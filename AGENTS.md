@@ -22,7 +22,7 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**滞回稳�
 | `crates/ime-repl` | CLI 调试前端 |
 | `crates/ime-tsf` | cdylib：COM/TSF 管线 + GDI 候选窗（Windows） |
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |
-| `scripts/` | download-dict / register / unregister |
+| `scripts/` | download-dict / install / uninstall |
 
 ## 常用命令
 
@@ -31,7 +31,8 @@ cargo check --workspace
 cargo test --workspace
 cargo build -p ime-tsf --release
 scripts\download-dict.ps1
-scripts\register.ps1        # 管理员
+scripts\install.ps1        # 安装（管理员，自动弹 UAC）
+scripts\uninstall.ps1      # 卸载（管理员，自动弹 UAC）
 ```
 
 ## 硬性约定

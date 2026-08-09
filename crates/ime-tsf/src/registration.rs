@@ -20,7 +20,7 @@ pub const PROFILE_GUID: &str = "{799E00DD-64C2-4280-AC48-D379A9ABC5BE}";
 pub const DISPLAY_ATTR_GUID: &str = "{4953F50B-CD5E-4AAF-BA0D-9F137CC7BC11}"; // M2+ 备用
 pub const LANGID_ZH_CN: u16 = 0x0804;
 pub const PROFILE_DESCRIPTION: &str = "Input IME";
-pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %ProgramData%\InputIME\
+pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIME\
 
 /// 注册表根键名（HKCR 下）。
 const CLSID_REG_KEY: &str = "CLSID\\{C69735F1-BAB1-458B-89FC-099ABA877ECB}";

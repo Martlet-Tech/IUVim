@@ -45,7 +45,7 @@ cargo run -p ime-repl -- data\input.imedic --batch de
 ## 4. W2：注册与真机手测（需管理员 PowerShell）
 
 ```powershell
-scripts\register.ps1     # 复制 DLL+词典 → %ProgramData%\InputIME\，regsvr32，重启 ctfmon
+scripts\install.ps1    # 复制 DLL → %ProgramFiles%\InputIME、词典 → %LOCALAPPDATA%\InputIME，注册，重启 ctfmon
 ```
 然后 `Win+Space` 切到 **Input IME**，打开记事本按清单手测：
 
@@ -60,7 +60,7 @@ scripts\register.ps1     # 复制 DLL+词典 → %ProgramData%\InputIME\，regsv
 | 7 | 输入中 Esc | 预编辑取消，正文无残留 |
 | 8 | Shift | 切英文模式，字母直出；再 Shift 回中文 |
 | 9 | 候选窗显示时切换到别的窗口 | 候选窗消失不残留 |
-| 10 | 删掉 `%ProgramData%\InputIME\input.imedic` 重试 | 输入法透明（字母直出），日志有记录，**不卡不死** |
+| 10 | 删掉 `%LOCALAPPDATA%\InputIME\input.imedic` 重试 | 输入法透明（字母直出），日志有记录，**不卡不死** |
 
 日志：`%TEMP%\input-ime-tsf.log` 应有 Activate、引擎加载、commit 记录。
 

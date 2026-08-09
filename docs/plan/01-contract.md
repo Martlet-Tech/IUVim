@@ -362,7 +362,7 @@ pub const PROFILE_GUID: &str     = "{799E00DD-64C2-4280-AC48-D379A9ABC5BE}";
 pub const DISPLAY_ATTR_GUID: &str= "{4953F50B-CD5E-4AAF-BA0D-9F137CC7BC11}"; // M2+ 备用
 pub const LANGID_ZH_CN: u16 = 0x0804;
 pub const PROFILE_DESCRIPTION: &str = "Input IME";
-pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %ProgramData%\InputIME\
+pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIME\
 ```
 
 ## 6. 文件属主矩阵（W1 并行防冲突）
@@ -387,5 +387,5 @@ pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %ProgramData%\InputIME
   （更新 composition 文本 → `effect_to_snapshot` → `CandidateUi`；`end` 则上屏/取消并 hide）。
 - composition 内嵌文本 = `Effect.composition`；候选窗第一行 = `Effect.reading`。
 - `Session::is_active() == false` 时字母键被消费（开启新会话），其余键全部放行。
-- 引擎在 DLL 内进程级单例（`OnceLock<Arc<Engine>>`），词典路径 `%ProgramData%\InputIME\input.imedic`；
+- 引擎在 DLL 内进程级单例（`OnceLock<Arc<Engine>>`），词典路径 `%LOCALAPPDATA%\InputIME\input.imedic`（用户级数据；DLL 本体在 `%ProgramFiles%\InputIME\`）；
   加载失败：日志记录，所有字母键原样放行（输入法"透明"，绝不卡用户）。

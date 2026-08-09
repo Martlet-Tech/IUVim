@@ -64,9 +64,13 @@ fn load_engine() -> Option<Arc<Engine>> {
     }
 }
 
-/// %ProgramData%\InputIME\input.imedic（契约 §7）。
+/// %LOCALAPPDATA%\InputIME\input.imedic（用户级数据，契约 §7）。
 fn dict_path() -> PathBuf {
-    let base = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".to_owned());
+    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
+        std::env::var("APPDATA")
+            .map(|a| PathBuf::from(a).join("Local").to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "C:\\Users\\Default\\AppData\\Local".to_owned())
+    });
     PathBuf::from(base).join("InputIME").join(crate::registration::DICT_FILENAME)
 }
 
@@ -132,7 +136,7 @@ impl TextService {
             return false;
         }
         let vk = wparam.0 as u16;
-        let key = map_key(vk, char_code(vk), shift_pressed());
+        let key = map_key(vk, char_code(vk), shift_pressed(), ctrl_pressed(), alt_pressed());
         let Some(key) = key else { return false };
         match &*self.session.borrow() {
             // 会话 active：映射表内键一律吃掉。
@@ -160,7 +164,7 @@ impl TextService {
             return false;
         }
 
-        let key = map_key(vk, char_code(vk), shift_pressed());
+        let key = map_key(vk, char_code(vk), shift_pressed(), ctrl_pressed(), alt_pressed());
         let Some(key) = key else { return false };
 
         // 开启新会话：仅字母键。
@@ -356,6 +360,18 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
 fn shift_pressed() -> bool {
     // SAFETY: GetKeyState 查询当前线程键盘状态，返回符号位表示按下。
     (unsafe { GetKeyState(VK_SHIFT.0 as i32) }) < 0
+}
+
+/// 当前 Ctrl 是否按下。Ctrl/Alt 组合键一律放行给应用（map_key 内约定）。
+fn ctrl_pressed() -> bool {
+    // SAFETY: 同上；VK_CONTROL 无.0 常量，用 0x11 字面量。
+    (unsafe { GetKeyState(0x11) }) < 0
+}
+
+/// 当前 Alt 是否按下。
+fn alt_pressed() -> bool {
+    // SAFETY: 同上；VK_MENU 无.0 常量，用 0x12 字面量。
+    (unsafe { GetKeyState(0x12) }) < 0
 }
 
 /// 无副作用的字符映射：MapVirtualKeyW(MAPVK_VK_TO_CHAR) 给出该键的无 Shift 字符值。
