@@ -13,7 +13,8 @@ pub mod store;
 pub mod viterbi;
 
 pub use candidate::{Candidate, CandidateKind};
-pub use config::Config;
+pub use config::keymap::{apply_keymap, is_session_start_key};
+pub use config::{Config, Keymap};
 pub use engine::Engine;
 pub use key::{Effect, Key, PageInfo, SessionEnd};
 pub use lm::{LmProvider, UnigramLm};

@@ -6,7 +6,7 @@ use std::error::Error;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
-use ime_core::{Config, Effect, Engine, Key, Session, SessionEnd};
+use ime_core::{apply_keymap, Config, Effect, Engine, Key, Session, SessionEnd};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let dict = ime_data::load(std::path::Path::new(&dict_path))
         .map_err(|e| format!("词典加载失败 {}：{}", dict_path, e))?;
-    let engine = Engine::new(dict, Config::default());
+    let engine = Engine::new(dict, Config::load());
     match batch_raw {
         Some(raw) => run_batch(&engine, &raw),
         None => interactive(&engine)?,
@@ -57,8 +57,6 @@ fn interactive(engine: &Arc<Engine>) -> io::Result<()> {
         match line {
             "q" => break,
             "!" => dispatch(&mut session, Key::Esc),
-            "+" => dispatch(&mut session, Key::PageDown),
-            "-" => dispatch(&mut session, Key::PageUp),
             "" => dispatch(&mut session, Key::Space),
             _ => {
                 if let Some(n) = digit(line) {
@@ -72,6 +70,9 @@ fn interactive(engine: &Arc<Engine>) -> io::Result<()> {
                     }
                     print_effect(&e);
                     session = Some(s);
+                } else if let Some(ch) = single_char(line) {
+                    // 标点键：按 keymap 重映射（默认 ,=上翻 . =下翻），与运行时一致
+                    dispatch(&mut session, apply_keymap(Key::Char(ch), &engine.config().keymap));
                 } else {
                     print_hint();
                 }
@@ -79,6 +80,17 @@ fn interactive(engine: &Arc<Engine>) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 单字符（标点/快捷键输入），多字符返回 None。
+fn single_char(line: &str) -> Option<char> {
+    let mut it = line.chars();
+    let c = it.next()?;
+    if it.next().is_some() {
+        None
+    } else {
+        Some(c)
+    }
 }
 
 /// 对当前会话发一个键并刷新显示；会话结束则丢弃。
@@ -108,7 +120,7 @@ fn is_pinyin(line: &str) -> bool {
 }
 
 fn print_hint() {
-    eprintln!("提示：输入字母/`'` 串=拼音，空行=空格提交，1-9=选词，+/-=翻页，!=Esc，q=退出");
+    eprintln!("提示：输入字母/`'` 串=拼音，空行=空格提交，1-9=选词，,=上翻 .=下翻，!=Esc，q=退出");
 }
 
 /// 打印一次按键后的 UI 快照（任务书 §3.2 格式）。

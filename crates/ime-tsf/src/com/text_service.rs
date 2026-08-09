@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use ime_core::{Config, Engine, Key, Session};
+use ime_core::{apply_keymap, is_session_start_key, Config, Engine, Session};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VK_SHIFT,
@@ -55,7 +55,7 @@ fn load_engine() -> Option<Arc<Engine>> {
                 path.display(),
                 dict.entry_count()
             ));
-            Some(Engine::new(dict, Config::default()))
+            Some(Engine::new(dict, Config::load()))
         }
         Err(e) => {
             log_line(&format!("引擎加载失败：{e}（{}），进入透明模式", path.display()));
@@ -139,16 +139,17 @@ impl TextService {
         let key = map_key(vk, char_code(vk), shift_pressed(), ctrl_pressed(), alt_pressed());
         let Some(key) = key else { return false };
         match &*self.session.borrow() {
-            // 会话 active：映射表内键一律吃掉。
+            // 会话 active：映射键一律吃掉（含经 keymap 重映射的翻页键）。
             Some(_) => true,
-            // 非 active：仅字母键（含 '）吃掉并开启会话；其余放行。
-            None => matches!(key, Key::Char(_)),
+            // 非 active：仅字母键（含 '）吃掉并开启会话；标点/数字等放行给应用。
+            None => is_session_start_key(key),
         }
     }
 
     /// OnKeyDown 完整处理：映射 → 会话推进 → 应用 Effect。
     fn handle_key_down(&self, pic: &ITfContext, wparam: WPARAM, _lparam: LPARAM) -> bool {
-        let Some(_engine) = engine() else { return false };
+        let Some(engine) = engine() else { return false };
+        let config = engine.config();
 
         let vk = wparam.0 as u16;
         // Shift：会话外切换英文模式；会话内忽略（MVP 直接忽略，契约 13 §3.3）。
@@ -169,10 +170,10 @@ impl TextService {
 
         // 开启新会话：仅字母键。
         if self.session.borrow().is_none() {
-            if !matches!(key, Key::Char(_)) {
+            if !is_session_start_key(key) {
                 return false;
             }
-            let mut session = _engine.start_session();
+            let mut session = engine.start_session();
             let effect = session.on_key(key);
             *self.session.borrow_mut() = Some(session);
             *self.composition.borrow_mut() = Some(Composition::new(pic.clone(), self.client_id.get()));
@@ -180,7 +181,8 @@ impl TextService {
             return true;
         }
 
-        // 会话内按键：映射键一律消费（test_key_down 已放行非映射键）。
+        // 会话内按键：先应用快捷键映射（翻页键重映射），映射键一律消费（test_key_down 已放行非映射键）。
+        let key = apply_keymap(key, &config.keymap);
         let effect = self
             .session
             .borrow_mut()

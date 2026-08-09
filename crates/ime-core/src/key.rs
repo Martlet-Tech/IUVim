@@ -3,6 +3,8 @@
 use crate::Candidate;
 
 /// 归一化按键。TSF/REPL 映射为它再喂给 Session。
+///
+/// 序列化格式（config.json）：`"PageUp"` / `"Up"` / `","` / `"3"` 等字符串。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Char(char),
@@ -15,6 +17,60 @@ pub enum Key {
     PageDown,
     Up,
     Down,
+}
+
+impl Key {
+    /// 展示名（config.json / 日志用）：`Char(',')` → `","`，`Digit(3)` → `"3"`。
+    pub fn name(&self) -> String {
+        match self {
+            Key::Char(c) => c.to_string(),
+            Key::Backspace => "Backspace".into(),
+            Key::Space => "Space".into(),
+            Key::Enter => "Enter".into(),
+            Key::Esc => "Esc".into(),
+            Key::Digit(n) => n.to_string(),
+            Key::PageUp => "PageUp".into(),
+            Key::PageDown => "PageDown".into(),
+            Key::Up => "Up".into(),
+            Key::Down => "Down".into(),
+        }
+    }
+
+    /// 从字符串解析（config.json）：`","` → Char(',')，`"3"` → Digit(3)，`"PageUp"` → PageUp。
+    pub fn from_name(s: &str) -> Option<Key> {
+        match s {
+            "Backspace" => Some(Key::Backspace),
+            "Space" => Some(Key::Space),
+            "Enter" => Some(Key::Enter),
+            "Esc" => Some(Key::Esc),
+            "PageUp" => Some(Key::PageUp),
+            "PageDown" => Some(Key::PageDown),
+            "Up" => Some(Key::Up),
+            "Down" => Some(Key::Down),
+            s if s.chars().count() == 1 => {
+                let c = s.chars().next().unwrap();
+                if c.is_ascii_digit() {
+                    Some(Key::Digit(c as u8 - b'0'))
+                } else {
+                    Some(Key::Char(c))
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+impl serde::Serialize for Key {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.name())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Key {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        Key::from_name(&raw).ok_or_else(|| serde::de::Error::custom(format!("未知按键：{raw}")))
+    }
 }
 
 /// 翻页信息。

@@ -85,6 +85,7 @@ windows = { version = "0.62", features = [
 ] }
 windows-core = "0.62"
 windows-registry = "0.6"
+serde_json = "1"
 ime-data = { path = "crates/ime-data" }
 ime-core = { path = "crates/ime-core" }
 
@@ -98,7 +99,7 @@ codegen-units = 1
 | crate | 依赖 |
 |---|---|
 | ime-data | `serde`（workspace） |
-| ime-core | `serde`（workspace）、`ime-data`（workspace） |
+| ime-core | `serde`（workspace）、`serde_json`（workspace）、`ime-data`（workspace） |
 | ime-repl | `ime-core`、`ime-data`（workspace） |
 | ime-tsf | `ime-core`、`ime-data`、`windows`、`windows-core`、`windows-registry`（workspace）；build-dep：`winres = "0.1"` |
 

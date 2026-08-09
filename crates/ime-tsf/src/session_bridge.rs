@@ -35,6 +35,8 @@ pub fn map_key(vk: u16, char_code: u32, with_shift: bool, with_ctrl: bool, with_
     const VK_A: u16 = 0x41;
     const VK_Z: u16 = 0x5A;
     const VK_OEM_7: u16 = 0xDE; // 引号键（无 Shift = '）
+    const VK_OEM_COMMA: u16 = 0xBC; // 逗号键（无 Shift = ,）
+    const VK_OEM_PERIOD: u16 = 0xBE; // 句号键（无 Shift = .）
 
     match vk {
         VK_BACK => Some(Key::Backspace),
@@ -56,9 +58,16 @@ pub fn map_key(vk: u16, char_code: u32, with_shift: bool, with_ctrl: bool, with_
             Some(Key::Char(c))
         }
         VK_OEM_7 if !with_shift && char_code == 0x27 => Some(Key::Char('\'')),
+        // 逗号/句号：无 Shift 时映射为标点键（会话内由 apply_keymap 翻页；会话外放行打标点）。
+        VK_OEM_COMMA if !with_shift && char_code == 0x2C => Some(Key::Char(',')),
+        VK_OEM_PERIOD if !with_shift && char_code == 0x2E => Some(Key::Char('.')),
         _ => None,
     }
 }
+
+/// 应用键映射（快捷键 → 引擎键）。命中翻页表则重映射为 PageUp/PageDown，否则原样。
+/// 会话外开启会话判定（仅字母与 `'`；`,`/`.` 等标点放行给应用）。
+/// 两者定义在 ime-core（config/keymap.rs），此处直接复用。
 
 /// 应用 Effect：composition 更新 → 候选窗快照 → 会话结束处理。
 /// 契约 13 任务书 §3.4：SetText → caret → ui.show/update → end 上屏/取消并 hide。
@@ -131,6 +140,41 @@ mod tests {
         // Shift+引号 = 双引号，放行
         assert_eq!(map_key(0xDE, 0x27, true, false, false), None);
         assert_eq!(map_key(0xDE, 0x22, false, false, false), None);
+    }
+
+    #[test]
+    fn map_key_comma_period() {
+        // 无 Shift：逗号/句号映射为标点键（会话内翻页、会话外打标点）
+        assert_eq!(map_key(0xBC, 0x2C, false, false, false), Some(Key::Char(',')));
+        assert_eq!(map_key(0xBE, 0x2E, false, false, false), Some(Key::Char('.')));
+        // Shift+逗号/句号 = < > 符号，放行
+        assert_eq!(map_key(0xBC, 0x2C, true, false, false), None);
+        assert_eq!(map_key(0xBE, 0x2E, true, false, false), None);
+    }
+
+    #[test]
+    fn apply_keymap_paging() {
+        let cfg = ime_core::Config::default();
+        assert_eq!(ime_core::apply_keymap(Key::Char(','), &cfg.keymap), Key::PageUp);
+        assert_eq!(ime_core::apply_keymap(Key::Char('.'), &cfg.keymap), Key::PageDown);
+        assert_eq!(ime_core::apply_keymap(Key::Up, &cfg.keymap), Key::PageUp);
+        assert_eq!(ime_core::apply_keymap(Key::Down, &cfg.keymap), Key::PageDown);
+        assert_eq!(ime_core::apply_keymap(Key::PageUp, &cfg.keymap), Key::PageUp);
+        // 未命中：原样
+        assert_eq!(ime_core::apply_keymap(Key::Char('a'), &cfg.keymap), Key::Char('a'));
+        assert_eq!(ime_core::apply_keymap(Key::Space, &cfg.keymap), Key::Space);
+        assert_eq!(ime_core::apply_keymap(Key::Digit(3), &cfg.keymap), Key::Digit(3));
+    }
+
+    #[test]
+    fn session_start_keys() {
+        assert!(ime_core::is_session_start_key(Key::Char('a')));
+        assert!(ime_core::is_session_start_key(Key::Char('\'')));
+        // 标点/数字/控制键不得开启会话（放行给应用）
+        assert!(!ime_core::is_session_start_key(Key::Char(',')));
+        assert!(!ime_core::is_session_start_key(Key::Char('.')));
+        assert!(!ime_core::is_session_start_key(Key::Digit(1)));
+        assert!(!ime_core::is_session_start_key(Key::Space));
     }
 
     #[test]
