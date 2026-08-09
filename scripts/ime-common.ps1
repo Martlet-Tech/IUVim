@@ -6,8 +6,12 @@ $ErrorActionPreference = "Stop"
 
 # ---- 自提权：非管理员时经 UAC 重新拉起自己，然后退出 ----
 # $ScriptPath 必须由调用方在脚本顶层传入（$PSCommandPath）；函数内取不到脚本级变量。
+# $PassArgs：可选，UAC 重拉时附加到命令行的参数（如 -SkipBuild），保持调用语义不变。
 function Exit-IfNotAdmin {
-    param([string]$ScriptPath)
+    param(
+        [string]$ScriptPath,
+        [string[]]$PassArgs = @()
+    )
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -17,7 +21,7 @@ function Exit-IfNotAdmin {
         exit 1
     }
     Write-Host "需要管理员权限，正在弹出 UAC 提权窗口..."
-    $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$ScriptPath`"")
+    $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$ScriptPath`"") + $PassArgs
     try {
         Start-Process powershell -Verb RunAs -Wait -ArgumentList $argList
     } catch {
@@ -62,6 +66,117 @@ function Restart-Ctfmon {
     }
     try { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     return $false
+}
+
+# ---- DLL 热替换（dev-deploy 用，零杀进程）----
+# Windows 加载 DLL 时授予 FILE_SHARE_DELETE：已加载的 DLL 可以改名但不能覆盖。
+# 策略：直接复制（未锁）→ 改名 .old + 原位复制（已锁）→ 改名也失败则报告持锁进程（不强杀）。
+# .old 的延迟清理复用双保险（Add-PendingOp 重启删 + Register-DelayedOps 注销删）。
+function Replace-InUseDll {
+    param(
+        [Parameter(Mandatory)][string]$Src,
+        [Parameter(Mandatory)][string]$Dest,
+        [string]$OldSuffix = ".old"
+    )
+    # 1) 快速路径：未锁直接覆盖
+    try {
+        Copy-Item $Src $Dest -Force -ErrorAction Stop
+        Trace-Script "Replace-InUseDll: 直接复制成功 $Dest"
+        return @{ Ok = $true; Renamed = $false }
+    } catch {
+        Trace-Script "Replace-InUseDll: 直接复制失败（被占用），尝试改名替换"
+    }
+    # 2) rename-then-copy：改名旧 DLL 让出原名，再原位写入新 DLL
+    # 旧 .old 若已存在（上一轮热部署遗留，尚未到注销/重启清理），追加时间戳后缀避免冲突。
+    $oldPath = "$Dest$OldSuffix"
+    if (Test-Path -LiteralPath $oldPath) {
+        $oldPath = "$Dest$OldSuffix.$([DateTime]::Now.ToString('yyyyMMddHHmmss'))"
+    }
+    try {
+        Move-Item -LiteralPath $Dest -Destination $oldPath -Force -ErrorAction Stop
+        Copy-Item $Src $Dest -Force -ErrorAction Stop
+        Trace-Script "Replace-InUseDll: 改名替换成功 $oldPath <- $Dest"
+        # 双保险安排 .old 延迟清理（老进程仍持旧映射，注销/重启后删除）
+        $p1 = Add-PendingOp -Source $oldPath
+        $p2 = Register-DelayedOps -Deletes @($oldPath)
+        if (-not ($p1 -or $p2)) {
+            Write-Host "警告：$oldPath 延迟清理登记失败，请注销/重启后手动删除。"
+        }
+        return @{ Ok = $true; Renamed = $true; OldPath = $oldPath }
+    } catch {
+        Trace-Script ("Replace-InUseDll: 改名替换失败 " + $_)
+        # 3) 兜底：报告持锁进程，绝不强杀
+        $holders = Get-FileHolders -Path $Dest
+        Write-Host "错误：DLL 无法替换，被以下进程占用："
+        $holders | ForEach-Object { Write-Host "  $_" }
+        Write-Host "请关闭这些进程后重跑，或改用 scripts\install.ps1（延迟替换，注销/重启后生效）。"
+        return @{ Ok = $false }
+    }
+}
+
+# 枚举占用文件的进程（Restart Manager API：RmStartSession → RmRegisterResources → RmGetList）。
+# 仅用于报告，不关停任何进程。返回进程名字符串数组。
+function Get-FileHolders {
+    param([Parameter(Mandatory)][string]$Path)
+    try {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class FileHolders {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct RM_UNIQUE_PROCESS { public int dwProcessId; public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct RM_PROCESS_INFO {
+        public RM_UNIQUE_PROCESS Process;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string strAppName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string strServiceShortName;
+        public int ApplicationType;
+        public uint AppStatus;
+        public uint TSSessionId;
+        [MarshalAs(UnmanagedType.Bool)] public bool bRestartable;
+    }
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+    static extern int RmStartSession(out uint pSessionHandle, int dwSessionFlags, StringBuilder strSessionKey);
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+    static extern int RmRegisterResources(uint dwSessionHandle, uint nFiles, string[] rgsFilenames, uint nServices, string[] rgsServiceNames, uint nApplications, RM_UNIQUE_PROCESS[] rgApplications);
+    [DllImport("rstrtmgr.dll")]
+    static extern int RmGetList(uint dwSessionHandle, out uint pnProcInfoNeeded, ref uint pnProcInfo, [In, Out] RM_PROCESS_INFO[] rgAffectedApps, ref uint lpdwRebootReasons);
+    [DllImport("rstrtmgr.dll")]
+    static extern int RmEndSession(uint dwSessionHandle);
+
+    public static string[] GetHolders(string path) {
+        List<string> names = new List<string>();
+        uint session;
+        StringBuilder key = new StringBuilder(256);
+        if (RmStartSession(out session, 0, key) != 0) return names.ToArray();
+        try {
+            string[] files = new string[] { path };
+            RmRegisterResources(session, 1, files, 0, null, 0, null);
+            uint needed = 0, count = 0, reboot = 0;
+            RM_PROCESS_INFO[] procs = new RM_PROCESS_INFO[16];
+            count = 16;
+            int ret = RmGetList(session, out needed, ref count, procs, ref reboot);
+            if (ret == 234 && needed > count) { // ERROR_MORE_DATA
+                procs = new RM_PROCESS_INFO[needed];
+                count = needed;
+                ret = RmGetList(session, out needed, ref count, procs, ref reboot);
+            }
+            if (ret != 0) return names.ToArray();
+            for (int i = 0; i < count; i++) {
+                names.Add(procs[i].strAppName + " (pid=" + procs[i].Process.dwProcessId + ")");
+            }
+        } finally { RmEndSession(session); }
+        return names.ToArray();
+    }
+}
+'@
+        return @([FileHolders]::GetHolders($Path))
+    } catch {
+        Trace-Script ("Get-FileHolders: EXCEPTION " + $_)
+        return @("（无法枚举占用进程：" + $_.Exception.Message + "）")
+    }
 }
 
 # ---- 延迟清理双保险 ----
