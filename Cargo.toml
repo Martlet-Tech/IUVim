@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/ime-data", "crates/ime-core", "crates/ime-repl", "crates/ime-tsf"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation", "Win32_Graphics", "Win32_Graphics_Gdi",
+    "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Ole",
+    "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Variant",
+    "Win32_System_WindowsProgramming", "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_TextServices",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-core = "0.62"
+windows-registry = "0.6"
+ime-data = { path = "crates/ime-data" }
+ime-core = { path = "crates/ime-core" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
