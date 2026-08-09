@@ -72,16 +72,11 @@ function Restart-Ctfmon {
 #
 # 注意：写 REG_MULTI_SZ 必须自己构造字节流——RegistryKey.SetValue 会丢弃数组中的空字符串
 # 元素（删除条目的空目标），导致条目错位（实测踩过坑）。
-function Add-PendingOp {
-    param(
-        [Parameter(Mandatory)][string]$Source,
-        [string]$Dest
-    )
-    $ntSrc = "\??\$Source"
-    $ntDest = if ($Dest) { "\??\$Dest" } else { "" }
-    Trace-Script ("Add-PendingOp: src=" + $Source + " dest=" + $Dest)
-    try {
-        Add-Type -TypeDefinition @'
+# 去重：AppendMultiSz 按 src 整对去重——写入时折叠已存在的重复对（旧版无去重写入的脏条目
+# 也会被折叠），防止条目无限累积。
+function Ensure-PendingOpsType {
+    if ('PendingOps' -as [type]) { return }
+    Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -97,20 +92,15 @@ public static class PendingOps {
     private const int KEY_SET_VALUE = 0x0002;
     private const int REG_MULTI_SZ = 7;
 
-    public static bool AppendMultiSz(string subKey, string valueName, string[] append) {
-        object existingRaw = null;
+    private static string[] ReadMultiSz(string subKey, string valueName) {
         try {
-            existingRaw = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(subKey).GetValue(valueName, null);
-        } catch { }
-        List<string> entries = new List<string>();
-        string[] existingArr = existingRaw as string[];
-        if (existingArr != null) { entries.AddRange(existingArr); }
-        for (int i = 0; i < append.Length; i += 2) {
-            string src = append[i];
-            if (src != null && entries.Contains(src)) { continue; }
-            entries.Add(src ?? "");
-            if (i + 1 < append.Length) { entries.Add(append[i + 1] ?? ""); }
+            return Microsoft.Win32.Registry.LocalMachine.OpenSubKey(subKey).GetValue(valueName, null) as string[];
+        } catch {
+            return null;
         }
+    }
+
+    private static bool WriteMultiSz(string subKey, string valueName, List<string> entries) {
         List<byte> ms = new List<byte>();
         foreach (string e in entries) {
             ms.AddRange(Encoding.Unicode.GetBytes(e ?? ""));
@@ -123,8 +113,57 @@ public static class PendingOps {
             return RegSetValueEx(hk, valueName, 0, REG_MULTI_SZ, ms.ToArray(), ms.Count) == 0;
         } finally { RegCloseKey(hk); }
     }
+
+    // 按 src 整对去重：先折叠已有重复对，再跳过与已有 src 相同的追加对。
+    public static bool AppendMultiSz(string subKey, string valueName, string[] append) {
+        List<string> entries = new List<string>();
+        HashSet<string> seen = new HashSet<string>();
+        string[] existingArr = ReadMultiSz(subKey, valueName);
+        if (existingArr != null) {
+            for (int i = 0; i < existingArr.Length; i += 2) {
+                string src = existingArr[i] ?? "";
+                if (src.Length > 0 && !seen.Add(src)) { continue; }
+                entries.Add(src);
+                if (i + 1 < existingArr.Length) { entries.Add(existingArr[i + 1] ?? ""); }
+            }
+        }
+        for (int i = 0; i < append.Length; i += 2) {
+            string src = append[i] ?? "";
+            if (src.Length > 0 && !seen.Add(src)) { continue; }
+            entries.Add(src);
+            if (i + 1 < append.Length) { entries.Add(append[i + 1] ?? ""); }
+        }
+        return WriteMultiSz(subKey, valueName, entries);
+    }
+
+    // 移除 src 命中的整对条目（用于安装前清理指向安装路径的陈旧 pending op）。
+    public static bool RemoveSrc(string subKey, string valueName, string[] remove) {
+        List<string> entries = new List<string>();
+        string[] existingArr = ReadMultiSz(subKey, valueName);
+        if (existingArr != null) {
+            for (int i = 0; i < existingArr.Length; i += 2) {
+                string src = existingArr[i] ?? "";
+                if (Array.IndexOf(remove, src) >= 0) { continue; }
+                entries.Add(src);
+                if (i + 1 < existingArr.Length) { entries.Add(existingArr[i + 1] ?? ""); }
+            }
+        }
+        return WriteMultiSz(subKey, valueName, entries);
+    }
 }
 '@
+}
+
+function Add-PendingOp {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [string]$Dest
+    )
+    $ntSrc = "\??\$Source"
+    $ntDest = if ($Dest) { "\??\$Dest" } else { "" }
+    Trace-Script ("Add-PendingOp: src=" + $Source + " dest=" + $Dest)
+    try {
+        Ensure-PendingOpsType
         $ok = [PendingOps]::AppendMultiSz('SYSTEM\CurrentControlSet\Control\Session Manager', 'PendingFileRenameOperations', @($ntSrc, $ntDest))
     } catch {
         Trace-Script ("Add-PendingOp: EXCEPTION " + $_)
@@ -138,6 +177,22 @@ public static class PendingOps {
         Trace-Script ("Add-PendingOp: verify=" + $found + " entries=[" + ($verify -join ' | ') + "]")
         return $found
     } catch {
+        return $false
+    }
+}
+
+# 安装前防御：清除指向指定路径的陈旧 pending op（"重启删目录"条目会误删新装的目录）。
+function Clear-PendingOp {
+    param(
+        [Parameter(Mandatory)][string]$Source
+    )
+    $ntSrc = "\??\$Source"
+    Trace-Script ("Clear-PendingOp: src=" + $Source)
+    try {
+        Ensure-PendingOpsType
+        return [PendingOps]::RemoveSrc('SYSTEM\CurrentControlSet\Control\Session Manager', 'PendingFileRenameOperations', @($ntSrc))
+    } catch {
+        Trace-Script ("Clear-PendingOp: EXCEPTION " + $_)
         return $false
     }
 }

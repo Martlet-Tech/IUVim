@@ -58,6 +58,10 @@ Trace-Script "install: 词库 OK"
 Write-Host "词库 OK：$imedicSrc"
 
 # ---- 3. 安装 DLL（被占用时登记延迟替换）----
+# 先清除指向安装目录的陈旧 pending op（旧版无去重卸载可能留下"重启删目录"条目，
+# 不清理的话下次重启会删掉刚装的目录）。
+$cleared = Clear-PendingOp -Source $destDir
+Trace-Script ("install: 陈旧 pending op 清理=" + $cleared)
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
 $queuedReplace = $false
 try {
