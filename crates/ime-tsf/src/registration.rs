@@ -9,7 +9,8 @@ use windows::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
 };
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, GUID_TFCAT_TIP_KEYBOARD, ITfCategoryMgr,
+    CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
+    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, GUID_TFCAT_TIP_KEYBOARD, ITfCategoryMgr,
     ITfInputProcessorProfiles,
 };
 use windows_core::{GUID, HRESULT, Result};
@@ -141,6 +142,20 @@ fn register_with_tsf(dll: &str) -> Result<()> {
         e
     })?;
     crate::log::log_line("RegisterCategory OK");
+    // 沉浸式支持（TSF 3.0 客户端如 Windows Terminal / UWP 只加载声明了该类别的 TIP）
+    unsafe { category_mgr.RegisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, &clsid()) }
+        .map_err(|e| {
+            crate::log::log_line(&format!("RegisterCategory(IMMERSIVESUPPORT) 失败：{e:?}"));
+            e
+        })?;
+    crate::log::log_line("RegisterCategory(IMMERSIVESUPPORT) OK");
+    // 系统托盘/语言栏兼容
+    unsafe { category_mgr.RegisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, &clsid()) }
+        .map_err(|e| {
+            crate::log::log_line(&format!("RegisterCategory(SYSTRAYSUPPORT) 失败：{e:?}"));
+            e
+        })?;
+    crate::log::log_line("RegisterCategory(SYSTRAYSUPPORT) OK");
     Ok(())
 }
 
@@ -165,6 +180,8 @@ fn unregister_with_tsf() -> Result<()> {
     // SAFETY: 反向注销类别。
     unsafe {
         let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIP_KEYBOARD, &clsid());
+        let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, &clsid());
+        let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, &clsid());
     }
     Ok(())
 }
