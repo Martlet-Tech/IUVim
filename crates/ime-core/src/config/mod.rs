@@ -26,6 +26,8 @@ pub struct Config {
     pub max_word_syllables: usize,
     /// 快捷键映射
     pub keymap: Keymap,
+    /// 前缀联想：关闭 = 候选仅 exact 匹配（微软化，默认）；开启 = 追加以当前码为前缀的长词（最多 20 条）
+    pub candidate_prefix: bool,
 }
 
 impl Default for Config {
@@ -35,6 +37,7 @@ impl Default for Config {
             max_candidates: 200,
             max_word_syllables: 7,
             keymap: Keymap::default(),
+            candidate_prefix: false,
         }
     }
 }
@@ -107,6 +110,7 @@ mod tests {
         assert_eq!(c.page_size, 5);
         assert_eq!(c.max_candidates, 200);
         assert_eq!(c.max_word_syllables, 7);
+        assert!(!c.candidate_prefix);
         assert!(c.keymap.page_prev.contains(&Key::Char(',')));
         assert!(c.keymap.page_next.contains(&Key::Char('.')));
     }

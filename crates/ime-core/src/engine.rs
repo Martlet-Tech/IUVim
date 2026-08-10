@@ -79,14 +79,16 @@ impl Engine {
             cands.push(crate::Candidate::new(e.word.clone(), kind, e.code.clone(), e.weight));
         }
 
-        // 3. 前缀补全，20 条
-        for e in self.dict.prefix(&squashed, 20) {
-            let kind = if e.word.chars().count() >= 2 {
-                crate::CandidateKind::Word
-            } else {
-                crate::CandidateKind::Char
-            };
-            cands.push(crate::Candidate::new(e.word.clone(), kind, e.code.clone(), e.weight));
+        // 3. 前缀补全（联想）：默认关闭（微软化，候选仅 exact）；config 开启时追加
+        if self.config.candidate_prefix {
+            for e in self.dict.prefix(&squashed, 20) {
+                let kind = if e.word.chars().count() >= 2 {
+                    crate::CandidateKind::Word
+                } else {
+                    crate::CandidateKind::Char
+                };
+                cands.push(crate::Candidate::new(e.word.clone(), kind, e.code.clone(), e.weight));
+            }
         }
 
         // 4. 按 text 去重（保序，先见先留）

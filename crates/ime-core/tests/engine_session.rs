@@ -60,9 +60,40 @@ fn exact_words_order_by_weight() {
     assert_eq!(s.effect().candidates[0].text, "的");
 }
 
+/// 前缀联想开关：默认关闭（候选仅 exact，微软化）；开启时追加以当前码为前缀的长词。
+#[test]
+fn candidate_prefix_switch() {
+    let dict = Dict::from_entries(vec![
+        ("nihao".into(), "你好".into(), 8000),
+        ("nihao".into(), "泥嚎".into(), 100),
+        ("nihaoa".into(), "你好啊".into(), 9000),
+        ("nihaoaa".into(), "你好啊啊".into(), 1000),
+    ]);
+    // 默认（关）：无联想长词
+    let engine = Engine::new(dict.clone(), Config::default());
+    let mut s = engine.start_session();
+    for c in "nihao".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    assert!(texts.contains(&"你好".to_string()));
+    assert!(!texts.contains(&"你好啊".to_string()), "默认不应出现前缀联想词，实际：{texts:?}");
+    // 开启：追加联想长词
+    let cfg = Config { candidate_prefix: true, ..Config::default() };
+    let engine2 = Engine::new(dict, cfg);
+    let mut s2 = engine2.start_session();
+    for c in "nihao".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    let texts2: Vec<String> = s2.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    assert!(texts2.contains(&"你好啊".to_string()), "开启后应出现前缀联想词，实际：{texts2:?}");
+}
+
 #[test]
 fn prefix_completion_recalled() {
-    let engine = default_engine();
+    // 联想开启时，未完成码 "nih" 也能通过前缀补全召回 "你好"
+    let cfg = Config { candidate_prefix: true, ..Config::default() };
+    let engine = Engine::new(fixture_dict(), cfg);
     let mut s = engine.start_session();
     for c in "nih".chars() {
         s.on_key(Key::Char(c));
