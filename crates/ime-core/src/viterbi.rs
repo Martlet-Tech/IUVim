@@ -31,7 +31,8 @@ pub fn best_sentence(
             continue;
         }
         for j in (i + 1)..=(n.min(i + max_w)) {
-            let code = seg[i..j].concat();
+            // 词库键已分隔化（空格→'），边 key 以 ' 连接各音节（如 ["xi","an"] → "xi'an"）。
+            let code = seg[i..j].join("'");
             let entries = dict.exact(&code);
             if entries.is_empty() {
                 if j == i + 1 {
@@ -65,7 +66,7 @@ pub fn best_sentence(
     path.reverse();
     let text = path.join("");
     // Sentence 权重恒 0（契约 candidate.rs）
-    Some(Candidate::new(text, CandidateKind::Sentence, seg.concat(), 0))
+    Some(Candidate::new(text, CandidateKind::Sentence, seg.join("'"), 0))
 }
 
 #[cfg(test)]
@@ -78,8 +79,8 @@ mod tests {
         Dict::from_entries(vec![
             ("ni".into(), "你".into(), 50000),
             ("hao".into(), "好".into(), 40000),
-            ("nihao".into(), "你好".into(), 8000),
-            ("shijie".into(), "世界".into(), 6000),
+            ("ni'hao".into(), "你好".into(), 8000),
+            ("shi'jie".into(), "世界".into(), 6000),
             ("shi".into(), "世".into(), 3000),
             ("jie".into(), "界".into(), 2500),
             ("de".into(), "的".into(), 100000),
@@ -88,7 +89,7 @@ mod tests {
 
     fn seg(raw: &str) -> Vec<String> {
         let d = dict();
-        Quanpin::new(d.syllables().clone()).segment(raw)
+        Quanpin::new(d.syllables().clone()).segment(raw)[0].clone()
     }
 
     #[test]

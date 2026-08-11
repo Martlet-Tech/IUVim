@@ -207,8 +207,8 @@ mod tests {
     #[test]
     fn input_then_space_commits_first_candidate() {
         let engine = engine_with(Dict::from_entries(vec![
-            ("nihao".into(), "你好".into(), 8000),
-            ("nihao".into(), "泥嚎".into(), 100),
+            ("ni'hao".into(), "你好".into(), 8000),
+            ("ni'hao".into(), "泥嚎".into(), 100),
         ]));
         let effects = run_script(
             &engine,
@@ -252,14 +252,14 @@ mod tests {
     #[test]
     fn batch_collects_all_pages() {
         let engine = engine_with(Dict::from_entries(vec![
-            ("nihao".into(), "你好".into(), 8000),
-            ("nihao".into(), "泥嚎".into(), 7000),
-            ("nihao".into(), "拟好".into(), 6000),
-            ("nihao".into(), "你号".into(), 5000),
-            ("nihao".into(), "尼好".into(), 4000),
-            ("nihao".into(), "腻好".into(), 3000),
-            ("nihao".into(), "逆豪".into(), 2000),
-            ("nihao".into(), "你浩".into(), 1000),
+            ("ni'hao".into(), "你好".into(), 8000),
+            ("ni'hao".into(), "泥嚎".into(), 7000),
+            ("ni'hao".into(), "拟好".into(), 6000),
+            ("ni'hao".into(), "你号".into(), 5000),
+            ("ni'hao".into(), "尼好".into(), 4000),
+            ("ni'hao".into(), "腻好".into(), 3000),
+            ("ni'hao".into(), "逆豪".into(), 2000),
+            ("ni'hao".into(), "你浩".into(), 1000),
         ]));
         let e = collect_all(&engine, "nihao");
         assert_eq!(e.reading, "ni'hao");
@@ -275,12 +275,12 @@ mod tests {
             Some(("a.imedic".into(), None))
         );
         assert_eq!(
-            parse_args(&["a".into(), "--batch".into(), "nihao".into()]),
-            Some(("a".into(), Some("nihao".into())))
+            parse_args(&["a".into(), "--batch".into(), "ni'hao".into()]),
+            Some(("a".into(), Some("ni'hao".into())))
         );
         assert_eq!(parse_args(&["a".into(), "x".into()]), None);
         assert_eq!(
-            parse_args(&["a".into(), "--batch".into(), "nihao".into(), "extra".into()]),
+            parse_args(&["a".into(), "--batch".into(), "ni'hao".into(), "extra".into()]),
             None
         );
     }

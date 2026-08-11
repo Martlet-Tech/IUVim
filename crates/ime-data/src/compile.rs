@@ -122,11 +122,22 @@ fn parse_file(path: &Path, uniq: &mut BTreeMap<(String, String), u32>) -> io::Re
     Ok(duplicates)
 }
 
-/// 拼音列 → squashed 键：去空白、转小写（`ni hao` → `nihao`；`xi'an` 保留 `'`）。
+/// 拼音列 → 词条键：空白转 `'`、转小写（`ni hao` → `ni'hao`；`xi an` → `xi'an`）。
+/// 保留音节分隔信息：无撇号输入经枚举切分重建 `'` 键命中词条，
+/// 强制输入 `xi'an` 直接命中 `xi'an` 键（单字词无空白，键不变）。
 fn squash(pinyin: &str) -> String {
-    pinyin
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
+    let mut out = String::new();
+    let mut pending_sep = false;
+    for c in pinyin.chars() {
+        if c.is_whitespace() {
+            pending_sep = true;
+        } else {
+            if pending_sep && !out.is_empty() {
+                out.push('\'');
+            }
+            pending_sep = false;
+            out.push(c.to_ascii_lowercase());
+        }
+    }
+    out
 }

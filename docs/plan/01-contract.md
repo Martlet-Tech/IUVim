@@ -120,7 +120,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     pub word: String,   // 词条文本，如 "你好"
-    pub code: String,   // squashed 全拼（无空格全小写），如 "nihao"——与查询键同形
+    pub code: String,   // 音节分隔键（全小写，音节间以 ' 分隔）："ni'hao" / "xi'an"；单字词无分隔如 "xian"——与查询键同形（compile 时拼音空白转 '）
     pub weight: u32,    // 词库静态权重（缺失按 0）
 }
 
@@ -207,8 +207,8 @@ pub enum SessionEnd { Commit(String), Cancel }
 /// 一次按键后的完整 UI 快照 + 副作用。TSF/REPL 只消费它，不读引擎内部。
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Effect {
-    pub composition: String,         // 内嵌预编辑文本：拼音分段（与 reading 同值，如 "ce'shi"）——微软式：拼音留在预编辑，候选窗只放候选；commit 时由 end.text 替换上屏
-    pub reading: String,             // 切分显示，如 "ni'hao"（以 ' 连接各音节）
+    pub composition: String,         // 内嵌预编辑文本：拼音分段（如 "ce'shi"，保留用户按下的强制分隔符 `'`，与 reading 同值）——微软式：拼音留在预编辑，候选窗只放候选；commit 时由 end.text 替换上屏
+    pub reading: String,             // 切分显示，如 "ni'hao"（保留用户 `'`，见 schema::display_with_sep）
     pub candidates: Vec<Candidate>,  // 当前页候选（页内索引 0 起）
     pub selected: usize,             // 页内高亮索引
     pub page: PageInfo,
@@ -217,11 +217,14 @@ pub struct Effect {
 
 // ===== schema.rs（Agent B）=====
 pub trait InputSchema: Send + Sync {   // Engine 进程级单例跨线程共享，全部件须 Send+Sync
-    /// 原始字母串 → 音节序列。全拼：' 为强制分隔；其余贪心最长合法音节。
-    /// 非法前缀（如不合法音节）按单字母原样保留为一个"音节"，保证永不失败。
-    fn segment(&self, raw: &str) -> Vec<String>;
-    /// 音节序列 → 显示串：以 ' 连接，如 ["ni","hao"] → "ni'hao"。
-    fn display(&self, seg: &[String]) -> String;
+/// 原始字母串 → 全部可能切分方案（每方案 = 音节序列）。全拼：
+/// `'` 为强制分隔（硬边界，空段保留供 display）；各段内部递归枚举全部合法音节切分
+/// （有合法音节前缀时不兜底单字母，无则单字母兜底保证永不失败）。
+/// 方案按贪心优先排序（方案[0] = 贪心/强制切分，供 viterbi 整句与 display）。
+/// 例：`"xian"` → `[[xian], [xi,an]]`；`"xi'an"` → `[[xi,an]]`；`"qaz"` → `[[q,a,z]]`。
+fn segment(&self, raw: &str) -> Vec<Vec<String>>;
+/// 单个方案 → 显示串：以 ' 连接（空段保留：`["x",""]` → `"x'"`）。
+fn display(&self, seg: &[String]) -> String;
 }
 pub struct Quanpin { /* BTreeSet<String> 合法音节 */ }
 impl Quanpin { pub fn new(syllables: std::collections::BTreeSet<String>) -> Self }
@@ -302,22 +305,24 @@ impl Session {
 | `Esc` | `end = Some(Cancel)` |
 | `PageUp/PageDown` | page ±1，clamp 到 `[0, page_count−1]`，selected 归 0 |
 | `Up/Down` | selected ±1，clamp 到 `[0, 当前页候选数−1]` |
-| commit 发生时 | 调 `store.record_selection(code_key, text, now)`：Word/Char 用候选自身 `code`，Sentence 用 `seg.concat()`；随后 `end = Some(Commit(text))` |
+| commit 发生时 | 调 `store.record_selection(code_key, text, now)`：Word/Char 用候选自身 `code`，Sentence 用 `seg.join("'")`；随后 `end = Some(Commit(text))` |
 
 会话结束后该 Session 不再使用（TSF/REPL 丢弃重建）。
 
 ### 4.2 候选生成算法契约（`Engine` 内部流程，B 实现；顺序即静态展示序）
 
-设 `seg` = 切分结果，`squashed` = seg 拼接。
+设 `seg` = 方案[0]（贪心/强制切分），`plans` = 全部切分方案（`schema.segment(raw)` 输出）。
 
-1. `seg.len() >= 2` → unigram Viterbi 最优路径 → `Candidate{ kind: Sentence, text: 路径拼接, code: seg.concat(), weight: 0 }`
-2. `dict.exact(squashed)`：词长 ≥2 → `Word`，单字 → `Char`；按 weight 降序（Dict 已保证），取前 50
-3. `dict.prefix(squashed, 20)`：前缀补全（`Char`/`Word` 同规则）
+1. `seg.len() >= 2` → unigram Viterbi 最优路径 → `Candidate{ kind: Sentence, text: 路径拼接, code: seg.join("'"), weight: 0 }`
+2. `dict.exact` **枚举合并**：对 `plans` 中每个方案取 `join("'")` 键查表，全部词条按 weight 降序统一排序（词长 ≥2 → `Word`，单字 → `Char`），按 text 去重取前 50。
+   无撇号 `xian` → 方案 `[xian]`（主键单字组）+ `[xi,an]`（分隔键词组）跨组混排；
+   强制 `xi'an` → 仅 `[xi,an]` 方案 → 只出词组。
+3. `dict.prefix(seg.join("'"), 20)`：前缀补全（`Char`/`Word` 同规则；词库键已分隔化，跨音节前缀如 `nih` 不再联想）
 4. 按 text 去重（保序，先见先留）
 5. 截断到 `config.max_candidates`
 6. 依次过 `stages` 管线（MVP 仅 StaticOrder = no-op）
 
-Viterbi 要点：位置 0..=n（音节界）；边 (i,j)（`j−i ≤ max_word_syllables`）= `dict.exact(seg[i..j].concat())`
+Viterbi 要点：位置 0..=n（音节界）；边 (i,j)（`j−i ≤ max_word_syllables`）= `dict.exact(seg[i..j].join("'"))`
 的全部词条；边分 = `lm.log_prob(prev_word, word, weight)`；单音节无词条时给兜底边
 （text = 该音节原样，分 = `UnigramLm::log_prob(None, s, 0) + OOV_PENALTY`），保证路径恒存在。
 

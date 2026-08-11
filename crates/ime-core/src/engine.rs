@@ -58,29 +58,54 @@ impl Engine {
         self.dict.exact(squashed_code)
     }
 
-    /// 按契约 §4.2 生成候选。`squashed` 需与 seg 一致。
-    pub(crate) fn generate_candidates(&self, raw: &str, seg: &[String]) -> Vec<crate::Candidate> {
-        let squashed: String = seg.concat();
+    /// 按契约 §4.2 生成候选。`seg` 为方案[0]（贪心/强制，供 viterbi/前缀联想），
+    /// `plans` 为全部切分方案（exact 枚举合并查询）。
+    pub(crate) fn generate_candidates(
+        &self,
+        raw: &str,
+        seg: &[String],
+        plans: &[Vec<String>],
+    ) -> Vec<crate::Candidate> {
         let mut cands: Vec<crate::Candidate> = Vec::new();
 
-        // 1. unigram Viterbi 最优路径（seg.len() >= 2）
+        // 1. unigram Viterbi 最优路径（方案[0]，seg.len() >= 2）
         if let Some(sentence) = crate::viterbi::best_sentence(&self.dict, seg, &*self.lm, &self.config)
         {
             cands.push(sentence);
         }
 
-        // 2. exact 查询，前 50
-        for e in self.dict.exact(&squashed).iter().take(50) {
+        // 2. exact 查询：全部切分方案各按 `'` 键查表，跨组按权重统一排序，前 50
+        //    （无撇号 `xian` → [xian]主键单字组 + [xi,an]别名键词组混排；
+        //    强制 `xi'an` → 仅 [xi,an] 方案 → 只出词）
+        let mut entries: Vec<&ime_data::Entry> = Vec::new();
+        for plan in plans {
+            // 空段方案（尾/连续 `'`）join 出尾 `'`，查无键自然无命中。
+            let key = plan.join("'");
+            entries.extend(self.dict.exact(&key).iter());
+        }
+        entries.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
+        let mut seen = std::collections::HashSet::new();
+        let mut exact_n = 0usize;
+        for e in entries {
+            if !seen.insert(e.word.as_str()) {
+                continue;
+            }
             let kind = if e.word.chars().count() >= 2 {
                 crate::CandidateKind::Word
             } else {
                 crate::CandidateKind::Char
             };
             cands.push(crate::Candidate::new(e.word.clone(), kind, e.code.clone(), e.weight));
+            exact_n += 1;
+            if exact_n >= 50 {
+                break;
+            }
         }
 
-        // 3. 前缀补全（联想）：默认关闭（微软化，候选仅 exact）；config 开启时追加
+        // 3. 前缀补全（联想）：默认关闭（微软化，候选仅 exact）；config 开启时追加。
+        //    用方案[0] 的 `'` 键做前缀匹配（词库键已分隔化）。
         if self.config.candidate_prefix {
+            let squashed = seg.join("'");
             for e in self.dict.prefix(&squashed, 20) {
                 let kind = if e.word.chars().count() >= 2 {
                     crate::CandidateKind::Word

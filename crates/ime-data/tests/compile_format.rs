@@ -39,12 +39,12 @@ fn roundtrip_small_dict() {
     assert_eq!(stats.duplicates, 1);
 
     let d = load(&out).unwrap();
-    let nihao = d.exact("nihao");
+    let nihao = d.exact("ni'hao");
     assert_eq!(nihao.len(), 2);
     assert_eq!(nihao[0].word, "你好");
     assert_eq!(nihao[0].weight, 9999); // 去重取最大 weight（与出现顺序无关）
     assert_eq!(nihao[1].weight, 100);
-    assert_eq!(d.exact("haode")[0].weight, 0); // 权重缺省按 0
+    assert_eq!(d.exact("hao'de")[0].weight, 0); // 权重缺省按 0
 }
 
 #[test]
@@ -57,17 +57,17 @@ fn yaml_header_and_comments_skipped() {
     assert_eq!(stats.entries, 2);
     assert_eq!(stats.duplicates, 0);
     let d = load(&out).unwrap();
-    assert_eq!(d.exact("nihao")[0].weight, 1000);
+    assert_eq!(d.exact("ni'hao")[0].weight, 1000);
 }
 
 #[test]
-fn code_is_squashed() {
+fn code_keeps_separation() {
     let dir = tmp_dir("squash");
     let (out, _) = compile_one(&dir, "你好\tNi Hao\t100\n");
     let d = load(&out).unwrap();
-    let hits = d.exact("nihao");
+    let hits = d.exact("ni'hao");
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].code, "nihao");
+    assert_eq!(hits[0].code, "ni'hao");
     assert!(d.exact("Ni Hao").is_empty());
     assert!(d.exact("nihao ").is_empty());
 }
@@ -105,14 +105,15 @@ fn prefix_query_smoke() {
         "你好\tni hao\t100\n你们\tni men\t50\n泥嚎\tni hao\t90\n拿手\tna shou\t10\n",
     );
     let d = load(&out).unwrap();
+    // 词库键已分隔化（空格→'）：前缀联想用音节前缀 "ni" 命中 "ni'hao" / "ni'men"。
     let words: Vec<&str> = d
-        .prefix("nih", 10)
+        .prefix("ni", 10)
         .iter()
         .map(|e| e.word.as_str())
         .collect();
     assert!(words.contains(&"你好"));
     assert!(words.contains(&"泥嚎"));
-    assert!(!words.contains(&"你们"));
+    assert!(words.contains(&"你们"));
     assert!(!words.contains(&"拿手"));
 }
 
@@ -142,7 +143,7 @@ fn multi_file_merge_dedup() {
     assert_eq!(stats.codes, 2);
     assert_eq!(stats.duplicates, 1);
     let d = load(&out).unwrap();
-    assert_eq!(d.exact("nihao")[0].weight, 200); // 跨文件去重取最大
+    assert_eq!(d.exact("ni'hao")[0].weight, 200); // 跨文件去重取最大
 }
 
 #[test]
@@ -151,7 +152,7 @@ fn format_write_load_roundtrip() {
     let records = [
         Entry {
             word: "你好".into(),
-            code: "nihao".into(),
+            code: "ni'hao".into(),
             weight: 10,
         },
         Entry {
@@ -166,5 +167,5 @@ fn format_write_load_roundtrip() {
     std::fs::write(&p, &buf).unwrap();
     let d = load(&p).unwrap();
     assert_eq!(d.entry_count(), 2);
-    assert_eq!(d.exact("nihao")[0].weight, 10);
+    assert_eq!(d.exact("ni'hao")[0].weight, 10);
 }

@@ -105,7 +105,7 @@ impl Session {
     fn commit_index(&mut self, idx: usize) {
         let c = self.all[idx].clone();
         let code_key = match c.kind {
-            crate::CandidateKind::Sentence => self.seg.concat(),
+            crate::CandidateKind::Sentence => self.seg.join("'"),
             _ => c.code.clone(),
         };
         self.engine.record_selection(&code_key, &c.text);
@@ -113,9 +113,12 @@ impl Session {
     }
 
     /// 重切分 → 重新生成候选 → page=0, selected=0。无候选也保持 active。
+    /// segment 返回全部切分方案；本会话使用方案[0]（贪心/强制），
+    /// 全部方案交给 engine 做枚举合并查询。
     fn recompute(&mut self) {
-        self.seg = self.engine.schema.segment(&self.raw);
-        self.all = self.engine.generate_candidates(&self.raw, &self.seg);
+        let plans = self.engine.schema.segment(&self.raw);
+        self.seg = plans.first().cloned().unwrap_or_default();
+        self.all = self.engine.generate_candidates(&self.raw, &self.seg, &plans);
         self.page = 0;
         self.selected = 0;
     }
@@ -148,11 +151,12 @@ impl Session {
         let page_cands = self.page_candidates().to_vec();
         // 微软式：预编辑文本 = 拼音分段（ce'shi），候选列表只放候选窗；
         // commit 上屏时由 end.text 替换（TSF 侧 apply_effect 的 Commit 分支）。
-        let composition = self.engine.schema.display(&self.seg);
+        // 方案[0] join 即含用户强制分隔符（`'` 硬切分空段保留），按 `'` 即有反馈。
+        let preview = self.engine.schema.display(&self.seg);
         let selected = if page_cands.is_empty() { 0 } else { self.selected };
         Effect {
-            composition,
-            reading: self.engine.schema.display(&self.seg),
+            composition: preview.clone(),
+            reading: preview,
             candidates: page_cands,
             selected,
             page: PageInfo {

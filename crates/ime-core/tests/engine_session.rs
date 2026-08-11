@@ -15,12 +15,12 @@ pub fn fixture_dict() -> Dict {
         ("de".into(), "的".into(), 100000),
         ("de".into(), "得".into(), 300),
         ("de".into(), "地".into(), 200),
-        ("nihao".into(), "你好".into(), 8000),
-        ("nihao".into(), "泥嚎".into(), 100),
+        ("ni'hao".into(), "你好".into(), 8000),
+        ("ni'hao".into(), "泥嚎".into(), 100),
         ("ni".into(), "泥".into(), 500),
         ("ni".into(), "你".into(), 50000),
         ("hao".into(), "好".into(), 40000),
-        ("shijie".into(), "世界".into(), 6000),
+        ("shi'jie".into(), "世界".into(), 6000),
         ("shi".into(), "世".into(), 3000),
         ("jie".into(), "界".into(), 2500),
     ])
@@ -64,10 +64,10 @@ fn exact_words_order_by_weight() {
 #[test]
 fn candidate_prefix_switch() {
     let dict = Dict::from_entries(vec![
-        ("nihao".into(), "你好".into(), 8000),
-        ("nihao".into(), "泥嚎".into(), 100),
-        ("nihaoa".into(), "你好啊".into(), 9000),
-        ("nihaoaa".into(), "你好啊啊".into(), 1000),
+        ("ni'hao".into(), "你好".into(), 8000),
+        ("ni'hao".into(), "泥嚎".into(), 100),
+        ("ni'hao'a".into(), "你好啊".into(), 9000),
+        ("ni'hao'a'a".into(), "你好啊啊".into(), 1000),
     ]);
     // 默认（关）：无联想长词
     let engine = Engine::new(dict.clone(), Config::default());
