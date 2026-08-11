@@ -8,7 +8,7 @@
 use std::cell::{Cell, RefCell};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -33,6 +33,8 @@ use crate::ui::CaretRect;
     /// 进程级引擎单例（契约 §7：`OnceLock<Arc<Engine>>`）。
     /// 词典加载失败 → None = 透明模式（全部按键放行，绝不卡用户）。
     static ENGINE: OnceLock<Option<Arc<Engine>>> = OnceLock::new();
+    /// 加载是否已启动（防重复 spawn；Activate 与 engine() 兜底并发安全）。
+    static ENGINE_LOAD_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// 全局活动对象计数（DllCanUnloadNow 用）：实例创建 +1，Drop −1。
 static INSTANCE_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -41,9 +43,34 @@ pub(crate) fn instance_count() -> u32 {
     INSTANCE_COUNT.load(Ordering::SeqCst)
 }
 
-/// 取引擎单例。透明模式下返回 None。
+/// 取引擎单例（非阻塞）。透明模式 / 加载未完成时返回 None（按键放行）。
 pub(crate) fn engine() -> Option<&'static Arc<Engine>> {
-    ENGINE.get_or_init(load_engine).as_ref()
+    let loaded = ENGINE.get().and_then(|e| e.as_ref());
+    if loaded.is_none() && ENGINE.get().is_none() {
+        // 兜底：未走 Activate 就被按键（极端路径），触发后台加载。
+        start_engine_load();
+    }
+    loaded
+}
+
+/// 后台异步加载引擎：词库 17MB/65 万词条，首键同步加载会卡顿。
+/// Activate（切到输入法）时调用；加载中按键 = 透明放行，绝不阻塞按键路径。
+/// 加载失败 → set(None) = 永久透明模式（与现状语义一致，不重试）。
+pub(crate) fn start_engine_load() {
+    if ENGINE_LOAD_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let t0 = std::time::Instant::now();
+        log_line("引擎加载开始（后台线程）");
+        let engine = load_engine();
+        log_line(&format!(
+            "引擎加载完成：耗时 {:.0} ms，结果 {:?}",
+            t0.elapsed().as_millis(),
+            engine.as_ref().map(|_| "就绪").unwrap_or("失败→透明模式")
+        ));
+        let _ = ENGINE.set(engine);
+    });
 }
 
 fn load_engine() -> Option<Arc<Engine>> {
@@ -263,6 +290,10 @@ impl TextService_Impl {
             source.AdviseSink(&<ITfThreadMgrEventSink as Interface>::IID, &thread_sink)?
         };
         self.event_cookie.set(cookie);
+
+        // 后台异步加载引擎（词库 17MB/65 万词条）：切到输入法即开始，
+        // 首次按键不再同步加载卡顿；加载完成前按键透明放行。
+        start_engine_load();
 
         log_line(&format!("Activate：tid={tid}"));
         Ok(())
