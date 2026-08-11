@@ -70,8 +70,8 @@ mod tests {
         let mut e = Effect::default();
         e.reading = "ni'hao".into();
         e.candidates = vec![
-            Candidate::new("你好", CandidateKind::Word, "nihao", 1),
-            Candidate::new("泥嚎", CandidateKind::Word, "nihao", 2),
+            Candidate::new("你好", CandidateKind::Word, "nihao", 1, 2),
+            Candidate::new("泥嚎", CandidateKind::Word, "nihao", 2, 2),
         ];
         e.selected = 1;
         e.page = PageInfo {

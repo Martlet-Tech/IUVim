@@ -65,8 +65,8 @@ pub fn best_sentence(
     }
     path.reverse();
     let text = path.join("");
-    // Sentence 权重恒 0（契约 candidate.rs）
-    Some(Candidate::new(text, CandidateKind::Sentence, seg.join("'"), 0))
+    // Sentence 权重恒 0（契约 candidate.rs）；seg_len = 组句段数（消费全部 vseg 段）。
+    Some(Candidate::new(text, CandidateKind::Sentence, seg.join("'"), 0, seg.len()))
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //! 用 Dict::from_entries 造小词典，不依赖真实词库文件。
 
 use ime_core::{
-    Candidate, CandidateKind, Config, Engine, Key, Quanpin, RerankCtx, RerankStage,
+    Candidate, CandidateKind, Config, Engine, Key, Quanpin, RerankCtx, RerankStage, Session,
     SessionEnd, UserDataStore,
 };
 use ime_data::Dict;
@@ -199,6 +199,89 @@ fn tail_cutting_xian_merge_by_weight() {
     let xian = texts.iter().position(|t| t == "先").unwrap();
     let xian2 = texts.iter().position(|t| t == "线").unwrap();
     assert!(xian < xi_an && xian2 < xi_an, "实际：{texts:?}");
+}
+
+// ===== 续接（picked 栈 + 尾巴续接，契约 §4.1 选词行，M1 后期）=====
+
+/// 长句词库：整句/两字词/单字 + 尾巴整词，供续接用例。
+fn tail_dict() -> Dict {
+    Dict::from_entries(vec![
+        ("chuang'qian'ming'yue'guang".into(), "床前明月光".into(), 8000),
+        ("chuang'qian".into(), "床前".into(), 5000),
+        ("chuang".into(), "床".into(), 4000),
+        ("qian".into(), "前".into(), 3000),
+        ("ming'yue'guang".into(), "明月光".into(), 7000),
+        ("ming'yue".into(), "明月".into(), 6000),
+        ("ming".into(), "明".into(), 2000),
+        ("yue".into(), "月".into(), 1000),
+        ("guang".into(), "光".into(), 500),
+    ])
+}
+
+fn type_long(s: &mut Session) {
+    for c in "chuangqianmingyueguang".chars() {
+        s.on_key(Key::Char(c));
+    }
+}
+
+/// 选中间级词：部分上屏 + 尾巴续接（会话不结束）。
+#[test]
+fn partial_commit_keeps_tail() {
+    let engine = Engine::new(tail_dict(), Config::default());
+    let mut s = engine.start_session();
+    type_long(&mut s);
+    // 选 k=2 级"床前"（候选 1 是整句，找"床前"位置）。
+    let idx = s.effect().candidates.iter().position(|c| c.text == "床前").unwrap();
+    let e = s.on_key(Key::Digit((idx + 1) as u8));
+    assert_eq!(e.end, None, "续接不应结束会话");
+    assert_eq!(e.part_commit.as_deref(), Some("床前"));
+    assert_eq!(e.composition, "ming'yue'guang", "尾巴留预编辑，实际：{}", e.composition);
+    assert_eq!(e.reading, "ming'yue'guang");
+    // 尾巴候选：整词"明月光"居首。
+    assert_eq!(e.candidates[0].text, "明月光");
+    assert!(s.is_active());
+}
+
+/// 续接后继续选词直至全部上屏。
+#[test]
+fn continue_then_commit_all() {
+    let engine = Engine::new(tail_dict(), Config::default());
+    let mut s = engine.start_session();
+    type_long(&mut s);
+    let idx = s.effect().candidates.iter().position(|c| c.text == "床前").unwrap();
+    s.on_key(Key::Digit((idx + 1) as u8));
+    // 空格上屏首选（明月光）→ 全量结束：床前明月光。
+    let e = s.on_key(Key::Space);
+    assert_eq!(e.end, Some(SessionEnd::Commit("床前明月光".into())));
+    assert!(!s.is_active());
+}
+
+/// 退格回退已选词：pop 栈顶，raw 恢复原输入。
+#[test]
+fn backspace_pops_picked() {
+    let engine = Engine::new(tail_dict(), Config::default());
+    let mut s = engine.start_session();
+    type_long(&mut s);
+    let idx = s.effect().candidates.iter().position(|c| c.text == "床前").unwrap();
+    s.on_key(Key::Digit((idx + 1) as u8));
+    let e = s.on_key(Key::Backspace);
+    assert_eq!(e.end, None, "回退栈顶不结束会话");
+    assert_eq!(e.part_commit, None);
+    assert_eq!(e.composition, "chuang'qian'ming'yue'guang", "raw 恢复，实际：{}", e.composition);
+    assert!(e.candidates.iter().any(|c| c.text == "床前明月光"), "候选恢复整句");
+    assert!(s.is_active());
+}
+
+/// 选整句（k=5）：全部消费，会话结束。
+#[test]
+fn select_full_consumes_all() {
+    let engine = Engine::new(tail_dict(), Config::default());
+    let mut s = engine.start_session();
+    type_long(&mut s);
+    let e = s.on_key(Key::Digit(1));
+    assert_eq!(e.end, Some(SessionEnd::Commit("床前明月光".into())));
+    assert_eq!(e.part_commit, None);
+    assert!(!s.is_active());
 }
 
 #[test]

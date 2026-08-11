@@ -94,9 +94,11 @@ pub enum SessionEnd {
 /// 一次按键后的完整 UI 快照 + 副作用。TSF/REPL 只消费它，不读引擎内部。
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Effect {
-    /// 内嵌预编辑文本：首选候选文本；无候选时为原始拼音 raw
+    /// 内嵌预编辑文本：拼音分段（如 "ce'shi"，保留用户按下的强制分隔符 `'`，
+    /// 与 reading 同值）——微软式：拼音留在预编辑，候选窗只放候选；
+    /// commit 时由 end.text 替换上屏
     pub composition: String,
-    /// 切分显示，如 "ni'hao"（以 ' 连接各音节）
+    /// 切分显示，如 "ni'hao"（保留用户 `'`）
     pub reading: String,
     /// 当前页候选（页内索引 0 起）
     pub candidates: Vec<Candidate>,
@@ -105,4 +107,7 @@ pub struct Effect {
     pub page: PageInfo,
     /// Some → 会话结束（Commit 上屏 / Cancel 取消）
     pub end: Option<SessionEnd>,
+    /// 续接选词的部分上屏词（M1 后期契约演进）：选中中间级词时上屏该词、
+    /// 尾巴留预编辑继续；TSF 收到后 commit 该词并重建 composition。None = 无。
+    pub part_commit: Option<String>,
 }

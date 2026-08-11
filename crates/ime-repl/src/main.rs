@@ -146,6 +146,9 @@ fn print_effect(e: &Effect) {
             e.page.total
         );
     }
+    if let Some(word) = &e.part_commit {
+        println!("< 部分上屏：{word}（尾巴续接）");
+    }
     match &e.end {
         Some(SessionEnd::Commit(text)) => println!("< committed: {}", text),
         Some(SessionEnd::Cancel) => println!("< cancelled"),

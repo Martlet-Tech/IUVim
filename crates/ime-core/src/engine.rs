@@ -86,7 +86,7 @@ impl Engine {
             }
 
             // 2. 前缀枚举切分 → exact 词/单字（join 键；前缀含 `'` 时强制切分，
-            //    无 `'` 时枚举变体如 [xian] → [xian]+[xi,an]）。
+            //    无 `'` 时枚举变体如 [xian] → [xian]+[xi,an]）。seg_len = k。
             let mut entries: Vec<&ime_data::Entry> = Vec::new();
             for plan in self.schema.segment(&prefix.join("'")) {
                 let key = plan.join("'");
@@ -104,7 +104,13 @@ impl Engine {
                 } else {
                     crate::CandidateKind::Char
                 };
-                cands.push(crate::Candidate::new(e.word.clone(), kind, e.code.clone(), e.weight));
+                cands.push(crate::Candidate::new(
+                    e.word.clone(),
+                    kind,
+                    e.code.clone(),
+                    e.weight,
+                    k,
+                ));
                 pushed += 1;
                 if pushed >= PER_LEVEL_EXACT {
                     break;
@@ -114,6 +120,7 @@ impl Engine {
 
         // 3. 前缀补全（联想）：默认关闭（微软化，候选仅 exact）；config 开启时追加。
         //    用方案[0] 的 `'` 键做前缀匹配（词库键已分隔化）。
+        //    联想词消费全部当前段（seg_len = n），选中即整词上屏。
         if self.config.candidate_prefix {
             let squashed = seg.join("'");
             for e in self.dict.prefix(&squashed, 20) {
@@ -122,7 +129,13 @@ impl Engine {
                 } else {
                     crate::CandidateKind::Char
                 };
-                cands.push(crate::Candidate::new(e.word.clone(), kind, e.code.clone(), e.weight));
+                cands.push(crate::Candidate::new(
+                    e.word.clone(),
+                    kind,
+                    e.code.clone(),
+                    e.weight,
+                    n,
+                ));
             }
         }
 

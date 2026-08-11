@@ -112,6 +112,14 @@ pub fn apply_effect(
             true
         }
         None => {
+            // 续接选词的部分上屏：上屏本次词（EndComposition），
+            // composition 随即重建显示尾巴（set_text 会重新 StartComposition）。
+            if let Some(word) = &effect.part_commit {
+                match composition.commit(word) {
+                    Ok(()) => log_line(&format!("部分上屏：{word}")),
+                    Err(e) => log_line(&format!("部分上屏失败：{e}")),
+                }
+            }
             match composition.set_text(&effect.composition) {
                 Ok(Some(rect)) => {
                     log_line(&format!(

@@ -17,11 +17,19 @@ pub struct Candidate {
     pub code: String,
     /// 词典 weight；Sentence 恒 0
     pub weight: u32,
+    /// 该候选消费的音节段数（所在前缀级 k；续接选词时推进用，M1 后期契约演进）
+    pub seg_len: usize,
 }
 
 impl Candidate {
     /// 构造一个候选。
-    pub fn new(text: impl Into<String>, kind: CandidateKind, code: impl Into<String>, weight: u32) -> Self {
-        Candidate { text: text.into(), kind, code: code.into(), weight }
+    pub fn new(
+        text: impl Into<String>,
+        kind: CandidateKind,
+        code: impl Into<String>,
+        weight: u32,
+        seg_len: usize,
+    ) -> Self {
+        Candidate { text: text.into(), kind, code: code.into(), weight, seg_len }
     }
 }

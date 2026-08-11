@@ -173,7 +173,7 @@ pub fn compile_files(inputs: &[std::path::PathBuf], output: &std::path::Path) ->
 ## 4. ime-core 公共 API
 
 ```rust
-// ===== candidate.rs（W0 完整，冻结）=====
+// ===== candidate.rs（W0 完整，冻结；M1 后期契约演进：+seg_len）=====
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CandidateKind { Sentence, Word, Char }  // M3+ 可扩：English / Symbol…
 
@@ -183,6 +183,7 @@ pub struct Candidate {
     pub kind: CandidateKind,
     pub code: String,   // squashed 编码（学习 key 用）；Sentence 为 seg 拼接
     pub weight: u32,    // 词典 weight；Sentence 恒 0
+    pub seg_len: usize, // 该候选消费的音节段数（所在前缀级 k；续接选词推进用）
 }
 
 // ===== config.rs（W0 完整，冻结）=====
@@ -207,12 +208,13 @@ pub enum SessionEnd { Commit(String), Cancel }
 /// 一次按键后的完整 UI 快照 + 副作用。TSF/REPL 只消费它，不读引擎内部。
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Effect {
-    pub composition: String,         // 内嵌预编辑文本：拼音分段（如 "ce'shi"，保留用户按下的强制分隔符 `'`，与 reading 同值）——微软式：拼音留在预编辑，候选窗只放候选；commit 时由 end.text 替换上屏
+    pub composition: String,         // 内嵌预编辑文本：拼音分段（如 "ce'shi"，保留用户按下的强制分隔符 `'`，与 reading 同值）——微软式：拼音留在预编辑，候选窗只放候选；commit 时由 end.text 替换上屏；续接时只显示尾巴（已选词已由 part_commit 上屏）
     pub reading: String,             // 切分显示，如 "ni'hao"（保留用户 `'`，见 schema::display_with_sep）
     pub candidates: Vec<Candidate>,  // 当前页候选（页内索引 0 起）
     pub selected: usize,             // 页内高亮索引
     pub page: PageInfo,
     pub end: Option<SessionEnd>,     // Some → 会话结束（Commit 上屏 / Cancel 取消）
+    pub part_commit: Option<String>, // 续接选词的部分上屏词（M1 后期契约演进）：TSF 收到后 commit 该词并重建 composition 显示尾巴；None = 无
 }
 
 // ===== schema.rs（Agent B）=====
@@ -299,13 +301,16 @@ impl Session {
 |---|---|
 | `Char('a'..='z' \| '\'')` | 追加 raw → 重切分 → 重新生成候选 → page=0, selected=0。无候选也保持 active |
 | `Backspace` | 删 raw 尾字符；删后 raw 为空 → `end = Some(Cancel)`；否则重算候选 |
-| `Space` | 有候选 → commit 当前页 selected 项；无候选 → `Commit(raw)`（拼音原文） |
+| `Space` | 有候选 → commit 当前页 selected 项；无候选 → `Commit(picked.join + raw)`（全部上屏） |
 | `Digit(n)` n∈1..=9 | 全表索引 = page×page_size + n−1，存在则 commit 该项；不存在则无操作（仍消费） |
-| `Enter` | `Commit(raw)` 原文上屏 |
-| `Esc` | `end = Some(Cancel)` |
+| `Enter` | `Commit(picked.join + raw)` 原文上屏 |
+| `Esc` | `end = Some(Cancel)`（picked 不上屏） |
 | `PageUp/PageDown` | page ±1，clamp 到 `[0, page_count−1]`，selected 归 0 |
 | `Up/Down` | selected ±1，clamp 到 `[0, 当前页候选数−1]` |
-| commit 发生时 | 调 `store.record_selection(code_key, text, now)`：Word/Char 用候选自身 `code`，Sentence 用 `seg.join("'")`；随后 `end = Some(Commit(text))` |
+| commit 发生时 | 调 `store.record_selection(code_key, text, now)`：Word/Char 用候选自身 `code`，Sentence 用 `seg[..consumed].join("'")`（其覆盖的前缀段） |
+| **选词（续接）** | 候选消费 `seg_len` 段：`seg_len >= 当前段数` → `end = Commit(picked.join + 词)` 会话结束；`seg_len < 当前段数` → `part_commit = Some(词)`、`picked.push((词, code_key))`、`raw = seg[seg_len..].join("'")` 重算候选（会话继续） |
+| **Backspace（有 picked）** | pop picked 栈顶，其 code 拼回 raw 头部（`code + "'" + raw`，raw 空则直接 code），重算候选——取消一次已选，而非删拼音 |
+| **Backspace（无 picked）** | 删 raw 尾字符；删后 raw 为空 → `end = Some(Cancel)`；否则重算候选 |
 
 会话结束后该 Session 不再使用（TSF/REPL 丢弃重建）。
 

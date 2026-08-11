@@ -7,6 +7,13 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**滞回稳�
 
 - [x] M1 最小 MVP：全拼打字链路（见 `docs/plan/00-overview.md`）——**已结案**（2026-08-09：手测 1-8 项通过、词库缺失透明模式通过）
   - 已知问题：Alt+Tab 切窗口时未确认的预编辑会残留上屏（TSF 终止 composition 的标准语义，微软拼音同款行为；残留为汉字首选而非拼音原文）——M3+ 或按需处理
+  - **已知 bug（2026-08-11，未修）**：续接（选中间级词部分上屏+尾巴重建）后，尾巴再 commit 失败
+    `0x8000FFFF (E_UNEXPECTED)`，尾巴不上屏。现象/日志：`commit 失败：灾难性故障 (0x8000FFFF)`，
+    发生于"EndComposition 上屏已选词 → StartComposition 重建尾巴 → 下一次 EndComposition"。
+    根因方向：① TSF 侧重建 composition 的生命周期/时序（EndComposition 后紧接 StartComposition
+    的下一次 EndSession 失效）；② 语义侧 `SessionEnd::Commit` 文本为 picked+词全量，而 composition
+    范围只有尾巴（即使成功也会重复上屏"床前"）——commit 文本应为本次词。修复方向：commit 文本改
+    本次词 + 核查重建 composition 姿势（或单 composition 全程方案）。
 - 后续：M2 滞回/学习/钉选 · M3 整句增强(LMDG)/简拼/模糊音 · M4 Tauri helper（WebView 候选窗+设置） · M5 安装器/词库导入/x86
 
 ## 开发入口
