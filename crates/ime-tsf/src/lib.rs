@@ -45,10 +45,11 @@ pub unsafe extern "system" fn DllGetClassObject(
     }
 }
 
-/// DllCanUnloadNow：无活动对象（实例/工厂引用）时允许卸载。
+/// DllCanUnloadNow：无活动对象（实例/工厂引用）且引擎后台加载线程已结束时才允许卸载
+/// （加载线程运行中访问 DLL 代码，卸载会导致宿主进程崩溃）。
 #[no_mangle]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
-    if com::class_factory::active_count() == 0 {
+    if com::class_factory::active_count() == 0 && !com::text_service::engine_loading() {
         S_OK
     } else {
         S_FALSE

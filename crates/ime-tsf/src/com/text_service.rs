@@ -73,6 +73,12 @@ pub(crate) fn start_engine_load() {
     });
 }
 
+/// 引擎后台加载是否仍在进行（DllCanUnloadNow 用：加载线程运行中访问 DLL 代码，
+/// 不可卸载）。set 完成（含失败 set(None)）后恒 false。
+pub(crate) fn engine_loading() -> bool {
+    ENGINE_LOAD_STARTED.load(Ordering::SeqCst) && ENGINE.get().is_none()
+}
+
 fn load_engine() -> Option<Arc<Engine>> {
     let path = dict_path();
     match ime_data::load(&path) {
