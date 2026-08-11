@@ -146,7 +146,8 @@ fn type_shows_candidates() {
     }
     let e = s.effect();
     assert!(s.is_active());
-    assert_eq!(e.composition, "的");
+    // 微软式：预编辑 = 拼音分段，候选只进候选窗。
+    assert_eq!(e.composition, "de");
     assert_eq!(e.reading, "de");
     assert!(!e.candidates.is_empty());
 }

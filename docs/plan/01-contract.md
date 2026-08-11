@@ -207,7 +207,7 @@ pub enum SessionEnd { Commit(String), Cancel }
 /// 一次按键后的完整 UI 快照 + 副作用。TSF/REPL 只消费它，不读引擎内部。
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Effect {
-    pub composition: String,         // 内嵌预编辑文本：首选候选文本；无候选时为原始拼音 raw
+    pub composition: String,         // 内嵌预编辑文本：拼音分段（与 reading 同值，如 "ce'shi"）——微软式：拼音留在预编辑，候选窗只放候选；commit 时由 end.text 替换上屏
     pub reading: String,             // 切分显示，如 "ni'hao"（以 ' 连接各音节）
     pub candidates: Vec<Candidate>,  // 当前页候选（页内索引 0 起）
     pub selected: usize,             // 页内高亮索引
@@ -386,7 +386,7 @@ pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIM
 
 - TSF 侧每次按键只做三件事（session_bridge）：`vk/char → Key` 映射；`Session::on_key`；应用 Effect
   （更新 composition 文本 → `effect_to_snapshot` → `CandidateUi`；`end` 则上屏/取消并 hide）。
-- composition 内嵌文本 = `Effect.composition`；候选窗第一行 = `Effect.reading`。
+- composition 内嵌文本 = `Effect.composition`（拼音分段）；候选窗只放候选列表（不渲染 reading，微软式，M1 后期修正）。
 - `Session::is_active() == false` 时字母键被消费（开启新会话），其余键全部放行。
 - 引擎在 DLL 内进程级单例（`OnceLock<Arc<Engine>>`），词典路径 `%LOCALAPPDATA%\InputIME\input.imedic`（用户级数据；DLL 本体在 `%ProgramFiles%\InputIME\`）；
   加载失败：日志记录，所有字母键原样放行（输入法"透明"，绝不卡用户）。

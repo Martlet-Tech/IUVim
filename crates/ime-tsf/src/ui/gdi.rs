@@ -39,7 +39,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 // ===== 主题常量（M4 主题槽位：集中于此，届时只动这里）=====
 const BG_COLOR: COLORREF = COLORREF(0x00FF_FFFF); // 背景白
 const TEXT_COLOR: COLORREF = COLORREF(0x001F_1F1F); // 正文近黑
-const READING_COLOR: COLORREF = COLORREF(0x0066_6666); // reading 次要灰
 const HL_BG: COLORREF = COLORREF(0x00D7_7800); // 高亮底 #0078D7
 const HL_TEXT: COLORREF = COLORREF(0x00FF_FFFF); // 高亮字白
 const PAGE_COLOR: COLORREF = COLORREF(0x0099_9999); // 页码灰
@@ -66,14 +65,11 @@ pub struct Rect {
 }
 
 /// 纯布局计算：返回 `(窗口宽, 窗口高, 各行矩形)`。
-/// 行序：`reading` → 各候选（`"N.候选"`）→ 页码（`page_count > 1` 时，右对齐）；
-/// `reading` 为空时跳过该行。`measurer` 返回文本的 (宽, 高)。
+/// 行序：各候选（`"N.候选"`）→ 页码（`page_count > 1` 时，右对齐）。
+/// `snap.reading`（拼音分段）不渲染：composition 已显示，候选窗只放候选列表
+/// （微软同款，省一行高度）。`measurer` 返回文本的 (宽, 高)。
 pub fn layout(snap: &UiSnapshot, measurer: &dyn Fn(&str) -> (i32, i32)) -> (i32, i32, Vec<Rect>) {
     let mut rows: Vec<(String, i32, i32)> = Vec::new();
-    if !snap.reading.is_empty() {
-        let (w, h) = measurer(&snap.reading);
-        rows.push((snap.reading.clone(), w, h));
-    }
     for (i, cand) in snap.candidates.iter().enumerate() {
         let text = format!("{}.{}", i + 1, cand);
         let (w, h) = measurer(&text);
@@ -541,12 +537,6 @@ fn draw_content(hdc: HDC, snap: &UiSnapshot, w: i32, h: i32) {
     }
     let (_, _, rects) = layout(snap, &|s| measure(hdc, s));
     let mut i = 0usize;
-    if !snap.reading.is_empty() {
-        if let Some(r) = rects.get(i) {
-            draw_text(hdc, &snap.reading, r.x, r.y, READING_COLOR, BG_COLOR);
-            i += 1;
-        }
-    }
     for (ci, cand) in snap.candidates.iter().enumerate() {
         let Some(r) = rects.get(i) else {
             break; // 防御：布局行数与候选数不一致也不越界
@@ -687,35 +677,35 @@ mod tests {
     fn layout_single_page_rows_and_size() {
         let s = snap("ni'hao", &["你好", "泥嚎"], 0, 1);
         let (w, h, rects) = layout(&s, &fake_measurer);
-        assert_eq!(rects.len(), 3, "reading + 2 候选");
-        assert_eq!(w, 60 + PAD_X * 2, "最宽行 reading 6 字");
-        assert_eq!(h, PAD_Y * 2 + 20 * 3 + ROW_GAP * 2);
+        assert_eq!(rects.len(), 2, "2 候选，reading 不渲染");
+        assert_eq!(w, 40 + PAD_X * 2, "最宽行 '1.你好'=4 字");
+        assert_eq!(h, PAD_Y * 2 + 20 * 2 + ROW_GAP * 1);
         assert_eq!(
             rects[0],
             Rect {
                 x: PAD_X,
                 y: PAD_Y,
-                w: 60,
+                w: 40,
                 h: 20
             }
         );
         assert_eq!(rects[1].x, PAD_X);
-        assert_eq!(rects[2].y, PAD_Y + (20 + ROW_GAP) * 2);
+        assert_eq!(rects[1].y, PAD_Y + (20 + ROW_GAP) * 1);
     }
 
     #[test]
     fn layout_multi_page_indicator_right_aligned() {
         let s = snap("ni'hao", &["你好", "泥嚎"], 0, 3);
         let (w, _, rects) = layout(&s, &fake_measurer);
-        assert_eq!(rects.len(), 4, "reading + 2 候选 + 页码");
+        assert_eq!(rects.len(), 3, "2 候选 + 页码");
         let page_rect = *rects.last().unwrap();
         assert_eq!(
             page_rect.x,
-            PAD_X + 60 - 30,
+            PAD_X + 40 - 30,
             "页码右对齐：x = PAD_X + content_w - 页码宽"
         );
-        assert_eq!(page_rect.y, PAD_Y + (20 + ROW_GAP) * 3);
-        assert_eq!(w, 60 + PAD_X * 2, "页码窄于最宽行，宽度不变");
+        assert_eq!(page_rect.y, PAD_Y + (20 + ROW_GAP) * 2);
+        assert_eq!(w, 40 + PAD_X * 2, "页码窄于最宽行，宽度不变");
     }
 
     #[test]
@@ -737,15 +727,19 @@ mod tests {
     }
 
     #[test]
-    fn layout_skips_empty_reading() {
-        let s = snap("", &["你好"], 0, 1);
+    fn layout_ignores_reading() {
+        // reading（拼音分段）不参与布局：composition 已显示，候选窗只放候选。
+        let s = snap("ni'hao", &["你好"], 0, 1);
         let (_, _, rects) = layout(&s, &fake_measurer);
         assert_eq!(rects.len(), 1);
         assert_eq!(rects[0].y, PAD_Y);
+        let s2 = snap("", &["你好"], 0, 1);
+        let (_, _, rects2) = layout(&s2, &fake_measurer);
+        assert_eq!(rects2.len(), 1, "有/无 reading 布局一致");
     }
 
     #[test]
-    fn layout_candidate_wider_than_reading() {
+    fn layout_candidate_widths() {
         let s = snap("ni", &["你好", "泥嚎"], 0, 1);
         let (w, _, rects) = layout(&s, &fake_measurer);
         assert_eq!(w, 40 + PAD_X * 2, "候选行 '1.你好'=4 字 40px 最宽");

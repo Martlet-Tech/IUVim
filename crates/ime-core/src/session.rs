@@ -146,10 +146,9 @@ impl Session {
     /// 不交按键取当前快照（REPL/测试用）。
     pub fn effect(&self) -> Effect {
         let page_cands = self.page_candidates().to_vec();
-        let composition = page_cands
-            .first()
-            .map(|c| c.text.clone())
-            .unwrap_or_else(|| self.raw.clone());
+        // 微软式：预编辑文本 = 拼音分段（ce'shi），候选列表只放候选窗；
+        // commit 上屏时由 end.text 替换（TSF 侧 apply_effect 的 Commit 分支）。
+        let composition = self.engine.schema.display(&self.seg);
         let selected = if page_cands.is_empty() { 0 } else { self.selected };
         Effect {
             composition,

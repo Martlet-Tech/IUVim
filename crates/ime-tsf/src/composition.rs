@@ -181,8 +181,10 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
         // SAFETY: GetRange 返回本 composition 的有效范围，调用期间存活。
         let range = trace_step("comp.GetRange", || unsafe { comp.GetRange() })?;
         let wide: Vec<u16> = self.text.encode_utf16().collect();
+        let wide_len = wide.len();
+        let display: String = self.text.chars().take(32).collect();
         // SAFETY: SetText 替换整个 composition 文本（写入切片为 UTF-16 编码）。
-        trace_step(&format!("range.SetText(ec={ec}, len={})", wide.len()), || {
+        trace_step(&format!("range.SetText(ec={ec}, len={wide_len}, text={display:?})"), || {
             unsafe { range.SetText(ec, 0, &wide) }
         })?;
         // 仿 Weasel：把光标 range 折叠到组合文本末尾，并把该 range 设为当前 selection，
