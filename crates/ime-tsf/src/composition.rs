@@ -4,8 +4,9 @@
 //! 全部文档改动通过同步 edit session（TF_ES_SYNC | TF_ES_READWRITE）完成：
 //! 预编辑文本 = StartComposition + ITfRange::SetText；上屏/取消 = SetText + EndComposition。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
+use std::rc::Rc;
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::TextServices::{
@@ -25,7 +26,11 @@ use crate::ui::CaretRect;
 pub struct Composition {
     context: ITfContext,
     client_id: u32,
-    comp: RefCell<Option<ITfComposition>>,
+    /// 共享 composition 槽：sink 在 OnCompositionTerminated（外部终止）时清空，
+    /// 保证 set_text 不会复用一个已死的 composition（0x8000FFFF 问题）。
+    comp: Rc<RefCell<Option<ITfComposition>>>,
+    /// 是否曾被外部终止（sink 置位）：TextService 据此丢弃会话降级重建。
+    terminated: Rc<Cell<bool>>,
 }
 
 impl Composition {
@@ -33,7 +38,8 @@ impl Composition {
         Composition {
             context,
             client_id,
-            comp: RefCell::new(None),
+            comp: Rc::new(RefCell::new(None)),
+            terminated: Rc::new(Cell::new(false)),
         }
     }
 
@@ -42,12 +48,19 @@ impl Composition {
         self.comp.borrow().is_some()
     }
 
+    /// 是否曾被外部终止（sink 置位）：调用方应丢弃会话降级（丢弃后重建 Composition 对象）。
+    pub fn terminated(&self) -> bool {
+        self.terminated.get()
+    }
+
     /// 更新预编辑文本为 `text`（必要时先 StartComposition）。
     /// 返回新光标矩形（屏幕坐标）；失败返回 None 且保持原文本不变。
     pub fn set_text(&self, text: &str) -> Result<Option<CaretRect>> {
         let session = SetTextSession {
             context: self.context.clone(),
             existing: self.comp.borrow().clone(),
+            comp_slot: self.comp.clone(),
+            terminated: self.terminated.clone(),
             text: text.to_owned(),
             started: RefCell::new(None),
             caret: RefCell::new(None),
@@ -107,8 +120,12 @@ impl Composition {
 }
 
 /// composition 销毁回调 sink：仿 Weasel/SampleIME 传真实实现（StartComposition 的 psink 不能为 null）。
+/// 外部终止时清空共享 composition 槽，防 0x8000FFFF 复用死对象。
 #[implement(ITfCompositionSink)]
-struct CompositionSink;
+struct CompositionSink {
+    comp: Rc<RefCell<Option<ITfComposition>>>,
+    terminated: Rc<Cell<bool>>,
+}
 
 impl ITfCompositionSink_Impl for CompositionSink_Impl {
     fn OnCompositionTerminated(
@@ -116,7 +133,11 @@ impl ITfCompositionSink_Impl for CompositionSink_Impl {
         ecwrite: u32,
         _pcomposition: windows_core::Ref<ITfComposition>,
     ) -> Result<()> {
-        log_line(&format!("composition 终止通知（ec={ecwrite}）"));
+        log_line(&format!(
+            "composition 终止通知（ec={ecwrite}）：清空槽+置终止标志，会话将降级重建"
+        ));
+        *self.comp.borrow_mut() = None;
+        self.terminated.set(true);
         Ok(())
     }
 }
@@ -127,6 +148,10 @@ struct SetTextSession {
     context: ITfContext,
     /// 已有 composition（None = 首次输入，需要 StartComposition）。
     existing: Option<ITfComposition>,
+    /// 共享 composition 槽（StartComposition 时写入，供 sink 终止时清空）。
+    comp_slot: Rc<RefCell<Option<ITfComposition>>>,
+    /// 终止标志（StartComposition 成功时复位）。
+    terminated: Rc<Cell<bool>>,
     text: String,
     /// 输出：本次新建的 composition。
     started: RefCell<Option<ITfComposition>>,
@@ -169,12 +194,17 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
                     self.context.cast()
                 })?;
                 // 仿 Weasel/SampleIME：psink 传真实 ITfCompositionSink（不能为 null）。
-                let sink = ComObject::new(CompositionSink);
+                let sink = ComObject::new(CompositionSink {
+                    comp: self.comp_slot.clone(),
+                    terminated: self.terminated.clone(),
+                });
                 let sink: ITfCompositionSink = sink.to_interface();
                 let c = trace_step(&format!("StartComposition(ec={ec}, sink=Some)"), || unsafe {
                     context_comp.StartComposition(ec, &range, &sink)
                 })?;
                 *self.started.borrow_mut() = Some(c.clone());
+                // 新建成功：清终止标志（旧 composition 的终止不影响新生命周期）。
+                self.terminated.set(false);
                 c
             }
         };

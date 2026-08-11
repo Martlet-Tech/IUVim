@@ -208,13 +208,12 @@ pub enum SessionEnd { Commit(String), Cancel }
 /// 一次按键后的完整 UI 快照 + 副作用。TSF/REPL 只消费它，不读引擎内部。
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Effect {
-    pub composition: String,         // 内嵌预编辑文本：拼音分段（如 "ce'shi"，保留用户按下的强制分隔符 `'`，与 reading 同值）——微软式：拼音留在预编辑，候选窗只放候选；commit 时由 end.text 替换上屏；续接时只显示尾巴（已选词已由 part_commit 上屏）
-    pub reading: String,             // 切分显示，如 "ni'hao"（保留用户 `'`，见 schema::display_with_sep）
+    pub composition: String,         // 内嵌预编辑文本：混合显示——已选词汉字 + 未选部分拼音分段（如选"床前"后 "床前ming'yue'guang"）；候选窗只放候选；commit 时由 end.text 全量替换上屏
+    pub reading: String,             // 与 composition 同值（候选窗备用）
     pub candidates: Vec<Candidate>,  // 当前页候选（页内索引 0 起）
     pub selected: usize,             // 页内高亮索引
     pub page: PageInfo,
     pub end: Option<SessionEnd>,     // Some → 会话结束（Commit 上屏 / Cancel 取消）
-    pub part_commit: Option<String>, // 续接选词的部分上屏词（M1 后期契约演进）：TSF 收到后 commit 该词并重建 composition 显示尾巴；None = 无
 }
 
 // ===== schema.rs（Agent B）=====
@@ -304,11 +303,11 @@ impl Session {
 | `Space` | 有候选 → commit 当前页 selected 项；无候选 → `Commit(picked.join + raw)`（全部上屏） |
 | `Digit(n)` n∈1..=9 | 全表索引 = page×page_size + n−1，存在则 commit 该项；不存在则无操作（仍消费） |
 | `Enter` | `Commit(picked.join + raw)` 原文上屏 |
-| `Esc` | `end = Some(Cancel)`（picked 不上屏） |
+| `Esc` | **悬空**：有 picked → `end = Some(Commit(picked.join("")))`（已选词上屏，尾巴随之取消）；无 picked → `end = Some(Cancel)` |
 | `PageUp/PageDown` | page ±1，clamp 到 `[0, page_count−1]`，selected 归 0 |
 | `Up/Down` | selected ±1，clamp 到 `[0, 当前页候选数−1]` |
 | commit 发生时 | 调 `store.record_selection(code_key, text, now)`：Word/Char 用候选自身 `code`，Sentence 用 `seg[..consumed].join("'")`（其覆盖的前缀段） |
-| **选词（续接）** | 候选消费 `seg_len` 段：`seg_len >= 当前段数` → `end = Commit(picked.join + 词)` 会话结束；`seg_len < 当前段数` → `part_commit = Some(词)`、`picked.push((词, code_key))`、`raw = seg[seg_len..].join("'")` 重算候选（会话继续） |
+| **选词（续接）** | 候选消费 `seg_len` 段：`seg_len >= 当前段数` → `end = Commit(picked.join + 词)` 会话结束；`seg_len < 当前段数` → **悬空**：`picked.push((词, code_key))`、`raw = seg[seg_len..].join("'")` 重算候选（会话继续，**不产生任何 commit 信号**；已选词仅通过 composition 混合显示反馈，见 Effect.composition） |
 | **Backspace（有 picked）** | pop picked 栈顶，其 code 拼回 raw 头部（`code + "'" + raw`，raw 空则直接 code），重算候选——取消一次已选，而非删拼音 |
 | **Backspace（无 picked）** | 删 raw 尾字符；删后 raw 为空 → `end = Some(Cancel)`；否则重算候选 |
 

@@ -8,15 +8,13 @@ pub struct Session {
     engine: Arc<Engine>,
     raw: String,
     seg: Vec<String>,
-    /// 已确认上屏词栈：(文本, 词条 code)——续接选词入栈，退格回退栈顶
+    /// 已确认选词栈：(文本, 词条 code)——选中间级词入栈（悬空，未上屏），退格回退栈顶
     picked: Vec<(String, String)>,
     /// 全表候选
     all: Vec<Candidate>,
     page: usize,
     selected: usize,
     end: Option<SessionEnd>,
-    /// 本轮按键的部分上屏词（续接选词时设置，effect() 输出给 TSF）
-    part_commit: Option<String>,
 }
 
 impl Session {
@@ -30,7 +28,6 @@ impl Session {
             page: 0,
             selected: 0,
             end: None,
-            part_commit: None,
         }
     }
 
@@ -39,7 +36,6 @@ impl Session {
         if self.end.is_some() {
             return Effect { end: Some(SessionEnd::Cancel), ..Effect::default() };
         }
-        self.part_commit = None;
         match key {
             Key::Char(c) if c.is_ascii_lowercase() || c == '\'' => {
                 self.raw.push(c);
@@ -85,7 +81,14 @@ impl Session {
                 self.end = Some(SessionEnd::Commit(self.all_text()));
             }
             Key::Esc => {
-                self.end = Some(SessionEnd::Cancel);
+                // 悬空状态：已选词入栈未上屏——Esc 先把已选词上屏（composition 全量替换，尾巴随之消失），
+                // 无已选词才整句取消。
+                if self.picked.is_empty() {
+                    self.end = Some(SessionEnd::Cancel);
+                } else {
+                    let text = self.picked.iter().map(|(t, _)| t.clone()).collect::<String>();
+                    self.end = Some(SessionEnd::Commit(text));
+                }
             }
             Key::PageDown => {
                 let pc = self.page_count();
@@ -119,7 +122,7 @@ impl Session {
     }
 
     /// 选候选：消费 `c.seg_len` 段。消费完 → 上屏 picked+词、会话结束；
-    /// 未消费完 → picked 入栈、尾巴续接（part_commit 输出本次上屏词）。
+    /// 未消费完 → picked 入栈（悬空，不上屏）、尾巴续接，会话继续。
     fn commit_index(&mut self, idx: usize) {
         let c = self.all[idx].clone();
         let consumed = c.seg_len.max(1);
@@ -132,15 +135,16 @@ impl Session {
         };
         self.engine.record_selection(&code_key, &c.text);
         if consumed >= n {
-            // 全部消费：上屏 picked + 本次词，会话结束
+            // 全部消费：上屏 picked + 本次词，会话结束。
+            // composition 全程覆盖整个混合预编辑文本，SetText 全量替换，无重复上屏。
             let mut text = self.picked.iter().map(|(t, _)| t.clone()).collect::<String>();
             text.push_str(&c.text);
             self.end = Some(SessionEnd::Commit(text));
         } else {
-            // 部分消费：上屏本次词（part_commit），尾巴留预编辑继续
+            // 部分消费：悬空——只入栈 + 尾巴续接，不产生任何 commit 信号；
+            // 已选词视觉反馈由预编辑混合显示提供（effect().composition）。
             self.picked.push((c.text.clone(), code_key));
             self.raw = self.seg[consumed..].join("'");
-            self.part_commit = Some(c.text);
             self.recompute();
         }
     }
@@ -189,11 +193,17 @@ impl Session {
     /// 不交按键取当前快照（REPL/测试用）。
     pub fn effect(&self) -> Effect {
         let page_cands = self.page_candidates().to_vec();
-        // 微软式：预编辑文本 = 拼音分段（ce'shi），候选列表只放候选窗；
-        // commit 上屏时由 end.text 替换（TSF 侧 apply_effect 的 Commit 分支）；
-        // 续接时 composition 只显示尾巴（已选词已由 part_commit 上屏）。
+        // 混合预编辑（悬空显示）：已选词汉字 + 未选部分拼音分段。
+        // 如选"床前"后：`床前ming'yue'guang`；commit 时由 end.text 全量替换上屏。
         // 方案[0] join 即含用户强制分隔符（`'` 硬切分空段保留），按 `'` 即有反馈。
-        let preview = self.engine.schema.display(&self.seg);
+        let tail_preview = self.engine.schema.display(&self.seg);
+        let preview = if self.picked.is_empty() {
+            tail_preview
+        } else {
+            let mut s = self.picked.iter().map(|(t, _)| t.clone()).collect::<String>();
+            s.push_str(&tail_preview);
+            s
+        };
         let selected = if page_cands.is_empty() { 0 } else { self.selected };
         Effect {
             composition: preview.clone(),
@@ -207,7 +217,6 @@ impl Session {
                 total: self.all.len(),
             },
             end: self.end.clone(),
-            part_commit: self.part_commit.clone(),
         }
     }
 

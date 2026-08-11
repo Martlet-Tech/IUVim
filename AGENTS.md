@@ -7,13 +7,15 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**滞回稳�
 
 - [x] M1 最小 MVP：全拼打字链路（见 `docs/plan/00-overview.md`）——**已结案**（2026-08-09：手测 1-8 项通过、词库缺失透明模式通过）
   - 已知问题：Alt+Tab 切窗口时未确认的预编辑会残留上屏（TSF 终止 composition 的标准语义，微软拼音同款行为；残留为汉字首选而非拼音原文）——M3+ 或按需处理
-  - **已知 bug（2026-08-11，未修）**：续接（选中间级词部分上屏+尾巴重建）后，尾巴再 commit 失败
-    `0x8000FFFF (E_UNEXPECTED)`，尾巴不上屏。现象/日志：`commit 失败：灾难性故障 (0x8000FFFF)`，
-    发生于"EndComposition 上屏已选词 → StartComposition 重建尾巴 → 下一次 EndComposition"。
-    根因方向：① TSF 侧重建 composition 的生命周期/时序（EndComposition 后紧接 StartComposition
-    的下一次 EndSession 失效）；② 语义侧 `SessionEnd::Commit` 文本为 picked+词全量，而 composition
-    范围只有尾巴（即使成功也会重复上屏"床前"）——commit 文本应为本次词。修复方向：commit 文本改
-    本次词 + 核查重建 composition 姿势（或单 composition 全程方案）。
+  - **已知 bug（2026-08-11，已修）**：续接（选中间级词）后尾巴 commit 失败 `0x8000FFFF (E_UNEXPECTED)`。
+    根因：选中间词走「EndComposition 上屏已选词 → 紧接 StartComposition 重建尾巴」，重建的 composition
+    被 TSF 在应用（notepad 实测）的下一个 edit session 里终止（日志 `composition 终止通知`），而
+    `OnCompositionTerminated` 不清理 → 后续 GetRange/EndComposition 永久失败。
+    **修复方案（悬空状态）**：选中间级词不再产生任何 commit 信号——`part_commit` 契约字段删除；
+    已选词悬空入栈，预编辑混合显示（`床前ming'yue'guang`），composition 全程单个、只做 set_text 全量更新，
+    End→Start 窗口不存在 → bug 不复现；Esc 语义改为有已选词时上屏已选词；`OnCompositionTerminated` 兜底
+    清槽+置终止标志，TSF 侧检测后丢弃会话降级重建。改动：session.rs/key.rs（Effect 删 part_commit）、
+    session_bridge.rs、composition.rs（sink 共享槽）、text_service.rs（降级）、测试/契约/文档同步。
 - 后续：M2 滞回/学习/钉选 · M3 整句增强(LMDG)/简拼/模糊音 · M4 Tauri helper（WebView 候选窗+设置） · M5 安装器/词库导入/x86
 
 ## 开发入口

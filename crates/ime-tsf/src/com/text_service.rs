@@ -233,12 +233,21 @@ impl TextService {
     fn dispatch(&self, effect: &ime_core::Effect) {
         let mut caret = self.caret.get();
         let mut anchor = self.anchor.get();
+        let mut degraded = false;
         let ended = {
             let composition = self.composition.borrow();
             match composition.as_ref() {
                 Some(comp) => {
-                    let mut ui = self.ui.borrow_mut();
-                    apply_effect(comp, ui.as_mut(), &mut caret, &mut anchor, effect)
+                    // 外部终止（OnCompositionTerminated）降级：丢弃会话，
+                    // 文档残留文本由用户自行清理，下一键重新开会话（透明放行避免 0x8000FFFF 卡死）。
+                    if comp.terminated() {
+                        log_line("dispatch：composition 被外部终止，降级丢弃会话");
+                        degraded = true;
+                        true
+                    } else {
+                        let mut ui = self.ui.borrow_mut();
+                        apply_effect(comp, ui.as_mut(), &mut caret, &mut anchor, effect)
+                    }
                 }
                 // composition 缺失（异常路径）：仅更新候选窗并继续。
                 None => {
@@ -262,6 +271,9 @@ impl TextService {
             self.ui.borrow_mut().hide();
             *self.session.borrow_mut() = None;
             *self.composition.borrow_mut() = None;
+            if degraded {
+                log_line("dispatch：降级完成，会话已丢弃");
+            }
         }
     }
 }

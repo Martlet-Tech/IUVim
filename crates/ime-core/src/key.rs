@@ -107,7 +107,4 @@ pub struct Effect {
     pub page: PageInfo,
     /// Some → 会话结束（Commit 上屏 / Cancel 取消）
     pub end: Option<SessionEnd>,
-    /// 续接选词的部分上屏词（M1 后期契约演进）：选中中间级词时上屏该词、
-    /// 尾巴留预编辑继续；TSF 收到后 commit 该词并重建 composition。None = 无。
-    pub part_commit: Option<String>,
 }

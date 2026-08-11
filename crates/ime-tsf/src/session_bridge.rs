@@ -112,14 +112,8 @@ pub fn apply_effect(
             true
         }
         None => {
-            // 续接选词的部分上屏：上屏本次词（EndComposition），
-            // composition 随即重建显示尾巴（set_text 会重新 StartComposition）。
-            if let Some(word) = &effect.part_commit {
-                match composition.commit(word) {
-                    Ok(()) => log_line(&format!("部分上屏：{word}")),
-                    Err(e) => log_line(&format!("部分上屏失败：{e}")),
-                }
-            }
+            // 悬空状态（选中中间级词后）：无 commit 信号——已选词仅在预编辑混合文本中
+            // 显示（汉字+尾巴拼音），composition 全程覆盖整个混合文本，set_text 全量更新。
             match composition.set_text(&effect.composition) {
                 Ok(Some(rect)) => {
                     log_line(&format!(

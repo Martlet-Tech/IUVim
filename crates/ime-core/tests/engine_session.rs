@@ -224,7 +224,7 @@ fn type_long(s: &mut Session) {
     }
 }
 
-/// 选中间级词：部分上屏 + 尾巴续接（会话不结束）。
+/// 选中间级词：悬空入栈 + 尾巴续接（会话不结束、无 commit 信号）。
 #[test]
 fn partial_commit_keeps_tail() {
     let engine = Engine::new(tail_dict(), Config::default());
@@ -234,9 +234,8 @@ fn partial_commit_keeps_tail() {
     let idx = s.effect().candidates.iter().position(|c| c.text == "床前").unwrap();
     let e = s.on_key(Key::Digit((idx + 1) as u8));
     assert_eq!(e.end, None, "续接不应结束会话");
-    assert_eq!(e.part_commit.as_deref(), Some("床前"));
-    assert_eq!(e.composition, "ming'yue'guang", "尾巴留预编辑，实际：{}", e.composition);
-    assert_eq!(e.reading, "ming'yue'guang");
+    assert_eq!(e.composition, "床前ming'yue'guang", "混合预编辑：已选汉字+尾巴拼音，实际：{}", e.composition);
+    assert_eq!(e.reading, "床前ming'yue'guang");
     // 尾巴候选：整词"明月光"居首。
     assert_eq!(e.candidates[0].text, "明月光");
     assert!(s.is_active());
@@ -266,10 +265,33 @@ fn backspace_pops_picked() {
     s.on_key(Key::Digit((idx + 1) as u8));
     let e = s.on_key(Key::Backspace);
     assert_eq!(e.end, None, "回退栈顶不结束会话");
-    assert_eq!(e.part_commit, None);
     assert_eq!(e.composition, "chuang'qian'ming'yue'guang", "raw 恢复，实际：{}", e.composition);
     assert!(e.candidates.iter().any(|c| c.text == "床前明月光"), "候选恢复整句");
     assert!(s.is_active());
+}
+
+/// 悬空状态下按 Esc：已选词上屏（尾巴随之取消），非整句取消。
+#[test]
+fn esc_with_picked_commits_picked() {
+    let engine = Engine::new(tail_dict(), Config::default());
+    let mut s = engine.start_session();
+    type_long(&mut s);
+    let idx = s.effect().candidates.iter().position(|c| c.text == "床前").unwrap();
+    s.on_key(Key::Digit((idx + 1) as u8));
+    let e = s.on_key(Key::Esc);
+    assert_eq!(e.end, Some(SessionEnd::Commit("床前".into())));
+    assert!(!s.is_active());
+}
+
+/// 无已选词时 Esc = 整句取消（现状不变）。
+#[test]
+fn esc_without_picked_cancels() {
+    let engine = Engine::new(tail_dict(), Config::default());
+    let mut s = engine.start_session();
+    type_long(&mut s);
+    let e = s.on_key(Key::Esc);
+    assert_eq!(e.end, Some(SessionEnd::Cancel));
+    assert!(!s.is_active());
 }
 
 /// 选整句（k=5）：全部消费，会话结束。
@@ -280,7 +302,6 @@ fn select_full_consumes_all() {
     type_long(&mut s);
     let e = s.on_key(Key::Digit(1));
     assert_eq!(e.end, Some(SessionEnd::Commit("床前明月光".into())));
-    assert_eq!(e.part_commit, None);
     assert!(!s.is_active());
 }
 
