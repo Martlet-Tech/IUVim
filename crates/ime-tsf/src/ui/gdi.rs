@@ -22,9 +22,10 @@ use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW,
     CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, FrameRect, GetDC,
     GetDeviceCaps, GetMonitorInfoW, GetTextExtentPoint32W, InvalidateRect, MonitorFromPoint,
-    ReleaseDC, SelectObject, SetBkColor, SetTextColor, TextOutW, UpdateWindow, CLEARTYPE_QUALITY,
-    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, HBRUSH, HDC, HFONT, HGDIOBJ, LOGFONTW, LOGPIXELSY,
-    MONITORINFO, MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY,
+    MonitorFromWindow, ReleaseDC, SelectObject, SetBkColor, SetTextColor, TextOutW, UpdateWindow,
+    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, HBRUSH, HDC, HFONT, HGDIOBJ,
+    LOGFONTW, LOGPIXELSY, MONITORINFO, MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+    SRCCOPY,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -114,6 +115,8 @@ pub struct GdiCandidateWindow {
     font: HFONT,
     snap: UiSnapshot,
     visible: bool,
+    /// 最近一次定位用的光标锚点（update 超屏时翻屏用）。
+    last_caret: Option<CaretRect>,
 }
 
 impl GdiCandidateWindow {
@@ -123,6 +126,7 @@ impl GdiCandidateWindow {
             font: HFONT::default(),
             snap: UiSnapshot::default(),
             visible: false,
+            last_caret: None,
         }
     }
 
@@ -240,11 +244,13 @@ impl GdiCandidateWindow {
                 None => {
                     let mut rc = RECT::default();
                     let _ = GetWindowRect(self.hwnd, &mut rc);
+                    let (x, y) =
+                        update_position((rc.left, rc.top), w, h, work_area_for(self.hwnd), self.last_caret);
                     crate::log::log_line(&format!(
-                        "[candwin] 原位更新：GetWindowRect=({},{},{},{}) 窗口尺寸=({},{})",
-                        rc.left, rc.top, rc.right, rc.bottom, w, h
+                        "[candwin] 原位更新：GetWindowRect=({},{},{},{}) 窗口尺寸=({},{}) 修正后=({},{})",
+                        rc.left, rc.top, rc.right, rc.bottom, w, h, x, y
                     ));
-                    (rc.left, rc.top)
+                    (x, y)
                 }
             };
             crate::log::log_line(&format!(
@@ -274,6 +280,7 @@ impl CandidateUi for GdiCandidateWindow {
             return;
         }
         self.snap = snap.clone();
+        self.last_caret = Some(caret);
         if self.hwnd.is_invalid() {
             self.ensure_window();
             if self.hwnd.is_invalid() {
@@ -298,6 +305,7 @@ impl CandidateUi for GdiCandidateWindow {
         if self.hwnd.is_invalid() || !self.visible {
             return;
         }
+        self.last_caret = Some(caret);
         // SAFETY: GetWindowRect 读当前窗口矩形
         unsafe {
             let mut rc = RECT::default();
@@ -353,6 +361,46 @@ impl Drop for GdiCandidateWindow {
             let _ = unsafe { DeleteObject(self.font.into()) };
             self.font = HFONT::default();
         }
+    }
+}
+
+/// 窗口所在显示器的物理工作区；失败兜底近乎全屏区域。
+fn work_area_for(hwnd: HWND) -> RECT {
+    // SAFETY: MonitorFromWindow 纯查询；GetMonitorInfoW 输出缓冲已初始化。
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        info.rcWork
+    } else {
+        RECT {
+            left: 0,
+            top: 0,
+            right: 32767,
+            bottom: 32767,
+        }
+    }
+}
+
+/// update 原位修正：候选内容变化导致窗口变高时，若当前位置 + 新高度超出
+/// 工作区底 → 用最近一次 caret 重新定位（下方放不下自动翻到光标上方）；
+/// 无 caret 兜底贴工作区底，保证完整可见。不超屏保持原位。
+fn update_position(
+    current: (i32, i32),
+    w: i32,
+    h: i32,
+    work: RECT,
+    last_caret: Option<CaretRect>,
+) -> (i32, i32) {
+    let (x, y) = current;
+    if y + h <= work.bottom {
+        return (x, y);
+    }
+    match last_caret {
+        Some(caret) => position_in_area(caret, w, h, work),
+        None => (x, work.bottom - h),
     }
 }
 
@@ -697,6 +745,63 @@ mod tests {
         let (w, _, rects) = layout(&s, &fake_measurer);
         assert_eq!(w, 40 + PAD_X * 2, "候选行 '1.你好'=4 字 40px 最宽");
         assert_eq!(rects[1].x, PAD_X);
+    }
+
+    #[test]
+    fn update_position_keeps_in_place_when_fits() {
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        let c = CaretRect {
+            x: 100,
+            y: 700,
+            w: 2,
+            h: 20,
+        };
+        assert_eq!(
+            update_position((100, 800), 200, 195, work, Some(c)),
+            (100, 800),
+            "当前位置 + 新高度不超屏 → 保持原位"
+        );
+    }
+
+    #[test]
+    fn update_position_flips_above_caret_when_overflow() {
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 900,
+        };
+        let c = CaretRect {
+            x: 100,
+            y: 800,
+            w: 2,
+            h: 20,
+        };
+        assert_eq!(
+            update_position((100, 800), 200, 195, work, Some(c)),
+            (100, 605),
+            "窗口变高超屏 → 用 caret 重定位：下方放不下翻到光标上方"
+        );
+    }
+
+    #[test]
+    fn update_position_clamps_to_work_bottom_without_caret() {
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 900,
+        };
+        assert_eq!(
+            update_position((100, 800), 200, 195, work, None),
+            (100, 900 - 195),
+            "无 caret 锚点兜底 → 贴工作区底，保证完整可见"
+        );
     }
 
     #[test]
