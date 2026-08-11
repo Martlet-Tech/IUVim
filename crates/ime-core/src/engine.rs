@@ -58,47 +58,57 @@ impl Engine {
         self.dict.exact(squashed_code)
     }
 
-    /// 按契约 §4.2 生成候选。`seg` 为方案[0]（贪心/强制，供 viterbi/前缀联想），
-    /// `plans` 为全部切分方案（exact 枚举合并查询）。
-    pub(crate) fn generate_candidates(
-        &self,
-        raw: &str,
-        seg: &[String],
-        plans: &[Vec<String>],
-    ) -> Vec<crate::Candidate> {
+    /// 按契约 §4.2 生成候选。
+    ///
+    /// 砍尾巴逐级匹配：for k = n..1，对前缀 `seg[0..k]` 跑 viterbi（每级 0 或 1 句）
+    /// + 前缀枚举切分查 exact（词/单字）；候选按前缀长度**从长到短**排列，
+    /// 同 k 内 Sentence 在前、词按权重降序。viterbi.rs 算法零改动。
+    pub(crate) fn generate_candidates(&self, raw: &str, seg: &[String]) -> Vec<crate::Candidate> {
+        // 每级词候选上限（"2/3 字词时几个/十几个候选词"的规模；全局另有 max_candidates 截断）。
+        const PER_LEVEL_EXACT: usize = 20;
+
         let mut cands: Vec<crate::Candidate> = Vec::new();
+        let n = seg.len();
 
-        // 1. unigram Viterbi 最优路径（方案[0]，seg.len() >= 2）
-        if let Some(sentence) = crate::viterbi::best_sentence(&self.dict, seg, &*self.lm, &self.config)
-        {
-            cands.push(sentence);
-        }
+        for k in (1..=n).rev() {
+            let prefix = &seg[..k];
 
-        // 2. exact 查询：全部切分方案各按 `'` 键查表，跨组按权重统一排序，前 50
-        //    （无撇号 `xian` → [xian]主键单字组 + [xi,an]别名键词组混排；
-        //    强制 `xi'an` → 仅 [xi,an] 方案 → 只出词）
-        let mut entries: Vec<&ime_data::Entry> = Vec::new();
-        for plan in plans {
-            // 空段方案（尾/连续 `'`）join 出尾 `'`，查无键自然无命中。
-            let key = plan.join("'");
-            entries.extend(self.dict.exact(&key).iter());
-        }
-        entries.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
-        let mut seen = std::collections::HashSet::new();
-        let mut exact_n = 0usize;
-        for e in entries {
-            if !seen.insert(e.word.as_str()) {
-                continue;
+            // 1. 每级一句整句（k >= 2）。空段（尾/连续 `'`）过滤后组句，防兜底空词。
+            if k >= 2 {
+                let vseg: Vec<String> = prefix.iter().filter(|s| !s.is_empty()).cloned().collect();
+                if vseg.len() >= 2 {
+                    if let Some(sentence) =
+                        crate::viterbi::best_sentence(&self.dict, &vseg, &*self.lm, &self.config)
+                    {
+                        cands.push(sentence);
+                    }
+                }
             }
-            let kind = if e.word.chars().count() >= 2 {
-                crate::CandidateKind::Word
-            } else {
-                crate::CandidateKind::Char
-            };
-            cands.push(crate::Candidate::new(e.word.clone(), kind, e.code.clone(), e.weight));
-            exact_n += 1;
-            if exact_n >= 50 {
-                break;
+
+            // 2. 前缀枚举切分 → exact 词/单字（join 键；前缀含 `'` 时强制切分，
+            //    无 `'` 时枚举变体如 [xian] → [xian]+[xi,an]）。
+            let mut entries: Vec<&ime_data::Entry> = Vec::new();
+            for plan in self.schema.segment(&prefix.join("'")) {
+                let key = plan.join("'");
+                entries.extend(self.dict.exact(&key).iter());
+            }
+            entries.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
+            let mut seen = std::collections::HashSet::new();
+            let mut pushed = 0usize;
+            for e in entries {
+                if !seen.insert(e.word.as_str()) {
+                    continue;
+                }
+                let kind = if e.word.chars().count() >= 2 {
+                    crate::CandidateKind::Word
+                } else {
+                    crate::CandidateKind::Char
+                };
+                cands.push(crate::Candidate::new(e.word.clone(), kind, e.code.clone(), e.weight));
+                pushed += 1;
+                if pushed >= PER_LEVEL_EXACT {
+                    break;
+                }
             }
         }
 

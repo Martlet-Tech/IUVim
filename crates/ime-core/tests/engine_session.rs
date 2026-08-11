@@ -123,6 +123,84 @@ fn max_candidates_capped() {
     assert!(s.effect().candidates.len() <= 3);
 }
 
+// ===== 砍尾巴逐级前缀（契约 §4.2，M1 后期）=====
+
+/// 长句逐级：整句 → 次长句 → … → 词 → 单字，按从长到短全部出现在候选。
+#[test]
+fn tail_cutting_lists_all_levels_longest_first() {
+    let dict = Dict::from_entries(vec![
+        ("chuang'qian'ming'yue'guang".into(), "床前明月光".into(), 8000),
+        ("chuang'qian'ming'yue".into(), "床前明月".into(), 7000),
+        ("chuang'qian'ming".into(), "床前明".into(), 6000),
+        ("chuang'qian".into(), "床前".into(), 5000),
+        ("chuang".into(), "床".into(), 4000),
+        ("qian".into(), "前".into(), 3000),
+        ("ming".into(), "明".into(), 2000),
+        ("yue".into(), "月".into(), 1000),
+        ("guang".into(), "光".into(), 500),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "chuangqianmingyueguang".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let expect = ["床前明月光", "床前明月", "床前明", "床前", "床"];
+    let mut pos = 0usize;
+    for want in expect {
+        let at = texts.iter().position(|t| t == want).expect(&format!("候选应含 {want}，实际：{texts:?}"));
+        assert!(at >= pos, "{want} 应排在更早层级之后，实际：{texts:?}");
+        pos = at;
+    }
+    assert_eq!(texts[0], "床前明月光", "整句应为候选 1，实际：{texts:?}");
+}
+
+/// 短码的词/单字可及：zheshi → "这是/知识"（2 段词）+ "这"（1 段单字）。
+#[test]
+fn tail_cutting_single_char_reachable() {
+    let dict = Dict::from_entries(vec![
+        ("zhe'shi".into(), "这是".into(), 8000),
+        ("zhe'shi".into(), "知识".into(), 7000),
+        ("zhe".into(), "这".into(), 50000),
+        ("shi".into(), "是".into(), 40000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "zheshi".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    assert!(texts.contains(&"这是".to_string()), "实际：{texts:?}");
+    assert!(texts.contains(&"知识".to_string()), "实际：{texts:?}");
+    let zhe = texts.iter().position(|t| t == "这").expect("单字应可及，实际：{texts:?}");
+    let zheshi = texts.iter().position(|t| t == "这是").unwrap();
+    assert!(zheshi < zhe, "词级应在单字级之前（从长到短），实际：{texts:?}");
+}
+
+/// 无撇号 xian：枚举切分在 k=1 级内合并 [xian]+[xi,an]，跨组按权重（先/线/西安…）——
+/// "顺其自然"的规则结果，与历史混排一致。
+#[test]
+fn tail_cutting_xian_merge_by_weight() {
+    let dict = Dict::from_entries(vec![
+        ("xian".into(), "先".into(), 75337),
+        ("xian".into(), "线".into(), 24039),
+        ("xi'an".into(), "西安".into(), 6091),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "xian".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    assert_eq!(texts[0], "先");
+    assert!(texts.iter().position(|t| t == "西安").unwrap() > 0);
+    // 西安（6091）按权重在 先/线 之后。
+    let xi_an = texts.iter().position(|t| t == "西安").unwrap();
+    let xian = texts.iter().position(|t| t == "先").unwrap();
+    let xian2 = texts.iter().position(|t| t == "线").unwrap();
+    assert!(xian < xi_an && xian2 < xi_an, "实际：{texts:?}");
+}
+
 #[test]
 fn static_order_is_deterministic() {
     let engine = default_engine();

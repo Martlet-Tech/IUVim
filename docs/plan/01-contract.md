@@ -311,16 +311,22 @@ impl Session {
 
 ### 4.2 候选生成算法契约（`Engine` 内部流程，B 实现；顺序即静态展示序）
 
-设 `seg` = 方案[0]（贪心/强制切分），`plans` = 全部切分方案（`schema.segment(raw)` 输出）。
+设 `seg` = 方案[0]（贪心/强制切分），`n` = seg 段数。
 
-1. `seg.len() >= 2` → unigram Viterbi 最优路径 → `Candidate{ kind: Sentence, text: 路径拼接, code: seg.join("'"), weight: 0 }`
-2. `dict.exact` **枚举合并**：对 `plans` 中每个方案取 `join("'")` 键查表，全部词条按 weight 降序统一排序（词长 ≥2 → `Word`，单字 → `Char`），按 text 去重取前 50。
-   无撇号 `xian` → 方案 `[xian]`（主键单字组）+ `[xi,an]`（分隔键词组）跨组混排；
-   强制 `xi'an` → 仅 `[xi,an]` 方案 → 只出词组。
-3. `dict.prefix(seg.join("'"), 20)`：前缀补全（`Char`/`Word` 同规则；词库键已分隔化，跨音节前缀如 `nih` 不再联想）
-4. 按 text 去重（保序，先见先留）
-5. 截断到 `config.max_candidates`
-6. 依次过 `stages` 管线（MVP 仅 StaticOrder = no-op）
+**砍尾巴逐级前缀匹配**：`for k = n, n-1, ..., 1`，对前缀 `seg[0..k]`：
+
+1. `k >= 2` → unigram Viterbi 最优路径（每级 0 或 1 条）→ `Candidate{ kind: Sentence, text: 路径拼接, code: seg.join("'"), weight: 0 }`；
+   空段（尾/连续 `'`）过滤后组句。
+2. 前缀 `join("'")` 再 `schema.segment` 枚举切分 → 各方案 `join("'")` 键 `dict.exact`：
+   词长 ≥2 → `Word`，单字 → `Char`；同 k 内按 weight 降序，去重取前 20。
+3. 全部候选按 k **从长到短**排列（长句优先）；同 k 内 Sentence 在前、词按权重。
+4. 前缀补全（联想，默认关）：`dict.prefix(seg.join("'"), 20)`（词库键已分隔化）。
+5. 按 text 去重（保序，先见先留；跨级同文本只留首个）。
+6. 截断到 `config.max_candidates`。
+7. 依次过 `stages` 管线（MVP 仅 StaticOrder = no-op）。
+
+例：`chuangqianmingyueguang` → 床前明月光（整句）→ 窗前明月（次长句）→ … → 床前/窗前（词）→ 床/窗/创（单字），翻页总能到达所需层级；
+`zheshi` → 这是（整句）→ 这时/这事/…（词）→ 这/是（单字）。
 
 Viterbi 要点：位置 0..=n（音节界）；边 (i,j)（`j−i ≤ max_word_syllables`）= `dict.exact(seg[i..j].join("'"))`
 的全部词条；边分 = `lm.log_prob(prev_word, word, weight)`；单音节无词条时给兜底边

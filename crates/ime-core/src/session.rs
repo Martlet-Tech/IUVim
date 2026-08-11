@@ -114,11 +114,11 @@ impl Session {
 
     /// 重切分 → 重新生成候选 → page=0, selected=0。无候选也保持 active。
     /// segment 返回全部切分方案；本会话使用方案[0]（贪心/强制），
-    /// 全部方案交给 engine 做枚举合并查询。
+    /// engine 内部按"砍尾巴逐级前缀"（k=n..1）生成从长到短的候选。
     fn recompute(&mut self) {
         let plans = self.engine.schema.segment(&self.raw);
         self.seg = plans.first().cloned().unwrap_or_default();
-        self.all = self.engine.generate_candidates(&self.raw, &self.seg, &plans);
+        self.all = self.engine.generate_candidates(&self.raw, &self.seg);
         self.page = 0;
         self.selected = 0;
     }
