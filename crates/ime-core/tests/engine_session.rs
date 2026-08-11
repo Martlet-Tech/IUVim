@@ -226,7 +226,7 @@ fn type_long(s: &mut Session) {
 
 /// 选中间级词：悬空入栈 + 尾巴续接（会话不结束、无 commit 信号）。
 #[test]
-fn partial_commit_keeps_tail() {
+fn pick_middle_keeps_tail() {
     let engine = Engine::new(tail_dict(), Config::default());
     let mut s = engine.start_session();
     type_long(&mut s);

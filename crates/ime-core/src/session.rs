@@ -86,8 +86,7 @@ impl Session {
                 if self.picked.is_empty() {
                     self.end = Some(SessionEnd::Cancel);
                 } else {
-                    let text = self.picked.iter().map(|(t, _)| t.clone()).collect::<String>();
-                    self.end = Some(SessionEnd::Commit(text));
+                    self.end = Some(SessionEnd::Commit(self.picked_text()));
                 }
             }
             Key::PageDown => {
@@ -137,7 +136,7 @@ impl Session {
         if consumed >= n {
             // 全部消费：上屏 picked + 本次词，会话结束。
             // composition 全程覆盖整个混合预编辑文本，SetText 全量替换，无重复上屏。
-            let mut text = self.picked.iter().map(|(t, _)| t.clone()).collect::<String>();
+            let mut text = self.picked_text();
             text.push_str(&c.text);
             self.end = Some(SessionEnd::Commit(text));
         } else {
@@ -149,9 +148,14 @@ impl Session {
         }
     }
 
+    /// 已选词拼接文本（悬空栈：只含汉字，不含未消费拼音）。
+    fn picked_text(&self) -> String {
+        self.picked.iter().map(|(t, _)| t.clone()).collect::<String>()
+    }
+
     /// 当前全部待上屏文本：picked 拼接 + 未消费拼音 raw。
     fn all_text(&self) -> String {
-        let mut text = self.picked.iter().map(|(t, _)| t.clone()).collect::<String>();
+        let mut text = self.picked_text();
         text.push_str(&self.raw);
         text
     }
@@ -176,7 +180,7 @@ impl Session {
         if self.all.is_empty() {
             0
         } else {
-            (self.all.len() + ps - 1) / ps
+            self.all.len().div_ceil(ps)
         }
     }
 
@@ -200,7 +204,7 @@ impl Session {
         let preview = if self.picked.is_empty() {
             tail_preview
         } else {
-            let mut s = self.picked.iter().map(|(t, _)| t.clone()).collect::<String>();
+            let mut s = self.picked_text();
             s.push_str(&tail_preview);
             s
         };
