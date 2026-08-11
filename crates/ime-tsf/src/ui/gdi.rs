@@ -384,9 +384,10 @@ fn work_area_for(hwnd: HWND) -> RECT {
     }
 }
 
-/// update 原位修正：候选内容变化导致窗口变高时，若当前位置 + 新高度超出
-/// 工作区底 → 用最近一次 caret 重新定位（下方放不下自动翻到光标上方）；
-/// 无 caret 兜底贴工作区底，保证完整可见。不超屏保持原位。
+/// update 原位修正：候选内容变化导致窗口变高/变宽时，
+/// - 当前位置 + 新高度超出工作区底 → 用最近一次 caret 重新定位（下方放不下自动翻到光标上方）
+/// - 当前位置 + 新宽度超出工作区右缘 → 左移内收，保证完整可见
+/// 无 caret 兜底贴工作区底；未超屏保持原位。
 fn update_position(
     current: (i32, i32),
     w: i32,
@@ -395,12 +396,16 @@ fn update_position(
     last_caret: Option<CaretRect>,
 ) -> (i32, i32) {
     let (x, y) = current;
-    if y + h <= work.bottom {
+    if y + h <= work.bottom && x + w <= work.right {
         return (x, y);
     }
     match last_caret {
         Some(caret) => position_in_area(caret, w, h, work),
-        None => (x, work.bottom - h),
+        None => {
+            let x = if x + w > work.right { work.right - w } else { x };
+            let y = if y + h > work.bottom { work.bottom - h } else { y };
+            (x, y)
+        }
     }
 }
 
@@ -786,6 +791,29 @@ mod tests {
             update_position((100, 800), 200, 195, work, Some(c)),
             (100, 605),
             "窗口变高超屏 → 用 caret 重定位：下方放不下翻到光标上方"
+        );
+    }
+
+    #[test]
+    fn update_position_clamps_right_edge_when_wider() {
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 3138,
+            bottom: 900,
+        };
+        let c = CaretRect {
+            x: 3043,
+            y: 757,
+            w: 2,
+            h: 20,
+        };
+        // 窗口变宽到 237：3043+237=3280 > 3138 → 左移内收，右缘对齐工作区。
+        // y 按 caret 重定位：779 = 757+20+2（光标下方，不超底）。
+        assert_eq!(
+            update_position((3043, 562), 237, 60, work, Some(c)),
+            (3138 - 237, 779),
+            "变宽超右缘 → 左移内收，右缘对齐工作区"
         );
     }
 

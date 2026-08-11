@@ -138,22 +138,19 @@ pub fn apply_effect(
                 false
             } else if ui.is_visible() {
                 if jump_distance(*anchor, *caret) > JUMP_THRESHOLD {
-                    // 输入点远跳（拖拽窗口跨屏/点击远处）：简单版清除未完成输入，
-                    // 用户从头再打；完整版（保留 composition、候选框下一键重现）见任务书槽位。
+                    // 输入点远跳（拖拽窗口跨屏/点击远处/文档自动换行）：
+                    // 仅隐藏候选窗、保留 composition 与 Session；下一键 set_text 后
+                    // 自然走 show 分支用新光标重新定位。换行场景输入不丢失。
                     log_line(&format!(
-                        "[candwin] 光标远跳（anchor=({},{}), caret=({},{}), dist={:.0}px），清除未完成输入",
+                        "[candwin] 光标远跳（anchor=({},{}), caret=({},{}), dist={:.0}px），隐藏候选窗待下一键重现",
                         anchor.x,
                         anchor.y,
                         caret.x,
                         caret.y,
                         jump_distance(*anchor, *caret)
                     ));
-                    match composition.cancel() {
-                        Ok(()) => log_line("cancel：远跳清除预编辑"),
-                        Err(e) => log_line(&format!("cancel 失败：{e}")),
-                    }
                     ui.hide();
-                    true
+                    false
                 } else {
                     log_line(&format!(
                         "[candwin] 窗口已可见，update（不动位置），当前 caret：x={} y={}",
