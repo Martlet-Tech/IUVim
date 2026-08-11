@@ -69,14 +69,29 @@ pub fn map_key(vk: u16, char_code: u32, with_shift: bool, with_ctrl: bool, with_
 /// 会话外开启会话判定（仅字母与 `'`；`,`/`.` 等标点放行给应用）。
 /// 两者定义在 ime-core（config/keymap.rs），此处直接复用。
 
+/// 光标远跳阈值（px）：候选窗可见时，新光标距上次定位锚点超过该值
+/// 视为"输入点远跳"（拖拽窗口跨屏/点击远处），简单版直接清除未完成输入。
+/// 完整版（保留 composition、候选框在下一键重新出现）见 14-mod-ime-tsf-candwin.md §5。
+const JUMP_THRESHOLD: f64 = 150.0;
+
+/// 两点距离（像素）。
+fn jump_distance(a: CaretRect, b: CaretRect) -> f64 {
+    let dx = (a.x - b.x) as f64;
+    let dy = (a.y - b.y) as f64;
+    (dx * dx + dy * dy).sqrt()
+}
+
 /// 应用 Effect：composition 更新 → 候选窗快照 → 会话结束处理。
 /// 契约 13 任务书 §3.4：SetText → caret → ui.show/update → end 上屏/取消并 hide。
 ///
-/// 返回 `true` 表示会话已结束（effect.end 为 Some），调用方应丢弃 Session。
+/// `anchor`：上次候选窗定位时的 caret（跳变检测基准，仅 show 时更新）。
+///
+/// 返回 `true` 表示会话已结束（effect.end 为 Some 或远跳清除），调用方应丢弃 Session。
 pub fn apply_effect(
     composition: &Composition,
     ui: &mut dyn CandidateUi,
     caret: &mut CaretRect,
+    anchor: &mut CaretRect,
     effect: &Effect,
 ) -> bool {
     match &effect.end {
@@ -98,19 +113,64 @@ pub fn apply_effect(
         }
         None => {
             match composition.set_text(&effect.composition) {
-                Ok(Some(rect)) => *caret = rect,
-                Ok(None) => {}
-                Err(e) => log_line(&format!("set_text 失败：{e}，沿用上次光标")),
+                Ok(Some(rect)) => {
+                    log_line(&format!(
+                        "[caret] set_text 返回新光标：x={} y={} w={} h={}",
+                        rect.x, rect.y, rect.w, rect.h
+                    ));
+                    *caret = rect;
+                }
+                Ok(None) => {
+                    log_line(&format!(
+                        "[caret] set_text 无光标（GetTextExt 失败/clipped），沿用旧光标：x={} y={} w={} h={}",
+                        caret.x, caret.y, caret.w, caret.h
+                    ));
+                }
+                Err(e) => log_line(&format!(
+                    "[caret] set_text 失败：{e}，沿用旧光标：x={} y={} w={} h={}",
+                    caret.x, caret.y, caret.w, caret.h
+                )),
             }
             let snap = effect_to_snapshot(effect);
             if snap.candidates.is_empty() && snap.reading.is_empty() {
+                log_line("[candwin] 快照为空，hide");
                 ui.hide();
+                false
             } else if ui.is_visible() {
-                ui.update(&snap);
+                if jump_distance(*anchor, *caret) > JUMP_THRESHOLD {
+                    // 输入点远跳（拖拽窗口跨屏/点击远处）：简单版清除未完成输入，
+                    // 用户从头再打；完整版（保留 composition、候选框下一键重现）见任务书槽位。
+                    log_line(&format!(
+                        "[candwin] 光标远跳（anchor=({},{}), caret=({},{}), dist={:.0}px），清除未完成输入",
+                        anchor.x,
+                        anchor.y,
+                        caret.x,
+                        caret.y,
+                        jump_distance(*anchor, *caret)
+                    ));
+                    match composition.cancel() {
+                        Ok(()) => log_line("cancel：远跳清除预编辑"),
+                        Err(e) => log_line(&format!("cancel 失败：{e}")),
+                    }
+                    ui.hide();
+                    true
+                } else {
+                    log_line(&format!(
+                        "[candwin] 窗口已可见，update（不动位置），当前 caret：x={} y={}",
+                        caret.x, caret.y
+                    ));
+                    ui.update(&snap);
+                    false
+                }
             } else {
+                log_line(&format!(
+                    "[candwin] 首次 show，caret：x={} y={} w={} h={}",
+                    caret.x, caret.y, caret.w, caret.h
+                ));
+                *anchor = *caret;
                 ui.show(&snap, *caret);
+                false
             }
-            false
         }
     }
 }

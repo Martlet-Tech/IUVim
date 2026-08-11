@@ -7,8 +7,7 @@
 use std::cell::RefCell;
 use std::mem::ManuallyDrop;
 
-use windows::Win32::Foundation::{POINT, RECT};
-use windows::Win32::Graphics::Gdi::ClientToScreen;
+use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
     ITfContextComposition, ITfEditSession, ITfEditSession_Impl, TF_ANCHOR_END,
@@ -213,32 +212,35 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
         let mut clipped = BOOL(0);
         // SAFETY: GetTextExt 由 TSF 保证在 edit session 内可调用；输出缓冲在调用前初始化。
         let ext = trace_step(
-            &format!("view.GetTextExt(ec={ec}, clipped={clipped:?})"),
+            &format!("view.GetTextExt(ec={ec})"),
             || unsafe { view.GetTextExt(ec, &range, &mut rc, &mut clipped) },
         );
+        log_line(&format!(
+            "[caret] GetTextExt：rc=({},{},{},{}) clipped={} err={:?}",
+            rc.left, rc.top, rc.right, rc.bottom, clipped.0,
+            ext.as_ref().err().map(|e| e.code())
+        ));
         if ext.is_ok() && !clipped.as_bool() {
-            let hwnd = match trace_step("view.GetWnd", || unsafe { view.GetWnd() }) {
-                Ok(h) => h,
-                Err(e) => {
-                    log_line(&format!("GetWnd 失败：{e}，跳过光标量取"));
-                    return Ok(());
-                }
-            };
-            if !hwnd.0.is_null() {
-                let mut pt = POINT {
-                    x: rc.left,
-                    y: rc.bottom,
-                };
-                // SAFETY: ClientToScreen 将窗口客户区坐标转换为屏幕坐标。
-                if unsafe { ClientToScreen(hwnd, &mut pt) }.as_bool() {
-                    *self.caret.borrow_mut() = Some(CaretRect {
-                        x: pt.x,
-                        y: pt.y,
-                        w: rc.right - rc.left,
-                        h: rc.bottom - rc.top,
-                    });
-                }
+            // GetTextExt 返回屏幕坐标（MSDN：bounding box, in screen coordinates），
+            // 不再做 ClientToScreen 转换（历史 bug：双重转换导致候选框偏移窗口原点）。
+            if rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0 {
+                // MSDN：文档窗口最小化或文本不可见时返回 {0,0,0,0}。
+                log_line("[caret] GetTextExt 返回全 0 矩形（文本不可见），跳过光标量取");
+                return Ok(());
             }
+            let rect = CaretRect {
+                // y 用行顶（rc.top）：position_in_area 按"y=顶、h=行高"计算下方位置，
+                // 若直接用 rc.bottom 会重复加一次行高，候选框被推下一行。
+                x: rc.left,
+                y: rc.top,
+                w: rc.right - rc.left,
+                h: rc.bottom - rc.top,
+            };
+            log_line(&format!(
+                "[caret] 最终 CaretRect（屏幕坐标，无转换）：x={} y={} w={} h={}",
+                rect.x, rect.y, rect.w, rect.h
+            ));
+            *self.caret.borrow_mut() = Some(rect);
         }
         Ok(())
     }

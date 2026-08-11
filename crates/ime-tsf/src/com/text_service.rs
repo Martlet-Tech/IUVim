@@ -106,6 +106,8 @@ pub(crate) struct TextService {
     ui: RefCell<Box<dyn CandidateUi>>,
     /// 上一次光标矩形（GetTextExt 失败时复用；首次用屏幕中央）。
     caret: Cell<CaretRect>,
+    /// 候选窗最近一次定位时的光标锚点（远跳清除检测基准）。
+    anchor: Cell<CaretRect>,
     /// Shift 临时英文模式（会话非 active 时 Shift 切换）。
     english_mode: Cell<bool>,
 }
@@ -121,6 +123,7 @@ impl TextService {
             composition: RefCell::new(None),
             ui: RefCell::new(Box::new(GdiCandidateWindow::new())),
             caret: Cell::new(CaretRect::default()),
+            anchor: Cell::new(CaretRect::default()),
             english_mode: Cell::new(false),
         }
     }
@@ -196,12 +199,13 @@ impl TextService {
     /// 应用 Effect（契约 §7）：composition → 候选窗；end 则上屏/取消并清理会话。
     fn dispatch(&self, effect: &ime_core::Effect) {
         let mut caret = self.caret.get();
+        let mut anchor = self.anchor.get();
         let ended = {
             let composition = self.composition.borrow();
             match composition.as_ref() {
                 Some(comp) => {
                     let mut ui = self.ui.borrow_mut();
-                    apply_effect(comp, ui.as_mut(), &mut caret, effect)
+                    apply_effect(comp, ui.as_mut(), &mut caret, &mut anchor, effect)
                 }
                 // composition 缺失（异常路径）：仅更新候选窗并继续。
                 None => {
@@ -220,6 +224,7 @@ impl TextService {
             }
         };
         self.caret.set(caret);
+        self.anchor.set(anchor);
         if ended {
             self.ui.borrow_mut().hide();
             *self.session.borrow_mut() = None;

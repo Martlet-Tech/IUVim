@@ -15,14 +15,16 @@ use std::sync::OnceLock;
 use super::{CandidateUi, CaretRect, UiSnapshot};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    GetLastError, COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM,
+    GetLastError, COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE,
+    WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW,
-    CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, GetDC, GetDeviceCaps,
-    GetTextExtentPoint32W, InvalidateRect, ReleaseDC, SelectObject, SetBkColor, SetTextColor,
-    TextOutW, UpdateWindow, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, HBRUSH, HDC,
-    HFONT, HGDIOBJ, LOGFONTW, LOGPIXELSY, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY,
+    CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, FrameRect, GetDC,
+    GetDeviceCaps, GetMonitorInfoW, GetTextExtentPoint32W, InvalidateRect, MonitorFromPoint,
+    ReleaseDC, SelectObject, SetBkColor, SetTextColor, TextOutW, UpdateWindow, CLEARTYPE_QUALITY,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, HBRUSH, HDC, HFONT, HGDIOBJ, LOGFONTW, LOGPIXELSY,
+    MONITORINFO, MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -40,6 +42,7 @@ const READING_COLOR: COLORREF = COLORREF(0x0066_6666); // reading 次要灰
 const HL_BG: COLORREF = COLORREF(0x00D7_7800); // 高亮底 #0078D7
 const HL_TEXT: COLORREF = COLORREF(0x00FF_FFFF); // 高亮字白
 const PAGE_COLOR: COLORREF = COLORREF(0x0099_9999); // 页码灰
+const BORDER_COLOR: COLORREF = COLORREF(0x00C0_C0C0); // 1px 外框浅灰（白底区分边界）
 
 // ===== 布局常量 =====
 const PAD_X: i32 = 8;
@@ -227,13 +230,27 @@ impl GdiCandidateWindow {
             ReleaseDC(Some(self.hwnd), hdc);
 
             let (x, y) = match caret {
-                Some(c) => position_for(c, w, h),
+                Some(c) => {
+                    crate::log::log_line(&format!(
+                        "[candwin] 定位输入：caret=({},{},{},{}) 窗口尺寸=({},{})",
+                        c.x, c.y, c.w, c.h, w, h
+                    ));
+                    position_for(c, w, h)
+                }
                 None => {
                     let mut rc = RECT::default();
                     let _ = GetWindowRect(self.hwnd, &mut rc);
+                    crate::log::log_line(&format!(
+                        "[candwin] 原位更新：GetWindowRect=({},{},{},{}) 窗口尺寸=({},{})",
+                        rc.left, rc.top, rc.right, rc.bottom, w, h
+                    ));
                     (rc.left, rc.top)
                 }
             };
+            crate::log::log_line(&format!(
+                "[candwin] 定位结果：目标=({},{}) 尺寸=({},{})",
+                x, y, w, h
+            ));
             // SAFETY: 仅移动/改尺寸，不激活（SWP_NOACTIVATE），保持 z 序（置顶组内不变）
             let _ = SetWindowPos(self.hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
             // SAFETY: 全量无效化并同步重绘（双缓冲，无闪烁）
@@ -252,6 +269,7 @@ impl Default for GdiCandidateWindow {
 impl CandidateUi for GdiCandidateWindow {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect) {
         if snap.reading.is_empty() && snap.candidates.is_empty() {
+            crate::log::log_line("[candwin] show：快照为空，转 hide");
             self.hide();
             return;
         }
@@ -289,6 +307,10 @@ impl CandidateUi for GdiCandidateWindow {
             let w = rc.right - rc.left;
             let h = rc.bottom - rc.top;
             let (x, y) = position_for(caret, w, h);
+            crate::log::log_line(&format!(
+                "[candwin] move_to：caret=({},{}) -> 目标=({},{}) 尺寸=({},{})",
+                caret.x, caret.y, x, y, w, h
+            ));
             // SAFETY: 仅移动（SWP_NOSIZE），不激活
             let _ = SetWindowPos(
                 self.hwnd,
@@ -334,33 +356,52 @@ impl Drop for GdiCandidateWindow {
     }
 }
 
-/// 按 caret 定位：默认放在 caret 下方；超出工作区（SPI_GETWORKAREA）则右/下边界内收，
-/// 下方放不下时翻到 caret 上方。
+/// 按 caret 定位：默认放在 caret 下方；超出工作区（优先 caret 所在显示器，
+/// SPI_GETWORKAREA 兜底）则右/下边界内收，下方放不下时翻到 caret 上方。
 fn position_for(caret: CaretRect, w: i32, h: i32) -> (i32, i32) {
     let mut area = RECT::default();
-    // SAFETY: SPI_GETWORKAREA 需要可写 RECT；失败时兜底为近乎全屏的区域
-    let ok = unsafe {
-        SystemParametersInfoW(
-            SPI_GETWORKAREA,
-            0,
-            Some(&mut area as *mut RECT as *mut core::ffi::c_void),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        )
+    // 优先取光标所在显示器的物理工作区：GetTextExt 返回物理像素坐标，
+    // SPI_GETWORKAREA 只返回主屏工作区（副屏打字时会把候选框 clamp 回主屏）。
+    let monitor =
+        // SAFETY: MonitorFromPoint 纯查询，无资源；caret 为本地值。
+        unsafe { MonitorFromPoint(POINT { x: caret.x, y: caret.y }, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
     };
-    if ok.is_err() {
-        area = RECT {
-            left: 0,
-            top: 0,
-            right: 32767,
-            bottom: 32767,
+    let got_work =
+        // SAFETY: GetMonitorInfoW 输出缓冲 info 在调用前初始化且存活。
+        unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool();
+    if got_work {
+        area = info.rcWork;
+    } else {
+        // 兜底：主屏工作区。
+        // SAFETY: SPI_GETWORKAREA 需要可写 RECT；失败时兜底为近乎全屏的区域。
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETWORKAREA,
+                0,
+                Some(&mut area as *mut RECT as *mut core::ffi::c_void),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
         };
+        if ok.is_err() {
+            area = RECT {
+                left: 0,
+                top: 0,
+                right: 32767,
+                bottom: 32767,
+            };
+        }
     }
     position_in_area(caret, w, h, area)
 }
 
 /// 纯函数定位：给定工作区 `area` 内计算窗口位置。
-/// 默认 `caret` 下方；右/下边界内收；下方放不下翻到 `caret` 上方；
+/// 默认 `caret` 下方（光标底 + CARET_GAP）；右/下边界内收；下方放不下翻到 `caret` 上方；
 /// 上下都放不下时贴工作区边，保证窗口完整可见。
+const CARET_GAP: i32 = 2;
+
 fn position_in_area(caret: CaretRect, w: i32, h: i32, area: RECT) -> (i32, i32) {
     let mut x = caret.x;
     if x + w > area.right {
@@ -369,11 +410,8 @@ fn position_in_area(caret: CaretRect, w: i32, h: i32, area: RECT) -> (i32, i32) 
     if x < area.left {
         x = area.left;
     }
-    let below = if caret.h > 0 {
-        caret.y + caret.h
-    } else {
-        caret.y + 2
-    };
+    // caret.h=0 时（collapsed 光标）同样按 CARET_GAP 留间隙。
+    let below = caret.y + caret.h + CARET_GAP;
     let mut y = if below + h <= area.bottom {
         below
     } else {
@@ -443,6 +481,10 @@ fn draw_content(hdc: HDC, snap: &UiSnapshot, w: i32, h: i32) {
         };
         let _ = FillRect(hdc, &rc, bg);
         let _ = DeleteObject(bg.into());
+        // 1px 外框（浅灰）：白底应用里区分候选窗边界；brush 用后即删。
+        let border = CreateSolidBrush(BORDER_COLOR);
+        let _ = FrameRect(hdc, &rc, border);
+        let _ = DeleteObject(border.into());
     }
     let (_, _, rects) = layout(snap, &|s| measure(hdc, s));
     let mut i = 0usize;
@@ -672,7 +714,7 @@ mod tests {
             h: 20,
         };
         let (x, y) = position_in_area(caret, 200, 100, area);
-        assert_eq!((x, y), (100, 120), "默认 caret 正下方，不越界原样保留");
+        assert_eq!((x, y), (100, 122), "默认 caret 正下方（光标底 + 2px 间隙），不越界原样保留");
     }
 
     #[test]
