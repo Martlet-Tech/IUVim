@@ -136,6 +136,10 @@ impl Dict {
     /// 精确查询：squashed_code 如 "nihao"。返回按 weight 降序切片。
     pub fn exact(&self, squashed_code: &str) -> &[Entry];
 
+    /// 精确查询（单字视图，M1.5 单段档）：返回 code == squashed_code 的单字词条。
+    /// 单段档数据契约：只出单字——多字词键（异常数据）在此过滤，引擎侧无需防御。
+    pub fn exact_single(&self, squashed_code: &str) -> Vec<&Entry>;
+
     /// 前缀补全：返回 squashed 以 prefix 开头（且不等于 prefix）的词条，
     /// 跨编码按 weight 降序，最多 limit 条。
     pub fn prefix(&self, squashed_prefix: &str, limit: usize) -> Vec<&Entry>;
@@ -333,6 +337,11 @@ impl Session {
 
 设 `seg` = 方案[0]（贪心/强制切分），`n` = seg 段数。
 
+**档位路由（一等概念）**：输入经 `Engine::classify`（唯一判定点）归入
+`Route` 枚举（PrefixChars / CompleteChars / AmbiguousSyllable / FullPinyin /
+Abbrev / Mixed / Empty），`generate_candidates` 按档位 match 分派；
+后续加档（M3 模糊音等）= 加 Route 臂，不在分派函数里叠 if。
+
 **切分规则（M1.5 修正，微软对齐）**：段内无完整音节匹配时按**最长音节前缀**兜底
 （`sh` 是 sha/shan/shi… 的前缀 → 整体一段，而非 `s'h` 两段；`zho`/`zhon` 同理）；
 无任何音节前缀时才单字母兜底（`qaz`/`v` 等，保证有解）。`nh` 非任何音节前缀 → 仍拆
@@ -342,8 +351,8 @@ impl Session {
 
 | 输入 | 判定 | 候选 |
 |---|---|---|
-| 整串为音节前缀（`c`/`sh`/`zho`） | `plain`（去 `'`）是某音节真前缀 | **纯单字**：`initial_top(首字母)` 过滤 `starts_with(plain) && 单字`，词频序，取 20 |
-| 完整单音节无歧义（`shi`/`de`/`ba`） | 单段且无替代切分 | 同上（纯单字） |
+| 整串为音节前缀（`c`/`sh`/`zho`） | `plain`（去 `'`）是某音节真前缀 | **纯单字**：完整音节 → `dict.exact` 全量同音字；严格前缀 → `initial_top(首字母)` 单字桶过滤 `starts_with`。**全量返回不截断**（微软对齐：sh 候选 600+ 全给翻页可达），由全局 `max_candidates` 兜底 |
+| 完整单音节无歧义（`shi`/`de`/`ba`） | 单段且无替代切分 | 同上（纯单字，exact 全量） |
 | 完整单音节有歧义（`xian`→[xian]+[xi,an]） | 单段且有替代切分 | 全拼 k-loop（替代切分词如"西安"混排，词频序） |
 | 单段非前缀（`i`/`u`/`v`） | 非音节、非前缀 | 无候选（空格上屏原文） |
 | 多段全完整（`nihao`/`xi'an`） | 每段为完整音节 | 全拼 k-loop（viterbi 组句 + 逐级枚举） |

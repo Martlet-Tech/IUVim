@@ -19,14 +19,17 @@ pub struct Dict {
     entry_count: usize,
     max_word_syllables: usize,
     syllables: BTreeSet<String>,
-    /// 26 个首字母桶：每桶按词频降序前 `INITIAL_BUCKET_SIZE` 条（含字含词），
-    /// 供 M1.5 单段输入（`c`/`sh`/`shi`…）O(1) 取候选，替代全表前缀扫描排序。
-    /// 桶持有词条副本（26×500 条 ≈ 1MB），避免自引用结构。
+    /// 26 个首字母桶：每桶按词频降序前 `INITIAL_BUCKET_SIZE` 条**单字**
+    /// （word 单字且 code 无 `'`），供 M1.5 单段输入（`c`/`sh`/`shi`…）O(1) 取候选，
+    /// 替代全表前缀扫描排序。桶只收单字：多字词在单段档用不上，避免挤占同音字
+    /// （修正：top-500 混收时 `shi` 单字只剩 5 个）。
+    /// 桶持有词条副本（26×1000 条 ≈ 1MB），避免自引用结构。
     initial_buckets: BTreeMap<char, Vec<Entry>>,
 }
 
-/// 每首字母桶上限（单段档候选池；常量可调，太大徒增加载内存）。
-pub const INITIAL_BUCKET_SIZE: usize = 500;
+/// 每首字母桶上限（单段档候选池；M1.5 修正：桶只收**单字**——多字词在单段档
+/// 永远用不上，占桶位只会挤掉同音字，故不收录。常量可调，太大徒增加载内存）。
+pub const INITIAL_BUCKET_SIZE: usize = 1000;
 
 /// 标准汉语拼音音节表（无调，按字母序，供二分查找）。
 /// 数据来源：现代汉语拼音方案常用音节；不含语气词音节（m/n/ng/hm/hng 等）。
@@ -134,12 +137,14 @@ impl Dict {
                 }
             }
         }
-        // 首字母桶（单遍收集副本 + 桶内排序截断）
+        // 首字母桶（单遍收集副本 + 桶内排序截断；只收单字：word 单字且 code 无 `'`）
         for group in map.values() {
             for e in group.iter() {
-                if let Some(c) = e.code.chars().next() {
-                    if c.is_ascii_lowercase() {
-                        buckets.entry(c).or_default().push(e.clone());
+                if e.word.chars().count() == 1 && !e.code.contains('\'') {
+                    if let Some(c) = e.code.chars().next() {
+                        if c.is_ascii_lowercase() {
+                            buckets.entry(c).or_default().push(e.clone());
+                        }
                     }
                 }
             }
@@ -154,6 +159,15 @@ impl Dict {
     /// 精确查询：squashed_code 如 "nihao"。返回按 weight 降序切片。
     pub fn exact(&self, squashed_code: &str) -> &[Entry] {
         self.map.get(squashed_code).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// 精确查询（单字视图，M1.5 单段档）：返回 code == squashed_code 的**单字**词条。
+    /// 单段档数据契约：只出单字——多字词键（异常手写数据）在此过滤，引擎侧无需防御。
+    pub fn exact_single(&self, squashed_code: &str) -> Vec<&Entry> {
+        self.map
+            .get(squashed_code)
+            .map(|v| v.iter().filter(|e| e.word.chars().count() == 1).collect())
+            .unwrap_or_default()
     }
 
     /// 前缀补全：返回 squashed 以 prefix 开头（且不等于 prefix）的词条，
@@ -182,9 +196,9 @@ impl Dict {
         &self.syllables
     }
 
-    /// 首字母桶查询：返回 code 以 `initial` 开头的词条，按词频降序，最多 `limit` 条。
-    /// 桶在加载时预建（每字母 top-500），M1.5 单段输入档（`c`/`sh`/`shi`…）用它
-    /// 取代全表前缀扫描（'s' 全扫 10 万条再排序不可用于按键热路径）。
+    /// 首字母桶查询：返回 code 以 `initial` 开头的**单字**词条，按词频降序，
+    /// 最多 `limit` 条。桶在加载时预建（每字母 top-1000 单字），M1.5 单段输入档
+    /// （`c`/`sh`/`shi`…）用它取代全表前缀扫描（'s' 全扫 10 万条再排序不可用）。
     pub fn initial_top(&self, initial: char, limit: usize) -> Vec<&Entry> {
         self.initial_buckets
             .get(&initial)
@@ -269,6 +283,7 @@ mod tests {
             ("di".into(), "地".into(), 20000),
             ("bu".into(), "不".into(), 30000),
             ("zhongguo".into(), "中国".into(), 90000),
+            ("zhong".into(), "中".into(), 100),
         ]);
         // d 桶：词频降序（的/地/大/但/得），截断生效
         let top = d.initial_top('d', 10);
@@ -280,18 +295,28 @@ mod tests {
         assert!(d.initial_top('q', 10).is_empty());
         // 大写不入桶
         assert!(d.initial_top('A', 10).is_empty());
-        // 桶含多字词（中国在 z 桶）
-        assert!(d.initial_top('z', 10).iter().any(|e| e.word == "中国"));
+        // 桶只收单字：多字词"中国"不入桶；z 桶只含"中"
+        let z: Vec<&str> = d.initial_top('z', 10).iter().map(|e| e.word.as_str()).collect();
+        assert_eq!(z, vec!["中"]);
+        assert!(!z.contains(&"中国"), "多字词不应入桶，实际：{z:?}");
     }
 
     #[test]
     fn bucket_cap_truncates_to_constant() {
-        // 灌入超过 INITIAL_BUCKET_SIZE 的同首字母词条，验证截断
+        // 灌入超过 INITIAL_BUCKET_SIZE 的同首字母单字，验证截断
+        // 词变体 2000 个 × 码 50 个：1100 条全部唯一，超过桶上限
         let mut items = Vec::new();
         for i in 0..(INITIAL_BUCKET_SIZE + 100) {
-            items.push((format!("ba{}", i % 50).replace("ba", "b"), format!("词{i}"), i as u32));
+            let w = char::from_u32(0x4e00 + (i % 2000) as u32).unwrap().to_string();
+            items.push((format!("b{}", i % 50), w, i as u32));
+        }
+        // 多字词不入桶：再加一批 2 字词验证不占桶位
+        for i in 0..50 {
+            items.push((format!("b{}", i % 50), format!("词语{i}"), 999_999_999));
         }
         let d = Dict::from_entries(items);
-        assert_eq!(d.initial_top('b', usize::MAX).len(), INITIAL_BUCKET_SIZE);
+        let top = d.initial_top('b', usize::MAX);
+        assert_eq!(top.len(), INITIAL_BUCKET_SIZE);
+        assert!(top.iter().all(|e| e.word.chars().count() == 1), "桶应只含单字");
     }
 }

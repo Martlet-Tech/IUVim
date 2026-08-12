@@ -328,6 +328,10 @@ fn m15_dict() -> Dict {
         ("de".into(), "得".into(), 300),
         ("shi".into(), "是".into(), 90000),
         ("shi".into(), "时".into(), 50000),
+        ("shi".into(), "十".into(), 40000),
+        ("shi".into(), "事".into(), 30000),
+        ("shi".into(), "市".into(), 20000),
+        ("shi".into(), "世".into(), 10000),
         ("shang".into(), "上".into(), 40000),
         ("ca".into(), "擦".into(), 2000),
         ("cai".into(), "才".into(), 10000),
@@ -359,17 +363,18 @@ fn single_letter_chars_only() {
     assert!(e.candidates.iter().all(|c| c.kind == CandidateKind::Char), "单字母档应纯单字");
 }
 
-/// 部分音节档：sh → 纯单字（是/时/上），无词。
+/// 部分音节档：sh → 纯单字（是/时/上/十/事…），无词。
 #[test]
 fn prefix_segment_chars_only() {
-    let engine = Engine::new(m15_dict(), Config::default());
+    let cfg = Config { page_size: 10, ..Config::default() };
+    let engine = Engine::new(m15_dict(), cfg);
     let mut s = engine.start_session();
     for c in "sh".chars() {
         s.on_key(Key::Char(c));
     }
     let binding = s.effect();
     let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
-    assert_eq!(texts, vec!["是", "时", "上"]);
+    assert_eq!(texts, vec!["是", "时", "上", "十", "事", "市", "世"]);
     assert!(s.effect().candidates.iter().all(|c| c.kind == CandidateKind::Char));
 }
 
@@ -399,6 +404,22 @@ fn complete_syllable_chars_only() {
     let binding = s.effect();
     let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["的", "得"]);
+}
+
+/// 完整音节档走 exact 全量同音字：shi → 全部 shi 单字按词频序（是时十事市世），
+/// 不被首字母桶 top-N 截成 5 个（修正：桶混收多字词导致 shi 只剩 5 字）。
+#[test]
+fn complete_syllable_exact_full_pool() {
+    let cfg = Config { page_size: 10, ..Config::default() };
+    let engine = Engine::new(m15_dict(), cfg);
+    let mut s = engine.start_session();
+    for c in "shi".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let binding = s.effect();
+    let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(texts, vec!["是", "时", "十", "事", "市", "世"]);
+    assert!(binding.candidates.iter().all(|c| c.kind == CandidateKind::Char));
 }
 
 /// 单段非前缀（v）：无候选（微软 A 组实测：i/u/v 只有字面）。
@@ -478,6 +499,27 @@ fn mixed_nhao_finds_nihao() {
     let ni = texts.iter().position(|t| t == "你").unwrap();
     let nihao = texts.iter().position(|t| t == "你好").unwrap();
     assert!(nihao < ni, "词前字后，实际：{texts:?}");
+}
+
+/// 单段档全量返回、无 30 截断（微软对齐：候选全给、翻页可达；全局 max_candidates 兜底）。
+#[test]
+fn single_segment_no_truncation() {
+    let mut items: Vec<(String, String, u32)> = Vec::new();
+    for i in 0..40u32 {
+        let w = char::from_u32(0x4e00 + i).unwrap().to_string(); // 40 个唯一单字
+        items.push((format!("shi"), w, 1000 - i));
+    }
+    let dict = Dict::from_entries(items);
+    let cfg = Config { page_size: 10, ..Config::default() };
+    let engine = Engine::new(dict, cfg);
+    let mut s = engine.start_session();
+    for c in "shi".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    // e.candidates = 当前页（page_size 10）；全量由 page_count 体现：40 候选 = 4 页
+    assert_eq!(e.candidates.len(), 10);
+    assert_eq!(e.page.page_count, 4, "40 候选应为 4 页（无 30 截断），实际：{}", e.page.page_count);
 }
 
 /// 简拼键整串消费：选中"你好"（k=2=n）→ 全部上屏、会话结束。

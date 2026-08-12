@@ -166,7 +166,7 @@ impl Session {
     fn recompute(&mut self) {
         let plans = self.engine.schema.segment(&self.raw);
         self.seg = plans.first().cloned().unwrap_or_default();
-        self.all = self.engine.generate_candidates(&self.raw, &self.seg);
+        self.all = self.engine.generate_candidates(&self.raw, &self.seg, plans.len());
         self.page = 0;
         self.selected = 0;
     }

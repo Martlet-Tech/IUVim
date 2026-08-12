@@ -8,7 +8,7 @@ use ime_data::{Dict, Entry};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-/// 引擎：进程级单例，跨线程共享。
+    /// 引擎：进程级单例，跨线程共享。
 pub struct Engine {
     pub(crate) dict: Dict,
     pub(crate) config: Config,
@@ -16,6 +16,27 @@ pub struct Engine {
     pub(crate) lm: Box<dyn LmProvider>,
     pub(crate) stages: Vec<Box<dyn RerankStage>>,
     pub(crate) store: Mutex<Box<dyn UserDataStore>>,
+}
+
+/// 候选生成档位（契约 §4.2 路由表的一等概念）：输入经 `Engine::classify` 归入
+/// 微软实测的 5 档 + 空档，`generate_candidates` 按档位分派，后续加档（M3 模糊音
+/// 等）= 加一个 Route 臂，不再往分派函数里叠 if。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// 严格前缀（`c`/`sh`/`zho`）→ 纯单字（单字桶）
+    PrefixChars,
+    /// 完整单音节无歧义（`shi`/`de`/`ba`）→ 纯单字（exact 全量）
+    CompleteChars,
+    /// 完整单音节有歧义（`xian`→[xi,an]）→ 全拼 k-loop（替代切分词混排）
+    AmbiguousSyllable,
+    /// 多段全完整（`nihao`/`xi'an`）→ 全拼 k-loop
+    FullPinyin,
+    /// 多段全不完整（`nh`/`nhm`）→ 简拼键逐级砍尾巴
+    Abbrev,
+    /// 多段混合（`nhao`）→ 简拼段展开配对
+    Mixed,
+    /// 单段非前缀（`i`/`u`/`v`）或空输入 → 无候选
+    Empty,
 }
 
 impl Engine {
@@ -58,49 +79,62 @@ impl Engine {
         self.dict.exact(squashed_code)
     }
 
+    /// 档位判定（唯一判定点）：`plain` 为去 `'` 的整串，`plans_len` 为切分方案数。
+    /// 与契约 §4.2 路由表逐行对应：
+    /// - 整串是音节真前缀 → 单字档（切分器可能把它切成多段，但微软实测只出单字）
+    /// - 单段完整音节：无替代切分 → 单字档；有替代切分（xian）→ 全拼（混排西安）
+    /// - 单段非前缀（i/u/v）→ 空
+    /// - 多段：按段完整性分派（全完整/全不完整/混合）
+    fn classify(&self, plain: &str, seg: &[String], plans_len: usize) -> Route {
+        if !plain.is_empty() && self.is_syllable_prefix(plain) && !self.is_syllable(plain) {
+            return Route::PrefixChars;
+        }
+        if seg.len() == 1 {
+            if self.is_syllable(&seg[0]) {
+                return if plans_len > 1 {
+                    Route::AmbiguousSyllable
+                } else {
+                    Route::CompleteChars
+                };
+            }
+            return Route::Empty;
+        }
+        let kinds: Vec<bool> =
+            seg.iter().map(|s| !s.is_empty() && self.is_syllable(s)).collect();
+        if kinds.iter().all(|&c| c) {
+            Route::FullPinyin
+        } else if kinds.iter().all(|&c| !c) {
+            Route::Abbrev
+        } else {
+            Route::Mixed
+        }
+    }
+
     /// 按契约 §4.2 生成候选。
     ///
     /// 路由（M1.5，微软实测对齐，见 docs/research/msime-probe-checklist.txt）：
-    /// - 整串为音节前缀（`c`/`sh`/`zho`）→ 纯单字（首字母桶，词频序）
-    /// - 完整单音节：无歧义（`shi`）→ 纯单字；歧义（`xian`→[xi,an]）→ 全拼 k-loop（替代切分词混排）
+    /// - 整串为音节前缀（`c`/`sh`/`zho`）→ 纯单字（单字桶，词频序）
+    /// - 完整单音节：无歧义（`shi`）→ 纯单字（exact 全量）；歧义（`xian`→[xi,an]）→ 全拼 k-loop
     /// - 单段非前缀（`i`/`u`/`v`）→ 无候选
-    /// - 多段全完整（`nihao`/`xi'an`）→ 现有全拼 k-loop（viterbi 组句 + 逐级枚举）
+    /// - 多段全完整（`nihao`/`xi'an`）→ 全拼 k-loop（viterbi 组句 + 逐级枚举）
     /// - 多段全不完整（`nh`/`nhm`/`nhmsx`）→ 简拼键逐级砍尾巴（构建期键，O(1) exact）
     /// - 多段混合（`nhao`）→ 不完整段展开音节配对查询（上限内，超限降级）
     ///
     /// 部分消费：候选 seg_len=k，选中间级词经 session 悬空续接把尾巴重建为组合。
-    pub(crate) fn generate_candidates(&self, raw: &str, seg: &[String]) -> Vec<crate::Candidate> {
-        let mut cands = {
-            // 整串（去强制分隔符）判定：是否是某音节的前缀
-            let plain: String = raw.chars().filter(|c| *c != '\'').collect();
-            if !plain.is_empty() && self.is_syllable_prefix(&plain) && !self.is_syllable(&plain) {
-                // 严格前缀（c/sh/zho…）：切分器可能把它切成多段，但按微软实测只出单字
-                self.single_segment_candidates(&plain)
-            } else if seg.len() == 1 {
-                // 完整单音节 或 单段非前缀
-                let plans = self.schema.segment(raw);
-                if self.is_syllable(&seg[0]) {
-                    if plans.len() > 1 {
-                        // 歧义单音节（xian 类）：替代切分（xi,an）的词也要混排
-                        self.full_pinyin_candidates(seg)
-                    } else {
-                        self.single_segment_candidates(&seg[0])
-                    }
-                } else {
-                    Vec::new() // i/u/v 等非前缀：无候选
-                }
-            } else {
-                // 多段：按段完整性分派
-                let kinds: Vec<bool> =
-                    seg.iter().map(|s| !s.is_empty() && self.is_syllable(s)).collect();
-                if kinds.iter().all(|&c| c) {
-                    self.full_pinyin_candidates(seg)
-                } else if kinds.iter().all(|&c| !c) {
-                    self.abbrev_candidates(seg)
-                } else {
-                    self.mixed_candidates(seg)
-                }
-            }
+    pub(crate) fn generate_candidates(
+        &self,
+        raw: &str,
+        seg: &[String],
+        plans_len: usize,
+    ) -> Vec<crate::Candidate> {
+        let plain: String = raw.chars().filter(|c| *c != '\'').collect();
+        let mut cands = match self.classify(&plain, seg, plans_len) {
+            Route::PrefixChars => self.single_segment_candidates(&plain),
+            Route::CompleteChars => self.single_segment_candidates(&seg[0]),
+            Route::AmbiguousSyllable | Route::FullPinyin => self.full_pinyin_candidates(seg),
+            Route::Abbrev => self.abbrev_candidates(seg),
+            Route::Mixed => self.mixed_candidates(seg),
+            Route::Empty => Vec::new(),
         };
 
         // 前缀补全（联想）：默认关闭（微软化，候选仅 exact）；config 开启时追加。
@@ -150,36 +184,40 @@ impl Engine {
         self.dict.syllables().iter().any(|syl| syl.starts_with(s))
     }
 
-    /// 单段档：完整音节或音节前缀 → 纯单字（词频序，首字母桶过滤）；否则空。
-    /// 微软实测：单段输入无论完整与否只出单字（shi→是时十使，无"时间/时候"）；
-    /// i/u/v 等非前缀无候选。
+    /// 单段档：完整音节或音节前缀 → 纯单字（词频序）。空档（i/u/v）由 classify 拦截。
+    /// 微软实测：单段输入无论完整与否只出单字（shi→是时十使，无"时间/时候"）。
+    /// 数据源分两路（M1.5 修正）：完整音节 → `dict.exact_single` 全部同音字（首字母桶
+    /// 混收多字词会把同音字挤出 top-N，如 shi 只剩 5 字）；严格前缀 → 单字桶
+    /// （桶只收单字，前缀无法 exact）。
+    /// 候选**全量返回不截断**（微软对齐：sh 候选 600+ 全给、翻页可达，见
+    /// docs/research/msime-probe-checklist.txt G3），由全局 max_candidates 兜底。
     fn single_segment_candidates(&self, s: &str) -> Vec<crate::Candidate> {
-        const PER_LEVEL_EXACT: usize = 20;
-        let mut cands = Vec::new();
         if s.is_empty() {
-            return cands;
+            return Vec::new();
         }
-        if !self.is_syllable(s) && !self.is_syllable_prefix(s) {
-            return cands;
-        }
-        let first = s.chars().next().unwrap();
-        let mut pushed = 0usize;
-        for e in self.dict.initial_top(first, ime_data::INITIAL_BUCKET_SIZE) {
-            if e.code.starts_with(s) && e.word.chars().count() == 1 {
-                cands.push(crate::Candidate::new(
+        let entries: Vec<&ime_data::Entry> = if self.is_syllable(s) {
+            self.dict.exact_single(s)
+        } else {
+            // 严格前缀：单字桶（桶只收单字，过滤 starts_with）
+            let first = s.chars().next().unwrap();
+            self.dict
+                .initial_top(first, ime_data::INITIAL_BUCKET_SIZE)
+                .into_iter()
+                .filter(|e| e.code.starts_with(s))
+                .collect()
+        };
+        entries
+            .into_iter()
+            .map(|e| {
+                crate::Candidate::new(
                     e.word.clone(),
                     crate::CandidateKind::Char,
                     e.code.clone(),
                     e.weight,
                     1,
-                ));
-                pushed += 1;
-                if pushed >= PER_LEVEL_EXACT {
-                    break;
-                }
-            }
-        }
-        cands
+                )
+            })
+            .collect()
     }
 
     /// 简拼键档：多段全不完整（`nh`/`nhm`/`nhmsx`）→ 构建期简拼键逐级砍尾巴。
