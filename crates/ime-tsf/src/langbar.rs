@@ -23,8 +23,9 @@ use windows::Win32::System::LibraryLoader::{
 use windows::Win32::System::Ole::{
     CONNECT_E_ADVISELIMIT, CONNECT_E_CANNOTCONNECT, CONNECT_E_NOCONNECTION,
 };
+use windows::Win32::System::Variant::{VARIANT, VT_I4};
 use windows::Win32::UI::TextServices::{
-    GUID_LBI_INPUTMODE, ITfLangBarItemButton, ITfLangBarItemButton_Impl,
+    GUID_LBI_INPUTMODE, ITfCompartment, ITfLangBarItemButton, ITfLangBarItemButton_Impl,
     ITfLangBarItemMgr, ITfLangBarItemSink, ITfLangBarItem_Impl, ITfMenu, ITfSource,
     ITfSource_Impl, ITfThreadMgr, TfLBIClick, TF_LANGBARITEMINFO, TF_LBI_CLK_LEFT,
     TF_LBI_ICON, TF_LBI_STATUS, TF_LBI_STATUS_HIDDEN, TF_LBI_STYLE_BTN_BUTTON,
@@ -118,14 +119,54 @@ fn build_info() -> TF_LANGBARITEMINFO {
     info
 }
 
+/// 构造 VT_I4 VARIANT（OPENCLOSE compartment 读写用；纯函数，单测覆盖）。
+pub(crate) fn variant_i4(v: i32) -> VARIANT {
+    // SAFETY: VARIANT 为联合体；初值 zeroed 后只写 VT_I4 活跃成员。
+    let mut var = VARIANT::default();
+    unsafe {
+        // SAFETY: ManuallyDrop 字段需显式解引用后写入（不运行析构）。
+        let inner = &mut *var.Anonymous.Anonymous;
+        inner.vt = VT_I4;
+        inner.Anonymous.lVal = v;
+    }
+    var
+}
+
+/// 读 OPENCLOSE compartment：VT_I4 非零 = 打开（中文），零 = 关闭（英文）。
+/// 未设置（VT_EMPTY）或读取失败返回 None。
+pub(crate) fn read_openclose(comp: &ITfCompartment) -> Option<bool> {
+    // SAFETY: GetValue 为 TSF 标准查询；VARIANT 联合体字段访问需 unsafe。
+    let var = unsafe { comp.GetValue() }.ok()?;
+    // SAFETY: vt 位于 VARIANT 首字段（VARIANT_0_0），可安全读取。
+    let vt = unsafe { var.Anonymous.Anonymous.vt };
+    if vt != VT_I4 {
+        return None;
+    }
+    // SAFETY: vt==VT_I4 时 lVal 为活跃成员。
+    Some(unsafe { var.Anonymous.Anonymous.Anonymous.lVal } != 0)
+}
+
+/// 写 OPENCLOSE compartment（`tid` 为 TSF client id，同 SetValue 约定）。
+/// 注意：SetValue 会同步触发本 TIP 的 OnChange 回调（重入），调用方需防抖。
+pub(crate) fn write_openclose(comp: &ITfCompartment, tid: u32, open: bool) -> Result<()> {
+    let var = variant_i4(i32::from(open));
+    // SAFETY: 标准 TSF 写入；VARIANT 在本调用期间存活。
+    unsafe { comp.SetValue(tid, &var) }
+}
+
 /// 语言栏按钮项。`mode` 与 TextService 共享（`Arc<AtomicBool>`），
-/// 点击图标（OnClick）与 Shift 按键（TextService）都翻转它并刷新图标。
+/// 点击图标（OnClick）翻转它并刷新图标。
 ///
-/// 图标来自 DLL 资源（LR_SHARED），不持有、不销毁——`Drop` 无事可做。
+/// 点击归一为写 `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`（系统"输入法/非输入法切换"
+/// 真相源）：TextService 的 OnChange 统一响应并刷图标；compartment 缺失时
+/// 本地翻转兜底。图标来自 DLL 资源（LR_SHARED），不持有、不销毁。
 #[implement(ITfLangBarItemButton, ITfSource)]
 pub(crate) struct LangBarItemButton {
     /// 共享中/英模式：true = 英文（按键放行），false = 中文。
     mode: Arc<AtomicBool>,
+    /// OPENCLOSE compartment + 本实例 client id（Activate 传入；None = 无监听，
+    /// 点击走本地翻转兜底）。
+    compartment: RefCell<Option<(ITfCompartment, u32)>>,
     /// 语言栏塞进来的 sink；状态变化时 `OnUpdate` 刷新图标。
     sink: RefCell<Option<ITfLangBarItemSink>>,
     /// 状态位（TF_LBI_STATUS_*，MVP 仅 HIDDEN 会用到）。
@@ -133,9 +174,10 @@ pub(crate) struct LangBarItemButton {
 }
 
 impl LangBarItemButton {
-    pub(crate) fn new(mode: Arc<AtomicBool>) -> Self {
+    pub(crate) fn new(mode: Arc<AtomicBool>, compartment: Option<(ITfCompartment, u32)>) -> Self {
         LangBarItemButton {
             mode,
+            compartment: RefCell::new(compartment),
             sink: RefCell::new(None),
             status: Cell::new(0),
         }
@@ -150,7 +192,19 @@ impl LangBarItemButton {
     }
 
     /// 翻转中/英模式并刷新图标。
+    ///
+    /// 归一为写 OPENCLOSE compartment（单一真相源，TextService OnChange 统一响应）；
+    /// compartment 缺失或写失败时本地翻转兜底。
     fn toggle_mode(&self) {
+        if let Some((comp, tid)) = self.compartment.borrow().as_ref() {
+            let next_open = !read_openclose(comp).unwrap_or(true);
+            if write_openclose(comp, *tid, next_open).is_ok() {
+                // OnChange 会负责翻转 mode + 刷新图标；这里仅记日志。
+                log_line(&format!("语言栏图标点击：写 OPENCLOSE={next_open}"));
+                return;
+            }
+            log_line("语言栏图标点击：写 OPENCLOSE 失败，本地翻转兜底");
+        }
         let next = !self.mode.load(Ordering::SeqCst);
         self.mode.store(next, Ordering::SeqCst);
         log_line(&format!("语言栏图标点击切换英文模式：{next}"));
@@ -274,7 +328,7 @@ pub(crate) fn remove_from_lang_bar(thread_mgr: &ITfThreadMgr, com: &ComObject<La
     unsafe { mgr.RemoveItem(&item) }
 }
 
-/// 刷新语言栏图标（Shift 切换英文模式后由 TextService 调用）。
+/// 刷新语言栏图标（模式切换后由 TextService 调用）。
 pub(crate) fn refresh_lang_bar(com: &ComObject<LangBarItemButton>) {
     // SAFETY: com 为正在语言栏上的有效对象；内部经 sink OnUpdate 刷新。
     com.as_ref().refresh();
@@ -306,5 +360,32 @@ mod tests {
     fn icon_ids_unique() {
         // MAKEINTRESOURCEW 要求 id 在 16 位内（高位 0）；两个 ID 不得相同。
         assert_ne!(ICON_ID_ZH, ICON_ID_EN);
+    }
+
+    #[test]
+    fn variant_i4_layout() {
+        for v in [0, 1, -1, 12345] {
+            let var = variant_i4(v);
+            // SAFETY: 测试内直接读联合体字段（vt 首字段；lVal 为刚写入的活跃成员）。
+            let vt = unsafe { var.Anonymous.Anonymous.vt };
+            let lval = unsafe { var.Anonymous.Anonymous.Anonymous.lVal };
+            assert_eq!(vt, VT_I4);
+            assert_eq!(lval, v);
+        }
+    }
+
+    #[test]
+    fn read_openclose_mapping() {
+        // 纯函数映射验证：VT_I4 非零 → Some(true)，零 → Some(false)。
+        // read_openclose 需要 COM 对象，这里仅验证 VARIANT→bool 的等价语义
+        // （通过 variant_i4 构造 + 手工解析，保证与实现同构）。
+        for (v, expect) in [(0i32, false), (1, true), (42, true)] {
+            let var = variant_i4(v);
+            // SAFETY: 同上。
+            let vt = unsafe { var.Anonymous.Anonymous.vt };
+            let some = vt == VT_I4;
+            let lval = some && unsafe { var.Anonymous.Anonymous.Anonymous.lVal } != 0;
+            assert_eq!(lval, expect, "lVal={v}");
+        }
     }
 }

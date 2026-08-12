@@ -18,9 +18,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VK_SHIFT,
 };
 use windows::Win32::UI::TextServices::{
-    ITfContext, ITfDocumentMgr, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr,
-    ITfTextInputProcessor_Impl, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl,
-    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, ITfSource,
+    GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, ITfCompartment, ITfCompartmentEventSink,
+    ITfCompartmentEventSink_Impl, ITfCompartmentMgr, ITfContext, ITfDocumentMgr,
+    ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfTextInputProcessor_Impl,
+    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfThreadMgr,
+    ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, ITfSource,
 };
 use windows_core::{implement, BOOL, ComObject, Interface, IUnknownImpl, Ref, Result};
 
@@ -124,7 +126,12 @@ where
 ///
 /// 实例状态全部用 RefCell/Cell 包裹：edit session 同步回调会重入同一对象，
 /// 不允许出现跨方法 &mut 借用。
-#[implement(ITfTextInputProcessorEx, ITfKeyEventSink, ITfThreadMgrEventSink)]
+#[implement(
+    ITfTextInputProcessorEx,
+    ITfKeyEventSink,
+    ITfThreadMgrEventSink,
+    ITfCompartmentEventSink
+)]
 pub(crate) struct TextService {
     /// ITfThreadMgr（Activate 传入，Deactivate 用）。
     thread_mgr: RefCell<Option<ITfThreadMgr>>,
@@ -132,6 +139,10 @@ pub(crate) struct TextService {
     client_id: Cell<u32>,
     /// ITfThreadMgrEventSink 的 advise cookie（UnadviseSink 用）。
     event_cookie: Cell<u32>,
+    /// OPENCLOSE compartment 监听（系统"输入法/非输入法切换"热键驱动，
+    /// 经 ITfSource::AdviseSink 挂 ITfCompartmentEventSink）+ cookie。
+    /// Step1 仅监听记日志，验证系统热键确实翻转第三方 TIP 的 compartment。
+    compartment: RefCell<Option<(ITfCompartment, u32)>>,
     /// 活动会话；None = 无会话（字母键将开启新会话）。
     session: RefCell<Option<Session>>,
     /// composition 封装（随会话创建/销毁）。
@@ -156,6 +167,7 @@ impl TextService {
             thread_mgr: RefCell::new(None),
             client_id: Cell::new(0),
             event_cookie: Cell::new(0),
+            compartment: RefCell::new(None),
             session: RefCell::new(None),
             composition: RefCell::new(None),
             ui: RefCell::new(Box::new(GdiCandidateWindow::new())),
@@ -187,25 +199,37 @@ impl TextService {
         }
     }
 
+    /// 翻转中/英模式（Shift / 语言栏点击共用入口）。
+    /// 按 OPENCLOSE compartment 值同步中英模式（OnChange / 初始化共用）。
+    ///
+    /// open=false（0）= 英文模式；open=true（非 0）= 中文模式。值未变化则不动
+    /// （SetValue 会同步重入 OnChange，防抖避免循环）。关闭时清理活动会话。
+    fn apply_openclose(&self, open: bool) {
+        let next = !open;
+        if self.english_mode.load(Ordering::SeqCst) == next {
+            return;
+        }
+        self.english_mode.store(next, Ordering::SeqCst);
+        log_line(&format!("OPENCLOSE 变化：open={open} → {}模式", if next { "英文" } else { "中文" }));
+        // 同步语言栏"中/英"图标。
+        if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
+            langbar::refresh_lang_bar(lang_bar);
+        }
+        // 关闭输入法时清理活动会话（Weasel 同款：close 清 composition）。
+        if !open && (self.session.borrow().is_some() || self.composition.borrow().is_some()) {
+            self.ui.borrow_mut().hide();
+            *self.session.borrow_mut() = None;
+            *self.composition.borrow_mut() = None;
+            log_line("OPENCLOSE 关闭：清理活动会话");
+        }
+    }
+
     /// OnKeyDown 完整处理：映射 → 会话推进 → 应用 Effect。
     fn handle_key_down(&self, pic: &ITfContext, wparam: WPARAM, _lparam: LPARAM) -> bool {
         let Some(engine) = engine() else { return false };
         let config = engine.config();
 
         let vk = wparam.0 as u16;
-        // Shift：会话外切换英文模式；会话内忽略（MVP 直接忽略，契约 13 §3.3）。
-        if vk == VK_SHIFT.0 {
-            if self.session.borrow().is_none() {
-                let next = !self.english_mode.load(Ordering::SeqCst);
-                self.english_mode.store(next, Ordering::SeqCst);
-                log_line(&format!("Shift 切换英文模式：{next}"));
-                // 同步语言栏"中/英"图标。
-                if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
-                    langbar::refresh_lang_bar(lang_bar);
-                }
-            }
-            return false;
-        }
         if self.english_mode.load(Ordering::SeqCst) {
             return false;
         }
@@ -318,12 +342,59 @@ impl TextService_Impl {
         };
         self.event_cookie.set(cookie);
 
+        // 监听系统"输入法/非输入法切换"（GUID_COMPARTMENT_KEYBOARD_OPENCLOSE）：
+        // 系统按热键翻转该 compartment，我们经 OnChange 统一响应（中英切换真相源）。
+        // ITfCompartment 经 ITfSource 塞 sink（同 Weasel Compartment.cpp 模式）。
+        match ptim.cast::<ITfCompartmentMgr>() {
+            Ok(mgr) => match unsafe { mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE) } {
+                Ok(comp) => {
+                    let src: ITfSource = comp.cast()?;
+                    let comp_sink: ITfCompartmentEventSink = self.to_object().to_interface();
+                    // SAFETY: 标准 TSF advise；sink 在本对象生命周期内有效，Deactivate 时 UnadviseSink。
+                    match unsafe {
+                        src.AdviseSink(&<ITfCompartmentEventSink as Interface>::IID, &comp_sink)
+                    } {
+                        Ok(cookie) => {
+                            *self.compartment.borrow_mut() = Some((comp.clone(), cookie));
+                            // 激活即打开（MS IME 同款语义）：初始未设置（VT_EMPTY）或
+                            // 关闭（0）时置为打开，保证切入输入法即中文模式；同时保持
+                            // 系统状态与我们一致（后续 SetValue 会同步重入 OnChange，防抖无害）。
+                            if langbar::read_openclose(&comp) != Some(true) {
+                                if let Err(e) = langbar::write_openclose(&comp, tid, true) {
+                                    log_line(&format!("OPENCLOSE 激活写 open=1 失败：{e:?}"));
+                                }
+                            }
+                            log_line(&format!(
+                                "OPENCLOSE compartment 监听注册 OK（当前 open={}）",
+                                match langbar::read_openclose(&comp) {
+                                    Some(v) => i32::from(v).to_string(),
+                                    None => "未设置".to_owned(),
+                                }
+                            ));
+                            self.apply_openclose(true);
+                        }
+                        Err(e) => log_line(&format!(
+                            "OPENCLOSE compartment AdviseSink 失败：{e:?}（不影响输入法）"
+                        )),
+                    }
+                }
+                Err(e) => log_line(&format!(
+                    "OPENCLOSE compartment 获取失败：{e:?}（不影响输入法）"
+                )),
+            },
+            Err(_) => log_line("OPENCLOSE compartment 监听注册失败（QI 不到 ITfCompartmentMgr）"),
+        }
+
         // 后台异步加载引擎（词库 17MB/65 万词条）：切到输入法即开始，
         // 首次按键不再同步加载卡顿；加载完成前按键透明放行。
         start_engine_load();
 
         // 挂载语言栏"中/英"切换图标（失败仅记日志，不影响输入法主体）。
-        let lang_bar_com = ComObject::new(LangBarItemButton::new(self.english_mode.clone()));
+        // 点击归一为写 OPENCLOSE compartment（OnChange 统一响应）。
+        let lang_bar_com = ComObject::new(LangBarItemButton::new(
+            self.english_mode.clone(),
+            self.compartment.borrow().as_ref().map(|(c, _)| (c.clone(), tid)),
+        ));
         match langbar::add_to_lang_bar(ptim, &lang_bar_com) {
             Ok(()) => {
                 *self.lang_bar.borrow_mut() = Some(lang_bar_com);
@@ -348,6 +419,16 @@ impl TextService_Impl {
             if let Some(tm) = self.thread_mgr.borrow().as_ref() {
                 if let Err(e) = langbar::remove_from_lang_bar(tm, &lang_bar_com) {
                     log_line(&format!("语言栏图标卸载失败：{e:?}"));
+                }
+            }
+        }
+
+        // 卸载 OPENCLOSE compartment 监听。
+        if let Some((comp, cookie)) = self.compartment.borrow_mut().take() {
+            // SAFETY: 标准 TSF unadvise 调用，cookie 为注册返回值。
+            if let Ok(src) = comp.cast::<ITfSource>() {
+                if let Err(e) = unsafe { src.UnadviseSink(cookie) } {
+                    log_line(&format!("OPENCLOSE compartment UnadviseSink 失败：{e:?}"));
                 }
             }
         }
@@ -437,6 +518,28 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
 
     fn OnPopContext(&self, _pic: Ref<ITfContext>) -> Result<()> {
         Ok(())
+    }
+}
+
+// ---- ITfCompartmentEventSink ----
+
+impl ITfCompartmentEventSink_Impl for TextService_Impl {
+    /// OPENCLOSE compartment 变化：中英切换唯一响应点（系统热键 / Shift /
+    /// 语言栏点击都归一为写该 compartment）。open=false → 英文模式，true → 中文。
+    fn OnChange(&self, rguid: *const windows_core::GUID) -> Result<()> {
+        guard(|| {
+            // SAFETY: rguid 由 TSF 保证非空有效（回调参数约定）。
+            if unsafe { *rguid } != GUID_COMPARTMENT_KEYBOARD_OPENCLOSE {
+                return Ok(());
+            }
+            let Some((comp, _)) = self.compartment.borrow().as_ref().map(|c| c.clone()) else {
+                log_line("OPENCLOSE 变化但 compartment 缺失，忽略");
+                return Ok(());
+            };
+            // 未设置（VT_EMPTY）视为打开（中文），保持默认行为。
+            self.apply_openclose(langbar::read_openclose(&comp).unwrap_or(true));
+            Ok(())
+        })
     }
 }
 

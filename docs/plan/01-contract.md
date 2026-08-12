@@ -406,8 +406,13 @@ pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIM
 - composition 内嵌文本 = `Effect.composition`（拼音分段）；候选窗只放候选列表（不渲染 reading，微软式，M1 后期修正）。
 - `Session::is_active() == false` 时字母键被消费（开启新会话），其余键全部放行。
 - **语言栏"中/英"图标（langbar.rs）**：Activate 时经 `ITfLangBarItemMgr::AddItem` 挂载 `ITfLangBarItemButton`（样式
-  `TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY`，运行时 GDI 生成中/英图标）；Deactivate 时 `RemoveItem`。
-  图标点击（`OnClick`）与 Shift 切换共享同一 `Arc<AtomicBool>` 状态；Shift 切换后调用 `OnUpdate` 刷新图标。
+  `TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY`，图标为 DLL 内嵌 .ico 资源 ID 101/102）；Deactivate 时 `RemoveItem`。
   挂载失败仅记日志，不影响输入法主体。
+- **中/英切换 = 系统"输入法/非输入法切换"（`GUID_COMPARTMENT_KEYBOARD_OPENCLOSE` compartment，真相源）**：
+  系统热键（高级键设置，如 Ctrl+Space）翻转 compartment → TextService 经 `ITfCompartmentEventSink::OnChange`
+  统一响应（open=0 → 英文模式，非 0 → 中文模式），更新共享 `Arc<AtomicBool>` 并 `OnUpdate` 刷新图标；
+  关闭时清理活动会话。语言栏图标点击归一为写该 compartment（`ITfCompartment::SetValue`，需带本实例
+  client id；SetValue 同步重入 OnChange，靠防抖幂等）。不再提供 Shift 切换（2026-08 移除）。
+  Activate 时"激活即打开"（初始 VT_EMPTY/关闭 → 写 open=1，保持切入即中文）；compartment 缺失/写失败时本地翻转兜底。
 - 引擎在 DLL 内进程级单例（`OnceLock<Arc<Engine>>`），词典路径 `%LOCALAPPDATA%\InputIME\input.imedic`（用户级数据；DLL 本体在 `%ProgramFiles%\InputIME\`）；
   加载失败：日志记录，所有字母键原样放行（输入法"透明"，绝不卡用户）。

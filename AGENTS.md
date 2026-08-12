@@ -17,6 +17,10 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**滞回稳�
     清槽+置终止标志，TSF 侧检测后丢弃会话降级重建。改动：session.rs/key.rs（Effect 删 part_commit）、
     session_bridge.rs、composition.rs（sink 共享槽）、text_service.rs（降级）、测试/契约/文档同步。
 - 后续：M2 滞回/学习/钉选 · M3 整句增强(LMDG)/简拼/模糊音 · M4 Tauri helper（WebView 候选窗+设置） · M5 安装器/词库导入/x86
+- **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
+  OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；激活即打开）。前置条件：用户在
+  高级键设置把"输入法/非输入法切换"设为 Ctrl+Space（"切换输入语言"热键让位，Win+Space 仍可用）。
+  已知遗留（未修）：有活动候选时按热键关闭，会话清理路径存在小 bug（2026-08-12 手测记录，待修）。
 
 ## 开发入口
 
