@@ -69,9 +69,13 @@ pub fn map_key(vk: u16, char_code: u32, with_shift: bool, with_ctrl: bool, with_
 /// 会话外开启会话判定（仅字母与 `'`；`,`/`.` 等标点放行给应用）。
 /// 两者定义在 ime-core（config/keymap.rs），此处直接复用。
 
-/// 光标远跳阈值（px）：候选窗可见时，新光标距上次定位锚点超过该值
-/// 视为"输入点远跳"（拖拽窗口跨屏/点击远处），简单版直接清除未完成输入。
+/// 光标跳变阈值（px）：候选窗可见时，新光标距**上一次光标**位移超过该值
+/// 视为"输入点远跳"（点击远处/拖拽窗口跨屏/自动换行），简单版直接清除未完成输入。
 /// 完整版（保留 composition、候选框在下一键重新出现）见 14-mod-ime-tsf-candwin.md §5。
+/// 判定基准用增量（与上次 caret 的位移）而非 composition 起点：连续打字时
+/// caret 每键只前进约一个字符宽（~15px），长 composition 不会误触发；
+/// 点击/换行才产生跳变位移（实测修复 2026-08-13：qingnixiangyong 15 键后
+/// composition 起点到末尾 167px > 阈值，旧基准把正常打字误判为远跳而藏候选窗）。
 const JUMP_THRESHOLD: f64 = 150.0;
 
 /// 两点距离（像素）。
@@ -84,14 +88,11 @@ fn jump_distance(a: CaretRect, b: CaretRect) -> f64 {
 /// 应用 Effect：composition 更新 → 候选窗快照 → 会话结束处理。
 /// 契约 13 任务书 §3.4：SetText → caret → ui.show/update → end 上屏/取消并 hide。
 ///
-/// `anchor`：上次候选窗定位时的 caret（跳变检测基准，仅 show 时更新）。
-///
 /// 返回 `true` 表示会话已结束（effect.end 为 Some 或远跳清除），调用方应丢弃 Session。
 pub fn apply_effect(
     composition: &Composition,
     ui: &mut dyn CandidateUi,
     caret: &mut CaretRect,
-    anchor: &mut CaretRect,
     effect: &Effect,
 ) -> bool {
     match &effect.end {
@@ -114,6 +115,7 @@ pub fn apply_effect(
         None => {
             // 悬空状态（选中中间级词后）：无 commit 信号——已选词仅在预编辑混合文本中
             // 显示（汉字+尾巴拼音），composition 全程覆盖整个混合文本，set_text 全量更新。
+            let prev_caret = *caret; // 跳变检测基准：上一次光标（增量位移）
             match composition.set_text(&effect.composition) {
                 Ok(Some(rect)) => {
                     log_line(&format!(
@@ -139,17 +141,18 @@ pub fn apply_effect(
                 ui.hide();
                 false
             } else if ui.is_visible() {
-                if jump_distance(*anchor, *caret) > JUMP_THRESHOLD {
-                    // 输入点远跳（拖拽窗口跨屏/点击远处/文档自动换行）：
+                if jump_distance(prev_caret, *caret) > JUMP_THRESHOLD {
+                    // 输入点跳变（点击远处/拖拽窗口跨屏/自动换行）：
                     // 仅隐藏候选窗、保留 composition 与 Session；下一键 set_text 后
                     // 自然走 show 分支用新光标重新定位。换行场景输入不丢失。
+                    // 基准为增量（与上次 caret 位移）——正常打字每键 ~15px 不触发。
                     log_line(&format!(
-                        "[candwin] 光标远跳（anchor=({},{}), caret=({},{}), dist={:.0}px），隐藏候选窗待下一键重现",
-                        anchor.x,
-                        anchor.y,
+                        "[candwin] 光标跳变（prev=({},{}), caret=({},{}), dist={:.0}px），隐藏候选窗待下一键重现",
+                        prev_caret.x,
+                        prev_caret.y,
                         caret.x,
                         caret.y,
-                        jump_distance(*anchor, *caret)
+                        jump_distance(prev_caret, *caret)
                     ));
                     ui.hide();
                     false
@@ -166,7 +169,6 @@ pub fn apply_effect(
                     "[candwin] 首次 show，caret：x={} y={} w={} h={}",
                     caret.x, caret.y, caret.w, caret.h
                 ));
-                *anchor = *caret;
                 ui.show(&snap, *caret);
                 false
             }
