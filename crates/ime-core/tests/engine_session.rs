@@ -317,7 +317,168 @@ fn static_order_is_deterministic() {
     assert_eq!(a.effect().candidates, b.effect().candidates);
 }
 
-// ===== session 状态机（契约 §4.1 逐行）=====
+// ===== M1.5 三路路由（微软实测对齐，docs/research/msime-probe-checklist.txt）=====
+
+/// M1.5 词典：模拟 dictc 产物——全拼键 + 简拼键同表（简拼键为 dictc 自动生成，
+/// 引擎测试里手工给出等价数据）。
+fn m15_dict() -> Dict {
+    Dict::from_entries(vec![
+        // 单段档单字
+        ("de".into(), "的".into(), 100000),
+        ("de".into(), "得".into(), 300),
+        ("shi".into(), "是".into(), 90000),
+        ("shi".into(), "时".into(), 50000),
+        ("shang".into(), "上".into(), 40000),
+        ("ca".into(), "擦".into(), 2000),
+        ("cai".into(), "才".into(), 10000),
+        ("cai".into(), "财".into(), 3000),
+        // 混拼全拼键
+        ("ni'hao".into(), "你好".into(), 8000),
+        ("ni'hao".into(), "泥嚎".into(), 100),
+        ("ni".into(), "你".into(), 50000),
+        ("na".into(), "那".into(), 40000),
+        ("hao".into(), "好".into(), 30000),
+        // 简拼键（dictc 同款）
+        ("nh".into(), "你好".into(), 8000),
+        ("nh".into(), "泥嚎".into(), 100),
+        ("nhm".into(), "你还没".into(), 6000),
+        ("nhms".into(), "你还没说".into(), 5000),
+        ("nhmsx".into(), "你还没睡醒".into(), 7000),
+    ])
+}
+
+/// 单字母档：c → 纯单字（才/财/擦），无词，词频序。
+#[test]
+fn single_letter_chars_only() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    s.on_key(Key::Char('c'));
+    let e = s.effect();
+    let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(texts, vec!["才", "财", "擦"]);
+    assert!(e.candidates.iter().all(|c| c.kind == CandidateKind::Char), "单字母档应纯单字");
+}
+
+/// 部分音节档：sh → 纯单字（是/时/上），无词。
+#[test]
+fn prefix_segment_chars_only() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "sh".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let binding = s.effect();
+    let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(texts, vec!["是", "时", "上"]);
+    assert!(s.effect().candidates.iter().all(|c| c.kind == CandidateKind::Char));
+}
+
+/// 完整音节档：de → 纯单字（的/得），无"的的"类词（微软 B 组实测：shi→是时十使）。
+#[test]
+fn complete_syllable_chars_only() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "de".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let binding = s.effect();
+    let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(texts, vec!["的", "得"]);
+}
+
+/// 单段非前缀（v）：无候选（微软 A 组实测：i/u/v 只有字面）。
+#[test]
+fn non_prefix_single_letter_empty() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "v".chars() {
+        s.on_key(Key::Char(c));
+    }
+    assert!(s.effect().candidates.is_empty());
+    let e = s.on_key(Key::Space);
+    assert_eq!(e.end, Some(SessionEnd::Commit("v".into())));
+}
+
+/// 简拼档：nh → 纯词（你好/泥嚎），无单字（微软 D 组实测：nh→你好您好女孩你还）。
+#[test]
+fn abbrev_words_only_no_chars() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "nh".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let binding = s.effect();
+    let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(texts, vec!["你好", "泥嚎"]);
+    assert!(s.effect().candidates.iter().all(|c| c.kind == CandidateKind::Word), "简拼档应纯词");
+    assert!(!texts.contains(&"你"), "简拼候选不含单字，实际：{texts:?}");
+}
+
+/// 简拼无长度上限 + 逐级砍尾巴：nhmsx → 你还没睡醒(k5)/你还没说(k4)/你还没(k3)/你好(k2)。
+#[test]
+fn abbrev_tail_levels_longest_first() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "nhmsx".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let expect = ["你还没睡醒", "你还没说", "你还没", "你好"];
+    let mut pos = 0usize;
+    for want in expect {
+        let at = texts.iter().position(|t| t == want)
+            .unwrap_or_else(|| panic!("候选应含 {want}，实际：{texts:?}"));
+        assert!(at >= pos, "{want} 应排在更长层级之后，实际：{texts:?}");
+        pos = at;
+    }
+}
+
+/// 简拼部分消费：选中"你还没说"（k=4）→ 词上屏 + 尾巴 x 续接（悬空续接复用）。
+#[test]
+fn abbrev_partial_commit_keeps_tail() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "nhmsx".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let idx = s.effect().candidates.iter().position(|c| c.text == "你还没说").unwrap();
+    let e = s.on_key(Key::Digit((idx + 1) as u8));
+    assert_eq!(e.end, None, "部分消费不结束会话");
+    assert_eq!(e.composition, "你还没说x", "词上屏+尾巴拼音，实际：{}", e.composition);
+    assert!(s.is_active());
+}
+
+/// 混拼：nhao → 你好（n 简拼段展开 × hao 完整段），词前字后。
+#[test]
+fn mixed_nhao_finds_nihao() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "nhao".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    assert_eq!(texts[0], "你好", "混拼词应居首，实际：{texts:?}");
+    assert!(texts.contains(&"泥嚎".to_string()));
+    // 单字（你/那）排在词后
+    let ni = texts.iter().position(|t| t == "你").unwrap();
+    let nihao = texts.iter().position(|t| t == "你好").unwrap();
+    assert!(nihao < ni, "词前字后，实际：{texts:?}");
+}
+
+/// 简拼键整串消费：选中"你好"（k=2=n）→ 全部上屏、会话结束。
+#[test]
+fn abbrev_full_commit_ends_session() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "nh".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.on_key(Key::Space);
+    assert_eq!(e.end, Some(SessionEnd::Commit("你好".into())));
+    assert!(!s.is_active());
+}
+
+
 
 #[test]
 fn type_shows_candidates() {

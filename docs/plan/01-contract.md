@@ -125,7 +125,8 @@ pub struct Entry {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Dict { /* BTreeMap<squashed_code, Vec<Entry>>，每组按 weight 降序 */ }
+pub struct Dict { /* BTreeMap<squashed_code, Vec<Entry>>，每组按 weight 降序；
+                      initial_buckets: 26 首字母桶（每桶词频降序 top-500，含字含词，M1.5） */ }
 
 impl Dict {
     /// 测试/用户词库构造器。items = (squashed_code, word, weight)。
@@ -139,6 +140,11 @@ impl Dict {
     /// 跨编码按 weight 降序，最多 limit 条。
     pub fn prefix(&self, squashed_prefix: &str, limit: usize) -> Vec<&Entry>;
 
+    /// 首字母桶查询（M1.5）：返回 code 以 `initial` 开头的词条，按词频降序，
+    /// 最多 limit 条。桶在加载时预建（每字母 top-500），供单段档（`c`/`sh`/`shi`…）
+    /// O(1) 取候选，替代全表前缀扫描排序（'s' 全扫 10 万条不可用于按键热路径）。
+    pub fn initial_top(&self, initial: char, limit: usize) -> Vec<&Entry>;
+
     /// 全部音节集合（从所有 code 切出），供全拼切分器构造。
     pub fn syllables(&self) -> &BTreeSet<String>;
 
@@ -146,6 +152,16 @@ impl Dict {
     pub fn entry_count(&self) -> usize;  // 词条总数
     pub fn max_word_syllables(&self) -> usize; // 最长词的音节数（lattice 宽度上限）
 }
+
+// ===== 简拼键（M1.5）=====
+/// dictc 对 ≥2 音节词额外生成简拼键（每音节首字母串联：`ni'hao`→`nh`、
+/// `xi'an`→`xa`、`tian'an'men`→`tam`），与全拼键同表混存，权重复制。
+/// 无格式升级（IMEDIC01 原样），新旧词库双向兼容：
+/// - 新引擎读老词库：简拼键缺失 → 简拼档降级为空（其余路径不变）
+/// - 老引擎读新词库：多余键从不被查询，无感
+/// 键空间隔离靠查询路由（§4.2）：全拼查询的键要么是完整音节、要么含 `'`，
+/// 简拼键不含 `'` 且非完整音节，只在多段简拼输入时被查询，互不命中。
+pub const INITIAL_BUCKET_SIZE: usize = 500; // 每首字母桶上限（可调）
 
 // ===== lib.rs 顶部函数（Agent A 实现于 format.rs 后 re-export）=====
 /// 加载二进制词典。
@@ -317,7 +333,19 @@ impl Session {
 
 设 `seg` = 方案[0]（贪心/强制切分），`n` = seg 段数。
 
-**砍尾巴逐级前缀匹配**：`for k = n, n-1, ..., 1`，对前缀 `seg[0..k]`：
+**路由（M1.5，微软实测对齐，见 docs/research/msime-probe-checklist.txt）**：
+
+| 输入 | 判定 | 候选 |
+|---|---|---|
+| 整串为音节前缀（`c`/`sh`/`zho`） | `plain`（去 `'`）是某音节真前缀 | **纯单字**：`initial_top(首字母)` 过滤 `starts_with(plain) && 单字`，词频序，取 20 |
+| 完整单音节无歧义（`shi`/`de`/`ba`） | 单段且无替代切分 | 同上（纯单字） |
+| 完整单音节有歧义（`xian`→[xian]+[xi,an]） | 单段且有替代切分 | 全拼 k-loop（替代切分词如"西安"混排，词频序） |
+| 单段非前缀（`i`/`u`/`v`） | 非音节、非前缀 | 无候选（空格上屏原文） |
+| 多段全完整（`nihao`/`xi'an`） | 每段为完整音节 | 全拼 k-loop（viterbi 组句 + 逐级枚举） |
+| 多段全不完整（`nh`/`nhm`/`nhmsx`） | 每段非完整音节 | **简拼键逐级砍尾巴**：k=n..1 查 `dict.exact(前k段首字母串)`，纯词 |
+| 多段混合（`nhao`） | 含完整段 + 不完整段 | 不完整段展开为音节列表（源 `dict.syllables()`），逐级笛卡尔积 `exact(join("'"))`，词频合并；单级组合数 > 2000 该级降级为空 |
+
+**砍尾巴逐级前缀匹配**（全拼路径，`for k = n, n-1, ..., 1`，对前缀 `seg[0..k]`）：
 
 1. `k >= 2` → unigram Viterbi 最优路径（每级 0 或 1 条）→ `Candidate{ kind: Sentence, text: 路径拼接, code: seg.join("'"), weight: 0 }`；
    空段（尾/连续 `'`）过滤后组句。
@@ -329,8 +357,16 @@ impl Session {
 6. 截断到 `config.max_candidates`。
 7. 依次过 `stages` 管线（MVP 仅 StaticOrder = no-op）。
 
+**简拼路径**（多段全不完整）：k=n..1 查简拼键（构建期生成，§3），候选 seg_len=k；
+选中部分消费 → session 悬空续接把尾巴段重建为组合（与全拼路径选中间级词同一机制）。
+
+**部分消费语义**：候选 seg_len=k < n 时，选中后词上屏（悬空入栈）、
+`seg[k..]` 尾巴拼音重建组合继续输入（微软实测"你还没说x"同构：词+尾巴拼音）。
+
 例：`chuangqianmingyueguang` → 床前明月光（整句）→ 窗前明月（次长句）→ … → 床前/窗前（词）→ 床/窗/创（单字），翻页总能到达所需层级；
-`zheshi` → 这是（整句）→ 这时/这事/…（词）→ 这/是（单字）。
+`zheshi` → 这是（整句）→ 这时/这事/…（词）→ 这/是（单字）；
+`nh` → 你好/泥嚎（简拼词，无单字）；`nhmsx` → 你还没睡醒（k5）→ 你还没说（k4）→ 你还没（k3）→ 你好（k2）；
+`nhao` → 你好/您好（混拼词）→ 你/那（单字，词前字后）；`sh` → 是/时/上（纯单字）。
 
 Viterbi 要点：位置 0..=n（音节界）；边 (i,j)（`j−i ≤ max_word_syllables`）= `dict.exact(seg[i..j].join("'"))`
 的全部词条；边分 = `lm.log_prob(prev_word, word, weight)`；单音节无词条时给兜底边

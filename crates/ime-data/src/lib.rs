@@ -6,5 +6,5 @@ pub mod dict;
 pub mod format;
 
 pub use compile::{compile_files, CompileStats};
-pub use dict::{Dict, Entry};
+pub use dict::{Dict, Entry, INITIAL_BUCKET_SIZE};
 pub use format::load;

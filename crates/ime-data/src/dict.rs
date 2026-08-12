@@ -19,7 +19,14 @@ pub struct Dict {
     entry_count: usize,
     max_word_syllables: usize,
     syllables: BTreeSet<String>,
+    /// 26 个首字母桶：每桶按词频降序前 `INITIAL_BUCKET_SIZE` 条（含字含词），
+    /// 供 M1.5 单段输入（`c`/`sh`/`shi`…）O(1) 取候选，替代全表前缀扫描排序。
+    /// 桶持有词条副本（26×500 条 ≈ 1MB），避免自引用结构。
+    initial_buckets: BTreeMap<char, Vec<Entry>>,
 }
+
+/// 每首字母桶上限（单段档候选池；常量可调，太大徒增加载内存）。
+pub const INITIAL_BUCKET_SIZE: usize = 500;
 
 /// 标准汉语拼音音节表（无调，按字母序，供二分查找）。
 /// 数据来源：现代汉语拼音方案常用音节；不含语气词音节（m/n/ng/hm/hng 等）。
@@ -111,8 +118,9 @@ impl Dict {
         let mut entry_count = 0usize;
         let mut max_word_syllables = 0usize;
         let mut syllables = BTreeSet::new();
+        let mut buckets: BTreeMap<char, Vec<Entry>> = BTreeMap::new();
         for group in map.values_mut() {
-            group.sort_by(|a, b| b.weight.cmp(&a.weight));
+            group.sort_by_key(|a| std::cmp::Reverse(a.weight));
             entry_count += group.len();
             total += group.iter().map(|e| e.weight as u64).sum::<u64>();
             let seg = greedy_segment(&group[0].code);
@@ -126,7 +134,21 @@ impl Dict {
                 }
             }
         }
-        Dict { map, total, entry_count, max_word_syllables, syllables }
+        // 首字母桶（单遍收集副本 + 桶内排序截断）
+        for group in map.values() {
+            for e in group.iter() {
+                if let Some(c) = e.code.chars().next() {
+                    if c.is_ascii_lowercase() {
+                        buckets.entry(c).or_default().push(e.clone());
+                    }
+                }
+            }
+        }
+        for v in buckets.values_mut() {
+            v.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
+            v.truncate(INITIAL_BUCKET_SIZE);
+        }
+        Dict { map, total, entry_count, max_word_syllables, syllables, initial_buckets: buckets }
     }
 
     /// 精确查询：squashed_code 如 "nihao"。返回按 weight 降序切片。
@@ -158,6 +180,16 @@ impl Dict {
     /// 全部音节集合（从所有 code 切出），供全拼切分器构造。
     pub fn syllables(&self) -> &BTreeSet<String> {
         &self.syllables
+    }
+
+    /// 首字母桶查询：返回 code 以 `initial` 开头的词条，按词频降序，最多 `limit` 条。
+    /// 桶在加载时预建（每字母 top-500），M1.5 单段输入档（`c`/`sh`/`shi`…）用它
+    /// 取代全表前缀扫描（'s' 全扫 10 万条再排序不可用于按键热路径）。
+    pub fn initial_top(&self, initial: char, limit: usize) -> Vec<&Entry> {
+        self.initial_buckets
+            .get(&initial)
+            .map(|v| v.iter().take(limit).collect())
+            .unwrap_or_default()
     }
 
     /// 全部词条 weight 之和（LM 分母）。
@@ -225,5 +257,41 @@ mod tests {
         assert!(d.syllables().contains("xian"));
         assert!(!d.syllables().contains("abc"));
         assert_eq!(d.max_word_syllables(), 2);
+    }
+
+    #[test]
+    fn initial_bucket_top_by_weight() {
+        let d = Dict::from_entries(vec![
+            ("de".into(), "的".into(), 100000),
+            ("de".into(), "得".into(), 300),
+            ("da".into(), "大".into(), 5000),
+            ("dan".into(), "但".into(), 4000),
+            ("di".into(), "地".into(), 20000),
+            ("bu".into(), "不".into(), 30000),
+            ("zhongguo".into(), "中国".into(), 90000),
+        ]);
+        // d 桶：词频降序（的/地/大/但/得），截断生效
+        let top = d.initial_top('d', 10);
+        let words: Vec<&str> = top.iter().map(|e| e.word.as_str()).collect();
+        assert_eq!(words, vec!["的", "地", "大", "但", "得"]);
+        // limit 截断
+        assert_eq!(d.initial_top('d', 2).len(), 2);
+        // 无该字母 → 空
+        assert!(d.initial_top('q', 10).is_empty());
+        // 大写不入桶
+        assert!(d.initial_top('A', 10).is_empty());
+        // 桶含多字词（中国在 z 桶）
+        assert!(d.initial_top('z', 10).iter().any(|e| e.word == "中国"));
+    }
+
+    #[test]
+    fn bucket_cap_truncates_to_constant() {
+        // 灌入超过 INITIAL_BUCKET_SIZE 的同首字母词条，验证截断
+        let mut items = Vec::new();
+        for i in 0..(INITIAL_BUCKET_SIZE + 100) {
+            items.push((format!("ba{}", i % 50).replace("ba", "b"), format!("词{i}"), i as u32));
+        }
+        let d = Dict::from_entries(items);
+        assert_eq!(d.initial_top('b', usize::MAX).len(), INITIAL_BUCKET_SIZE);
     }
 }

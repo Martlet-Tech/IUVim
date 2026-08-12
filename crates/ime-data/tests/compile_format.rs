@@ -34,8 +34,8 @@ fn roundtrip_small_dict() {
         "你好\tni hao\t1000\n泥嚎\tni hao\t100\n你好\tni hao\t9999\n好的\thao de\n",
     );
     assert_eq!(stats.files, 1);
-    assert_eq!(stats.entries, 3);
-    assert_eq!(stats.codes, 2);
+    assert_eq!(stats.entries, 6); // 3 全拼 + 3 简拼键（你好→nh、泥嚎→nh、好的→hd）
+    assert_eq!(stats.codes, 4); // ni'hao、hao'de + 简拼 nh、hd
     assert_eq!(stats.duplicates, 1);
 
     let d = load(&out).unwrap();
@@ -45,6 +45,12 @@ fn roundtrip_small_dict() {
     assert_eq!(nihao[0].weight, 9999); // 去重取最大 weight（与出现顺序无关）
     assert_eq!(nihao[1].weight, 100);
     assert_eq!(d.exact("hao'de")[0].weight, 0); // 权重缺省按 0
+    // 简拼键：同键多条按 weight 降序，权重复制自原词条
+    let nh = d.exact("nh");
+    assert_eq!(nh.len(), 2);
+    assert_eq!(nh[0].word, "你好");
+    assert_eq!(nh[0].weight, 9999);
+    assert_eq!(nh[1].word, "泥嚎");
 }
 
 #[test]
@@ -54,7 +60,7 @@ fn yaml_header_and_comments_skipped() {
         &dir,
         "\u{feff}# 顶部注释\n---\nname: test.dict\nversion: \"0.1\"\nsort: by_weight\n...\n# 词条前注释\n\n你好\tni hao\t1000\n\n好的\thao de\t200\n",
     );
-    assert_eq!(stats.entries, 2);
+    assert_eq!(stats.entries, 4); // 2 全拼 + 2 简拼键（你好→nh、好的→hd）
     assert_eq!(stats.duplicates, 0);
     let d = load(&out).unwrap();
     assert_eq!(d.exact("ni'hao")[0].weight, 1000);
@@ -139,11 +145,32 @@ fn multi_file_merge_dedup() {
     let out = dir.join("merged.imedic");
     let stats = compile_files(&[in1, in2], &out).unwrap();
     assert_eq!(stats.files, 2);
-    assert_eq!(stats.entries, 2);
-    assert_eq!(stats.codes, 2);
+    assert_eq!(stats.entries, 4); // 2 全拼 + 2 简拼键（你好→nh、世界→sj）
+    assert_eq!(stats.codes, 4);
     assert_eq!(stats.duplicates, 1);
     let d = load(&out).unwrap();
     assert_eq!(d.exact("ni'hao")[0].weight, 200); // 跨文件去重取最大
+    assert_eq!(d.exact("sj")[0].word, "世界");
+}
+
+#[test]
+fn abbrev_key_generation() {
+    let dir = tmp_dir("abbrev");
+    let (out, _) = compile_one(
+        &dir,
+        "你好\tni hao\t100\n西安\txi an\t50\n天安门\ttian an men\t30\n是\tshi\t200\n",
+    );
+    let d = load(&out).unwrap();
+    // 简拼键：每音节首字母，权重复制
+    assert_eq!(d.exact("nh")[0].word, "你好");
+    assert_eq!(d.exact("nh")[0].weight, 100);
+    assert_eq!(d.exact("xa")[0].word, "西安"); // 强制分隔段也取首字母
+    assert_eq!(d.exact("tam")[0].word, "天安门");
+    // 单音节词不生成简拼键
+    assert!(d.exact("s").is_empty());
+    // 简拼键不污染音节表/词长统计
+    assert!(!d.syllables().contains("nh"));
+    assert_eq!(d.max_word_syllables(), 3);
 }
 
 #[test]

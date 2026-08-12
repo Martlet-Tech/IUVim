@@ -27,10 +27,27 @@ pub fn compile_files(inputs: &[PathBuf], output: &Path) -> io::Result<CompileSta
     for input in inputs {
         duplicates += parse_file(input, &mut uniq)?;
     }
-    let mut records: Vec<Entry> = uniq
+    let records: Vec<Entry> = uniq
         .into_iter()
         .map(|((code, word), weight)| Entry { word, code, weight })
         .collect();
+    // M1.5：生成简拼键（≥2 音节词），与全拼键同表混存。查询路由隔离保证互不命中：
+    // 全拼查询的键要么是完整音节、要么含 `'`；简拼键不含 `'` 且非完整音节，只在多段
+    // 简拼输入时被查询（见 01-contract.md §4.2）。老引擎加载新词库不受影响（多余键从不查询）。
+    let mut records: Vec<Entry> = {
+        let mut all = Vec::with_capacity(records.len() + records.len() / 3);
+        for r in records {
+            if let Some(ab) = abbrev_of(&r.code) {
+                all.push(Entry {
+                    code: ab,
+                    word: r.word.clone(),
+                    weight: r.weight,
+                });
+            }
+            all.push(r);
+        }
+        all
+    };
     // 契约 §3.1：按 (code 升序, weight 降序) 排列写入；weight 相同再按 word 保证确定序。
     records.sort_by(|a, b| {
         a.code
@@ -140,4 +157,14 @@ fn squash(pinyin: &str) -> String {
         }
     }
     out
+}
+
+/// 简拼键：≥2 音节词的每音节首字母串联（`ni'hao`→`nh`、`xi'an`→`xa`、
+/// `tian'an'men`→`tam`）。单音节词无简拼键；含空段的畸形键跳过。
+fn abbrev_of(code: &str) -> Option<String> {
+    let parts: Vec<&str> = code.split('\'').collect();
+    if parts.len() < 2 || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    Some(parts.iter().map(|p| p.chars().next().unwrap()).collect())
 }
