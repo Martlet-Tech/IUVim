@@ -62,9 +62,18 @@ impl Quanpin {
             }
         }
         if !matched {
-            // 无合法音节前缀 → 单字母兜底（保证有解，永不失败）
-            cur.push(s[pos..pos + 1].to_string());
-            self.backtrack(s, pos + 1, cur, out);
+            // 无合法音节 → 最长音节前缀兜底（微软对齐：`sh` 是 sha/shan/shi… 的前缀，
+            // 整体为一段而非 s'h 两段；`zho`/`zhon` 同理）。无任何前缀才单字母兜底，
+            // 保证有解永不失败（如 `qaz` 的 q 处仅 "q" 自身是前缀）。
+            let mut plen = 1usize;
+            for len in (1..=rem.min(self.max_len)).rev() {
+                if self.syllables.iter().any(|syl| syl.starts_with(&s[pos..pos + len])) {
+                    plen = len;
+                    break;
+                }
+            }
+            cur.push(s[pos..pos + plen].to_string());
+            self.backtrack(s, pos + plen, cur, out);
             cur.pop();
         }
     }
@@ -115,6 +124,8 @@ mod tests {
             ("xian".into(), "先".into(), 500),
             ("xi".into(), "西".into(), 100),
             ("an".into(), "安".into(), 100),
+            ("shi".into(), "是".into(), 90000),
+            ("zhong".into(), "中".into(), 50000),
         ]);
         Quanpin::new(d.syllables().clone())
     }
@@ -142,10 +153,29 @@ mod tests {
     #[test]
     fn seg_invalid_char_fallback() {
         let q = quanpin();
-        // 无合法音节前缀按单字母保留，不 panic。
+        // 无合法音节前缀时：最长音节前缀兜底（q 仅 "q" 自身是前缀 → 单字母）
         assert_eq!(q.segment("qaz"), vec![vec!["q", "a", "z"]]);
         // 非法起始不 panic。
         assert_eq!(q.segment("xn"), vec![vec!["x", "n"]]);
+    }
+
+    #[test]
+    fn seg_longest_prefix_fallback_single_segment() {
+        let q = quanpin();
+        // 微软对齐：`sh` 是 sha/shan/shi… 的前缀 → 整体一段，而非 s'h 两段。
+        assert_eq!(q.segment("sh"), vec![vec!["sh"]]);
+        // `zho`/`zhon` 是 zhong/zhou 的前缀 → 单段。
+        assert_eq!(q.segment("zho"), vec![vec!["zho"]]);
+        assert_eq!(q.segment("zhon"), vec![vec!["zhon"]]);
+    }
+
+    #[test]
+    fn seg_abbrev_not_prefix_keeps_single_letters() {
+        let q = quanpin();
+        // `nh` 不是任何音节的前缀（无音节以 nh 开头）→ 仍拆为 n/h 两段（简拼档）。
+        assert_eq!(q.segment("nh"), vec![vec!["n", "h"]]);
+        // 前缀段（n）之后继续正常切分完整音节（hao）。
+        assert_eq!(q.segment("nhao"), vec![vec!["n", "hao"]]);
     }
 
     #[test]

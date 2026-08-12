@@ -373,6 +373,21 @@ fn prefix_segment_chars_only() {
     assert!(s.effect().candidates.iter().all(|c| c.kind == CandidateKind::Char));
 }
 
+/// 部分音节档选中候选：整串消费、上屏、会话结束（切分器前缀兜底修正后 sh 为单段，
+/// 不残留尾巴 h 续接——微软实测：sh 选"时"直接上屏）。
+#[test]
+fn prefix_select_commits_all() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "sh".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let idx = s.effect().candidates.iter().position(|c| c.text == "时").unwrap();
+    let e = s.on_key(Key::Digit((idx + 1) as u8));
+    assert_eq!(e.end, Some(SessionEnd::Commit("时".into())));
+    assert!(!s.is_active());
+}
+
 /// 完整音节档：de → 纯单字（的/得），无"的的"类词（微软 B 组实测：shi→是时十使）。
 #[test]
 fn complete_syllable_chars_only() {
