@@ -111,6 +111,8 @@ fn register_with_tsf(dll: &str) -> Result<()> {
     let mut icon: Vec<u16> = dll.encode_utf16().collect();
     icon.push(0);
     // SAFETY: 同上；langid 与 GUID 常量由契约冻结。
+    // ulIconIndex 必须用非负索引（0 = DLL 组图标第一个 = icon.ico/main logo）：
+    // 传 u32::MAX(-1) 时系统输入指示器按索引提取图标失败，回退显示语言名"简体"。
     unsafe {
         profiles.AddLanguageProfile(
             &clsid(),
@@ -118,7 +120,7 @@ fn register_with_tsf(dll: &str) -> Result<()> {
             &profile_guid(),
             &desc,
             &icon,
-            u32::MAX,
+            0,
         )
     }
     .map_err(|e| {

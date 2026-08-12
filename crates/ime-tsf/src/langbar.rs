@@ -16,7 +16,10 @@ use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use windows::Win32::Foundation::{HANDLE, POINT, RECT};
+use windows::Win32::Foundation::{HANDLE, HMODULE, POINT, RECT};
+use windows::Win32::System::LibraryLoader::{
+    GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+};
 use windows::Win32::System::Ole::{
     CONNECT_E_ADVISELIMIT, CONNECT_E_CANNOTCONNECT, CONNECT_E_NOCONNECTION,
 };
@@ -41,13 +44,40 @@ const SINK_COOKIE: u32 = 0x42424242;
 const ICON_ID_ZH: u32 = 101;
 const ICON_ID_EN: u32 = 102;
 
+/// 本 DLL 的模块句柄。
+///
+/// 用 `GetModuleHandleExW(FROM_ADDRESS)` 从本函数自身地址反查——绝不能
+/// `GetModuleHandleW(None)`（那会取到宿主进程 EXE 的句柄，资源 ID 撞车时
+/// 加载出应用自己的图标，甚至加载失败导致语言栏项无法显示）。同
+/// `registration.rs::dll_path` 的已验证模式。
+fn dll_module_handle() -> HMODULE {
+    use std::os::raw::c_void;
+    let mut module = HMODULE::default();
+    // SAFETY: FROM_ADDRESS 把 lpModuleName 解释为函数地址，指向本 DLL 内的代码，
+    // 该函数在本进程存活期间有效。
+    let ok = unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            PCWSTR(load_icon as *const c_void as *const u16),
+            &mut module,
+        )
+    };
+    if ok.is_err() || module.0.is_null() {
+        log_line("dll_module_handle：GetModuleHandleExW(FROM_ADDRESS) 失败");
+        HMODULE::default()
+    } else {
+        module
+    }
+}
+
 /// 从本 DLL 资源加载图标（LR_SHARED：系统缓存共享句柄，调用方不得 DestroyIcon）。
 fn load_icon(id: u32) -> HICON {
-    // SAFETY: GetModuleHandleW(None) 取当前 DLL 句柄；MAKEINTRESOURCEW 语义 = 数字资源 ID
-    // （低 16 位有效，高位 0，PCWSTR 直接整数转指针）。LoadImageW 失败返回空 HANDLE。
-    let hinst = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) };
-    let hinst = hinst.unwrap_or_default();
-    // SAFETY: MAKEINTRESOURCEW(id) = (LPWSTR)(ULONG_PTR)id，id < 0xFFFF 时合法。
+    let hinst = dll_module_handle();
+    if hinst.0.is_null() {
+        return HICON::default();
+    }
+    // SAFETY: MAKEINTRESOURCEW 语义 = 数字资源 ID（低 16 位有效，高位 0，
+    // PCWSTR 直接整数转指针）。LoadImageW 失败返回空 HANDLE。
     let name = PCWSTR::from_raw(id as usize as *const u16);
     let size = unsafe { GetSystemMetrics(SM_CXSMICON) };
     let cy = unsafe { GetSystemMetrics(SM_CYSMICON) };
@@ -63,6 +93,9 @@ fn load_icon(id: u32) -> HICON {
         )
     }
     .unwrap_or_default();
+    if handle.0.is_null() {
+        log_line(&format!("语言栏图标加载失败：id={id}"));
+    }
     // HICON/HANDLE 同布局（句柄即指针），直接转换。
     HICON(handle.0)
 }
