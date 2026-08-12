@@ -30,7 +30,7 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**滞回稳�
 | `crates/ime-data` | 词库编译器 dictc + 二进制格式 + Dict 查询层 |
 | `crates/ime-core` | 引擎：切分/候选生成/unigram Viterbi/会话状态机/排序管线（跨平台纯 Rust） |
 | `crates/ime-repl` | CLI 调试前端 |
-| `crates/ime-tsf` | cdylib：COM/TSF 管线 + GDI 候选窗（Windows） |
+| `crates/ime-tsf` | cdylib：COM/TSF 管线 + GDI 候选窗 + 语言栏"中/英"切换图标（Windows） |
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |
 | `scripts/` | download-dict / install / uninstall / dev-deploy（热部署） / ime-common（共享库：提权/日志/ctfmon/延迟清理/Replace-InUseDll） |
 

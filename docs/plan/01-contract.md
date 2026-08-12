@@ -376,6 +376,7 @@ pub struct NullCandidateUi;  // 各方法均为 no-op，is_visible 恒 false
 pub const CLSID_TEXT_SERVICE: &str = "{C69735F1-BAB1-458B-89FC-099ABA877ECB}";
 pub const PROFILE_GUID: &str     = "{799E00DD-64C2-4280-AC48-D379A9ABC5BE}";
 pub const DISPLAY_ATTR_GUID: &str= "{4953F50B-CD5E-4AAF-BA0D-9F137CC7BC11}"; // M2+ 备用
+pub const LANG_BAR_ITEM_GUID: &str = "{4D746B0B-64F1-4B52-9D8F-42F4A32C8831}"; // 语言栏"中/英"切换项
 pub const LANGID_ZH_CN: u16 = 0x0804;
 pub const PROFILE_DESCRIPTION: &str = "Input IME";
 pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIME\
@@ -393,7 +394,7 @@ pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIM
 | `crates/ime-repl/**` | **Agent C** | W1 |
 | `ime-tsf/src/ui/mod.rs` | 主智能体 | W0 **完整实现**，冻结 |
 | `ime-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs` | **Agent E** | W1 |
-| `ime-tsf/src/{lib,registration,log,session_bridge,composition}.rs`、`com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、`Cargo.toml` 内 winres 配置 | **Agent D** | W1 |
+| `ime-tsf/src/{lib,registration,log,session_bridge,composition,langbar}.rs`、`com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、`Cargo.toml` 内 winres 配置 | **Agent D** | W1 |
 
 规则：只允许改自己属主的文件；发现契约缺陷 → 报告主智能体，禁止私改他人文件。
 
@@ -403,5 +404,9 @@ pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIM
   （更新 composition 文本 → `effect_to_snapshot` → `CandidateUi`；`end` 则上屏/取消并 hide）。
 - composition 内嵌文本 = `Effect.composition`（拼音分段）；候选窗只放候选列表（不渲染 reading，微软式，M1 后期修正）。
 - `Session::is_active() == false` 时字母键被消费（开启新会话），其余键全部放行。
+- **语言栏"中/英"图标（langbar.rs）**：Activate 时经 `ITfLangBarItemMgr::AddItem` 挂载 `ITfLangBarItemButton`（样式
+  `TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY`，运行时 GDI 生成中/英图标）；Deactivate 时 `RemoveItem`。
+  图标点击（`OnClick`）与 Shift 切换共享同一 `Arc<AtomicBool>` 状态；Shift 切换后调用 `OnUpdate` 刷新图标。
+  挂载失败仅记日志，不影响输入法主体。
 - 引擎在 DLL 内进程级单例（`OnceLock<Arc<Engine>>`），词典路径 `%LOCALAPPDATA%\InputIME\input.imedic`（用户级数据；DLL 本体在 `%ProgramFiles%\InputIME\`）；
   加载失败：日志记录，所有字母键原样放行（输入法"透明"，绝不卡用户）。

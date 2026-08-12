@@ -4,6 +4,7 @@
 //! COM 导出：DllGetClassObject / DllCanUnloadNow / DllRegisterServer / DllUnregisterServer。
 
 pub mod composition;
+pub mod langbar;
 pub mod log;
 pub mod registration;
 pub mod session_bridge;

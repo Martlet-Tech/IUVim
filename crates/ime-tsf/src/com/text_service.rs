@@ -22,9 +22,10 @@ use windows::Win32::UI::TextServices::{
     ITfTextInputProcessor_Impl, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl,
     ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, ITfSource,
 };
-use windows_core::{implement, BOOL, Interface, IUnknownImpl, Ref, Result};
+use windows_core::{implement, BOOL, ComObject, Interface, IUnknownImpl, Ref, Result};
 
 use crate::composition::Composition;
+use crate::langbar::{self, LangBarItemButton};
 use crate::log::log_line;
 use crate::session_bridge::{apply_effect, map_key};
 use crate::ui::{GdiCandidateWindow, CandidateUi};
@@ -142,7 +143,10 @@ pub(crate) struct TextService {
     /// 候选窗最近一次定位时的光标锚点（远跳清除检测基准）。
     anchor: Cell<CaretRect>,
     /// Shift 临时英文模式（会话非 active 时 Shift 切换）。
-    english_mode: Cell<bool>,
+    /// `Arc` 共享：语言栏"中/英"图标与按键路径读同一状态。
+    english_mode: Arc<AtomicBool>,
+    /// 语言栏"中/英"切换图标（Activate 挂载，Deactivate 卸载）。
+    lang_bar: RefCell<Option<ComObject<LangBarItemButton>>>,
 }
 
 impl TextService {
@@ -157,7 +161,8 @@ impl TextService {
             ui: RefCell::new(Box::new(GdiCandidateWindow::new())),
             caret: Cell::new(CaretRect::default()),
             anchor: Cell::new(CaretRect::default()),
-            english_mode: Cell::new(false),
+            english_mode: Arc::new(AtomicBool::new(false)),
+            lang_bar: RefCell::new(None),
         }
     }
 
@@ -168,7 +173,7 @@ impl TextService {
             return false;
         }
         // 英文模式：全部放行。
-        if self.english_mode.get() {
+        if self.english_mode.load(Ordering::SeqCst) {
             return false;
         }
         let vk = wparam.0 as u16;
@@ -191,13 +196,17 @@ impl TextService {
         // Shift：会话外切换英文模式；会话内忽略（MVP 直接忽略，契约 13 §3.3）。
         if vk == VK_SHIFT.0 {
             if self.session.borrow().is_none() {
-                let next = !self.english_mode.get();
-                self.english_mode.set(next);
+                let next = !self.english_mode.load(Ordering::SeqCst);
+                self.english_mode.store(next, Ordering::SeqCst);
                 log_line(&format!("Shift 切换英文模式：{next}"));
+                // 同步语言栏"中/英"图标。
+                if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
+                    langbar::refresh_lang_bar(lang_bar);
+                }
             }
             return false;
         }
-        if self.english_mode.get() {
+        if self.english_mode.load(Ordering::SeqCst) {
             return false;
         }
 
@@ -313,6 +322,16 @@ impl TextService_Impl {
         // 首次按键不再同步加载卡顿；加载完成前按键透明放行。
         start_engine_load();
 
+        // 挂载语言栏"中/英"切换图标（失败仅记日志，不影响输入法主体）。
+        let lang_bar_com = ComObject::new(LangBarItemButton::new(self.english_mode.clone()));
+        match langbar::add_to_lang_bar(ptim, &lang_bar_com) {
+            Ok(()) => {
+                *self.lang_bar.borrow_mut() = Some(lang_bar_com);
+                log_line("语言栏图标挂载成功");
+            }
+            Err(e) => log_line(&format!("语言栏图标挂载失败：{e:?}（不影响输入法）")),
+        }
+
         log_line(&format!("Activate：tid={tid}"));
         Ok(())
     }
@@ -323,6 +342,15 @@ impl TextService_Impl {
         self.ui.borrow_mut().hide();
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
+
+        // 卸载语言栏"中/英"图标（失败仅记日志）。
+        if let Some(lang_bar_com) = self.lang_bar.borrow_mut().take() {
+            if let Some(tm) = self.thread_mgr.borrow().as_ref() {
+                if let Err(e) = langbar::remove_from_lang_bar(tm, &lang_bar_com) {
+                    log_line(&format!("语言栏图标卸载失败：{e:?}"));
+                }
+            }
+        }
 
         if let Some(tm) = self.thread_mgr.borrow().as_ref() {
             // SAFETY: 标准 TSF unadvise 调用。

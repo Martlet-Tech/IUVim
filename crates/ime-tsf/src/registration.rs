@@ -19,6 +19,7 @@ use windows_registry::CLASSES_ROOT;
 pub const CLSID_TEXT_SERVICE: &str = "{C69735F1-BAB1-458B-89FC-099ABA877ECB}";
 pub const PROFILE_GUID: &str = "{799E00DD-64C2-4280-AC48-D379A9ABC5BE}";
 pub const DISPLAY_ATTR_GUID: &str = "{4953F50B-CD5E-4AAF-BA0D-9F137CC7BC11}"; // M2+ 备用
+pub const LANG_BAR_ITEM_GUID: &str = "{4D746B0B-64F1-4B52-9D8F-42F4A32C8831}"; // 中英切换语言栏项
 pub const LANGID_ZH_CN: u16 = 0x0804;
 pub const PROFILE_DESCRIPTION: &str = "Input IME";
 pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIME\
@@ -39,6 +40,10 @@ pub(crate) fn clsid() -> GUID {
 
 fn profile_guid() -> GUID {
     parse_guid(PROFILE_GUID)
+}
+
+pub(crate) fn lang_bar_item_guid() -> GUID {
+    parse_guid(LANG_BAR_ITEM_GUID)
 }
 
 /// 当前 DLL 的完整路径（regsvr32 场景即本文件）。
