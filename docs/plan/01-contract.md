@@ -376,7 +376,8 @@ pub struct NullCandidateUi;  // 各方法均为 no-op，is_visible 恒 false
 pub const CLSID_TEXT_SERVICE: &str = "{C69735F1-BAB1-458B-89FC-099ABA877ECB}";
 pub const PROFILE_GUID: &str     = "{799E00DD-64C2-4280-AC48-D379A9ABC5BE}";
 pub const DISPLAY_ATTR_GUID: &str= "{4953F50B-CD5E-4AAF-BA0D-9F137CC7BC11}"; // M2+ 备用
-pub const LANG_BAR_ITEM_GUID: &str = "{4D746B0B-64F1-4B52-9D8F-42F4A32C8831}"; // 语言栏"中/英"切换项
+// 语言栏"中/英"切换项：guidItem 必须用系统 GUID_LBI_INPUTMODE（Windows 8+ 只显示该 GUID 的项，
+// 自定义 GUID 被静默忽略；MSDN ITfLangBarItemMgr::AddItem）。值 0x2C77A81E-41CC-4178-A3A7-5F8A987568E6。
 pub const LANGID_ZH_CN: u16 = 0x0804;
 pub const PROFILE_DESCRIPTION: &str = "Input IME";
 pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIME\

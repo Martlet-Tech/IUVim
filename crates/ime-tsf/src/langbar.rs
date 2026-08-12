@@ -5,51 +5,76 @@
 //! `ITfSource`（语言栏通过它塞入 `ITfLangBarItemSink`，状态变化时 `OnUpdate` 刷新图标）。
 //! 经 `ITfThreadMgr` QI 得到 `ITfLangBarItemMgr` 后 `AddItem`/`RemoveItem`。
 //!
-//! 图标运行时用 GDI 生成（画"中"/"英"文字 → DIB → `CreateIconIndirect`），
-//! 零二进制资产。中/英状态经 `Arc<AtomicBool>` 与 TextService 共享。
+//! 图标：编译进 DLL 的 .ico 资源（`res/zh.ico`/`res/en.ico`，winres 编入，ID 101/102），
+//! `GetIcon` 用 `LoadImageW` + `MAKEINTRESOURCE` 加载（LR_SHARED，系统管理生命周期，
+//! 无需 DestroyIcon）——与 Weasel（IDI_ZH/IDI_EN）同款可靠路径。中/英状态经
+//! `Arc<AtomicBool>` 与 TextService 共享。
 //!
 //! 全部 COM 回调经 `guard` 包装捕获 panic（ime-tsf 绝不 panic 到宿主进程的硬性约定）。
 
 use std::cell::{Cell, RefCell};
-use std::mem::size_of;
-use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use windows::Win32::Foundation::{COLORREF, POINT, RECT, SIZE};
-use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontIndirectW, DeleteDC, DeleteObject,
-    GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
-    TextOutW, ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER,
-    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DIB_RGB_COLORS, HGDIOBJ, LOGFONTW,
-    OUT_DEFAULT_PRECIS, TRANSPARENT,
-};
+use windows::Win32::Foundation::{HANDLE, POINT, RECT};
 use windows::Win32::System::Ole::{
     CONNECT_E_ADVISELIMIT, CONNECT_E_CANNOTCONNECT, CONNECT_E_NOCONNECTION,
 };
 use windows::Win32::UI::TextServices::{
-    ITfLangBarItemButton, ITfLangBarItemButton_Impl, ITfLangBarItemMgr, ITfLangBarItemSink,
-    ITfLangBarItem_Impl, ITfMenu, ITfSource, ITfSource_Impl, ITfThreadMgr, TfLBIClick,
-    TF_LANGBARITEMINFO, TF_LBI_CLK_LEFT, TF_LBI_ICON, TF_LBI_STATUS,
-    TF_LBI_STATUS_HIDDEN, TF_LBI_STYLE_BTN_BUTTON, TF_LBI_STYLE_SHOWNINTRAY,
+    GUID_LBI_INPUTMODE, ITfLangBarItemButton, ITfLangBarItemButton_Impl,
+    ITfLangBarItemMgr, ITfLangBarItemSink, ITfLangBarItem_Impl, ITfMenu, ITfSource,
+    ITfSource_Impl, ITfThreadMgr, TfLBIClick, TF_LANGBARITEMINFO, TF_LBI_CLK_LEFT,
+    TF_LBI_ICON, TF_LBI_STATUS, TF_LBI_STATUS_HIDDEN, TF_LBI_STYLE_BTN_BUTTON,
+    TF_LBI_STYLE_SHOWNINTRAY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateIconIndirect, DestroyIcon, GetSystemMetrics, HICON, ICONINFO, SM_CXSMICON,
+    GetSystemMetrics, LoadImageW, HICON, IMAGE_ICON, LR_SHARED, SM_CXSMICON, SM_CYSMICON,
 };
-use windows_core::{implement, BSTR, BOOL, ComObject, GUID, Interface, Ref, Result, IUnknown};
+use windows_core::{implement, BSTR, BOOL, ComObject, GUID, Interface, PCWSTR, Ref, Result, IUnknown};
 
 use crate::log::log_line;
 
 /// 语言栏塞入的 sink cookie（唯一即可，Weasel 用固定值，这里同款）。
 const SINK_COOKIE: u32 = 0x42424242;
-/// 图标文字颜色（BGR：B=0xCC, G=0x66, R=0x00 → RGB(0,102,204)，深浅任务栏均可读）。
-const ICON_COLOR: COLORREF = COLORREF(0x00CC_6600);
+
+/// 中/英图标的 DLL 资源 ID（winres `set_icon_with_id` 编入，契约 01 §5.1；对齐 Weasel）。
+const ICON_ID_ZH: u32 = 101;
+const ICON_ID_EN: u32 = 102;
+
+/// 从本 DLL 资源加载图标（LR_SHARED：系统缓存共享句柄，调用方不得 DestroyIcon）。
+fn load_icon(id: u32) -> HICON {
+    // SAFETY: GetModuleHandleW(None) 取当前 DLL 句柄；MAKEINTRESOURCEW 语义 = 数字资源 ID
+    // （低 16 位有效，高位 0，PCWSTR 直接整数转指针）。LoadImageW 失败返回空 HANDLE。
+    let hinst = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) };
+    let hinst = hinst.unwrap_or_default();
+    // SAFETY: MAKEINTRESOURCEW(id) = (LPWSTR)(ULONG_PTR)id，id < 0xFFFF 时合法。
+    let name = PCWSTR::from_raw(id as usize as *const u16);
+    let size = unsafe { GetSystemMetrics(SM_CXSMICON) };
+    let cy = unsafe { GetSystemMetrics(SM_CYSMICON) };
+    // SAFETY: 标准资源加载；hinst/name 在本调用期间有效。
+    let handle: HANDLE = unsafe {
+        LoadImageW(
+            Some(hinst.into()),
+            name,
+            IMAGE_ICON,
+            size,
+            cy,
+            LR_SHARED,
+        )
+    }
+    .unwrap_or_default();
+    // HICON/HANDLE 同布局（句柄即指针），直接转换。
+    HICON(handle.0)
+}
 
 /// 构造 `TF_LANGBARITEMINFO`（纯函数，单测覆盖）。
+///
+/// `guidItem` 必须用系统 `GUID_LBI_INPUTMODE`：MSDN AddItem 注明 Windows 8+ 只显示
+/// `GetInfo` 返回该 GUID 的项（自定义 GUID 会被静默忽略，AddItem 仍返回 S_OK）。
 fn build_info() -> TF_LANGBARITEMINFO {
     let mut info = TF_LANGBARITEMINFO {
         clsidService: crate::registration::clsid(),
-        guidItem: crate::registration::lang_bar_item_guid(),
+        guidItem: GUID_LBI_INPUTMODE,
         dwStyle: TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY,
         ulSort: 0,
         ..Default::default()
@@ -62,6 +87,8 @@ fn build_info() -> TF_LANGBARITEMINFO {
 
 /// 语言栏按钮项。`mode` 与 TextService 共享（`Arc<AtomicBool>`），
 /// 点击图标（OnClick）与 Shift 按键（TextService）都翻转它并刷新图标。
+///
+/// 图标来自 DLL 资源（LR_SHARED），不持有、不销毁——`Drop` 无事可做。
 #[implement(ITfLangBarItemButton, ITfSource)]
 pub(crate) struct LangBarItemButton {
     /// 共享中/英模式：true = 英文（按键放行），false = 中文。
@@ -70,9 +97,6 @@ pub(crate) struct LangBarItemButton {
     sink: RefCell<Option<ITfLangBarItemSink>>,
     /// 状态位（TF_LBI_STATUS_*，MVP 仅 HIDDEN 会用到）。
     status: Cell<u32>,
-    /// 中/英图标（运行时 GDI 生成，Drop 时销毁）。
-    icon_zh: HICON,
-    icon_en: HICON,
 }
 
 impl LangBarItemButton {
@@ -81,8 +105,6 @@ impl LangBarItemButton {
             mode,
             sink: RefCell::new(None),
             status: Cell::new(0),
-            icon_zh: make_text_icon("中"),
-            icon_en: make_text_icon("英"),
         }
     }
 
@@ -109,18 +131,6 @@ impl LangBarItemButton {
         if cur != next {
             self.status.set(next);
             self.refresh();
-        }
-    }
-}
-
-impl Drop for LangBarItemButton {
-    fn drop(&mut self) {
-        // SAFETY: 图标由本对象创建并持有，销毁不重入。
-        if !self.icon_zh.is_invalid() {
-            let _ = unsafe { DestroyIcon(self.icon_zh) };
-        }
-        if !self.icon_en.is_invalid() {
-            let _ = unsafe { DestroyIcon(self.icon_en) };
         }
     }
 }
@@ -167,11 +177,13 @@ impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
     }
 
     fn GetIcon(&self) -> Result<HICON> {
-        Ok(if self.mode.load(Ordering::SeqCst) {
-            self.icon_en
+        // 按当前模式加载 DLL 资源图标（LR_SHARED，系统管理，无需销毁）。
+        let id = if self.mode.load(Ordering::SeqCst) {
+            ICON_ID_EN
         } else {
-            self.icon_zh
-        })
+            ICON_ID_ZH
+        };
+        Ok(load_icon(id))
     }
 
     fn GetText(&self) -> Result<BSTR> {
@@ -214,7 +226,11 @@ pub(crate) fn add_to_lang_bar(thread_mgr: &ITfThreadMgr, com: &ComObject<LangBar
     let mgr: ITfLangBarItemMgr = thread_mgr.cast()?;
     let item: ITfLangBarItemButton = com.to_interface();
     // SAFETY: item 在本调用期间存活；AddItem 后语言栏持引用，直到 RemoveItem。
-    unsafe { mgr.AddItem(&item) }
+    unsafe { mgr.AddItem(&item) }?;
+    // Weasel 同款：AddItem 后 Show(true) 确保项可见（默认可能被语言栏隐藏）。
+    // SAFETY: item 仍存活；Show 只改状态位。
+    unsafe { item.Show(true) }?;
+    Ok(())
 }
 
 /// 从线程语言栏移除按钮项（Deactivate 时调用）。
@@ -231,131 +247,6 @@ pub(crate) fn refresh_lang_bar(com: &ComObject<LangBarItemButton>) {
     com.as_ref().refresh();
 }
 
-// ===== GDI 运行时图标生成 =====
-
-/// 生成 16×16（SM_CXSMICON）文字图标：画"中/英"进 32bpp DIB → 设 alpha → CreateIconIndirect。
-/// 失败静默返回空 HICON（语言栏退化为不显示图标，绝不 panic）。
-fn make_text_icon(text: &str) -> HICON {
-    let size = unsafe { GetSystemMetrics(SM_CXSMICON) };
-    if size <= 0 {
-        return HICON::default();
-    }
-    let s = size as i32;
-
-    // SAFETY: GetDC(None) 取屏幕 DC，用后 ReleaseDC(None, hdc) 配对释放。
-    let hdc = unsafe { GetDC(None) };
-    if hdc.is_invalid() {
-        return HICON::default();
-    }
-
-    let mut bmi = BITMAPINFO::default();
-    bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = s;
-    bmi.bmiHeader.biHeight = s;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB.0;
-    let mut bits: *mut core::ffi::c_void = null_mut();
-    // SAFETY: bmi 在调用期间存活；bits 由 DIB section 写回。
-    let hbmp = unsafe { CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) };
-    if hbmp.is_err() || bits.is_null() {
-        // SAFETY: 与 GetDC 配对释放。
-        let _ = unsafe { ReleaseDC(None, hdc) };
-        return HICON::default();
-    }
-    let hbmp = hbmp.unwrap();
-
-    // SAFETY: 内存 DC 与 DIB 配 SelectObject/DeleteDC/DeleteObject 使用。
-    let mem = unsafe { CreateCompatibleDC(Some(hdc)) };
-    let old_bmp = unsafe { SelectObject(mem, hbmp.into()) };
-
-    let font = make_icon_font();
-    let old_font = if !font.is_invalid() {
-        // SAFETY: 配 SelectObject 还原。
-        unsafe { SelectObject(mem, font.into()) }
-    } else {
-        HGDIOBJ::default()
-    };    // 清空缓冲区（透明黑，alpha=0）。
-    if !bits.is_null() {
-        let px = bits as *mut u32;
-        for i in 0..(s as usize * s as usize) {
-            // SAFETY: bits 指向 s*s 个 32bpp 像素（CreateDIBSection 保证缓冲大小）。
-            unsafe { px.add(i).write(0) };
-        }
-    }
-
-    // SAFETY: 透明背景画文字；TextOutW 写 RGB，alpha 由后续后处理补上。
-    unsafe {
-        let _ = SetBkMode(mem, TRANSPARENT);
-        let _ = SetTextColor(mem, ICON_COLOR);
-        let wide: Vec<u16> = text.encode_utf16().collect();
-        let mut sz = SIZE::default();
-        let _ = GetTextExtentPoint32W(mem, &wide, &mut sz);
-        let x = (s - sz.cx) / 2;
-        let y = (s - sz.cy) / 2;
-        let _ = TextOutW(mem, x, y, &wide);
-    }
-
-    // 后处理：alpha = 最大颜色分量（文字覆盖率）；背景保持透明（alpha=0）。
-    if !bits.is_null() {
-        let px = bits as *mut u32;
-        for i in 0..(s as usize * s as usize) {
-            // SAFETY: 同上的像素缓冲遍历。
-            unsafe {
-                let v = px.add(i).read();
-                let r = v & 0xFF;
-                let g = (v >> 8) & 0xFF;
-                let b = (v >> 16) & 0xFF;
-                let a = r.max(g).max(b);
-                px.add(i).write(v | (a << 24));
-            }
-        }
-    }
-
-    // 还原 DC 状态并清理。
-    // SAFETY: 还原顺序与选择顺序相反；font/hbmp/mem/hdc 各配对释放。
-    unsafe {
-        if !old_font.is_invalid() {
-            let _ = SelectObject(mem, old_font);
-        }
-        let _ = SelectObject(mem, old_bmp);
-        if !font.is_invalid() {
-            let _ = DeleteObject(font.into());
-        }
-        let _ = DeleteDC(mem);
-        let _ = DeleteObject(hbmp.into());
-        let _ = ReleaseDC(None, hdc);
-    }
-
-    // 32bpp DIB 带 alpha 时 hbmMask 可传空（MSDN CreateIconIndirect）。
-    let info = ICONINFO {
-        fIcon: true.into(),
-        hbmColor: hbmp,
-        ..Default::default()
-    };
-    // SAFETY: info 在调用期间存活；CreateIconIndirect 复制位图，随后删除 hbmp 安全。
-    let icon = unsafe { CreateIconIndirect(&info) };
-    icon.unwrap_or_default()
-}
-
-/// 图标字体：Microsoft YaHei UI，灰阶抗锯齿（避免 ClearType 亚像素在 16px 下的色边）。
-fn make_icon_font() -> windows::Win32::Graphics::Gdi::HFONT {
-    let mut lf = LOGFONTW {
-        lfHeight: -12,
-        lfWeight: 400,
-        lfCharSet: DEFAULT_CHARSET,
-        lfOutPrecision: OUT_DEFAULT_PRECIS,
-        lfClipPrecision: CLIP_DEFAULT_PRECIS,
-        lfQuality: ANTIALIASED_QUALITY,
-        ..Default::default()
-    };
-    let face: Vec<u16> = "Microsoft YaHei UI".encode_utf16().collect();
-    let n = face.len().min(lf.lfFaceName.len() - 1);
-    lf.lfFaceName[..n].copy_from_slice(&face[..n]);
-    // SAFETY: lf 在调用期间存活；CreateFontIndirectW 复制字体描述。
-    unsafe { CreateFontIndirectW(&lf) }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,7 +255,7 @@ mod tests {
     fn build_info_fills_identity() {
         let info = build_info();
         assert_eq!(info.clsidService, crate::registration::clsid());
-        assert_eq!(info.guidItem, crate::registration::lang_bar_item_guid());
+        assert_eq!(info.guidItem, GUID_LBI_INPUTMODE);
         assert_eq!(info.dwStyle & TF_LBI_STYLE_BTN_BUTTON, TF_LBI_STYLE_BTN_BUTTON);
         assert_eq!(info.dwStyle & TF_LBI_STYLE_SHOWNINTRAY, TF_LBI_STYLE_SHOWNINTRAY);
     }
@@ -376,5 +267,11 @@ mod tests {
         assert_eq!(&info.szDescription[..desc.len()], desc.as_slice());
         // 描述之后应保持 0（null 结尾）。
         assert_eq!(info.szDescription[desc.len()], 0);
+    }
+
+    #[test]
+    fn icon_ids_unique() {
+        // MAKEINTRESOURCEW 要求 id 在 16 位内（高位 0）；两个 ID 不得相同。
+        assert_ne!(ICON_ID_ZH, ICON_ID_EN);
     }
 }
