@@ -38,6 +38,12 @@ impl Session {
         }
         match key {
             Key::Char(c) if c.is_ascii_lowercase() || c == '\'' => {
+                // 连续 `'`：已处于分隔尾态（raw 以 `'` 结尾）时忽略，不允许 `''`——
+                // 空段只允许来自尾撇号（xi'），连续撇号产生的多余空段会让切分/续接
+                // 出现空段怪态（实测 2026-08-13：xi''an 尾巴续接保留 'an 表现不佳）。
+                if c == '\'' && self.raw.ends_with('\'') {
+                    return self.effect();
+                }
                 self.raw.push(c);
                 self.recompute();
             }
@@ -125,7 +131,10 @@ impl Session {
     fn commit_index(&mut self, idx: usize) {
         let c = self.all[idx].clone();
         let consumed = c.seg_len.max(1);
-        let n = self.seg.len();
+        // 消费边界用有效段数（非空段）：尾/连续撇号产生的空段只服务 display，
+        // 不构成消费边界——否则 `xi'` 选"系"（seg_len=1）会被判成部分消费，
+        // 悬空"系"+ 空尾巴导致"空候选表"（实测 2026-08-13）。
+        let n = self.seg.iter().filter(|s| !s.is_empty()).count();
         // 学习 key：Sentence 用其覆盖的前缀段（seg[..consumed]），
         // 其余用词条自身 code（枚举变体如"西安"code="xi'an" 亦为消费键）。
         let code_key = match c.kind {

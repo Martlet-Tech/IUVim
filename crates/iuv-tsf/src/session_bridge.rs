@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn session_start_keys() {
         assert!(iuv_core::is_session_start_key(Key::Char('a')));
-        assert!(iuv_core::is_session_start_key(Key::Char('\'')));
+        assert!(!iuv_core::is_session_start_key(Key::Char('\'')));
         // 标点/数字/控制键不得开启会话（放行给应用）
         assert!(!iuv_core::is_session_start_key(Key::Char(',')));
         assert!(!iuv_core::is_session_start_key(Key::Char('.')));

@@ -243,6 +243,7 @@ pub trait InputSchema: Send + Sync {   // Engine 进程级单例跨线程共享�
 /// （有合法音节前缀时不兜底单字母，无则单字母兜底保证永不失败）。
 /// 方案按贪心优先排序（方案[0] = 贪心/强制切分，供 viterbi 整句与 display）。
 /// 例：`"xian"` → `[[xian], [xi,an]]`；`"xi'an"` → `[[xi,an]]`；`"qaz"` → `[[q,a,z]]`。
+/// 输入层（session）不允许连续 `'`（已处于分隔尾态时忽略），空段仅来自尾撇号。
 fn segment(&self, raw: &str) -> Vec<Vec<String>>;
 /// 单个方案 → 显示串：以 ' 连接（空段保留：`["x",""]` → `"x'"`）。
 fn display(&self, seg: &[String]) -> String;

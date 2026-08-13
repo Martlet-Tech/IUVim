@@ -254,6 +254,48 @@ fn forced_apostrophe_does_not_enumerate() {
     assert!(!texts.contains(&"先".to_string()), "强制切分不应枚举出 xian 键，实际：{texts:?}");
 }
 
+/// `xi'`（尾空段）后空格：消费边界按有效段数（非空段）判定——
+/// 否则"系"（seg_len=1）被判成部分消费，悬空 + 空尾巴导致"空候选表"（实测 2026-08-13）。
+#[test]
+fn trailing_apostrophe_space_commits_first_candidate() {
+    let dict = Dict::from_entries(vec![
+        ("xi".into(), "西".into(), 4125),
+        ("xi".into(), "系".into(), 11730),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "xi'".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.on_key(Key::Space);
+    assert_eq!(e.end, Some(SessionEnd::Commit("系".into())));
+}
+
+/// 连续 `'` 忽略（不允许 `''`）：`xi'` 后按 `'` 预览不变、不产生空段怪态；
+/// 继续输入等效 `xi'an` → 出"西安"（第二个 `'` 被吞）。
+#[test]
+fn consecutive_apostrophe_ignored() {
+    let dict = Dict::from_entries(vec![
+        ("xi".into(), "西".into(), 100),
+        ("xi'an".into(), "西安".into(), 200),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "xi'".chars() {
+        s.on_key(Key::Char(c));
+    }
+    // 第二个 `'`：忽略，预览保持 xi'
+    let e = s.on_key(Key::Char('\''));
+    assert_eq!(e.composition, "xi'");
+    assert_eq!(s.effect().composition, "xi'");
+    // 继续 an：等效 xi'an → 候选含"西安"
+    for c in "an".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    assert!(texts.contains(&"西安".to_string()), "实际：{texts:?}");
+}
+
 // ===== 续接（picked 栈 + 尾巴续接，契约 §4.1 选词行，M1 后期）=====
 
 /// 长句词库：整句/两字词/单字 + 尾巴整词，供续接用例。

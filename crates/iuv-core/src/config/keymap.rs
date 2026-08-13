@@ -40,9 +40,10 @@ pub fn apply_keymap(key: Key, keymap: &Keymap) -> Key {
     keymap.page(key).unwrap_or(key)
 }
 
-/// 会话外是否可用该键开启新会话（仅字母与 `'`；`,`/`.` 等标点放行给应用）。
+/// 会话外是否可用该键开启新会话（仅字母；`,`/`.`/`'` 等标点放行给应用——
+/// `'` 只在会话内作强制分隔符，开场按 `'` 应直接上屏）。
 pub fn is_session_start_key(key: Key) -> bool {
-    matches!(key, Key::Char(c) if c.is_ascii_lowercase() || c == '\'')
+    matches!(key, Key::Char(c) if c.is_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -99,8 +100,8 @@ mod tests {
     #[test]
     fn session_start_keys() {
         assert!(is_session_start_key(Key::Char('a')));
-        assert!(is_session_start_key(Key::Char('\'')));
-        // 标点/数字/控制键不得开启会话（放行给应用）
+        // 标点/数字/控制键不得开启会话（放行给应用；`'` 仅会话内作强制分隔符）
+        assert!(!is_session_start_key(Key::Char('\'')));
         assert!(!is_session_start_key(Key::Char(',')));
         assert!(!is_session_start_key(Key::Char('.')));
         assert!(!is_session_start_key(Key::Digit(1)));
