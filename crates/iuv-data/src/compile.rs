@@ -1,7 +1,7 @@
 //! rime `.dict.yaml` → 记录集 编译。契约 01-contract.md §3、任务书 10 §3.1。
 
 use crate::{format, Entry};
-use std::collections::{btree_map::Entry as MapEntry, BTreeMap};
+use std::collections::{btree_map::Entry as MapEntry, BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -34,7 +34,7 @@ pub fn compile_files(inputs: &[PathBuf], output: &Path) -> io::Result<CompileSta
     // M1.5：生成简拼键（≥2 音节词），与全拼键同表混存。查询路由隔离保证互不命中：
     // 全拼查询的键要么是完整音节、要么含 `'`；简拼键不含 `'` 且非完整音节，只在多段
     // 简拼输入时被查询（见 01-contract.md §4.2）。老引擎加载新词库不受影响（多余键从不查询）。
-    let mut records: Vec<Entry> = {
+    let records: Vec<Entry> = {
         let mut all = Vec::with_capacity(records.len() + records.len() / 3);
         for r in records {
             if let Some(ab) = abbrev_of(&r.code) {
@@ -48,19 +48,12 @@ pub fn compile_files(inputs: &[PathBuf], output: &Path) -> io::Result<CompileSta
         }
         all
     };
-    // 契约 §3.1：按 (code 升序, weight 降序) 排列写入；weight 相同再按 word 保证确定序。
-    records.sort_by(|a, b| {
-        a.code
-            .cmp(&b.code)
-            .then_with(|| b.weight.cmp(&a.weight))
-            .then_with(|| a.word.cmp(&b.word))
-    });
+    // 排序不变量（code 升序、组内 weight 降序）由 format::write 保证，此处无需排序。
     let mut codes = 0usize;
-    let mut last_code: Option<&str> = None;
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
     for r in &records {
-        if last_code != Some(r.code.as_str()) {
+        if seen.insert(r.code.as_str()) {
             codes += 1;
-            last_code = Some(r.code.as_str());
         }
     }
     let file = File::create(output)

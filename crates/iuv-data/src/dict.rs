@@ -1,9 +1,17 @@
-//! Dict 查询层：二进制词库加载后的内存表示与查询。
-//! W0 完整实现，冻结。任何签名变更需回契约 01-contract.md §3 修改。
+//! Dict 查询层：IMEDIC02 平面词库的 mmap 零加工查询。
+//! 加载 = mmap + 段表定位 + 一次边界校验扫描；查询 = 索引段二分 + 记录体物化。
+//! 接口契约 01-contract.md §3（`exact` 系列返回物化 `Vec<Entry>`）。
 
+use crate::format::{
+    self, SEG_BUCKETS, SEG_INDEX, SEG_META, SEG_RECORDS, SEG_HEADER_LEN, FILE_HEADER_LEN, MAGIC,
+};
+use crate::mmap::MappedFile;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
+use std::ops::Range;
+use std::sync::Arc;
 
-/// 词条。`code` 为 squashed 全拼（无空格全小写），与查询键同形。
+/// 词条。`code` 为 squashed 全拼（无空格全小写，音节间 `'` 分隔），与查询键同形。
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     pub word: String,
@@ -11,25 +19,61 @@ pub struct Entry {
     pub weight: u32,
 }
 
-/// 内存词典：BTreeMap<squashed_code, Vec<Entry>>，每组按 weight 降序。
-#[derive(Clone, Debug, Default)]
+/// 每首字母桶上限（单段档候选池；M1.5 修正：桶只收**单字**——多字词在单段档
+/// 永远用不上，占桶位只会挤掉同音字，故不收录。常量可调，太大徒增词库文件）。
+pub const INITIAL_BUCKET_SIZE: usize = 1000;
+
+/// 内存词典：mmap 视图 + 段偏移。查询全在 `file` 视图上做（物化 Entry 拷贝）。
+/// Clone 共享同一映射（Arc），语义同原 BTreeMap 版本。
+#[derive(Debug)]
 pub struct Dict {
-    map: BTreeMap<String, Vec<Entry>>,
+    file: Arc<MappedFile>,
+    /// 段2 首字母桶目录：26 项 (字母, 桶段内起始偏移, 记录数)，按 a-z。
+    bucket_dir: Vec<(u8, u32, u32)>,
+    /// 段3 记录索引（记录体段内偏移数组）
+    index: Range<usize>,
+    /// 段4 记录体
+    records: Range<usize>,
+    /// 段2 首字母桶（桶记录内联于此段）
+    buckets: Range<usize>,
     total: u64,
     entry_count: usize,
     max_word_syllables: usize,
     syllables: BTreeSet<String>,
-    /// 26 个首字母桶：每桶按词频降序前 `INITIAL_BUCKET_SIZE` 条**单字**
-    /// （word 单字且 code 无 `'`），供 M1.5 单段输入（`c`/`sh`/`shi`…）O(1) 取候选，
-    /// 替代全表前缀扫描排序。桶只收单字：多字词在单段档用不上，避免挤占同音字
-    /// （修正：top-500 混收时 `shi` 单字只剩 5 个）。
-    /// 桶持有词条副本（26×1000 条 ≈ 1MB），避免自引用结构。
-    initial_buckets: BTreeMap<char, Vec<Entry>>,
 }
 
-/// 每首字母桶上限（单段档候选池；M1.5 修正：桶只收**单字**——多字词在单段档
-/// 永远用不上，占桶位只会挤掉同音字，故不收录。常量可调，太大徒增加载内存）。
-pub const INITIAL_BUCKET_SIZE: usize = 1000;
+impl Clone for Dict {
+    fn clone(&self) -> Dict {
+        Dict {
+            file: self.file.clone(),
+            bucket_dir: self.bucket_dir.clone(),
+            index: self.index.clone(),
+            records: self.records.clone(),
+            buckets: self.buckets.clone(),
+            total: self.total,
+            entry_count: self.entry_count,
+            max_word_syllables: self.max_word_syllables,
+            syllables: self.syllables.clone(),
+        }
+    }
+}
+
+impl Default for Dict {
+    fn default() -> Self {
+        // 空文件无法解析（magic 缺失），直接构造空状态；所有查询自然返回空。
+        Dict {
+            file: Arc::new(MappedFile::from_vec(Vec::new())),
+            bucket_dir: Vec::new(),
+            index: 0..0,
+            records: 0..0,
+            buckets: 0..0,
+            total: 0,
+            entry_count: 0,
+            max_word_syllables: 0,
+            syllables: BTreeSet::new(),
+        }
+    }
+}
 
 /// 标准汉语拼音音节表（无调，按字母序，供二分查找）。
 /// 数据来源：现代汉语拼音方案常用音节；不含语气词音节（m/n/ng/hm/hng 等）。
@@ -76,7 +120,7 @@ pub(crate) fn is_syllable(s: &str) -> bool {
 
 /// 贪心最长匹配切分（与 Quanpin 同一规则）：返回 (音节序列, 音节数)。
 /// `'` 为强制分隔（不产生段）；匹配失败的单字母原样保留，保证对任意输入不 panic。
-fn greedy_segment(code: &str) -> Vec<String> {
+pub(crate) fn greedy_segment(code: &str) -> Vec<String> {
     let b = code.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -104,9 +148,142 @@ fn greedy_segment(code: &str) -> Vec<String> {
     out
 }
 
+// ===== 字节级读取（视图已由 from_file 全量校验，索引操作安全）=====
+
+fn u32_at(bytes: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+}
+
 impl Dict {
+    /// 从 mmap/内存字节解析（统一加载路径；含全量边界校验扫描）。
+    /// 校验内容：头部/magic、段表边界、各段内部逐条边界（无分配）；不校验排序不变量。
+    pub(crate) fn from_file(file: MappedFile) -> io::Result<Dict> {
+        let bytes = file.as_bytes();
+        let bad = |msg: String| io::Error::new(io::ErrorKind::InvalidData, msg);
+
+        if bytes.len() < FILE_HEADER_LEN {
+            return Err(bad(format!("文件过短（{} 字节）", bytes.len())));
+        }
+        if &bytes[..MAGIC.len()] != MAGIC {
+            return Err(bad(format!("magic 校验失败（期望 {MAGIC:?}）")));
+        }
+        let seg_count = u32_at(bytes, 8) as usize;
+        let table_end = FILE_HEADER_LEN + seg_count * SEG_HEADER_LEN;
+        if table_end > bytes.len() {
+            return Err(bad("段表越界（文件截断）".into()));
+        }
+        // 段表 → (类型, 段区间)
+        let mut segs: Vec<(u8, Range<usize>)> = Vec::with_capacity(seg_count);
+        for i in 0..seg_count {
+            let h = FILE_HEADER_LEN + i * SEG_HEADER_LEN;
+            let ty = bytes[h];
+            let off = u32_at(bytes, h + 1) as usize;
+            let len = u32_at(bytes, h + 5) as usize;
+            let end = off.checked_add(len).filter(|e| *e <= bytes.len());
+            let end = end.ok_or_else(|| bad("段偏移越界".into()))?;
+            segs.push((ty, off..end));
+        }
+        let meta = seg_of(&segs, SEG_META).ok_or_else(|| bad("缺少元数据段".into()))?;
+        let index = seg_of(&segs, SEG_INDEX).ok_or_else(|| bad("缺少记录索引段".into()))?;
+        let records = seg_of(&segs, SEG_RECORDS).ok_or_else(|| bad("缺少记录体段".into()))?;
+        let buckets = seg_of(&segs, SEG_BUCKETS).ok_or_else(|| bad("缺少首字母桶段".into()))?;
+        if index.len() % 4 != 0 {
+            return Err(bad("索引段长度不是 4 的倍数".into()));
+        }
+
+        // ---- 段1 元数据（u64 total | u32 entry | u32 max_syl | u32 音节数 | 音节×{u8 len, bytes}）----
+        let m = meta.clone();
+        if m.len() < 20 {
+            return Err(bad("元数据段过短".into()));
+        }
+        let total = u64::from_le_bytes([
+            bytes[m.start], bytes[m.start + 1], bytes[m.start + 2], bytes[m.start + 3],
+            bytes[m.start + 4], bytes[m.start + 5], bytes[m.start + 6], bytes[m.start + 7],
+        ]);
+        let entry_count = u32_at(bytes, m.start + 8) as usize;
+        let max_word_syllables = u32_at(bytes, m.start + 12) as usize;
+        let syl_count = u32_at(bytes, m.start + 16) as usize;
+        let mut syllables = BTreeSet::new();
+        let mut pos = m.start + 20;
+        for _ in 0..syl_count {
+            if pos >= m.end {
+                return Err(bad("音节表截断".into()));
+            }
+            let len = bytes[pos] as usize;
+            pos += 1;
+            let end = pos + len;
+            if end > m.end {
+                return Err(bad("音节表截断".into()));
+            }
+            let s = std::str::from_utf8(&bytes[pos..end])
+                .map_err(|_| bad("音节非 UTF-8".into()))?;
+            syllables.insert(s.to_string());
+            pos = end;
+        }
+
+        // ---- 段3 索引：每条偏移 < 记录体长度 ----
+        let record_count = index.len() / 4;
+        let records_len = records.end - records.start;
+        for i in 0..record_count {
+            let off = u32_at(bytes, index.start + i * 4) as usize;
+            if off >= records_len {
+                return Err(bad("索引偏移越界".into()));
+            }
+        }
+
+        // ---- 段4 记录体：逐条边界扫描（防截断/坏字节；不校验排序）----
+        let mut pos = records.start;
+        while pos < records.end {
+            let step = record_step(&bytes[pos..records.end])
+                .map_err(|m| bad(m))?;
+            pos += step;
+        }
+
+        // ---- 段2 首字母桶：26 桶头部 + 逐条边界扫描；目录物化 ----
+        let mut bucket_dir = Vec::with_capacity(26);
+        let mut pos = buckets.start;
+        let mut count = 0usize;
+        while pos < buckets.end {
+            if buckets.end - pos < 5 {
+                return Err(bad("桶段头部截断".into()));
+            }
+            let letter = bytes[pos];
+            if !letter.is_ascii_lowercase() {
+                return Err(bad("桶字母非法".into()));
+            }
+            let n = u32_at(bytes, pos + 1) as usize;
+            // 记录数下限检查：每条记录至少 7 字节
+            if n > (buckets.end - pos - 5) / 7 {
+                return Err(bad("桶记录数越界".into()));
+            }
+            bucket_dir.push((letter, (pos + 5 - buckets.start) as u32, n as u32));
+            pos += 5;
+            for _ in 0..n {
+                let step = record_step(&bytes[pos..buckets.end]).map_err(|m| bad(m))?;
+                pos += step;
+            }
+            count += 1;
+        }
+        if count != 26 {
+            return Err(bad(format!("桶段应含 26 个桶，实际 {count}")));
+        }
+
+        Ok(Dict {
+            file: Arc::new(file),
+            bucket_dir,
+            index: index.clone(),
+            records: records.clone(),
+            buckets: buckets.clone(),
+            total,
+            entry_count,
+            max_word_syllables,
+            syllables,
+        })
+    }
+
     /// 测试/用户词库构造器。items = (squashed_code, word, weight)。
     /// 同码多条按 weight 降序归并；同 (code,word) 去重取最大 weight。
+    /// 实现 = 归并 → 序列化 IMEDIC02 → 统一解析路径（与文件加载完全同构）。
     pub fn from_entries(items: Vec<(String, String, u32)>) -> Dict {
         let mut map: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
         for (code, word, weight) in items {
@@ -117,93 +294,85 @@ impl Dict {
                 group.push(Entry { word, code, weight });
             }
         }
-        let mut total = 0u64;
-        let mut entry_count = 0usize;
-        let mut max_word_syllables = 0usize;
-        let mut syllables = BTreeSet::new();
-        let mut buckets: BTreeMap<char, Vec<Entry>> = BTreeMap::new();
-        for group in map.values_mut() {
-            group.sort_by_key(|a| std::cmp::Reverse(a.weight));
-            entry_count += group.len();
-            total += group.iter().map(|e| e.weight as u64).sum::<u64>();
-            let seg = greedy_segment(&group[0].code);
-            // 仅全为合法音节的词条计入词长（英文条目如 "abc" 不算拼音词）
-            if seg.iter().all(|s| is_syllable(s)) {
-                max_word_syllables = max_word_syllables.max(seg.len());
-            }
-            for s in &seg {
-                if is_syllable(s) {
-                    syllables.insert(s.clone());
-                }
-            }
-        }
-        // 首字母桶（单遍收集副本 + 桶内排序截断；只收单字：word 单字且 code 无 `'`）
-        for group in map.values() {
-            for e in group.iter() {
-                if e.word.chars().count() == 1 && !e.code.contains('\'') {
-                    if let Some(c) = e.code.chars().next() {
-                        if c.is_ascii_lowercase() {
-                            buckets.entry(c).or_default().push(e.clone());
-                        }
-                    }
-                }
-            }
-        }
-        for v in buckets.values_mut() {
-            v.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
-            v.truncate(INITIAL_BUCKET_SIZE);
-        }
-        Dict { map, total, entry_count, max_word_syllables, syllables, initial_buckets: buckets }
+        let records: Vec<Entry> = map.into_values().flatten().collect();
+        let mut buf = Vec::new();
+        format::write(&records, &mut buf).expect("内存序列化不可能失败");
+        Dict::from_file(MappedFile::from_vec(buf)).expect("自产数据必合法")
     }
 
-    /// 精确查询：squashed_code 如 "nihao"。返回按 weight 降序切片。
-    pub fn exact(&self, squashed_code: &str) -> &[Entry] {
-        self.map.get(squashed_code).map(|v| v.as_slice()).unwrap_or(&[])
+    /// 精确查询：squashed_code 如 "nihao"。返回按 weight 降序（写端不变量）的物化词条。
+    pub fn exact(&self, squashed_code: &str) -> Vec<Entry> {
+        let target = squashed_code.as_bytes();
+        let n = self.index.len() / 4;
+        if n == 0 {
+            return Vec::new();
+        }
+        let lower = self.lower_bound(target);
+        if lower == n || self.code_at(self.index_off(lower)) != target {
+            return Vec::new();
+        }
+        let upper = self.upper_bound(target);
+        (lower..upper).map(|i| self.entry_at(self.index_off(i))).collect()
     }
 
     /// 精确查询（单字视图，M1.5 单段档）：返回 code == squashed_code 的**单字**词条。
-    /// 单段档数据契约：只出单字——多字词键（异常手写数据）在此过滤，引擎侧无需防御。
-    pub fn exact_single(&self, squashed_code: &str) -> Vec<&Entry> {
-        self.map
-            .get(squashed_code)
-            .map(|v| v.iter().filter(|e| e.word.chars().count() == 1).collect())
-            .unwrap_or_default()
+    pub fn exact_single(&self, squashed_code: &str) -> Vec<Entry> {
+        self.exact(squashed_code)
+            .into_iter()
+            .filter(|e| e.word.chars().count() == 1)
+            .collect()
     }
 
     /// 前缀补全：返回 squashed 以 prefix 开头（且不等于 prefix）的词条，
-    /// 跨编码按 weight 降序，最多 limit 条。
-    pub fn prefix(&self, squashed_prefix: &str, limit: usize) -> Vec<&Entry> {
+    /// 跨编码按 weight 降序，最多 limit 条。低频路径（默认关闭），实现为
+    /// 范围物化 + 全量排序；如开启后性能不达标再改归并取 top-k。
+    pub fn prefix(&self, squashed_prefix: &str, limit: usize) -> Vec<Entry> {
         if limit == 0 || squashed_prefix.is_empty() {
             return Vec::new();
         }
-        let mut all: Vec<&Entry> = Vec::new();
-        for (code, group) in self.map.range(squashed_prefix.to_string()..) {
-            if !code.starts_with(squashed_prefix) {
+        let target = squashed_prefix.as_bytes();
+        let n = self.index.len() / 4;
+        let mut out = Vec::new();
+        for i in self.lower_bound(target)..n {
+            let code = self.code_at(self.index_off(i));
+            if !code.starts_with(target) {
                 break;
             }
-            if code == squashed_prefix {
+            if code == target {
                 continue;
             }
-            all.extend(group.iter());
+            out.push(self.entry_at(self.index_off(i)));
         }
-        all.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
-        all.truncate(limit);
-        all
-    }
-
-    /// 全部音节集合（从所有 code 切出），供全拼切分器构造。
-    pub fn syllables(&self) -> &BTreeSet<String> {
-        &self.syllables
+        out.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
+        out.truncate(limit);
+        out
     }
 
     /// 首字母桶查询：返回 code 以 `initial` 开头的**单字**词条，按词频降序，
-    /// 最多 `limit` 条。桶在加载时预建（每字母 top-1000 单字），M1.5 单段输入档
+    /// 最多 `limit` 条。桶在编译期预建（每字母 top-1000 单字），M1.5 单段输入档
     /// （`c`/`sh`/`shi`…）用它取代全表前缀扫描（'s' 全扫 10 万条再排序不可用）。
-    pub fn initial_top(&self, initial: char, limit: usize) -> Vec<&Entry> {
-        self.initial_buckets
-            .get(&initial)
-            .map(|v| v.iter().take(limit).collect())
-            .unwrap_or_default()
+    pub fn initial_top(&self, initial: char, limit: usize) -> Vec<Entry> {
+        if limit == 0 || !initial.is_ascii_lowercase() {
+            return Vec::new();
+        }
+        let idx = (initial as u8 - b'a') as usize;
+        let Some(&(_, off, count)) = self.bucket_dir.get(idx) else {
+            return Vec::new();
+        };
+        let take = (count as usize).min(limit);
+        let mut out = Vec::with_capacity(take);
+        let mut pos = self.buckets.start + off as usize;
+        for _ in 0..take {
+            let (e, step) = self.entry_at_with_step(pos);
+            out.push(e);
+            pos = step;
+        }
+        out
+    }
+
+    /// 全部音节集合（编译期固化在元数据段，加载物化），供全拼切分器构造。
+    pub fn syllables(&self) -> &BTreeSet<String> {
+        &self.syllables
     }
 
     /// 全部词条 weight 之和（LM 分母）。
@@ -220,6 +389,94 @@ impl Dict {
     pub fn max_word_syllables(&self) -> usize {
         self.max_word_syllables
     }
+
+    // ===== 内部：索引二分 / 记录物化（视图已校验，索引直接）=====
+
+    /// 第一个 code >= target 的索引位置（二分）。
+    fn lower_bound(&self, target: &[u8]) -> usize {
+        let n = self.index.len() / 4;
+        let mut lo = 0usize;
+        let mut hi = n;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.code_at(self.index_off(mid)) < target {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// 第一个 code > target 的索引位置（二分）。
+    fn upper_bound(&self, target: &[u8]) -> usize {
+        let n = self.index.len() / 4;
+        let mut lo = 0usize;
+        let mut hi = n;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.code_at(self.index_off(mid)) <= target {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    fn index_off(&self, i: usize) -> usize {
+        u32_at(&self.file.as_bytes(), self.index.start + i * 4) as usize
+    }
+
+    /// 记录 code 字节（相对记录体段起点）。
+    fn code_at(&self, rel: usize) -> &[u8] {
+        let b = &self.file.as_bytes()[self.records.start + rel..];
+        let len = b[0] as usize;
+        &b[1..1 + len]
+    }
+
+    fn entry_at(&self, rel: usize) -> Entry {
+        self.entry_at_with_step(self.records.start + rel).0
+    }
+
+    /// 物化记录（绝对文件偏移）+ 下一条记录偏移（桶顺序遍历用）。
+    fn entry_at_with_step(&self, abs: usize) -> (Entry, usize) {
+        let b = &self.file.as_bytes()[abs..];
+        let code_len = b[0] as usize;
+        let code = std::str::from_utf8(&b[1..1 + code_len])
+            .expect("词库已校验 code 边界")
+            .to_string();
+        let word_len = u16::from_le_bytes([b[1 + code_len], b[2 + code_len]]) as usize;
+        let word_start = 3 + code_len;
+        let word = std::str::from_utf8(&b[word_start..word_start + word_len])
+            .expect("词库已校验 word 边界")
+            .to_string();
+        let w_off = word_start + word_len;
+        let weight = u32::from_le_bytes([b[w_off], b[w_off + 1], b[w_off + 2], b[w_off + 3]]);
+        (Entry { word, code, weight }, abs + w_off + 4)
+    }
+}
+
+/// 段表查找指定类型段。
+fn seg_of(segs: &[(u8, Range<usize>)], ty: u8) -> Option<Range<usize>> {
+    segs.iter().find(|(t, _)| *t == ty).map(|(_, r)| r.clone())
+}
+
+/// 单条记录从当前位置起的字节长度（越界 → Err，消息含细节）。
+/// 记录：u8 code_len | code | u16 word_len | word | u32 weight。
+fn record_step(rest: &[u8]) -> Result<usize, String> {
+    if rest.len() < 1 {
+        return Err("记录体截断（缺 code_len）".into());
+    }
+    let code_len = rest[0] as usize;
+    if 1 + code_len + 2 + 4 > rest.len() {
+        return Err("记录体截断（code/word/weight 越界）".into());
+    }
+    let word_len = u16::from_le_bytes([rest[1 + code_len], rest[2 + code_len]]) as usize;
+    if 1 + code_len + 2 + word_len + 4 > rest.len() {
+        return Err("记录体截断（word 越界）".into());
+    }
+    Ok(1 + code_len + 2 + word_len + 4)
 }
 
 #[cfg(test)]
@@ -296,7 +553,8 @@ mod tests {
         // 大写不入桶
         assert!(d.initial_top('A', 10).is_empty());
         // 桶只收单字：多字词"中国"不入桶；z 桶只含"中"
-        let z: Vec<&str> = d.initial_top('z', 10).iter().map(|e| e.word.as_str()).collect();
+        let ztop = d.initial_top('z', 10);
+        let z: Vec<&str> = ztop.iter().map(|e| e.word.as_str()).collect();
         assert_eq!(z, vec!["中"]);
         assert!(!z.contains(&"中国"), "多字词不应入桶，实际：{z:?}");
     }
@@ -304,7 +562,6 @@ mod tests {
     #[test]
     fn bucket_cap_truncates_to_constant() {
         // 灌入超过 INITIAL_BUCKET_SIZE 的同首字母单字，验证截断
-        // 词变体 2000 个 × 码 50 个：1100 条全部唯一，超过桶上限
         let mut items = Vec::new();
         for i in 0..(INITIAL_BUCKET_SIZE + 100) {
             let w = char::from_u32(0x4e00 + (i % 2000) as u32).unwrap().to_string();
@@ -318,5 +575,14 @@ mod tests {
         let top = d.initial_top('b', usize::MAX);
         assert_eq!(top.len(), INITIAL_BUCKET_SIZE);
         assert!(top.iter().all(|e| e.word.chars().count() == 1), "桶应只含单字");
+    }
+
+    #[test]
+    fn default_dict_empty() {
+        let d = Dict::default();
+        assert_eq!(d.entry_count(), 0);
+        assert!(d.exact("nihao").is_empty());
+        assert!(d.initial_top('a', 10).is_empty());
+        assert_eq!(d.total_weight(), 0);
     }
 }

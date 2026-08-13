@@ -75,7 +75,7 @@ impl Engine {
     }
 
     /// 调试/REPL 用精确查询。
-    pub fn lookup(&self, squashed_code: &str) -> &[Entry] {
+    pub fn lookup(&self, squashed_code: &str) -> Vec<Entry> {
         self.dict.exact(squashed_code)
     }
 
@@ -143,7 +143,7 @@ impl Engine {
         if self.config.candidate_prefix {
             let n = seg.len();
             let squashed = seg.join("'");
-            for e in self.dict.prefix(&squashed, 20) {
+            for e in &self.dict.prefix(&squashed, 20) {
                 let kind = if e.word.chars().count() >= 2 {
                     crate::CandidateKind::Word
                 } else {
@@ -195,7 +195,7 @@ impl Engine {
         if s.is_empty() {
             return Vec::new();
         }
-        let entries: Vec<&iuv_data::Entry> = if self.is_syllable(s) {
+        let entries: Vec<iuv_data::Entry> = if self.is_syllable(s) {
             self.dict.exact_single(s)
         } else {
             // 严格前缀：单字桶（桶只收单字，过滤 starts_with）
@@ -210,9 +210,9 @@ impl Engine {
             .into_iter()
             .map(|e| {
                 crate::Candidate::new(
-                    e.word.clone(),
+                    e.word,
                     crate::CandidateKind::Char,
-                    e.code.clone(),
+                    e.code,
                     e.weight,
                     1,
                 )
@@ -234,7 +234,7 @@ impl Engine {
                 continue;
             }
             let mut pushed = 0usize;
-            for e in self.dict.exact(&key) {
+            for e in &self.dict.exact(&key) {
                 let kind = if e.word.chars().count() >= 2 {
                     crate::CandidateKind::Word
                 } else {
@@ -311,15 +311,15 @@ impl Engine {
                 }
                 combos = next;
             }
-            let mut entries: Vec<&iuv_data::Entry> = Vec::new();
+            let mut entries: Vec<iuv_data::Entry> = Vec::new();
             for combo in &combos {
-                entries.extend(self.dict.exact(&combo.join("'")).iter());
+                entries.extend(self.dict.exact(&combo.join("'")));
             }
             entries.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
             let mut seen = std::collections::HashSet::new();
             let mut pushed = 0usize;
             for e in entries {
-                if !seen.insert(e.word.as_str()) {
+                if !seen.insert(e.word.clone()) {
                     continue;
                 }
                 let kind = if e.word.chars().count() >= 2 {
@@ -380,15 +380,15 @@ impl Engine {
                     keys.push(plan.join("'"));
                 }
             }
-            let mut entries: Vec<&iuv_data::Entry> = Vec::new();
+            let mut entries: Vec<iuv_data::Entry> = Vec::new();
             for key in keys {
-                entries.extend(self.dict.exact(&key).iter());
+                entries.extend(self.dict.exact(&key));
             }
             entries.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
             let mut seen = std::collections::HashSet::new();
             let mut pushed = 0usize;
             for e in entries {
-                if !seen.insert(e.word.as_str()) {
+                if !seen.insert(e.word.clone()) {
                     continue;
                 }
                 let kind = if e.word.chars().count() >= 2 {
@@ -397,9 +397,9 @@ impl Engine {
                     crate::CandidateKind::Char
                 };
                 cands.push(crate::Candidate::new(
-                    e.word.clone(),
+                    e.word,
                     kind,
-                    e.code.clone(),
+                    e.code,
                     e.weight,
                     k,
                 ));
