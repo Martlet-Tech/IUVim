@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 use iuv_core::{apply_keymap, is_session_start_key, Config, Engine, Key, Session};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VK_SHIFT,
+    GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VK_CAPITAL, VK_SHIFT,
 };
 use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, ITfCompartment, ITfCompartmentEventSink,
@@ -220,7 +220,7 @@ impl TextService {
             return false;
         }
         let vk = wparam.0 as u16;
-        let key = map_key(vk, char_code(vk), shift_pressed(), ctrl_pressed(), alt_pressed());
+        let key = map_key(vk, char_code(vk), shift_pressed(), capslock_on(), ctrl_pressed(), alt_pressed());
         let Some(key) = key else { return false };
         match &*self.session.borrow() {
             // 会话 active：映射键一律吃掉（含经 keymap 重映射的翻页键）。
@@ -265,7 +265,7 @@ impl TextService {
             return false;
         }
 
-        let key = map_key(vk, char_code(vk), shift_pressed(), ctrl_pressed(), alt_pressed());
+        let key = map_key(vk, char_code(vk), shift_pressed(), capslock_on(), ctrl_pressed(), alt_pressed());
         let Some(key) = key else { return false };
 
         // 开启新会话：仅字母键。
@@ -592,6 +592,12 @@ impl ITfCompartmentEventSink_Impl for TextService_Impl {
 fn shift_pressed() -> bool {
     // SAFETY: GetKeyState 查询当前线程键盘状态，返回符号位表示按下。
     (unsafe { GetKeyState(VK_SHIFT.0 as i32) }) < 0
+}
+
+/// CapsLock 是否生效（切换状态位，与消息队列无关）。
+fn capslock_on() -> bool {
+    // SAFETY: GetKeyState 对 VK_CAPITAL 返回切换状态（最低位 1 = 生效）。
+    (unsafe { GetKeyState(VK_CAPITAL.0 as i32) }) & 1 != 0
 }
 
 /// 当前 Ctrl 是否按下。Ctrl/Alt 组合键一律放行给应用（map_key 内约定）。

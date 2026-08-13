@@ -35,6 +35,12 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**滞回稳�
   候选窗内容恒非空——修复英文输入时 2mm×1mm 全空候选框（根因：候选为空 + reading 非空，
   双空守卫放行 → layout 空 items → 16×8px 窗口）。候选窗对原文候选**不编号**呈现
   （text == 预编辑原文去 `'` 即判定，gdi.rs），传达"不认识"语义。
+- [ ] 大写保形进序列（2026-08-14 实现待测）：Shift/CapsLock 字母 → `Key::ShiftChar` 大写原样进 raw
+  （匹配只认小写：大写不被音节表命中、按不可匹配字符处理，`niHAO` 候选仍从 `ni` 前缀出；
+  commit 原样上屏 `niHAO`/`Hello`）；字母大小写 = Shift 与 CapsLock 的 XOR（CapsLock+Shift 反转小写）；
+  **大写同样是开会话键**（`is_session_start_key` 字母即开会话，`Hello` 的 H 进序列而非直接上屏）。
+  改动：key.rs/session.rs（ShiftChar 臂）、keymap.rs（is_session_start_key 单条件）、
+  session_bridge.rs（map_key XOR）、text_service.rs（capslock_on 传参）。
 - 后续：M2 滞回/学习/钉选 · M3 整句增强(LMDG)/简拼/模糊音 · M4 Tauri helper（WebView 候选窗+设置） · M5 安装器/词库导入/x86
 - **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
   OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；激活即打开）。前置条件：用户在

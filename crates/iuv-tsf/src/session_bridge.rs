@@ -12,12 +12,22 @@ use crate::ui::{effect_to_snapshot, CandidateUi, CaretRect};
 /// - `vk`：WM_KEYDOWN 的 wParam（VK_*）。
 /// - `char_code`：该键在当前键盘布局下的字符值（`MapVirtualKeyW(_, MAPVK_VK_TO_CHAR)`，
 ///   无 Shift 状态的静态映射），用于字母/OEM 引号判定。
-/// - `with_shift` / `with_ctrl` / `with_alt`：各修饰键是否按下。
+/// - `with_shift` / `with_capslock` / `with_ctrl` / `with_alt`：各修饰键/状态是否生效。
 ///
+/// 字母大小写 = Shift 与 CapsLock 的 XOR（系统惯例：恰好一个生效 → 大写）：
+/// 大写 → `Key::ShiftChar`（保形进序列，匹配只认小写、commit 原样上屏）；
+/// 小写 → `Key::Char`（含 CapsLock+Shift 反转）。
 /// 约定：**Ctrl/Alt 组合键一律放行给应用**（如 Ctrl+S 保存、Alt+字母 菜单），
 /// 输入法只消费 Shift 修饰的组合（大小写/符号）。映射表集中在此一处，
 /// M3+ 加双拼/快捷键只动这里（13 任务书 §5）。
-pub fn map_key(vk: u16, char_code: u32, with_shift: bool, with_ctrl: bool, with_alt: bool) -> Option<Key> {
+pub fn map_key(
+    vk: u16,
+    char_code: u32,
+    with_shift: bool,
+    with_capslock: bool,
+    with_ctrl: bool,
+    with_alt: bool,
+) -> Option<Key> {
     // Ctrl/Alt 组合：放行给应用，绝不消费（13 任务书 §3.3）。
     if with_ctrl || with_alt {
         return None;
@@ -53,13 +63,18 @@ pub fn map_key(vk: u16, char_code: u32, with_shift: bool, with_ctrl: bool, with_
         VK_RIGHT => Some(Key::Right),
         VK_1..=VK_9 if !with_shift => Some(Key::Digit((char_code - 0x30) as u8)),
         VK_A..=VK_Z => {
-            // 字母：优先用布局字符（保证小写），退化用 vk 推算。
+            // 字母：优先用布局字符（无 Shift 态恒小写），退化用 vk 推算。
             let c = if (0x61..=0x7A).contains(&char_code) {
                 char_code as u8 as char
             } else {
                 (vk + 0x20) as u8 as char
             };
-            Some(Key::Char(c))
+            // Shift 与 CapsLock 恰好一个生效 → 大写（ShiftChar 保形进序列）；否则小写。
+            if with_shift ^ with_capslock {
+                Some(Key::ShiftChar(c.to_ascii_uppercase()))
+            } else {
+                Some(Key::Char(c))
+            }
         }
         VK_OEM_7 if !with_shift && char_code == 0x27 => Some(Key::Char('\'')),
         // 逗号/句号：无 Shift 时映射为标点键（会话内由 apply_keymap 翻页；会话外放行打标点）。
@@ -187,44 +202,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn map_key_letters_lowercase() {
-        assert_eq!(map_key(0x41, 0x61, false, false, false), Some(Key::Char('a')));
-        assert_eq!(map_key(0x5A, 0x7A, false, false, false), Some(Key::Char('z')));
-        assert_eq!(map_key(0x4B, 0x6B, true, false, false), Some(Key::Char('k')));
+    fn map_key_letters_shift_and_caps_xor() {
+        // 无修饰：小写 Char（拼音）
+        assert_eq!(map_key(0x41, 0x61, false, false, false, false), Some(Key::Char('a')));
+        assert_eq!(map_key(0x5A, 0x7A, false, false, false, false), Some(Key::Char('z')));
+        // Shift+字母 → ShiftChar 大写（保形进序列）
+        assert_eq!(map_key(0x4B, 0x6B, true, false, false, false), Some(Key::ShiftChar('K')));
+        assert_eq!(map_key(0x41, 0x61, true, false, false, false), Some(Key::ShiftChar('A')));
+        // CapsLock 生效 → 同样 ShiftChar 大写（直通进序列）
+        assert_eq!(map_key(0x4B, 0x6B, false, true, false, false), Some(Key::ShiftChar('K')));
+        // CapsLock + Shift 反转 → 小写 Char（系统惯例）
+        assert_eq!(map_key(0x4B, 0x6B, true, true, false, false), Some(Key::Char('k')));
+    }
+
+    #[test]
+    fn map_key_capslock_does_not_affect_non_letters() {
+        // CapsLock 只影响字母：数字/标点照常（Shift+数字 = 符号仍放行）
+        assert_eq!(map_key(0x31, 0x31, false, true, false, false), Some(Key::Digit(1)));
+        assert_eq!(map_key(0x31, 0x31, true, true, false, false), None, "Shift+数字放行");
+        assert_eq!(map_key(0xDE, 0x27, false, true, false, false), Some(Key::Char('\'')));
     }
 
     #[test]
     fn map_key_digits_respect_shift() {
-        assert_eq!(map_key(0x31, 0x31, false, false, false), Some(Key::Digit(1)));
-        assert_eq!(map_key(0x39, 0x39, false, false, false), Some(Key::Digit(9)));
+        assert_eq!(map_key(0x31, 0x31, false, false, false, false), Some(Key::Digit(1)));
+        assert_eq!(map_key(0x39, 0x39, false, false, false, false), Some(Key::Digit(9)));
         // Shift+数字 = 符号，放行给应用
-        assert_eq!(map_key(0x31, 0x31, true, false, false), None);
+        assert_eq!(map_key(0x31, 0x31, true, false, false, false), None);
     }
 
     #[test]
     fn map_key_arrows() {
-        assert_eq!(map_key(0x25, 0x25, false, false, false), Some(Key::Left));
-        assert_eq!(map_key(0x27, 0x27, false, false, false), Some(Key::Right));
+        assert_eq!(map_key(0x25, 0x25, false, false, false, false), Some(Key::Left));
+        assert_eq!(map_key(0x27, 0x27, false, false, false, false), Some(Key::Right));
         // Ctrl+左右 = 词跳转，放行给应用
-        assert_eq!(map_key(0x25, 0x25, false, true, false), None);
+        assert_eq!(map_key(0x25, 0x25, false, false, true, false), None);
     }
 
     #[test]
     fn map_key_apostrophe() {
-        assert_eq!(map_key(0xDE, 0x27, false, false, false), Some(Key::Char('\'')));
+        assert_eq!(map_key(0xDE, 0x27, false, false, false, false), Some(Key::Char('\'')));
         // Shift+引号 = 双引号，放行
-        assert_eq!(map_key(0xDE, 0x27, true, false, false), None);
-        assert_eq!(map_key(0xDE, 0x22, false, false, false), None);
+        assert_eq!(map_key(0xDE, 0x27, true, false, false, false), None);
+        assert_eq!(map_key(0xDE, 0x22, false, false, false, false), None);
     }
 
     #[test]
     fn map_key_comma_period() {
         // 无 Shift：逗号/句号映射为标点键（会话内翻页、会话外打标点）
-        assert_eq!(map_key(0xBC, 0x2C, false, false, false), Some(Key::Char(',')));
-        assert_eq!(map_key(0xBE, 0x2E, false, false, false), Some(Key::Char('.')));
+        assert_eq!(map_key(0xBC, 0x2C, false, false, false, false), Some(Key::Char(',')));
+        assert_eq!(map_key(0xBE, 0x2E, false, false, false, false), Some(Key::Char('.')));
         // Shift+逗号/句号 = < > 符号，放行
-        assert_eq!(map_key(0xBC, 0x2C, true, false, false), None);
-        assert_eq!(map_key(0xBE, 0x2E, true, false, false), None);
+        assert_eq!(map_key(0xBC, 0x2C, true, false, false, false), None);
+        assert_eq!(map_key(0xBE, 0x2E, true, false, false, false), None);
     }
 
     #[test]
@@ -245,6 +275,8 @@ mod tests {
     fn session_start_keys() {
         assert!(iuv_core::is_session_start_key(Key::Char('a')));
         assert!(!iuv_core::is_session_start_key(Key::Char('\'')));
+        // 大写（Shift/CapsLock）同样开启会话：Hello 的 H 进序列而非直接上屏
+        assert!(iuv_core::is_session_start_key(Key::ShiftChar('A')));
         // 标点/数字/控制键不得开启会话（放行给应用）
         assert!(!iuv_core::is_session_start_key(Key::Char(',')));
         assert!(!iuv_core::is_session_start_key(Key::Char('.')));
@@ -254,40 +286,40 @@ mod tests {
 
     #[test]
     fn map_key_control_keys() {
-        assert_eq!(map_key(0x08, 0, false, false, false), Some(Key::Backspace));
-        assert_eq!(map_key(0x20, 0, false, false, false), Some(Key::Space));
-        assert_eq!(map_key(0x0D, 0, false, false, false), Some(Key::Enter));
-        assert_eq!(map_key(0x1B, 0, false, false, false), Some(Key::Esc));
-        assert_eq!(map_key(0x21, 0, false, false, false), Some(Key::PageUp));
-        assert_eq!(map_key(0x22, 0, false, false, false), Some(Key::PageDown));
-        assert_eq!(map_key(0x26, 0, false, false, false), Some(Key::Up));
-        assert_eq!(map_key(0x28, 0, false, false, false), Some(Key::Down));
+        assert_eq!(map_key(0x08, 0, false, false, false, false), Some(Key::Backspace));
+        assert_eq!(map_key(0x20, 0, false, false, false, false), Some(Key::Space));
+        assert_eq!(map_key(0x0D, 0, false, false, false, false), Some(Key::Enter));
+        assert_eq!(map_key(0x1B, 0, false, false, false, false), Some(Key::Esc));
+        assert_eq!(map_key(0x21, 0, false, false, false, false), Some(Key::PageUp));
+        assert_eq!(map_key(0x22, 0, false, false, false, false), Some(Key::PageDown));
+        assert_eq!(map_key(0x26, 0, false, false, false, false), Some(Key::Up));
+        assert_eq!(map_key(0x28, 0, false, false, false, false), Some(Key::Down));
     }
 
     #[test]
     fn map_key_unknown_returns_none() {
-        assert_eq!(map_key(0x10, 0, false, false, false), None); // Shift
-        assert_eq!(map_key(0x1B, 0, false, false, false), Some(Key::Esc));
-        assert_eq!(map_key(0x90, 0, false, false, false), None); // NumLock
-        assert_eq!(map_key(0x00, 0, false, false, false), None);
+        assert_eq!(map_key(0x10, 0, false, false, false, false), None); // Shift
+        assert_eq!(map_key(0x1B, 0, false, false, false, false), Some(Key::Esc));
+        assert_eq!(map_key(0x90, 0, false, false, false, false), None); // NumLock
+        assert_eq!(map_key(0x00, 0, false, false, false, false), None);
     }
 
     #[test]
     fn map_key_modifiers_always_release() {
         // Ctrl/Alt 组合键一律放行给应用（如 Ctrl+S 保存、Alt+F4 关闭），
         // 与是否在映射表内无关。
-        assert_eq!(map_key(0x53, 0x73, false, true, false), None); // Ctrl+S
-        assert_eq!(map_key(0x53, 0x73, false, false, true), None); // Alt+S
-        assert_eq!(map_key(0x31, 0x31, false, true, false), None); // Ctrl+1
-        assert_eq!(map_key(0x20, 0, false, true, false), None); // Ctrl+Space
-        assert_eq!(map_key(0x0D, 0, false, false, true), None); // Alt+Enter
+        assert_eq!(map_key(0x53, 0x73, false, false, true, false), None); // Ctrl+S
+        assert_eq!(map_key(0x53, 0x73, false, false, false, true), None); // Alt+S
+        assert_eq!(map_key(0x31, 0x31, false, false, true, false), None); // Ctrl+1
+        assert_eq!(map_key(0x20, 0, false, false, true, false), None); // Ctrl+Space
+        assert_eq!(map_key(0x0D, 0, false, false, false, true), None); // Alt+Enter
     }
 
     /// 断言"某事没发生"必须配正向用例：Digit(9) 存在即 Digit 边界可控。
     #[test]
     fn map_key_digit_range_bounds() {
         // VK_0 不在 1..=9 语义内（契约 §3.4），必须放行给应用。
-        assert_eq!(map_key(0x30, 0x30, false, false, false), None);
-        assert_eq!(map_key(0x31, 0x31, false, false, false), Some(Key::Digit(1)));
+        assert_eq!(map_key(0x30, 0x30, false, false, false, false), None);
+        assert_eq!(map_key(0x31, 0x31, false, false, false, false), Some(Key::Digit(1)));
     }
 }

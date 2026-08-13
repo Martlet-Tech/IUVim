@@ -326,6 +326,7 @@ impl Session {
 | 输入 | 行为 |
 |---|---|
 | `Char('a'..='z' \| '\'')` | 追加 raw → 重切分 → 重新生成候选 → page=0, selected=0。无候选也保持 active |
+| `ShiftChar('A'..='Z')`（Shift/CapsLock 字母） | **大写保形进序列**：`raw` 原样追加大写（不转小写）→ 重切分 → 重新生成候选。匹配只认小写——大写字符不被音节表命中（按不可匹配字符单字母段兜底，`niHAO` → `ni`/`H`/`A`/`O`，候选仍从 `ni` 前缀出），commit 时 `raw` 原样上屏。**也是开会话键**（无会话时 `Hello` 的 `H` 同样进序列）。字母大小写 = Shift 与 CapsLock 的 XOR（恰好一个生效 → 大写；CapsLock+Shift 反转 → 小写） |
 | `Backspace` | 删 raw 尾字符；删后 raw 为空 → `end = Some(Cancel)`；否则重算候选 |
 | `Space` | 有候选 → commit 当前页 selected 项；无候选 → `Commit(picked.join + raw)`（全部上屏） |
 | `Digit(n)` n∈1..=9 | 全表索引 = page×page_size + n−1，存在则 commit 该项；不存在则无操作（仍消费） |

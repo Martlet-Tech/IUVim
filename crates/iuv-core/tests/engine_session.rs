@@ -852,6 +852,73 @@ fn enter_commits_raw() {
     assert_eq!(e.end, Some(SessionEnd::Commit("de".into())));
 }
 
+/// 大写保形进序列：ni + CapsLock HAO（ShiftChar 大写）→ raw=niHAO 原样；
+/// 匹配只认小写（大写段不命中音节表），候选仍从 ni 前缀出，Enter 原样上屏。
+#[test]
+fn shiftchar_uppercase_preserves_case_through_session() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for c in "ni".chars() {
+        s.on_key(Key::Char(c));
+    }
+    for c in ['H', 'A', 'O'] {
+        s.on_key(Key::ShiftChar(c));
+    }
+    let e = s.effect();
+    assert_eq!(e.reading, "ni'H'A'O", "大写原样进序列，切分按不可匹配字符单字母段");
+    let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert!(texts.contains(&"你"), "候选仍从 ni 前缀出：{texts:?}");
+    let e = s.on_key(Key::Enter);
+    assert_eq!(e.end, Some(SessionEnd::Commit("niHAO".into())), "commit 原样含大写");
+}
+
+/// 悬空 + ShiftChar：选中 ni 候选（部分消费）→ 尾巴 HAO 悬空续接，commit 组合原样。
+#[test]
+fn shiftchar_partial_consume_keeps_uppercase_tail() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for c in "ni".chars() {
+        s.on_key(Key::Char(c));
+    }
+    s.on_key(Key::ShiftChar('H'));
+    // 选"你"（ni 前缀词，seg_len=1 < n=2）→ 悬空：你 + 尾巴 H
+    let e = s.on_key(Key::Digit(1));
+    assert!(e.end.is_none(), "部分消费不产生 commit 信号");
+    assert_eq!(s.effect().composition, "你H", "已选词汉字 + 尾巴大写");
+    let e = s.on_key(Key::Enter);
+    assert_eq!(e.end, Some(SessionEnd::Commit("你H".into())));
+}
+
+/// ShiftChar 可被 Backspace 正常回退。
+#[test]
+fn shiftchar_backspace_removes_uppercase() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    s.on_key(Key::Char('n'));
+    s.on_key(Key::ShiftChar('I'));
+    let e = s.on_key(Key::Backspace);
+    assert!(e.end.is_none());
+    assert_eq!(s.effect().reading, "n");
+}
+
+/// 大写开会话首键：Shift+H + ello → Hello 全程进序列，commit 原样上屏。
+#[test]
+fn shiftchar_starts_session_hello() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    s.on_key(Key::ShiftChar('H'));
+    assert!(s.is_active(), "ShiftChar 是开会话键，H 进序列而非直接上屏");
+    for c in ['e', 'l', 'l', 'o'] {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert_eq!(e.reading, "H'e'l'l'o", "大写段不被音节表命中，按单字母段切分");
+    let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert!(texts.contains(&"Hello"), "全不命中 → 兜底原文候选：{texts:?}");
+    let e = s.on_key(Key::Enter);
+    assert_eq!(e.end, Some(SessionEnd::Commit("Hello".into())), "commit 原样含大写");
+}
+
 #[test]
 fn esc_cancels() {
     let engine = default_engine();

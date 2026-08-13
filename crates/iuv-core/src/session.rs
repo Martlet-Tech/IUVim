@@ -47,6 +47,13 @@ impl Session {
                 self.raw.push(c);
                 self.recompute();
             }
+            Key::ShiftChar(c) if c.is_ascii_uppercase() => {
+                // 大写保形进序列：原样追加大写（不转小写）。匹配只认小写——大写字符
+                // 切分时不被音节表命中（按不可匹配字符单字母段兜底），其余自然流；
+                // commit 时 raw 原样上屏（如 Hello）。大写也是开会话键（is_session_start_key）。
+                self.raw.push(c);
+                self.recompute();
+            }
             Key::Backspace => {
                 if let Some((_, code)) = self.picked.pop() {
                     // 有已选词：回退栈顶，词 code 拼回 raw 头部（续接的逆操作）
@@ -111,7 +118,7 @@ impl Session {
             }
             Key::Up | Key::Left => self.move_selected(-1),
             Key::Down | Key::Right => self.move_selected(1),
-            Key::Digit(_) | Key::Char(_) => {}
+            Key::Digit(_) | Key::Char(_) | Key::ShiftChar(_) => {}
         }
         self.effect()
     }

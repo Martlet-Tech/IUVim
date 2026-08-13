@@ -8,6 +8,9 @@ use crate::Candidate;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Char(char),
+    /// Shift/CapsLock 字母（大写；保形进序列——匹配只认小写、commit 原样上屏）。
+    /// 仅 TSF 产生，不参与 config 序列化（from_name 不可达）。
+    ShiftChar(char),
     Backspace,
     Space,
     Enter,
@@ -26,6 +29,7 @@ impl Key {
     pub fn name(&self) -> String {
         match self {
             Key::Char(c) => c.to_string(),
+            Key::ShiftChar(c) => c.to_string(),
             Key::Backspace => "Backspace".into(),
             Key::Space => "Space".into(),
             Key::Enter => "Enter".into(),
