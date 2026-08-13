@@ -1,7 +1,13 @@
-# 17 · 规划：IMEDIC02 平面词库 + mmap 零加工加载（待实施）
+# 17 · 规划：IMEDIC02 平面词库 + mmap 零加工加载
 
-> 状态：**规划已定，待实施**（2026-08-13 定稿）。背景见 AGENTS.md「当前状态」已知问题：
-> 新开记事本立刻打字前 5-8 个字母直接上屏（引擎冷加载 2.1s 窗口期透明放行）。
+> 状态：**已实施**（2026-08-13 落地，分支 feat/imedic02-mmap）。背景见 AGENTS.md「当前状态」
+> 已知问题：新开记事本立刻打字前 5-8 个字母直接上屏（引擎冷加载 2.1s 窗口期透明放行）。
+>
+> **实施决策（与规划差异）**：
+> - 加载校验 = **简单边界检查**（逐条记录边界扫描，不校验 code 单调性/排序——数据出自自家 dictc）
+> - **删除 IMEDIC01 读路径**（magic 分派不做；老词库必须重编译）
+> - 验收实测：真实词库 125.5 万条，dictc 编译 ~14s；repl 冷加载 **70ms**、热 **31ms**（目标 <200ms）
+> - 查询热路径：exact 物化 Vec<Entry> 量级微秒（repl 全表候选批查无感）
 
 ## 1. 问题根因
 
@@ -37,11 +43,11 @@
 | 文件 | 改动 |
 |---|---|
 | `iuv-data/src/mmap.rs` **新增** | `MappedFile` RAII：Windows = `CreateFileW`(GENERIC_READ, `FILE_SHARE_READ\|WRITE\|DELETE`) + `CreateFileMappingW` + `MapViewOfFile`；非 Windows = `fs::read` + `Arc<[u8]>`，统一 `&[u8]` 视图 |
-| `iuv-data/src/format.rs` | 写 IMEDIC02（段表+桶+索引+记录体）；平面读路径（段定位 O(1) + 校验扫描：边界/code 合法/**code 单调性全查**）；保留 IMEDIC01 旧读路径（magic 分派） |
-| `iuv-data/src/dict.rs` | Dict 内部 = MappedFile + 段偏移 + 物化音节表；`exact` 二分索引段→组内物化；`exact_single` 过滤单字；`prefix` 二分范围扫 + 跨组归并（默认关闭低频路径）；`initial_top` 桶段直读；`from_entries` 改走序列化→平面解析统一路径；返回 `&[Entry]`→`Vec<Entry>` |
-| `iuv-data/src/compile.rs` | 产出段表/桶/索引（排序逻辑复用） |
-| `iuv-data/Cargo.toml` | `windows = { workspace = true }`（仅 Windows target） |
-| `iuv-core/src/engine.rs` 等 | 仅类型标注微调（`Vec<&Entry>`→`Vec<Entry>`，消费语法不变） |
+| `iuv-data/src/format.rs` | 写 IMEDIC02（段表+元数据+桶+索引+记录体，内部排序）；段布局常量；`load` = MappedFile + `Dict::from_file` |
+| `iuv-data/src/dict.rs` | Dict = MappedFile + 段偏移 + 物化音节表；`from_file` 边界校验扫描；`exact` 索引段二分→组内物化；`exact_single` 过滤单字；`prefix` 二分范围扫（默认关闭低频路径）；`initial_top` 桶段直读；`from_entries` 走序列化→平面解析统一路径；返回 `Vec<Entry>`（mmap 无法零拷贝借用） |
+| `iuv-data/src/compile.rs` | 简拼键生成保留；排序移交写端；stats 用集合计数 |
+| `iuv-data/Cargo.toml` | `windows`（仅 Windows target）+ `windows-core` |
+| `iuv-core/src/{engine,viterbi}.rs` | 消费类型适配（`Vec<Entry>`），无逻辑变化 |
 | 文档 | `01-contract.md` §3、`10-mod-iuv-data.md`、`AGENTS.md` 同步 |
 
 ## 5. 关键风险
@@ -58,6 +64,6 @@
 
 ## 7. 验收
 
-1. `cargo test --workspace` 全绿（新增：02 往返、坏数据/截断、01 兼容、排序不变量）
-2. `download-dict.ps1` 重编译 → 日志「引擎加载完成：耗时 <200ms」
-3. 手测：新开记事本首键即进拼音；旧 IMEDIC01 仍可加载
+1. `cargo test --workspace` 全绿（新增：02 往返、坏数据/截断、未知段兼容、桶文件查询、排序不变量）
+2. `download-dict.ps1` 重编译 → 日志「引擎加载完成：耗时 <200ms」（实测 70ms/31ms）
+3. 手测：新开记事本首键即进拼音

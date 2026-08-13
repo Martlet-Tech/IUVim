@@ -111,20 +111,28 @@ if ($r.Renamed) {
     Trace-Script "dev-deploy: DLL 复制成功 $destDll"
 }
 
-# ---- 4. 注册（仅未注册时；DLL 路径不变，热替换无需重注册）----
-if (-not (Test-Path $clsidKey) -or -not (Test-Path $tipKey)) {
-    Trace-Script "dev-deploy: 开始 regsvr32 $destDll"
+# ---- 4. 注册（未注册、或 CLSID 指向的 DLL 路径不是本安装时重注册）----
+# 曾因只查 key 存在与否而跳过 regsvr32，导致注册表仍指向旧路径的旧 DLL
+# （项目改名前的 C:\Program Files\InputIME），热部署永远不生效。现与 install.ps1
+# 同款校验：InprocServer32 默认值必须等于本安装的 destDll。
+$registeredPath = $null
+if (Test-Path "$clsidKey\InprocServer32") {
+    $registeredPath = (Get-ItemProperty -Path "$clsidKey\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
+}
+if (-not (Test-Path $clsidKey) -or -not (Test-Path $tipKey) -or $registeredPath -ne $destDll) {
+    Trace-Script "dev-deploy: 开始 regsvr32 $destDll（注册路径=$registeredPath）"
     Write-Host "正在注册 COM/TSF 服务..."
     & "$env:windir\System32\regsvr32.exe" /s $destDll
     Start-Sleep -Seconds 1
-    if (-not (Test-Path $clsidKey) -or -not (Test-Path $tipKey)) {
-        Trace-Script "dev-deploy: 注册失败（CLSID=$(Test-Path $clsidKey) TIP=$(Test-Path $tipKey)）"
+    $afterPath = (Get-ItemProperty -Path "$clsidKey\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
+    if (-not (Test-Path $clsidKey) -or -not (Test-Path $tipKey) -or $afterPath -ne $destDll) {
+        Trace-Script "dev-deploy: 注册失败（CLSID=$(Test-Path $clsidKey) TIP=$(Test-Path $tipKey) path=$afterPath）"
         Write-Host "错误：注册失败。日志见 %TEMP%\iuv-script.log"
         exit 1
     }
-    Trace-Script "dev-deploy: regsvr32 完成，CLSID=True TIP=True"
+    Trace-Script "dev-deploy: regsvr32 完成，CLSID=True TIP=True path=$afterPath"
 } else {
-    Trace-Script "dev-deploy: 已注册，跳过 regsvr32"
+    Trace-Script "dev-deploy: 已注册且路径匹配，跳过 regsvr32"
 }
 
 # ---- 5. 重启 ctfmon（受限用户上下文，加载新 DLL）----

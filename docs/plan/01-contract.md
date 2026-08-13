@@ -125,31 +125,33 @@ pub struct Entry {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Dict { /* BTreeMap<squashed_code, Vec<Entry>>，每组按 weight 降序；
-                      initial_buckets: 26 首字母桶（每桶词频降序 top-500，含字含词，M1.5） */ }
+pub struct Dict { /* IMEDIC02 mmap 平面视图 + 段偏移（零重建加载）；查询物化 Entry 拷贝。
+                      initial_buckets 固化为段2（26 桶，每桶词频降序 top-1000 单字，M1.5） */ }
 
 impl Dict {
     /// 测试/用户词库构造器。items = (squashed_code, word, weight)。
     /// 同码多条按 weight 降序归并；同 (code,word) 去重取最大 weight。
+    /// 实现 = 归并 → 序列化 IMEDIC02 → 与文件加载同一条解析路径。
     pub fn from_entries(items: Vec<(String, String, u32)>) -> Dict;
 
-    /// 精确查询：squashed_code 如 "nihao"。返回按 weight 降序切片。
-    pub fn exact(&self, squashed_code: &str) -> &[Entry];
+    /// 精确查询：squashed_code 如 "nihao"。返回按 weight 降序的物化词条
+    /// （mmap 数据无法零拷贝借用，查询即拷贝；量级微秒，M1.6 实测通过）。
+    pub fn exact(&self, squashed_code: &str) -> Vec<Entry>;
 
     /// 精确查询（单字视图，M1.5 单段档）：返回 code == squashed_code 的单字词条。
     /// 单段档数据契约：只出单字——多字词键（异常数据）在此过滤，引擎侧无需防御。
-    pub fn exact_single(&self, squashed_code: &str) -> Vec<&Entry>;
+    pub fn exact_single(&self, squashed_code: &str) -> Vec<Entry>;
 
     /// 前缀补全：返回 squashed 以 prefix 开头（且不等于 prefix）的词条，
     /// 跨编码按 weight 降序，最多 limit 条。
-    pub fn prefix(&self, squashed_prefix: &str, limit: usize) -> Vec<&Entry>;
+    pub fn prefix(&self, squashed_prefix: &str, limit: usize) -> Vec<Entry>;
 
     /// 首字母桶查询（M1.5）：返回 code 以 `initial` 开头的词条，按词频降序，
-    /// 最多 limit 条。桶在加载时预建（每字母 top-500），供单段档（`c`/`sh`/`shi`…）
+    /// 最多 limit 条。桶在编译期固化（每字母 top-1000 单字），供单段档（`c`/`sh`/`shi`…）
     /// O(1) 取候选，替代全表前缀扫描排序（'s' 全扫 10 万条不可用于按键热路径）。
-    pub fn initial_top(&self, initial: char, limit: usize) -> Vec<&Entry>;
+    pub fn initial_top(&self, initial: char, limit: usize) -> Vec<Entry>;
 
-    /// 全部音节集合（从所有 code 切出），供全拼切分器构造。
+    /// 全部音节集合（编译期固化在元数据段，加载物化），供全拼切分器构造。
     pub fn syllables(&self) -> &BTreeSet<String>;
 
     pub fn total_weight(&self) -> u64;   // 全部词条 weight 之和（LM 分母）
@@ -160,12 +162,9 @@ impl Dict {
 // ===== 简拼键（M1.5）=====
 /// dictc 对 ≥2 音节词额外生成简拼键（每音节首字母串联：`ni'hao`→`nh`、
 /// `xi'an`→`xa`、`tian'an'men`→`tam`），与全拼键同表混存，权重复制。
-/// 无格式升级（IMEDIC01 原样），新旧词库双向兼容：
-/// - 新引擎读老词库：简拼键缺失 → 简拼档降级为空（其余路径不变）
-/// - 老引擎读新词库：多余键从不被查询，无感
 /// 键空间隔离靠查询路由（§4.2）：全拼查询的键要么是完整音节、要么含 `'`，
 /// 简拼键不含 `'` 且非完整音节，只在多段简拼输入时被查询，互不命中。
-pub const INITIAL_BUCKET_SIZE: usize = 500; // 每首字母桶上限（可调）
+pub const INITIAL_BUCKET_SIZE: usize = 1000; // 每首字母桶上限（可调，实现为准）
 
 // ===== lib.rs 顶部函数（Agent A 实现于 format.rs 后 re-export）=====
 /// 加载二进制词典。
@@ -179,15 +178,22 @@ pub struct CompileStats { pub files: usize, pub entries: usize, pub codes: usize
 pub fn compile_files(inputs: &[std::path::PathBuf], output: &std::path::Path) -> std::io::Result<CompileStats>;
 ```
 
-### 3.1 二进制词典格式（`iuv.imedic`）
+### 3.1 二进制词典格式（`iuv.imedic`，IMEDIC02）
+
+段表驱动平面格式（详情见 `17-imedic02-mmap.md`）。加载 = mmap + 段定位 + 边界校验扫描，
+零重建（冷启动 2.1s → ~70ms 实测）。排序不变量（code 升序、组内 weight 降序）由写端保证。
 
 ```
-[0..8]    magic = b"IMEDIC01"
-[8..12]   u32 LE  record_count
-记录×N:   u8 code_len | code（squashed，全小写 a-z，无空格）
-          u16 LE word_utf8_len | word（UTF-8）
-          u32 LE weight
-记录按 (code 升序, weight 降序) 排列写入；加载时顺序建 BTreeMap。
+[0..8]   magic = b"IMEDIC02"
+[8..12]  u32 LE 段数 N
+[12..]   段表：N × { u8 段类型 | u32 偏移 | u32 长度 }
+段1 元数据:  u64 total_weight | u32 entry_count | u32 max_word_syllables
+            | u32 音节数 | 音节 × { u8 len | bytes（UTF-8） }
+段2 首字母桶: 26 × { u8 字母 | u32 记录数 | 记录 × N }（单字，weight 降序，≤1000/桶）
+段3 记录索引: record_count × u32 记录体段内偏移（按 code 升序）
+段4 记录体:   record_count × { u8 code_len | code | u16 word_len | word | u32 weight }
+记录: code 为 squashed 键（全小写 a-z，音节间 ' 分隔）；记录按 (code 升序, weight 降序) 排列。
+未知段类型 → 加载器忽略（未来屏蔽段/用户段前向兼容）；IMEDIC01 旧格式不再支持读。
 ```
 
 ## 4. iuv-core 公共 API

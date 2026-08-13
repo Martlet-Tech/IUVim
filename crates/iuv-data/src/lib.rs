@@ -4,6 +4,7 @@
 pub mod compile;
 pub mod dict;
 pub mod format;
+mod mmap;
 
 pub use compile::{compile_files, CompileStats};
 pub use dict::{Dict, Entry, INITIAL_BUCKET_SIZE};

@@ -22,6 +22,8 @@ name = "iuv-data"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

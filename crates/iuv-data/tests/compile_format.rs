@@ -112,11 +112,8 @@ fn prefix_query_smoke() {
     );
     let d = load(&out).unwrap();
     // 词库键已分隔化（空格→'）：前缀联想用音节前缀 "ni" 命中 "ni'hao" / "ni'men"。
-    let words: Vec<&str> = d
-        .prefix("ni", 10)
-        .iter()
-        .map(|e| e.word.as_str())
-        .collect();
+    let hits = d.prefix("ni", 10);
+    let words: Vec<&str> = hits.iter().map(|e| e.word.as_str()).collect();
     assert!(words.contains(&"你好"));
     assert!(words.contains(&"泥嚎"));
     assert!(words.contains(&"你们"));
@@ -195,4 +192,54 @@ fn format_write_load_roundtrip() {
     let d = load(&p).unwrap();
     assert_eq!(d.entry_count(), 2);
     assert_eq!(d.exact("ni'hao")[0].weight, 10);
+}
+
+#[test]
+fn unknown_segment_ignored() {
+    // 段表驱动兼容：往合法 IMEDIC02 尾部追加一个未知段类型（99），加载必须成功
+    // 且忽略之（旧加载器对未来新段的约定行为）。
+    let dir = tmp_dir("unknown_seg");
+    let records = [Entry { word: "你好".into(), code: "ni'hao".into(), weight: 10 }];
+    let mut v = Vec::new();
+    iuv_data::format::write(&records, &mut v).unwrap();
+    let seg_count = u32::from_le_bytes([v[8], v[9], v[10], v[11]]) as usize;
+    assert_eq!(seg_count, 4);
+    let seg_hdr = 9usize; // u8 类型 | u32 偏移 | u32 长度
+    // 段表后插入一条未知段条目（9 字节）
+    let table_end = 12 + seg_count * seg_hdr;
+    let new_entry = [99u8, 0, 0, 0, 0, 0, 0, 0, 0];
+    v.splice(table_end..table_end, new_entry.iter().copied());
+    // 原有段被后推 9 字节，修正其偏移
+    for i in 0..seg_count {
+        let h = 12 + i * seg_hdr;
+        let off = u32::from_le_bytes([v[h + 1], v[h + 2], v[h + 3], v[h + 4]]) + 9;
+        v[h + 1..h + 5].copy_from_slice(&off.to_le_bytes());
+    }
+    // 未知段内容追加在文件尾（偏移 = 插入后的长度）
+    let tail_off = v.len();
+    v.extend_from_slice(&[0xEE; 9]);
+    let h = table_end;
+    v[h + 1..h + 5].copy_from_slice(&(tail_off as u32).to_le_bytes());
+    v[h + 5..h + 9].copy_from_slice(&9u32.to_le_bytes());
+    v[8..12].copy_from_slice(&((seg_count + 1) as u32).to_le_bytes());
+
+    let p = dir.join("with_unknown.imedic");
+    std::fs::write(&p, &v).unwrap();
+    let d = load(&p).unwrap();
+    assert_eq!(d.exact("ni'hao")[0].word, "你好");
+}
+
+#[test]
+fn initial_top_works_from_file() {
+    // 首字母桶段从文件加载后的查询（桶记录内联于桶段，读端逐条推进）。
+    let dir = tmp_dir("bucket_file");
+    let (out, _) = compile_one(
+        &dir,
+        "的\tde\t100000\n得\tde\t300\n大\tda\t5000\n中国\tzhong guo\t90000\n",
+    );
+    let d = load(&out).unwrap();
+    let top = d.initial_top('d', 10);
+    let words: Vec<&str> = top.iter().map(|e| e.word.as_str()).collect();
+    assert_eq!(words, vec!["的", "大", "得"]); // 词频降序
+    assert!(!words.contains(&"中国"), "多字词不入桶");
 }

@@ -1,130 +1,168 @@
-//! 二进制词典格式读写（magic = `IMEDIC01`）。契约 01-contract.md §3.1。
+//! IMEDIC02 平面词库格式：段表驱动，加载零加工（mmap 直读）。见 docs/plan/17-imedic02-mmap.md。
 //!
 //! 布局：
 //! ```text
-//! [0..8]    magic = b"IMEDIC01"
-//! [8..12]   u32 LE  record_count
-//! 记录×N:   u8 code_len | code（squashed，全小写 a-z，无空格）
-//!           u16 LE word_utf8_len | word（UTF-8）
-//!           u32 LE weight
+//! [0..8]   magic = b"IMEDIC02"
+//! [8..12]  u32 LE 段数 N
+//! [12..]   段表：N × { u8 段类型 | u32 偏移 | u32 长度 }（偏移相对文件头）
+//! 段1 元数据:  u64 total_weight | u32 entry_count | u32 max_word_syllables
+//!             | u32 音节数 | 音节 × { u8 len | bytes（UTF-8） }
+//! 段2 首字母桶: 26 × { u8 字母 | u32 记录数 | 记录 × N }（单字，weight 降序，≤INITIAL_BUCKET_SIZE/桶）
+//! 段3 记录索引: record_count × u32 记录体段内偏移（按 code 升序）
+//! 段4 记录体:   record_count × { u8 code_len | code | u16 word_len | word | u32 weight }
 //! ```
-//! 记录按 (code 升序, weight 降序) 排列写入；加载时经 `Dict::from_entries` 建表
-//! （其内部会再排序去重，天然防手写数据不规范）。
+//! 记录排序不变量（code 升序、组内 weight 降序）由写端保证；加载只做简单边界检查
+//! （不校验排序/单调性——数据出自自家 dictc，防的是截断与坏字节）。
+//! 段表驱动：未来追加段（屏蔽段/用户段）= 新段类型，旧加载器忽略未知段，双向兼容。
 
-use crate::{Dict, Entry};
-use std::fs;
+use crate::mmap::MappedFile;
+use crate::{Dict, Entry, INITIAL_BUCKET_SIZE};
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
-/// 文件头 magic（含版本号；格式演进升 `IMEDIC02` 并做向后兼容读取）。
-const MAGIC: &[u8; 8] = b"IMEDIC01";
+/// 文件头 magic。
+pub const MAGIC: &[u8; 8] = b"IMEDIC02";
 
-/// 流式游标：自带偏移统计，越界统一报 `InvalidData`（带偏移），由调用方补文件名。
-struct Cursor<'a> {
-    data: &'a [u8],
-    pos: usize,
-}
+// 段类型（1..=4 为当前必需段；未知段加载时忽略）
+pub(crate) const SEG_META: u8 = 1;
+pub(crate) const SEG_BUCKETS: u8 = 2;
+pub(crate) const SEG_INDEX: u8 = 3;
+pub(crate) const SEG_RECORDS: u8 = 4;
+pub(crate) const SEG_HEADER_LEN: usize = 1 + 4 + 4; // u8 类型 | u32 偏移 | u32 长度
+pub(crate) const FILE_HEADER_LEN: usize = 8 + 4; // magic | u32 段数
 
-impl<'a> Cursor<'a> {
-    fn take(&mut self, n: usize, what: &str) -> io::Result<&'a [u8]> {
-        if self.pos + n > self.data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("偏移 {}: 读取{what}时文件截断", self.pos),
-            ));
-        }
-        let s = &self.data[self.pos..self.pos + n];
-        self.pos += n;
-        Ok(s)
-    }
-
-    fn u8(&mut self) -> io::Result<u8> {
-        Ok(self.take(1, "字节")?[0])
-    }
-
-    fn u16(&mut self) -> io::Result<u16> {
-        let b = self.take(2, "u16")?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
-    }
-
-    fn u32(&mut self) -> io::Result<u32> {
-        let b = self.take(4, "u32")?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-}
-
-/// 从二进制文件加载词典。magic 校验失败 / 截断 / 坏数据 → `io::ErrorKind::InvalidData`，
-/// 错误消息带文件名与偏移。
+/// 从二进制文件加载词典：mmap 零拷贝 + 段表定位 + 全量边界校验。
+/// magic 校验失败 / 截断 / 坏数据 → `io::ErrorKind::InvalidData`。
 pub fn load(path: &Path) -> io::Result<Dict> {
-    let data =
-        fs::read(path).map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
-    let mut c = Cursor {
-        data: &data,
-        pos: 0,
-    };
-    let magic = c.take(MAGIC.len(), "magic")?;
-    if magic != MAGIC {
-        return Err(bad(
-            path,
-            0,
-            format!("magic 校验失败（期望 {MAGIC:?}，得到 {magic:?}）"),
-        ));
-    }
-    let count = c.u32()? as usize;
-    let mut items = Vec::with_capacity(count.min(1 << 20));
-    for _ in 0..count {
-        let code_len = c.u8()? as usize;
-        let code_start = c.pos;
-        let code = c.take(code_len, "code")?;
-        let code = std::str::from_utf8(code).map_err(|_| bad(path, code_start, "code 非 UTF-8"))?;
-        if !is_valid_code(code) {
-            return Err(bad(path, code_start, format!("code 含非法字符: {code:?}")));
-        }
-        let word_len = c.u16()? as usize;
-        let word_start = c.pos;
-        let word_b = c.take(word_len, "word")?;
-        let word =
-            std::str::from_utf8(word_b).map_err(|_| bad(path, word_start, "word 非 UTF-8"))?;
-        let weight = c.u32()?;
-        items.push((code.to_string(), word.to_string(), weight));
-    }
-    if c.pos != data.len() {
-        return Err(bad(path, c.pos, "文件尾部有多余数据"));
-    }
-    Ok(Dict::from_entries(items))
+    let file = MappedFile::open(path)?;
+    Dict::from_file(file).map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
 }
 
-/// 写入二进制词典。records 按 (code 升序, weight 降序) 排列。
+/// 写入 IMEDIC02。records 不要求有序——本函数内部排序并保证排序不变量
+/// （code 升序；同 code 按 weight 降序、同 weight 按 word 升序）。
 pub fn write(records: &[Entry], writer: impl io::Write) -> io::Result<()> {
+    let mut records: Vec<Entry> = records.to_vec();
+    records.sort_by(|a, b| {
+        a.code
+            .cmp(&b.code)
+            .then_with(|| b.weight.cmp(&a.weight))
+            .then_with(|| a.word.cmp(&b.word))
+    });
+
+    // ---- 元数据（total/entry_count/max_word_syllables/音节表；逻辑与 from_entries 一致）----
+    let mut total = 0u64;
+    let mut max_word_syllables = 0usize;
+    let mut syllables: Vec<String> = Vec::new();
+    let mut syllable_set = std::collections::BTreeSet::new();
+    for r in &records {
+        total += r.weight as u64;
+        let seg = crate::dict::greedy_segment(&r.code);
+        // 仅全为合法音节的词条计入词长（英文条目如 "abc" 不算拼音词）
+        if seg.iter().all(|s| crate::dict::is_syllable(s)) {
+            max_word_syllables = max_word_syllables.max(seg.len());
+        }
+        for s in &seg {
+            if crate::dict::is_syllable(s) {
+                syllable_set.insert(s.clone());
+            }
+        }
+    }
+    syllables.extend(syllable_set);
+
+    // ---- 首字母桶（单遍收集副本 + 桶内排序截断；只收单字：word 单字且 code 无 `'`）----
+    let mut buckets: Vec<Vec<Entry>> = (0..26).map(|_| Vec::new()).collect();
+    for e in &records {
+        if e.word.chars().count() == 1 && !e.code.contains('\'') {
+            if let Some(c) = e.code.chars().next() {
+                if c.is_ascii_lowercase() {
+                    buckets[(c as u8 - b'a') as usize].push(e.clone());
+                }
+            }
+        }
+    }
+    for v in buckets.iter_mut() {
+        v.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
+        v.truncate(INITIAL_BUCKET_SIZE);
+    }
+
+    // ---- 序列化段（一次性字节组装）----
+    let meta = {
+        let mut m = Vec::new();
+        m.extend_from_slice(&total.to_le_bytes());
+        m.extend_from_slice(&(records.len() as u32).to_le_bytes());
+        m.extend_from_slice(&(max_word_syllables as u32).to_le_bytes());
+        m.extend_from_slice(&(syllables.len() as u32).to_le_bytes());
+        for s in &syllables {
+            let len = u8::try_from(s.len())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "音节超过 255 字节"))?;
+            m.push(len);
+            m.extend_from_slice(s.as_bytes());
+        }
+        m
+    };
+
+    let bucket_seg = {
+        let mut b = Vec::new();
+        for (i, v) in buckets.iter().enumerate() {
+            b.push(b'a' + i as u8);
+            b.extend_from_slice(&(v.len() as u32).to_le_bytes());
+            for e in v {
+                write_record(&mut b, e)?;
+            }
+        }
+        b
+    };
+
+    let (index_seg, records_seg) = {
+        let mut idx = Vec::with_capacity(records.len() * 4);
+        let mut body = Vec::new();
+        for e in &records {
+            let off = u32::try_from(body.len())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "记录体超过 4GB"))?;
+            idx.extend_from_slice(&off.to_le_bytes());
+            write_record(&mut body, e)?;
+        }
+        (idx, body)
+    };
+
+    // ---- 段表 + 文件头（偏移在组装后计算）----
+    let segs: [(&[u8], u8); 4] = [
+        (&meta, SEG_META),
+        (&bucket_seg, SEG_BUCKETS),
+        (&index_seg, SEG_INDEX),
+        (&records_seg, SEG_RECORDS),
+    ];
+    let mut offset = FILE_HEADER_LEN + segs.len() * SEG_HEADER_LEN;
+    let mut header = Vec::with_capacity(FILE_HEADER_LEN + segs.len() * SEG_HEADER_LEN);
+    header.extend_from_slice(MAGIC);
+    header.extend_from_slice(&(segs.len() as u32).to_le_bytes());
+    for (seg, ty) in &segs {
+        header.push(*ty);
+        header.extend_from_slice(&(offset as u32).to_le_bytes());
+        header.extend_from_slice(&(seg.len() as u32).to_le_bytes());
+        offset += seg.len();
+    }
+
     let mut w = BufWriter::new(writer);
-    w.write_all(MAGIC)?;
-    let count = u32::try_from(records.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "记录数超过 u32 上限"))?;
-    w.write_all(&count.to_le_bytes())?;
-    for r in records {
-        let code = r.code.as_bytes();
-        let code_len = u8::try_from(code.len())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "code 超过 255 字节"))?;
-        w.write_all(&[code_len])?;
-        w.write_all(code)?;
-        let word = r.word.as_bytes();
-        let word_len = u16::try_from(word.len())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "word 超过 65535 字节"))?;
-        w.write_all(&word_len.to_le_bytes())?;
-        w.write_all(word)?;
-        w.write_all(&r.weight.to_le_bytes())?;
+    w.write_all(&header)?;
+    for (seg, _) in &segs {
+        w.write_all(seg)?;
     }
     w.flush()
 }
 
-/// code 合法性：squashed 全小写 a-z，允许 `'` 强制分隔（如 `xi'an`）。
-fn is_valid_code(code: &str) -> bool {
-    code.chars().all(|c| c.is_ascii_lowercase() || c == '\'')
-}
-
-fn bad(path: &Path, offset: usize, msg: impl AsRef<str>) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("{}: 偏移 {offset}: {}", path.display(), msg.as_ref()),
-    )
+/// 单条记录序列化（code/word 长度上限分别 255/65535 字节）。
+fn write_record(buf: &mut Vec<u8>, e: &Entry) -> io::Result<()> {
+    let code = e.code.as_bytes();
+    let code_len = u8::try_from(code.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "code 超过 255 字节"))?;
+    buf.push(code_len);
+    buf.extend_from_slice(code);
+    let word = e.word.as_bytes();
+    let word_len = u16::try_from(word.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "word 超过 65535 字节"))?;
+    buf.extend_from_slice(&word_len.to_le_bytes());
+    buf.extend_from_slice(word);
+    buf.extend_from_slice(&e.weight.to_le_bytes());
+    Ok(())
 }
