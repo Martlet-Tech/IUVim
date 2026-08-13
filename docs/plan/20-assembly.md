@@ -4,17 +4,17 @@
 
 1. 按 `01-contract.md` §1/§2 建 workspace：根 `Cargo.toml`、四个 crate 的 `Cargo.toml`、`.gitignore`（`/target`、`/data`）
 2. **完整实现**（冻结件）：
-   - `ime-data/src/dict.rs`（`Entry`/`Dict` 全查询层 + `from_entries`）与 `lib.rs` re-export
-   - `ime-core/src/{candidate,config,key}.rs` 与 `lib.rs`（模块声明 + re-export）
-   - `ime-tsf/src/ui/mod.rs`（`CaretRect`/`UiSnapshot`/`CandidateUi`/`effect_to_snapshot` 完整实现 + `NullCandidateUi` 桩）
-   - `ime-tsf/src/registration.rs` 中写入 §5.1 全部常量
+   - `iuv-data/src/dict.rs`（`Entry`/`Dict` 全查询层 + `from_entries`）与 `lib.rs` re-export
+   - `iuv-core/src/{candidate,config,key}.rs` 与 `lib.rs`（模块声明 + re-export）
+   - `iuv-tsf/src/ui/mod.rs`（`CaretRect`/`UiSnapshot`/`CandidateUi`/`effect_to_snapshot` 完整实现 + `NullCandidateUi` 桩）
+   - `iuv-tsf/src/registration.rs` 中写入 §5.1 全部常量
 3. 其余文件建空壳：签名照抄契约，函数体 `todo!()` / `Default::default()`，保证 **`cargo check --workspace` 全绿**
 4. 检查属主矩阵（契约 §6）无遗漏文件
 
 ## 2. W1：并行派发
 
 用 task 工具同时派发 5 个 general 子智能体，提示词 = 各任务书 §末"子智能体启动提示词"原文。
-建议顺序同发；A/B/C 互不依赖，D/E 在 ime-tsf 内文件不相交（D 若先于 E 完成用 `NullCandidateUi` 顶联调）。
+建议顺序同发；A/B/C 互不依赖，D/E 在 iuv-tsf 内文件不相交（D 若先于 E 完成用 `NullCandidateUi` 顶联调）。
 
 **收单检查**（每个 agent 回报后）：
 - 只改了属主矩阵内文件（`git status` 若已初始化；否则对照清单）
@@ -29,25 +29,25 @@ cargo build --workspace --release
 
 # 2. 词库（需先跑过 download-dict.ps1）
 scripts\download-dict.ps1
-cargo run -p ime-data --bin dictc -- data\input.imedic `
+cargo run -p iuv-data --bin dictc -- data\iuv.imedic `
   data\rime-frost\cn_dicts\8105.dict.yaml data\rime-frost\cn_dicts\41448.dict.yaml `
   data\rime-frost\cn_dicts\base.dict.yaml data\rime-frost\cn_dicts\ext.dict.yaml `
   data\rime-frost\cn_dicts\others.dict.yaml
 # 期望：entries ≈ 60万级，无解析错误；文件大小 15~40MB
 
 # 3. REPL 冒烟（断言肉眼级）
-cargo run -p ime-repl -- data\input.imedic --batch nihao
+cargo run -p iuv-repl -- data\iuv.imedic --batch nihao
 # 期望：首候选为 Sentence 且含"你好"；exact 词 "你好/泥嚎…" 按 weight 降序
-cargo run -p ime-repl -- data\input.imedic --batch de
+cargo run -p iuv-repl -- data\iuv.imedic --batch de
 # 期望：的/得/地 按 weight 降序
 ```
 
 ## 4. W2：注册与真机手测（需管理员 PowerShell）
 
 ```powershell
-scripts\install.ps1    # 复制 DLL → %ProgramFiles%\InputIME、词典 → %LOCALAPPDATA%\InputIME，注册，重启 ctfmon
+scripts\install.ps1    # 复制 DLL → %ProgramFiles%\iuv、词典 → %LOCALAPPDATA%\iuv，注册，重启 ctfmon
 ```
-然后 `Win+Space` 切到 **Input IME**，打开记事本按清单手测：
+然后 `Win+Space` 切到 **iuv 输入法**，打开记事本按清单手测：
 
 | # | 操作 | 期望 |
 |---|---|---|
@@ -60,9 +60,9 @@ scripts\install.ps1    # 复制 DLL → %ProgramFiles%\InputIME、词典 → %LO
 | 7 | 输入中 Esc | 预编辑取消，正文无残留 |
 | 8 | Shift | 切英文模式，字母直出；再 Shift 回中文 |
 | 9 | 候选窗显示时切换到别的窗口 | 候选窗消失不残留 |
-| 10 | 删掉 `%LOCALAPPDATA%\InputIME\input.imedic` 重试 | 输入法透明（字母直出），日志有记录，**不卡不死** |
+| 10 | 删掉 `%LOCALAPPDATA%\iuv\iuv.imedic` 重试 | 输入法透明（字母直出），日志有记录，**不卡不死** |
 
-日志：`%TEMP%\input-ime-tsf.log` 应有 Activate、引擎加载、commit 记录。
+日志：`%TEMP%\input-iuv-tsf.log` 应有 Activate、引擎加载、commit 记录。
 
 手测常见问题排查：
 - 语言列表看不到 → 注册脚本是否管理员运行；ctfmon 是否重启；注册表 `HKCR\CLSID\{C69735F1…}` 是否存在

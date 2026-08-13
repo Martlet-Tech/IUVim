@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ime-data", "crates/ime-core", "crates/ime-repl", "crates/ime-tsf"]
+members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-repl", "crates/iuv-tsf"]
 
 [workspace.package]
 edition = "2021"
@@ -20,8 +20,8 @@ windows = { version = "0.62", features = [
 ] }
 windows-core = "0.62"
 windows-registry = "0.6"
-ime-data = { path = "crates/ime-data" }
-ime-core = { path = "crates/ime-core" }
+iuv-data = { path = "crates/iuv-data" }
+iuv-core = { path = "crates/iuv-core" }
 
 [profile.release]
 lto = "fat"

@@ -1,4 +1,4 @@
-# 00 · 总览：Input 输入法 MVP（M1）vibecoding 方案书
+# 00 · 总览：iuv 输入法 MVP（M1）vibecoding 方案书
 
 > 本目录是 M1（最小 MVP）的**可执行**方案书。目标读者：主智能体（组装者）与子智能体（模块实现者）。
 > 所有文档中，**`01-contract.md` 是接口的唯一权威来源**；模块任务书与契约冲突时以契约为准。
@@ -16,17 +16,17 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 
 ```
 ┌─────────────────────────── workspace ───────────────────────────┐
-│ crates/ime-data   词库编译器(dictc) + 二进制格式 + Dict 查询层   │  叶 crate，无 workspace 内依赖
-│ crates/ime-core   引擎：切分/查词/Viterbi/会话状态机/排序管线    │  依赖 ime-data
-│ crates/ime-repl   CLI 调试前端（不注册输入法即可测引擎）         │  依赖 ime-core, ime-data
-│ crates/ime-tsf    cdylib：COM/TSF 管线 + GDI 候选窗             │  依赖 ime-core, ime-data
+│ crates/iuv-data   词库编译器(dictc) + 二进制格式 + Dict 查询层   │  叶 crate，无 workspace 内依赖
+│ crates/iuv-core   引擎：切分/查词/Viterbi/会话状态机/排序管线    │  依赖 iuv-data
+│ crates/iuv-repl   CLI 调试前端（不注册输入法即可测引擎）         │  依赖 iuv-core, iuv-data
+│ crates/iuv-tsf    cdylib：COM/TSF 管线 + GDI 候选窗             │  依赖 iuv-core, iuv-data
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 运行时数据流（M1，全在应用进程内）：
 
 ```
-按键 → TSF(OnTestKeyDown/OnKeyDown) → session_bridge 映射为 ime_core::Key
+按键 → TSF(OnTestKeyDown/OnKeyDown) → session_bridge 映射为 iuv_core::Key
       → Session::on_key → Effect ─┬→ composition.rs：更新预编辑文本 / 上屏
                                    └→ ui: CandidateUi.show/update/hide（GDI 候选窗）
 ```
@@ -36,7 +36,7 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 | 波次 | 执行者 | 内容 | 出口条件 |
 |---|---|---|---|
 | **W0** | 主智能体 | 按 `01-contract.md` 建 workspace 骨架：全部 Cargo.toml、契约类型/trait、`Dict` 查询层**完整实现**、`ui/mod.rs` **完整实现**，其余 `todo!()` 桩 | `cargo check --workspace` 全绿 |
-| **W1** | 5 个子智能体**并行** | A=ime-data(编译/格式/dictc) B=ime-core C=ime-repl D=ime-tsf 管线 E=ime-tsf 候选窗 | 各自任务书 DoD 全绿，且只改属主矩阵内的文件 |
+| **W1** | 5 个子智能体**并行** | A=iuv-data(编译/格式/dictc) B=iuv-core C=iuv-repl D=iuv-tsf 管线 E=iuv-tsf 候选窗 | 各自任务书 DoD 全绿，且只改属主矩阵内的文件 |
 | **W2** | 主智能体 | `20-assembly.md`：整体构建 → 词库编译 → repl 冒烟 → 注册 → 记事本手测清单 | M1 验收达成 |
 
 **并行独立性如何保证**：
@@ -63,10 +63,10 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 | 文件 | 内容 |
 |---|---|
 | `01-contract.md` | **共享契约**：依赖版本、全部公共 API、行为契约、文件属主矩阵、词典二进制格式 |
-| `10-mod-ime-data.md` | 任务书 A：词库编译器 + 二进制格式 + 下载脚本 |
-| `11-mod-ime-core.md` | 任务书 B：引擎（切分/候选生成/Viterbi/会话/管线桩） |
-| `12-mod-ime-repl.md` | 任务书 C：CLI 调试前端 |
-| `13-mod-ime-tsf-core.md` | 任务书 D：COM/TSF 管线 + 注册 |
-| `14-mod-ime-tsf-candwin.md` | 任务书 E：GDI 候选窗 + 演示程序 |
+| `10-mod-iuv-data.md` | 任务书 A：词库编译器 + 二进制格式 + 下载脚本 |
+| `11-mod-iuv-core.md` | 任务书 B：引擎（切分/候选生成/Viterbi/会话/管线桩） |
+| `12-mod-iuv-repl.md` | 任务书 C：CLI 调试前端 |
+| `13-mod-iuv-tsf-core.md` | 任务书 D：COM/TSF 管线 + 注册 |
+| `14-mod-iuv-tsf-candwin.md` | 任务书 E：GDI 候选窗 + 演示程序 |
 | `20-assembly.md` | W2 集成组装手册（主智能体用） |
 | `30-conventions.md` | 全局约定：代码风格、错误处理、日志、测试纪律 |

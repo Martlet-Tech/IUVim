@@ -4,7 +4,7 @@
 # 替换即时生效（新进程加载新 DLL），老进程继续持旧映射直到自然退出。全程不注销不重启。
 # 需管理员权限（自动弹 UAC 提权）。
 #
-# 用法：scripts\dev-deploy.ps1            # 先 cargo build -p ime-tsf --release 再部署
+# 用法：scripts\dev-deploy.ps1            # 先 cargo build -p iuv-tsf --release 再部署
 #       scripts\dev-deploy.ps1 -SkipBuild # 跳过构建，只部署现有产物
 #
 # 局限：运行中的其他应用（浏览器/编辑器等）仍持旧 DLL，需重启这些应用后才生效。
@@ -15,31 +15,31 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-. (Join-Path $PSScriptRoot 'ime-common.ps1')
+. (Join-Path $PSScriptRoot 'iuv-common.ps1')
 $pass = @()
 if ($SkipBuild) { $pass = @('-SkipBuild') }
 Exit-IfNotAdmin -ScriptPath $PSCommandPath -PassArgs $pass
 
 Trace-Script "dev-deploy: 提升实例启动"
-Write-Host "正在热部署 Input IME（管理员窗口）..."
+Write-Host "正在热部署 IUV 输入法（管理员窗口）..."
 
 $repoRoot  = Split-Path -Parent $PSScriptRoot
-$dllSrc    = Join-Path $repoRoot "target\release\input_ime_tsf.dll"
-$imedicSrc = Join-Path $repoRoot "data\input.imedic"
-$destDir   = Join-Path $env:ProgramFiles "InputIME"
-$destDll   = Join-Path $destDir "input_ime_tsf.dll"
-$dictDir   = Join-Path $env:LOCALAPPDATA "InputIME"
-$dictDest  = Join-Path $dictDir "input.imedic"
+$dllSrc    = Join-Path $repoRoot "target\release\iuv_tsf.dll"
+$imedicSrc = Join-Path $repoRoot "data\iuv.imedic"
+$destDir   = Join-Path $env:ProgramFiles "iuv"
+$destDll   = Join-Path $destDir "iuv_tsf.dll"
+$dictDir   = Join-Path $env:LOCALAPPDATA "iuv"
+$dictDest  = Join-Path $dictDir "iuv.imedic"
 $clsidKey  = 'Registry::HKEY_CLASSES_ROOT\CLSID\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
 $tipKey    = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
 
 # ---- 1. 构建（默认执行，增量很快；-SkipBuild 跳过）----
 if (-not $SkipBuild) {
-    Trace-Script "dev-deploy: 开始构建 cargo build -p ime-tsf --release"
-    Write-Host "正在构建（cargo build -p ime-tsf --release）..."
+    Trace-Script "dev-deploy: 开始构建 cargo build -p iuv-tsf --release"
+    Write-Host "正在构建（cargo build -p iuv-tsf --release）..."
     Push-Location $repoRoot
     try {
-        cargo build -p ime-tsf --release
+        cargo build -p iuv-tsf --release
         if ($LASTEXITCODE -ne 0) { throw "cargo build 失败（exit=$LASTEXITCODE）" }
     } finally { Pop-Location }
     Trace-Script "dev-deploy: 构建完成"
@@ -51,7 +51,7 @@ if (-not $SkipBuild) {
 if (-not (Test-Path $dllSrc)) {
     Trace-Script "dev-deploy: 错误，DLL 缺失 $dllSrc"
     Write-Host "错误：未找到 $dllSrc"
-    Write-Host "请先执行：cargo build -p ime-tsf --release（或去掉 -SkipBuild）"
+    Write-Host "请先执行：cargo build -p iuv-tsf --release（或去掉 -SkipBuild）"
     exit 1
 }
 if (-not (Test-Path $imedicSrc)) {
@@ -71,7 +71,7 @@ try {
 } catch {
     Trace-Script "dev-deploy: 词库复制失败（$dictDest）"
     Write-Host "错误：词库复制失败：$dictDest"
-    Write-Host "请关闭占用 %LOCALAPPDATA%\InputIME 的进程后重跑。"
+    Write-Host "请关闭占用 %LOCALAPPDATA%\iuv 的进程后重跑。"
     exit 1
 }
 $r = Replace-InUseDll -Src $dllSrc -Dest $destDll
@@ -90,7 +90,7 @@ if (-not (Test-Path $clsidKey) -or -not (Test-Path $tipKey)) {
     Start-Sleep -Seconds 1
     if (-not (Test-Path $clsidKey) -or -not (Test-Path $tipKey)) {
         Trace-Script "dev-deploy: 注册失败（CLSID=$(Test-Path $clsidKey) TIP=$(Test-Path $tipKey)）"
-        Write-Host "错误：注册失败。日志见 %TEMP%\input-ime-script.log"
+        Write-Host "错误：注册失败。日志见 %TEMP%\iuv-script.log"
         exit 1
     }
     Trace-Script "dev-deploy: regsvr32 完成，CLSID=True TIP=True"

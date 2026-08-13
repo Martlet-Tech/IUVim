@@ -1,0 +1,21 @@
+[package]
+name = "iuv-tsf"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[lib]
+name = "iuv_tsf"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+iuv-data = { workspace = true }
+iuv-core = { workspace = true }
+windows = { workspace = true }
+windows-core = { workspace = true }
+windows-registry = { workspace = true }
+
+[build-dependencies]
+winres = "0.1"

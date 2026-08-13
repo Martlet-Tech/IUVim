@@ -1,5 +1,5 @@
 ﻿# 下载白霜拼音词库（rime-frost，GPL-3.0）到 data\rime-frost\cn_dicts\。
-# 数据仅用于本地构建 input.imedic：不入 git 仓库（data/ 已 gitignore）、不编进二进制；
+# 数据仅用于本地构建 iuv.imedic：不入 git 仓库（data/ 已 gitignore）、不编进二进制；
 # 发布包若含编译产物，需附 GPL-3.0 NOTICE 声明（见 docs/plan/30-conventions.md §6）。
 # 幂等：目标已存在且非空则跳过。用法：scripts\download-dict.ps1
 $ErrorActionPreference = "Stop"

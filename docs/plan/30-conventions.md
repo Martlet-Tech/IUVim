@@ -9,15 +9,15 @@
 
 ## 2. 错误处理
 
-- `ime-data`：`io::Result`；格式错误用 `io::ErrorKind::InvalidData`，消息带文件名/偏移
-- `ime-core`：引擎运行期**不返回错误**（查不到 = 空结果，永不 panic）；构造期错误由 `Dict` 加载方处理
-- `ime-tsf`：DLL 内**绝不 panic 传播到宿主进程**——COM 边界捕获一切，记日志后降级（放行按键/隐藏窗口）；
+- `iuv-data`：`io::Result`；格式错误用 `io::ErrorKind::InvalidData`，消息带文件名/偏移
+- `iuv-core`：引擎运行期**不返回错误**（查不到 = 空结果，永不 panic）；构造期错误由 `Dict` 加载方处理
+- `iuv-tsf`：DLL 内**绝不 panic 传播到宿主进程**——COM 边界捕获一切，记日志后降级（放行按键/隐藏窗口）；
   unsafe 块必须带 `// SAFETY:` 注释
-- `ime-repl`：`Result<(), Box<dyn Error>>` 从 main 返回即可
+- `iuv-repl`：`Result<(), Box<dyn Error>>` 从 main 返回即可
 
 ## 3. 日志
 
-- 仅 ime-tsf 有运行期日志：`%TEMP%\input-ime-tsf.log`（`log.rs` 提供 `log_line`，std 实现，不加日志框架）
+- 仅 iuv-tsf 有运行期日志：`%TEMP%\input-iuv-tsf.log`（`log.rs` 提供 `log_line`，std 实现，不加日志框架）
 - 其他 crate 不打日志；测试用 `assert` 说话
 
 ## 4. 测试纪律
@@ -45,9 +45,9 @@
 ```powershell
 cargo check --workspace                 # 骨架/日常检查
 cargo test --workspace                  # 全量测试
-cargo build -p ime-tsf --release        # 产出 DLL
+cargo build -p iuv-tsf --release        # 产出 DLL
 scripts\download-dict.ps1               # 下词库
-cargo run -p ime-data --bin dictc -- ...# 编译词库（见 20-assembly §3）
+cargo run -p iuv-data --bin dictc -- ...# 编译词库（见 20-assembly §3）
 scripts\register.ps1                    # 注册（管理员）
 scripts\unregister.ps1                  # 注销（管理员）
 ```

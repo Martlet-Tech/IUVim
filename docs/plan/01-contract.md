@@ -7,7 +7,7 @@
 ## 1. 工作区结构（W0 产出）
 
 ```
-D:\Projects\input\
+D:\Projects\vaim\
 ├── Cargo.toml                     # workspace 根（见 §2.1）
 ├── .gitignore                     # /target, /data
 ├── AGENTS.md
@@ -18,7 +18,7 @@ D:\Projects\input\
 │   ├── register.ps1               # 【Agent D】注册输入法（管理员）
 │   └── unregister.ps1             # 【Agent D】注销
 └── crates\
-    ├── ime-data\
+    ├── iuv-data\
     │   ├── Cargo.toml             # 【W0】
     │   ├── src\lib.rs             # 【W0】模块声明 + re-export
     │   ├── src\dict.rs            # 【W0】Dict 查询层（完整实现，冻结）
@@ -26,7 +26,7 @@ D:\Projects\input\
     │   ├── src\compile.rs         # 【Agent A】rime yaml → 记录集
     │   ├── src\bin\dictc.rs       # 【Agent A】编译 CLI
     │   └── tests\                 # 【Agent A】
-    ├── ime-core\
+    ├── iuv-core\
     │   ├── Cargo.toml             # 【W0】
     │   ├── src\lib.rs             # 【W0】模块声明 + re-export
     │   ├── src\candidate.rs       # 【W0】Candidate 类型（完整，冻结）
@@ -40,10 +40,10 @@ D:\Projects\input\
     │   ├── src\engine.rs          # 【Agent B】Engine（候选生成）
     │   ├── src\session.rs         # 【Agent B】Session 状态机
     │   └── tests\                 # 【Agent B】
-    ├── ime-repl\
+    ├── iuv-repl\
     │   ├── Cargo.toml             # 【W0】
     │   └── src\main.rs            # 【Agent C】
-    └── ime-tsf\
+    └── iuv-tsf\
         ├── Cargo.toml             # 【W0】
         ├── build.rs               # 【Agent D】winres 资源
         ├── src\lib.rs             # 【Agent D】COM 导出（DllGetClassObject 等）
@@ -66,7 +66,7 @@ D:\Projects\input\
 ```toml
 [workspace]
 resolver = "2"
-members = ["crates/ime-data", "crates/ime-core", "crates/ime-repl", "crates/ime-tsf"]
+members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-repl", "crates/iuv-tsf"]
 
 [workspace.package]
 edition = "2021"
@@ -86,8 +86,8 @@ windows = { version = "0.62", features = [
 windows-core = "0.62"
 windows-registry = "0.6"
 serde_json = "1"
-ime-data = { path = "crates/ime-data" }
-ime-core = { path = "crates/ime-core" }
+iuv-data = { path = "crates/iuv-data" }
+iuv-core = { path = "crates/iuv-core" }
 
 [profile.release]
 lto = "fat"
@@ -98,20 +98,20 @@ codegen-units = 1
 
 | crate | 依赖 |
 |---|---|
-| ime-data | `serde`（workspace） |
-| ime-core | `serde`（workspace）、`serde_json`（workspace）、`ime-data`（workspace） |
-| ime-repl | `ime-core`、`ime-data`（workspace） |
-| ime-tsf | `ime-core`、`ime-data`、`windows`、`windows-core`、`windows-registry`（workspace）；build-dep：`winres = "0.1"` |
+| iuv-data | `serde`（workspace） |
+| iuv-core | `serde`（workspace）、`serde_json`（workspace）、`iuv-data`（workspace） |
+| iuv-repl | `iuv-core`、`iuv-data`（workspace） |
+| iuv-tsf | `iuv-core`、`iuv-data`、`windows`、`windows-core`、`windows-registry`（workspace）；build-dep：`winres = "0.1"` |
 
-### 2.3 ime-tsf Cargo.toml 要点
+### 2.3 iuv-tsf Cargo.toml 要点
 
 ```toml
 [lib]
-name = "input_ime_tsf"
+name = "iuv_tsf"
 crate-type = ["cdylib", "rlib"]   # rlib 供 examples/tests 链接
 ```
 
-## 3. ime-data 公共 API
+## 3. iuv-data 公共 API
 
 ```rust
 // ===== dict.rs（W0 完整实现，冻结）=====
@@ -179,7 +179,7 @@ pub struct CompileStats { pub files: usize, pub entries: usize, pub codes: usize
 pub fn compile_files(inputs: &[std::path::PathBuf], output: &std::path::Path) -> std::io::Result<CompileStats>;
 ```
 
-### 3.1 二进制词典格式（`input.imedic`）
+### 3.1 二进制词典格式（`iuv.imedic`）
 
 ```
 [0..8]    magic = b"IMEDIC01"
@@ -190,7 +190,7 @@ pub fn compile_files(inputs: &[std::path::PathBuf], output: &std::path::Path) ->
 记录按 (code 升序, weight 降序) 排列写入；加载时顺序建 BTreeMap。
 ```
 
-## 4. ime-core 公共 API
+## 4. iuv-core 公共 API
 
 ```rust
 // ===== candidate.rs（W0 完整，冻结；M1 后期契约演进：+seg_len）=====
@@ -287,10 +287,10 @@ pub struct NullStore;  // 全空实现
 pub struct Engine { /* dict, schema, lm, stages, store: Mutex<Box<dyn UserDataStore>>, config */ }
 impl Engine {
     /// 默认装配：Quanpin + UnigramLm + [StaticOrder] + NullStore。
-    pub fn new(dict: ime_data::Dict, config: Config) -> std::sync::Arc<Engine>;
+    pub fn new(dict: iuv_data::Dict, config: Config) -> std::sync::Arc<Engine>;
     /// 全注入构造器（测试与后续里程碑用）。
     pub fn with_parts(
-        dict: ime_data::Dict,
+        dict: iuv_data::Dict,
         config: Config,
         schema: Box<dyn InputSchema>,
         lm: Box<dyn LmProvider>,
@@ -300,7 +300,7 @@ impl Engine {
     pub fn start_session(self: &std::sync::Arc<Self>) -> Session;
     pub fn config(&self) -> &Config;
     /// 调试/REPL 用精确查询。
-    pub fn lookup(&self, squashed_code: &str) -> &[ime_data::Entry];
+    pub fn lookup(&self, squashed_code: &str) -> &[iuv_data::Entry];
 }
 
 // ===== session.rs（Agent B）=====
@@ -386,11 +386,11 @@ Viterbi 要点：位置 0..=n（音节界）；边 (i,j)（`j−i ≤ max_word_s
 的全部词条；边分 = `lm.log_prob(prev_word, word, weight)`；单音节无词条时给兜底边
 （text = 该音节原样，分 = `UnigramLm::log_prob(None, s, 0) + OOV_PENALTY`），保证路径恒存在。
 
-## 5. ime-tsf 内部接缝（W0 完整实现 `ui/mod.rs`，冻结）
+## 5. iuv-tsf 内部接缝（W0 完整实现 `ui/mod.rs`，冻结）
 
 ```rust
 // ===== ui/mod.rs（W0 完整实现）=====
-use ime_core::{Effect, PageInfo};
+use iuv_core::{Effect, PageInfo};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CaretRect { pub x: i32, pub y: i32, pub w: i32, pub h: i32 }
@@ -429,8 +429,8 @@ pub const DISPLAY_ATTR_GUID: &str= "{4953F50B-CD5E-4AAF-BA0D-9F137CC7BC11}"; // 
 // 语言栏"中/英"切换项：guidItem 必须用系统 GUID_LBI_INPUTMODE（Windows 8+ 只显示该 GUID 的项，
 // 自定义 GUID 被静默忽略；MSDN ITfLangBarItemMgr::AddItem）。值 0x2C77A81E-41CC-4178-A3A7-5F8A987568E6。
 pub const LANGID_ZH_CN: u16 = 0x0804;
-pub const PROFILE_DESCRIPTION: &str = "Input IME";
-pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIME\
+pub const PROFILE_DESCRIPTION: &str = "iuv 输入法";
+pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
 ```
 
 ## 6. 文件属主矩阵（W1 并行防冲突）
@@ -438,14 +438,14 @@ pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIM
 | 路径 | 属主 | 状态 |
 |---|---|---|
 | 根 `Cargo.toml` / `.gitignore` / `AGENTS.md` / `docs/**` | 主智能体 | W0 冻结 |
-| `ime-data/src/lib.rs`、`dict.rs` | 主智能体 | W0 **完整实现**，冻结 |
-| `ime-data/src/format.rs`、`compile.rs`、`bin/dictc.rs`、`tests/**`、`scripts/download-dict.ps1` | **Agent A** | W1 |
-| `ime-core/src/{candidate,config,key}.rs`、`lib.rs` | 主智能体 | W0 完整，冻结 |
-| `ime-core/src/{schema,lm,viterbi,rerank,store,engine,session}.rs`、`tests/**` | **Agent B** | W1 |
-| `crates/ime-repl/**` | **Agent C** | W1 |
-| `ime-tsf/src/ui/mod.rs` | 主智能体 | W0 **完整实现**，冻结 |
-| `ime-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs` | **Agent E** | W1 |
-| `ime-tsf/src/{lib,registration,log,session_bridge,composition,langbar}.rs`、`com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、`Cargo.toml` 内 winres 配置 | **Agent D** | W1 |
+| `iuv-data/src/lib.rs`、`dict.rs` | 主智能体 | W0 **完整实现**，冻结 |
+| `iuv-data/src/format.rs`、`compile.rs`、`bin/dictc.rs`、`tests/**`、`scripts/download-dict.ps1` | **Agent A** | W1 |
+| `iuv-core/src/{candidate,config,key}.rs`、`lib.rs` | 主智能体 | W0 完整，冻结 |
+| `iuv-core/src/{schema,lm,viterbi,rerank,store,engine,session}.rs`、`tests/**` | **Agent B** | W1 |
+| `crates/iuv-repl/**` | **Agent C** | W1 |
+| `iuv-tsf/src/ui/mod.rs` | 主智能体 | W0 **完整实现**，冻结 |
+| `iuv-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs` | **Agent E** | W1 |
+| `iuv-tsf/src/{lib,registration,log,session_bridge,composition,langbar}.rs`、`com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、`Cargo.toml` 内 winres 配置 | **Agent D** | W1 |
 
 规则：只允许改自己属主的文件；发现契约缺陷 → 报告主智能体，禁止私改他人文件。
 
@@ -464,5 +464,5 @@ pub const DICT_FILENAME: &str = "input.imedic"; // 位于 %LOCALAPPDATA%\InputIM
   关闭时清理活动会话。语言栏图标点击归一为写该 compartment（`ITfCompartment::SetValue`，需带本实例
   client id；SetValue 同步重入 OnChange，靠防抖幂等）。不再提供 Shift 切换（2026-08 移除）。
   Activate 时"激活即打开"（初始 VT_EMPTY/关闭 → 写 open=1，保持切入即中文）；compartment 缺失/写失败时本地翻转兜底。
-- 引擎在 DLL 内进程级单例（`OnceLock<Arc<Engine>>`），词典路径 `%LOCALAPPDATA%\InputIME\input.imedic`（用户级数据；DLL 本体在 `%ProgramFiles%\InputIME\`）；
+- 引擎在 DLL 内进程级单例（`OnceLock<Arc<Engine>>`），词典路径 `%LOCALAPPDATA%\iuv\iuv.imedic`（用户级数据；DLL 本体在 `%ProgramFiles%\iuv\`）；
   加载失败：日志记录，所有字母键原样放行（输入法"透明"，绝不卡用户）。

@@ -150,9 +150,9 @@ cursor（段位置，默认 0）
 
 | 步 | 模块 | 内容 |
 |---|---|---|
-| 1 | ime-data | 词库编译期生成简拼码表（`bsyz` 索引）；格式升 IMEDIC02（追加，旧文件兼容） |
-| 2 | ime-core | 切分结构化：段类型（Full/Abbr/Other）+ 强制分隔语义保留 |
-| 3 | ime-core | 匹配引擎：砍尾巴 + 全拼/简拼/混合段匹配 + 权重排序 |
-| 4 | ime-core | 会话：picked/cursor/续接/编辑重算 |
-| 5 | ime-tsf | composition 显示 + 编辑键放行 |
+| 1 | iuv-data | 词库编译期生成简拼码表（`bsyz` 索引）；格式升 IMEDIC02（追加，旧文件兼容） |
+| 2 | iuv-core | 切分结构化：段类型（Full/Abbr/Other）+ 强制分隔语义保留 |
+| 3 | iuv-core | 匹配引擎：砍尾巴 + 全拼/简拼/混合段匹配 + 权重排序 |
+| 4 | iuv-core | 会话：picked/cursor/续接/编辑重算 |
+| 5 | iuv-tsf | composition 显示 + 编辑键放行 |
 | 6 | 测试/REPL | 验收例子全量自动化 |
