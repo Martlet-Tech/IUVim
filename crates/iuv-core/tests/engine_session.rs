@@ -271,6 +271,34 @@ fn trailing_apostrophe_space_commits_first_candidate() {
     assert_eq!(e.end, Some(SessionEnd::Commit("系".into())));
 }
 
+/// 左右键页内移动 selected（夹紧边界）；set_selected 悬停同步（夹紧行尾）。
+#[test]
+fn arrow_keys_move_selected_in_page() {
+    let dict = Dict::from_entries(vec![
+        ("ni'hao".into(), "你好".into(), 8000),
+        ("ni'hao".into(), "泥嚎".into(), 7000),
+        ("ni'hao".into(), "拟好".into(), 6000),
+        ("ni".into(), "你".into(), 50000),
+        ("hao".into(), "好".into(), 40000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "nihao".chars() {
+        s.on_key(Key::Char(c));
+    }
+    assert_eq!(s.effect().selected, 0);
+    assert_eq!(s.on_key(Key::Right).selected, 1);
+    assert_eq!(s.on_key(Key::Right).selected, 2);
+    assert_eq!(s.on_key(Key::Left).selected, 1);
+    // 左到头夹紧 0
+    assert_eq!(s.on_key(Key::Left).selected, 0);
+    assert_eq!(s.on_key(Key::Left).selected, 0);
+    // set_selected 夹紧到页内行尾
+    s.set_selected(99);
+    let e = s.effect();
+    assert_eq!(e.selected, e.candidates.len() - 1);
+}
+
 /// 连续 `'` 忽略（不允许 `''`）：`xi'` 后按 `'` 预览不变、不产生空段怪态；
 /// 继续输入等效 `xi'an` → 出"西安"（第二个 `'` 被吞）。
 #[test]

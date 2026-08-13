@@ -13,6 +13,7 @@ use std::mem::size_of;
 use std::sync::OnceLock;
 
 use super::{CandidateUi, CaretRect, UiSnapshot};
+use iuv_core::Orientation;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE,
@@ -31,9 +32,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
     GetWindowRect, RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    SystemParametersInfoW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, SPI_GETWORKAREA, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOWNA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_ERASEBKGND, WM_PAINT,
-    WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SystemParametersInfoW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, MA_NOACTIVATE, SPI_GETWORKAREA,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_PAINT,
+    WM_RBUTTONDOWN, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 // ===== 主题常量（M4 主题槽位：集中于此，届时只动这里）=====
@@ -48,6 +50,8 @@ const BORDER_COLOR: COLORREF = COLORREF(0x00C0_C0C0); // 1px 外框浅灰（白�
 const PAD_X: i32 = 8;
 const PAD_Y: i32 = 4;
 const ROW_GAP: i32 = 2;
+/// 横排候选块之间的间距
+const CAND_GAP: i32 = 12;
 
 // ===== 字体 =====
 const FONT_FACE: &str = "Microsoft YaHei UI\0";
@@ -64,44 +68,67 @@ pub struct Rect {
     pub h: i32,
 }
 
-/// 纯布局计算：返回 `(窗口宽, 窗口高, 各行矩形)`。
-/// 行序：各候选（`"N.候选"`）→ 页码（`page_count > 1` 时，右对齐）。
+/// 纯布局计算：返回 `(窗口宽, 窗口高, 候选矩形列表)`。
+/// 竖排：每候选一行（`"N.候选"`），页码（`page_count > 1` 时）右对齐末行；
+/// 横排：所有候选单行从左到右，页码在行尾右侧。
 /// `snap.reading`（拼音分段）不渲染：composition 已显示，候选窗只放候选列表
 /// （微软同款，省一行高度）。`measurer` 返回文本的 (宽, 高)。
-pub fn layout(snap: &UiSnapshot, measurer: &dyn Fn(&str) -> (i32, i32)) -> (i32, i32, Vec<Rect>) {
-    let mut rows: Vec<(String, i32, i32)> = Vec::new();
+pub fn layout(
+    snap: &UiSnapshot,
+    measurer: &dyn Fn(&str) -> (i32, i32),
+    orientation: Orientation,
+) -> (i32, i32, Vec<Rect>) {
+    let mut items: Vec<(String, i32, i32)> = Vec::new();
     for (i, cand) in snap.candidates.iter().enumerate() {
         let text = format!("{}.{}", i + 1, cand);
         let (w, h) = measurer(&text);
-        rows.push((text, w, h));
+        items.push((text, w, h));
     }
     let show_page = snap.page.page_count > 1;
     if show_page {
         let text = format!("{}/{}", snap.page.page + 1, snap.page.page_count);
         let (w, h) = measurer(&text);
-        rows.push((text, w, h));
+        items.push((text, w, h));
     }
-    if rows.is_empty() {
+    if items.is_empty() {
         return (PAD_X * 2, PAD_Y * 2, Vec::new());
     }
-    let content_w = rows.iter().map(|r| r.1).max().unwrap_or(0);
-    let mut rects = Vec::with_capacity(rows.len());
-    let mut y = PAD_Y;
-    for (_, w, h) in &rows {
-        rects.push(Rect {
-            x: PAD_X,
-            y,
-            w: *w,
-            h: *h,
-        });
-        y += h + ROW_GAP;
-    }
-    if show_page {
-        if let Some(last) = rects.last_mut() {
-            last.x = PAD_X + content_w - last.w;
+    match orientation {
+        Orientation::Vertical => {
+            let content_w = items.iter().map(|r| r.1).max().unwrap_or(0);
+            let mut rects = Vec::with_capacity(items.len());
+            let mut y = PAD_Y;
+            for (_, w, h) in &items {
+                rects.push(Rect { x: PAD_X, y, w: *w, h: *h });
+                y += h + ROW_GAP;
+            }
+            if show_page {
+                if let Some(last) = rects.last_mut() {
+                    last.x = PAD_X + content_w - last.w;
+                }
+            }
+            (content_w + PAD_X * 2, y - ROW_GAP + PAD_Y, rects)
+        }
+        Orientation::Horizontal => {
+            // 候选单行：x 递增（候选间留 CAND_GAP）；页码在行尾右侧。
+            let mut rects = Vec::with_capacity(items.len());
+            let mut x = PAD_X;
+            let mut row_h = 0i32;
+            for (_, w, h) in &items {
+                rects.push(Rect { x, y: PAD_Y, w: *w, h: *h });
+                row_h = row_h.max(*h);
+                x += w + CAND_GAP;
+            }
+            let width = x - CAND_GAP + PAD_X;
+            (width, row_h + PAD_Y * 2, rects)
         }
     }
-    (content_w + PAD_X * 2, y - ROW_GAP + PAD_Y, rects)
+}
+
+/// 命中测试：坐标 (x,y)（窗口客户区）落在哪个候选矩形上。
+/// 竖排/横排统一（layout 输出的候选矩形列表）。未命中返回 None。
+pub fn hit_test(rects: &[Rect], x: i32, y: i32) -> Option<usize> {
+    rects.iter().position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
 }
 
 /// GDI 自绘候选窗：无边框、置顶、不抢焦点。
@@ -113,6 +140,12 @@ pub struct GdiCandidateWindow {
     visible: bool,
     /// 最近一次定位用的光标锚点（update 超屏时翻屏用）。
     last_caret: Option<CaretRect>,
+    /// 最近一次布局的候选矩形列表（横竖统一，命中测试用）。
+    rows: Vec<Rect>,
+    /// 点击候选回调（行号 0 起；None = 未接线）。
+    click: Option<Box<dyn Fn(usize)>>,
+    /// 悬停候选回调（行号 0 起，行变化才触发；None = 未接线）。
+    hover: Option<Box<dyn Fn(usize)>>,
 }
 
 impl GdiCandidateWindow {
@@ -123,7 +156,20 @@ impl GdiCandidateWindow {
             snap: UiSnapshot::default(),
             visible: false,
             last_caret: None,
+            rows: Vec::new(),
+            click: None,
+            hover: None,
         }
+    }
+
+    /// 接线点击回调（text_service 构造时注入；同线程调用）。
+    pub fn set_on_click(&mut self, cb: Option<Box<dyn Fn(usize)>>) {
+        self.click = cb;
+    }
+
+    /// 接线悬停回调（text_service 构造时注入；同线程调用）。
+    pub fn set_on_hover(&mut self, cb: Option<Box<dyn Fn(usize)>>) {
+        self.hover = cb;
     }
 
     /// 进程内注册一次窗口类；失败（非"已注册"）记日志，不 panic。
@@ -223,7 +269,9 @@ impl GdiCandidateWindow {
             } else {
                 HGDIOBJ::default()
             };
-            let (w, h, _) = layout(&self.snap, &|s| measure(hdc, s));
+            let (w, h, rects) =
+                layout(&self.snap, &|s| measure(hdc, s), self.snap.orientation);
+            self.rows = rects;
             if !old_font.is_invalid() {
                 SelectObject(hdc, old_font);
             }
@@ -535,7 +583,7 @@ fn draw_content(hdc: HDC, snap: &UiSnapshot, w: i32, h: i32) {
         let _ = FrameRect(hdc, &rc, border);
         let _ = DeleteObject(border.into());
     }
-    let (_, _, rects) = layout(snap, &|s| measure(hdc, s));
+    let (_, _, rects) = layout(snap, &|s| measure(hdc, s), snap.orientation);
     let mut i = 0usize;
     for (ci, cand) in snap.candidates.iter().enumerate() {
         let Some(r) = rects.get(i) else {
@@ -583,6 +631,24 @@ fn get_self(hwnd: HWND) -> Option<&'static GdiCandidateWindow> {
         // SAFETY: p 非 0 即此前 SetWindowLongPtrW 写入的有效指针
         Some(unsafe { &*(p as *const GdiCandidateWindow) })
     }
+}
+
+/// 可变版（hover 更新本地 selected 高亮用）。线程约束同 `get_self`。
+fn get_self_mut(hwnd: HWND) -> Option<&'static mut GdiCandidateWindow> {
+    // SAFETY: 同 get_self：指针生命周期由 Drop 清零保证；调用都在创建线程
+    let p = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+    if p == 0 {
+        None
+    } else {
+        // SAFETY: p 非 0 即此前 SetWindowLongPtrW 写入的有效指针
+        Some(unsafe { &mut *(p as *mut GdiCandidateWindow) })
+    }
+}
+
+/// lparam 低 32 位的客户区坐标 (x, y)。
+fn client_pos(lparam: LPARAM) -> (i32, i32) {
+    let v = lparam.0 as u32;
+    ((v & 0xFFFF) as i32, ((v >> 16) & 0xFFFF) as i32)
 }
 
 /// 内存 DC 双缓冲绘制：整窗填充 → 逐行文本 → 一次 BitBlt。
@@ -634,6 +700,10 @@ fn paint(hwnd: HWND) {
 }
 
 /// 类窗口过程：WM_PAINT 双缓冲自绘；WM_ERASEBKGND 直接返回 1（跳过擦背景，防闪烁）。
+/// 鼠标交互：WM_MOUSEACTIVATE 显式 MA_NOACTIVATE（点击候选窗绝不改变激活——
+/// 无 owner popup 的激活转移会让宿主（WinUI3 记事本实测）失活崩 TSF，2026-08-13）；
+/// WM_MOUSEMOVE 悬停命中 → 本地高亮 + 回调同步会话；WM_LBUTTONDOWN 命中 → 点击回调
+/// 选词上屏；其余鼠标消息一律吞掉（不回 DefWindowProc，杜绝默认行为）。
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -646,6 +716,38 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_MOUSEMOVE => {
+            let (x, y) = client_pos(lparam);
+            if let Some(wnd) = get_self_mut(hwnd) {
+                if let Some(row) = hit_test(&wnd.rows, x, y) {
+                    if row < wnd.snap.candidates.len() && row != wnd.snap.selected {
+                        wnd.snap.selected = row;
+                        if let Some(cb) = wnd.hover.as_ref() {
+                            cb(row);
+                        }
+                        // SAFETY: 悬停行变化 → 本地重绘高亮
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        let _ = UpdateWindow(hwnd);
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            let (x, y) = client_pos(lparam);
+            if let Some(wnd) = get_self(hwnd) {
+                if let Some(row) = hit_test(&wnd.rows, x, y) {
+                    if row < wnd.snap.candidates.len() {
+                        if let Some(cb) = wnd.click.as_ref() {
+                            cb(row);
+                        }
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+        WM_RBUTTONDOWN | WM_MBUTTONDOWN => LRESULT(0),
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -670,13 +772,14 @@ mod tests {
                 page_size: 5,
                 total: page_count * 5,
             },
+            orientation: Orientation::Vertical,
         }
     }
 
     #[test]
     fn layout_single_page_rows_and_size() {
         let s = snap("ni'hao", &["你好", "泥嚎"], 0, 1);
-        let (w, h, rects) = layout(&s, &fake_measurer);
+        let (w, h, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
         assert_eq!(rects.len(), 2, "2 候选，reading 不渲染");
         assert_eq!(w, 40 + PAD_X * 2, "最宽行 '1.你好'=4 字");
         assert_eq!(h, PAD_Y * 2 + 20 * 2 + ROW_GAP * 1);
@@ -696,7 +799,7 @@ mod tests {
     #[test]
     fn layout_multi_page_indicator_right_aligned() {
         let s = snap("ni'hao", &["你好", "泥嚎"], 0, 3);
-        let (w, _, rects) = layout(&s, &fake_measurer);
+        let (w, _, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
         assert_eq!(rects.len(), 3, "2 候选 + 页码");
         let page_rect = *rects.last().unwrap();
         assert_eq!(
@@ -711,7 +814,7 @@ mod tests {
     #[test]
     fn layout_page_indicator_wider_than_rows() {
         let s = snap("ni", &["你"], 0, 100);
-        let (w, _, rects) = layout(&s, &fake_measurer);
+        let (w, _, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
         let page_rect = *rects.last().unwrap();
         assert_eq!(w, 50 + PAD_X * 2, "页码 '1/100'=5 字 50px 最宽，撑开窗口");
         assert_eq!(page_rect.x, PAD_X, "页码自己最宽时从 PAD_X 起");
@@ -720,7 +823,7 @@ mod tests {
     #[test]
     fn layout_empty_snapshot_no_rows() {
         let s = UiSnapshot::default();
-        let (w, h, rects) = layout(&s, &fake_measurer);
+        let (w, h, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
         assert!(rects.is_empty());
         assert_eq!(w, PAD_X * 2);
         assert_eq!(h, PAD_Y * 2);
@@ -730,20 +833,71 @@ mod tests {
     fn layout_ignores_reading() {
         // reading（拼音分段）不参与布局：composition 已显示，候选窗只放候选。
         let s = snap("ni'hao", &["你好"], 0, 1);
-        let (_, _, rects) = layout(&s, &fake_measurer);
+        let (_, _, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
         assert_eq!(rects.len(), 1);
         assert_eq!(rects[0].y, PAD_Y);
         let s2 = snap("", &["你好"], 0, 1);
-        let (_, _, rects2) = layout(&s2, &fake_measurer);
+        let (_, _, rects2) = layout(&s2, &fake_measurer, Orientation::Vertical);
         assert_eq!(rects2.len(), 1, "有/无 reading 布局一致");
     }
 
     #[test]
     fn layout_candidate_widths() {
         let s = snap("ni", &["你好", "泥嚎"], 0, 1);
-        let (w, _, rects) = layout(&s, &fake_measurer);
+        let (w, _, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
         assert_eq!(w, 40 + PAD_X * 2, "候选行 '1.你好'=4 字 40px 最宽");
         assert_eq!(rects[1].x, PAD_X);
+    }
+
+    #[test]
+    fn layout_horizontal_single_row() {
+        // 横排：候选单行从左到右，页码在行尾右侧。
+        let s = snap("ni'hao", &["你好", "泥嚎", "你好吗"], 0, 2);
+        let (w, h, rects) = layout(&s, &fake_measurer, Orientation::Horizontal);
+        assert_eq!(rects.len(), 4, "3 候选 + 页码");
+        // 候选矩形同一行（y=PAD_Y），x 递增
+        assert_eq!(rects[0].y, PAD_Y);
+        assert_eq!(rects[1].y, PAD_Y);
+        assert_eq!(rects[2].y, PAD_Y);
+        assert_eq!(rects[1].x, rects[0].x + rects[0].w + CAND_GAP);
+        assert_eq!(rects[2].x, rects[1].x + rects[1].w + CAND_GAP);
+        // 页码在行尾右侧（最后一个候选之后）
+        assert!(rects[3].x > rects[2].x + rects[2].w);
+        // 窗口宽 = 全部块宽 + 间距 + PAD；高 = 单行高 + PAD*2
+        let expect_w = rects.iter().map(|r| r.w).sum::<i32>() + CAND_GAP * 3 + PAD_X * 2;
+        assert_eq!(w, expect_w);
+        assert_eq!(h, 20 + PAD_Y * 2);
+    }
+
+    #[test]
+    fn hit_test_vertical_rows() {
+        let s = snap("ni'hao", &["你好", "泥嚎", "你好吗"], 0, 1);
+        let (_, _, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
+        // 命中各行：矩形左上角 / 右下角内侧
+        assert_eq!(hit_test(&rects, rects[0].x, rects[0].y), Some(0));
+        assert_eq!(
+            hit_test(&rects, rects[1].x + rects[1].w - 1, rects[1].y + rects[1].h - 1),
+            Some(1)
+        );
+        // 行间 gap：未命中
+        assert_eq!(hit_test(&rects, PAD_X, rects[0].y + rects[0].h + 1), None);
+        // 越界：未命中
+        assert_eq!(hit_test(&rects, -1, 0), None);
+        assert_eq!(hit_test(&rects, 0, 9999), None);
+    }
+
+    #[test]
+    fn hit_test_horizontal_blocks() {
+        let s = snap("ni'hao", &["你好", "泥嚎"], 0, 2);
+        let (_, _, rects) = layout(&s, &fake_measurer, Orientation::Horizontal);
+        // 横排：命中各候选块；块间 gap 未命中（页码块不计入候选）
+        assert_eq!(hit_test(&rects, rects[0].x + 1, rects[0].y + 1), Some(0));
+        assert_eq!(hit_test(&rects, rects[1].x + 1, rects[1].y + 1), Some(1));
+        assert_eq!(
+            hit_test(&rects, rects[0].x + rects[0].w + 1, rects[0].y + 1),
+            None,
+            "候选块之间间距未命中"
+        );
     }
 
     #[test]

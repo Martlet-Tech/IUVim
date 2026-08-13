@@ -7,6 +7,7 @@ use iuv_core::{Effect, PageInfo};
 /// 注：W0 骨架遗漏本声明与 re-export，属契约缺陷，由 Agent E 补接线（待主智能体追认）。
 pub mod gdi;
 pub use gdi::GdiCandidateWindow;
+pub use iuv_core::Orientation;
 
 /// 光标矩形（屏幕坐标）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,6 +27,8 @@ pub struct UiSnapshot {
     pub candidates: Vec<String>,
     pub selected: usize,
     pub page: PageInfo,
+    /// 布局方向（竖排/横排）；effect_to_snapshot 默认竖排，TSF 侧从 config 填
+    pub orientation: Orientation,
 }
 
 /// Effect → UiSnapshot：取 effect.reading / 页内候选 text / selected / page。
@@ -35,6 +38,7 @@ pub fn effect_to_snapshot(e: &Effect) -> UiSnapshot {
         candidates: e.candidates.iter().map(|c| c.text.clone()).collect(),
         selected: e.selected,
         page: e.page.clone(),
+        orientation: Orientation::default(),
     }
 }
 

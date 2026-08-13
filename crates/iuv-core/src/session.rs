@@ -121,6 +121,18 @@ impl Session {
                     self.selected = (self.selected + 1).min(len - 1);
                 }
             }
+            Key::Left => {
+                let len = self.page_candidates().len();
+                if len > 0 {
+                    self.selected = self.selected.saturating_sub(1).min(len - 1);
+                }
+            }
+            Key::Right => {
+                let len = self.page_candidates().len();
+                if len > 0 {
+                    self.selected = (self.selected + 1).min(len - 1);
+                }
+            }
             Key::Digit(_) | Key::Char(_) => {}
         }
         self.effect()
@@ -182,6 +194,15 @@ impl Session {
 
     fn page_size(&self) -> usize {
         self.engine.config().page_size.max(1)
+    }
+
+    /// 鼠标悬停同步：把页内高亮定位到指定行（夹紧到页内行尾）。
+    /// 只改 selected 不重算候选——视觉由候选窗本地重绘，会话保持一致性。
+    pub fn set_selected(&mut self, row: usize) {
+        let len = self.page_candidates().len();
+        if len > 0 {
+            self.selected = row.min(len - 1);
+        }
     }
 
     fn page_count(&self) -> usize {

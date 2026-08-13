@@ -30,6 +30,8 @@ pub fn map_key(vk: u16, char_code: u32, with_shift: bool, with_ctrl: bool, with_
     const VK_NEXT: u16 = 0x22; // PageDown
     const VK_UP: u16 = 0x26;
     const VK_DOWN: u16 = 0x28;
+    const VK_LEFT: u16 = 0x25;
+    const VK_RIGHT: u16 = 0x27;
     const VK_1: u16 = 0x31;
     const VK_9: u16 = 0x39;
     const VK_A: u16 = 0x41;
@@ -47,6 +49,8 @@ pub fn map_key(vk: u16, char_code: u32, with_shift: bool, with_ctrl: bool, with_
         VK_NEXT => Some(Key::PageDown),
         VK_UP => Some(Key::Up),
         VK_DOWN => Some(Key::Down),
+        VK_LEFT => Some(Key::Left),
+        VK_RIGHT => Some(Key::Right),
         VK_1..=VK_9 if !with_shift => Some(Key::Digit((char_code - 0x30) as u8)),
         VK_A..=VK_Z => {
             // 字母：优先用布局字符（保证小写），退化用 vk 推算。
@@ -94,6 +98,7 @@ pub fn apply_effect(
     ui: &mut dyn CandidateUi,
     caret: &mut CaretRect,
     effect: &Effect,
+    orientation: iuv_core::Orientation,
 ) -> bool {
     match &effect.end {
         Some(SessionEnd::Commit(text)) => {
@@ -135,7 +140,8 @@ pub fn apply_effect(
                     caret.x, caret.y, caret.w, caret.h
                 )),
             }
-            let snap = effect_to_snapshot(effect);
+            let mut snap = effect_to_snapshot(effect);
+            snap.orientation = orientation;
             if snap.candidates.is_empty() && snap.reading.is_empty() {
                 log_line("[candwin] 快照为空，hide");
                 ui.hide();
@@ -193,6 +199,14 @@ mod tests {
         assert_eq!(map_key(0x39, 0x39, false, false, false), Some(Key::Digit(9)));
         // Shift+数字 = 符号，放行给应用
         assert_eq!(map_key(0x31, 0x31, true, false, false), None);
+    }
+
+    #[test]
+    fn map_key_arrows() {
+        assert_eq!(map_key(0x25, 0x25, false, false, false), Some(Key::Left));
+        assert_eq!(map_key(0x27, 0x27, false, false, false), Some(Key::Right));
+        // Ctrl+左右 = 词跳转，放行给应用
+        assert_eq!(map_key(0x25, 0x25, false, true, false), None);
     }
 
     #[test]

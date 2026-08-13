@@ -35,6 +35,7 @@ fn make_snapshot(page: usize) -> UiSnapshot {
             page_size: PAGES[page].len(),
             total: PAGES.len() * PAGES[0].len(),
         },
+        orientation: iuv_tsf::ui::Orientation::default(),
     }
 }
 

@@ -1,5 +1,6 @@
-//! 快捷键映射。默认（搜狗/微软同款）：
-//! 上翻页 = PageUp / `,` / ↑；下翻页 = PageDown / `.` / ↓；数字 1-9 选中上屏（无映射）。
+//! 快捷键映射。默认：上翻页 = PageUp / `,` / ↑；下翻页 = PageDown / `.` / ↓；
+//! 前一个候选项 = ←；后一个候选项 = →；数字 1-9 选中上屏（无映射）。
+//! 键位语义全部由配置文件决定，与候选窗布局方向解耦（改布局不改键位）。
 
 use crate::Key;
 
@@ -7,10 +8,14 @@ use crate::Key;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Keymap {
-    /// 上翻页键
+    /// 前页（上翻页）键
     pub page_prev: Vec<Key>,
-    /// 下翻页键
+    /// 后页（下翻页）键
     pub page_next: Vec<Key>,
+    /// 前一个候选项键（页内 selected 左移/上移）
+    pub candidate_prev: Vec<Key>,
+    /// 后一个候选项键（页内 selected 右移/下移）
+    pub candidate_next: Vec<Key>,
 }
 
 impl Default for Keymap {
@@ -18,12 +23,29 @@ impl Default for Keymap {
         Keymap {
             page_prev: vec![Key::PageUp, Key::Char(','), Key::Up],
             page_next: vec![Key::PageDown, Key::Char('.'), Key::Down],
+            candidate_prev: vec![Key::Left],
+            candidate_next: vec![Key::Right],
         }
     }
 }
 
 impl Keymap {
-    /// 命中翻页表则返回重映射后的键（PageUp/PageDown），否则返回 None。
+    /// 命中映射表则返回归一化键（PageUp/PageDown/Left/Right），否则返回 None。
+    pub fn map(&self, key: Key) -> Option<Key> {
+        if self.page_prev.contains(&key) {
+            Some(Key::PageUp)
+        } else if self.page_next.contains(&key) {
+            Some(Key::PageDown)
+        } else if self.candidate_prev.contains(&key) {
+            Some(Key::Left)
+        } else if self.candidate_next.contains(&key) {
+            Some(Key::Right)
+        } else {
+            None
+        }
+    }
+
+    /// 兼容旧接口：仅翻页表命中判定。
     pub fn page(&self, key: Key) -> Option<Key> {
         if self.page_prev.contains(&key) {
             Some(Key::PageUp)
@@ -35,9 +57,9 @@ impl Keymap {
     }
 }
 
-/// 应用快捷键映射：命中翻页表则重映射为 PageUp/PageDown，否则原样返回。
+/// 应用快捷键映射：命中四组表则归一化（翻页/候选移动），否则原样返回。
 pub fn apply_keymap(key: Key, keymap: &Keymap) -> Key {
-    keymap.page(key).unwrap_or(key)
+    keymap.map(key).unwrap_or(key)
 }
 
 /// 会话外是否可用该键开启新会话（仅字母；`,`/`.`/`'` 等标点放行给应用——
@@ -59,6 +81,8 @@ mod tests {
         assert!(k.page_next.contains(&Key::PageDown));
         assert!(k.page_next.contains(&Key::Char('.')));
         assert!(k.page_next.contains(&Key::Down));
+        assert!(k.candidate_prev.contains(&Key::Left));
+        assert!(k.candidate_next.contains(&Key::Right));
     }
 
     #[test]
@@ -76,8 +100,26 @@ mod tests {
     }
 
     #[test]
+    fn candidate_mapping() {
+        let k = Keymap::default();
+        assert_eq!(k.map(Key::Left), Some(Key::Left));
+        assert_eq!(k.map(Key::Right), Some(Key::Right));
+        assert_eq!(k.map(Key::Up), Some(Key::PageUp));
+        assert_eq!(k.map(Key::Down), Some(Key::PageDown));
+        // 自定义候选键
+        let c = Keymap {
+            candidate_prev: vec![Key::Char('h')],
+            candidate_next: vec![Key::Char('l')],
+            ..Default::default()
+        };
+        assert_eq!(c.map(Key::Char('h')), Some(Key::Left));
+        assert_eq!(c.map(Key::Char('l')), Some(Key::Right));
+        assert_eq!(c.map(Key::Left), None);
+    }
+
+    #[test]
     fn custom_mapping() {
-        let k = Keymap { page_prev: vec![Key::Char('[')], page_next: vec![Key::Char(']')] };
+        let k = Keymap { page_prev: vec![Key::Char('[')], page_next: vec![Key::Char(']')], ..Default::default() };
         assert_eq!(k.page(Key::Char('[')), Some(Key::PageUp));
         assert_eq!(k.page(Key::Char(']')), Some(Key::PageDown));
         assert_eq!(k.page(Key::Char(',')), None);
@@ -91,6 +133,8 @@ mod tests {
         assert_eq!(apply_keymap(Key::Up, &k), Key::PageUp);
         assert_eq!(apply_keymap(Key::Down, &k), Key::PageDown);
         assert_eq!(apply_keymap(Key::PageUp, &k), Key::PageUp);
+        assert_eq!(apply_keymap(Key::Left, &k), Key::Left);
+        assert_eq!(apply_keymap(Key::Right, &k), Key::Right);
         // 未命中：原样
         assert_eq!(apply_keymap(Key::Char('a'), &k), Key::Char('a'));
         assert_eq!(apply_keymap(Key::Space, &k), Key::Space);

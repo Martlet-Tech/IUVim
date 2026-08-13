@@ -8,11 +8,12 @@
 use std::cell::{Cell, RefCell};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use iuv_core::{apply_keymap, is_session_start_key, Config, Engine, Session};
+use iuv_core::{apply_keymap, is_session_start_key, Config, Engine, Key, Session};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VK_SHIFT,
@@ -30,7 +31,7 @@ use crate::composition::Composition;
 use crate::langbar::{self, LangBarItemButton};
 use crate::log::log_line;
 use crate::session_bridge::{apply_effect, map_key};
-use crate::ui::{GdiCandidateWindow, CandidateUi};
+use crate::ui::{CandidateUi, GdiCandidateWindow, NullCandidateUi};
 use crate::ui::CaretRect;
 
     /// 进程级引擎单例（契约 §7：`OnceLock<Arc<Engine>>`）。
@@ -144,13 +145,14 @@ pub(crate) struct TextService {
     /// Step1 仅监听记日志，验证系统热键确实翻转第三方 TIP 的 compartment。
     compartment: RefCell<Option<(ITfCompartment, u32)>>,
     /// 活动会话；None = 无会话（字母键将开启新会话）。
-    session: RefCell<Option<Session>>,
-    /// composition 封装（随会话创建/销毁）。
-    composition: RefCell<Option<Composition>>,
-    /// 候选窗：GdiCandidateWindow（Agent E 已交付，W2 起生效）。
-    ui: RefCell<Box<dyn CandidateUi>>,
-    /// 上一次光标矩形（GetTextExt 失败时复用；首次用屏幕中央）。
-    caret: Cell<CaretRect>,
+    /// Rc 共享：候选窗点击/hover 回调（同线程）经克隆访问。
+    session: Rc<RefCell<Option<Session>>>,
+    /// composition 封装（随会话创建/销毁）。Rc 共享：候选窗回调 dispatch 用。
+    composition: Rc<RefCell<Option<Composition>>>,
+    /// 候选窗：GdiCandidateWindow（Agent E 已交付，W2 起生效）。Rc 共享：同上。
+    ui: Rc<RefCell<Box<dyn CandidateUi>>>,
+    /// 上一次光标矩形（GetTextExt 失败时复用；首次用屏幕中央）。Rc 共享：同上。
+    caret: Rc<Cell<CaretRect>>,
     /// Shift 临时英文模式（会话非 active 时 Shift 切换）。
     /// `Arc` 共享：语言栏"中/英"图标与按键路径读同一状态。
     english_mode: Arc<AtomicBool>,
@@ -161,15 +163,47 @@ pub(crate) struct TextService {
 impl TextService {
     pub(crate) fn new() -> Self {
         INSTANCE_COUNT.fetch_add(1, Ordering::SeqCst);
+        let session = Rc::new(RefCell::new(None));
+        let composition = Rc::new(RefCell::new(None));
+        let caret = Rc::new(Cell::new(CaretRect::default()));
+        let ui_rc = Rc::new(RefCell::new(Box::new(NullCandidateUi) as Box<dyn CandidateUi>));
+        // 候选窗交互接线（同线程回调；点击=页内行号→Digit 键，悬停=同步 selected）。
+        let mut candwin = GdiCandidateWindow::new();
+        {
+            let s = session.clone();
+            let c = composition.clone();
+            let u = ui_rc.clone();
+            let ca = caret.clone();
+            candwin.set_on_click(Some(Box::new(move |row: usize| {
+                // Digit 键位上限 1-9（row 0-8）；超限忽略（page_size 配置极端时防御）。
+                if row >= 9 {
+                    return;
+                }
+                let effect: Option<iuv_core::Effect> = s
+                    .borrow_mut()
+                    .as_mut()
+                    .map(|sess: &mut Session| sess.on_key(Key::Digit((row + 1) as u8)));
+                if let Some(e) = effect {
+                    dispatch_effect(&s, &c, &u, &ca, &e);
+                }
+            })));
+            let s = session.clone();
+            candwin.set_on_hover(Some(Box::new(move |row: usize| {
+                if let Some(sess) = s.borrow_mut().as_mut() {
+                    sess.set_selected(row);
+                }
+            })));
+        }
+        *ui_rc.borrow_mut() = Box::new(candwin);
         TextService {
             thread_mgr: RefCell::new(None),
             client_id: Cell::new(0),
             event_cookie: Cell::new(0),
             compartment: RefCell::new(None),
-            session: RefCell::new(None),
-            composition: RefCell::new(None),
-            ui: RefCell::new(Box::new(GdiCandidateWindow::new())),
-            caret: Cell::new(CaretRect::default()),
+            session,
+            composition,
+            ui: ui_rc,
+            caret,
             english_mode: Arc::new(AtomicBool::new(false)),
             lang_bar: RefCell::new(None),
         }
@@ -261,47 +295,63 @@ impl TextService {
 
     /// 应用 Effect（契约 §7）：composition → 候选窗；end 则上屏/取消并清理会话。
     fn dispatch(&self, effect: &iuv_core::Effect) {
-        let mut caret = self.caret.get();
-        let mut degraded = false;
-        let ended = {
-            let composition = self.composition.borrow();
-            match composition.as_ref() {
-                Some(comp) => {
-                    // 外部终止（OnCompositionTerminated）降级：丢弃会话，
-                    // 文档残留文本由用户自行清理，下一键重新开会话（透明放行避免 0x8000FFFF 卡死）。
-                    if comp.terminated() {
-                        log_line("dispatch：composition 被外部终止，降级丢弃会话");
-                        degraded = true;
-                        true
-                    } else {
-                        let mut ui = self.ui.borrow_mut();
-                        apply_effect(comp, ui.as_mut(), &mut caret, effect)
-                    }
-                }
-                // composition 缺失（异常路径）：仅更新候选窗并继续。
-                None => {
-                    log_line("dispatch：composition 缺失，仅更新候选窗");
-                    let snap = crate::ui::effect_to_snapshot(effect);
-                    let mut ui = self.ui.borrow_mut();
-                    if snap.candidates.is_empty() && snap.reading.is_empty() {
-                        ui.hide();
-                    } else if ui.is_visible() {
-                        ui.update(&snap);
-                    } else {
-                        ui.show(&snap, caret);
-                    }
-                    effect.end.is_some()
+        dispatch_effect(&self.session, &self.composition, &self.ui, &self.caret, effect)
+    }
+}
+
+/// dispatch 的自由函数版：候选窗点击回调（同线程）与 TextService 共用同一路径。
+/// 经 Rc 共享槽访问 session/composition/ui/caret；orientation 取自引擎配置。
+fn dispatch_effect(
+    session: &Rc<RefCell<Option<Session>>>,
+    composition: &Rc<RefCell<Option<Composition>>>,
+    ui: &Rc<RefCell<Box<dyn CandidateUi>>>,
+    caret: &Rc<Cell<CaretRect>>,
+    effect: &iuv_core::Effect,
+) {
+    let orientation = engine()
+        .map(|e| e.config().candidate_orientation)
+        .unwrap_or_default();
+    let mut caret_pos = caret.get();
+    let mut degraded = false;
+    let ended = {
+        let comp = composition.borrow();
+        match comp.as_ref() {
+            Some(comp) => {
+                // 外部终止（OnCompositionTerminated）降级：丢弃会话，
+                // 文档残留文本由用户自行清理，下一键重新开会话（透明放行避免 0x8000FFFF 卡死）。
+                if comp.terminated() {
+                    log_line("dispatch：composition 被外部终止，降级丢弃会话");
+                    degraded = true;
+                    true
+                } else {
+                    let mut ui_guard = ui.borrow_mut();
+                    apply_effect(comp, ui_guard.as_mut(), &mut caret_pos, effect, orientation)
                 }
             }
-        };
-        self.caret.set(caret);
-        if ended {
-            self.ui.borrow_mut().hide();
-            *self.session.borrow_mut() = None;
-            *self.composition.borrow_mut() = None;
-            if degraded {
-                log_line("dispatch：降级完成，会话已丢弃");
+            // composition 缺失（异常路径）：仅更新候选窗并继续。
+            None => {
+                log_line("dispatch：composition 缺失，仅更新候选窗");
+                let mut snap = crate::ui::effect_to_snapshot(effect);
+                snap.orientation = orientation;
+                let mut ui_guard = ui.borrow_mut();
+                if snap.candidates.is_empty() && snap.reading.is_empty() {
+                    ui_guard.hide();
+                } else if ui_guard.is_visible() {
+                    ui_guard.update(&snap);
+                } else {
+                    ui_guard.show(&snap, caret_pos);
+                }
+                effect.end.is_some()
             }
+        }
+    };
+    caret.set(caret_pos);
+    if ended {
+        ui.borrow_mut().hide();
+        *session.borrow_mut() = None;
+        *composition.borrow_mut() = None;
+        if degraded {
+            log_line("dispatch：降级完成，会话已丢弃");
         }
     }
 }

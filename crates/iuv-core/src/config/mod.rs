@@ -11,10 +11,26 @@ use crate::Key;
 pub mod keymap;
 pub use keymap::Keymap;
 
+/// 候选窗布局方向。键位语义与布局解耦（由 keymap 配置决定）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Orientation {
+    /// 竖排：候选一列从上到下
+    Vertical,
+    /// 横排：候选单行从左到右
+    Horizontal,
+}
+
+impl Default for Orientation {
+    fn default() -> Self {
+        Orientation::Vertical
+    }
+}
+
 /// 引擎配置。
 ///
 /// 默认值：page_size=5, max_candidates=200, max_word_syllables=7,
-/// 翻页键 上=PageUp/,/↑、下=PageDown/./↓。
+/// 翻页键 上=PageUp/,/↑、下=PageDown/./↓，候选移动 左=←、右=→，布局竖排。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -24,10 +40,12 @@ pub struct Config {
     pub max_candidates: usize,
     /// lattice 词宽上限
     pub max_word_syllables: usize,
-    /// 快捷键映射
+    /// 快捷键映射（翻页/候选移动四组语义键）
     pub keymap: Keymap,
     /// 前缀联想：关闭 = 候选仅 exact 匹配（微软化，默认）；开启 = 追加以当前码为前缀的长词（最多 20 条）
     pub candidate_prefix: bool,
+    /// 候选窗布局方向（竖排/横排）
+    pub candidate_orientation: Orientation,
 }
 
 impl Default for Config {
@@ -38,6 +56,7 @@ impl Default for Config {
             max_word_syllables: 7,
             keymap: Keymap::default(),
             candidate_prefix: false,
+            candidate_orientation: Orientation::Vertical,
         }
     }
 }

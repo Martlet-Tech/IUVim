@@ -17,6 +17,8 @@ pub enum Key {
     PageDown,
     Up,
     Down,
+    Left,
+    Right,
 }
 
 impl Key {
@@ -33,6 +35,8 @@ impl Key {
             Key::PageDown => "PageDown".into(),
             Key::Up => "Up".into(),
             Key::Down => "Down".into(),
+            Key::Left => "Left".into(),
+            Key::Right => "Right".into(),
         }
     }
 
@@ -47,6 +51,8 @@ impl Key {
             "PageDown" => Some(Key::PageDown),
             "Up" => Some(Key::Up),
             "Down" => Some(Key::Down),
+            "Left" => Some(Key::Left),
+            "Right" => Some(Key::Right),
             s if s.chars().count() == 1 => {
                 let c = s.chars().next().unwrap();
                 if c.is_ascii_digit() {
