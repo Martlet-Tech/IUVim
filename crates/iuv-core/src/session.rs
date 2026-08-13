@@ -109,30 +109,8 @@ impl Session {
                     self.selected = 0;
                 }
             }
-            Key::Up => {
-                let len = self.page_candidates().len();
-                if len > 0 {
-                    self.selected = self.selected.saturating_sub(1).min(len - 1);
-                }
-            }
-            Key::Down => {
-                let len = self.page_candidates().len();
-                if len > 0 {
-                    self.selected = (self.selected + 1).min(len - 1);
-                }
-            }
-            Key::Left => {
-                let len = self.page_candidates().len();
-                if len > 0 {
-                    self.selected = self.selected.saturating_sub(1).min(len - 1);
-                }
-            }
-            Key::Right => {
-                let len = self.page_candidates().len();
-                if len > 0 {
-                    self.selected = (self.selected + 1).min(len - 1);
-                }
-            }
+            Key::Up | Key::Left => self.move_selected(-1),
+            Key::Down | Key::Right => self.move_selected(1),
             Key::Digit(_) | Key::Char(_) => {}
         }
         self.effect()
@@ -194,6 +172,33 @@ impl Session {
 
     fn page_size(&self) -> usize {
         self.engine.config().page_size.max(1)
+    }
+
+    /// 页内导航（Up/Left=-1，Down/Right=+1）：边界环绕——页尾继续 → 翻下一页
+    /// （selected=0）；页首回退 → 翻上一页（selected=页尾）。首/末页夹紧。
+    fn move_selected(&mut self, dir: i32) {
+        let len = self.page_candidates().len();
+        if len == 0 {
+            return;
+        }
+        let next = self.selected as i32 + dir;
+        if next < 0 {
+            if self.page > 0 {
+                self.page -= 1;
+                self.selected = self.page_candidates().len().saturating_sub(1);
+            } else {
+                self.selected = 0;
+            }
+        } else if next as usize >= len {
+            if self.page + 1 < self.page_count() {
+                self.page += 1;
+                self.selected = 0;
+            } else {
+                self.selected = len - 1;
+            }
+        } else {
+            self.selected = next as usize;
+        }
     }
 
     /// 鼠标悬停同步：把页内高亮定位到指定行（夹紧到页内行尾）。

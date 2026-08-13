@@ -271,7 +271,7 @@ fn trailing_apostrophe_space_commits_first_candidate() {
     assert_eq!(e.end, Some(SessionEnd::Commit("系".into())));
 }
 
-/// 左右键页内移动 selected（夹紧边界）；set_selected 悬停同步（夹紧行尾）。
+/// 左右键页内移动 selected（边界环绕翻页）；set_selected 悬停同步（夹紧行尾）。
 #[test]
 fn arrow_keys_move_selected_in_page() {
     let dict = Dict::from_entries(vec![
@@ -290,13 +290,63 @@ fn arrow_keys_move_selected_in_page() {
     assert_eq!(s.on_key(Key::Right).selected, 1);
     assert_eq!(s.on_key(Key::Right).selected, 2);
     assert_eq!(s.on_key(Key::Left).selected, 1);
-    // 左到头夹紧 0
     assert_eq!(s.on_key(Key::Left).selected, 0);
+    // 页首回退：首页夹紧 0（无上一页）
     assert_eq!(s.on_key(Key::Left).selected, 0);
     // set_selected 夹紧到页内行尾
     s.set_selected(99);
     let e = s.effect();
     assert_eq!(e.selected, e.candidates.len() - 1);
+}
+
+/// 页内导航边界环绕：页尾继续 → 下一页（selected=0）；页首回退 → 上一页（selected=页尾）。
+#[test]
+fn arrow_keys_wrap_across_pages() {
+    let dict = Dict::from_entries(vec![
+        ("ni'hao".into(), "你好".into(), 8000),
+        ("ni'hao".into(), "泥嚎".into(), 7000),
+        ("ni'hao".into(), "拟好".into(), 6000),
+        ("ni'hao".into(), "你好啊".into(), 5000),
+        ("ni'hao".into(), "泥嚎哦".into(), 4000),
+        ("ni'hao".into(), "拟好吧".into(), 3000),
+        ("ni".into(), "你".into(), 50000),
+        ("hao".into(), "好".into(), 40000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "nihao".chars() {
+        s.on_key(Key::Char(c));
+    }
+    // 第一页 5 个（page_size=5）；多翻几页到最后一页
+    while s.effect().page.page + 1 < s.effect().page.page_count {
+        s.on_key(Key::PageDown);
+    }
+    let last_page = s.effect().page.page;
+    // 页尾继续 → 夹紧（已是末页）
+    let len = s.effect().candidates.len();
+    for _ in 0..len {
+        s.on_key(Key::Right);
+    }
+    let e = s.effect();
+    assert_eq!(e.page.page, last_page);
+    assert_eq!(e.selected, e.candidates.len() - 1, "末页页尾夹紧");
+    // 回第一页
+    while s.effect().page.page > 0 {
+        s.on_key(Key::PageUp);
+    }
+    // 页首回退 → 夹紧 0（已是首页）
+    assert_eq!(s.on_key(Key::Left).selected, 0);
+    // 页尾继续 → 翻到下一页 selected=0
+    for _ in 0..s.effect().candidates.len() {
+        s.on_key(Key::Right);
+    }
+    let e = s.effect();
+    assert_eq!(e.page.page, 1, "页尾继续应翻到下一页");
+    assert_eq!(e.selected, 0, "下一页从页首开始");
+    // 页首回退 → 翻回上一页 selected=页尾
+    let e = s.on_key(Key::Left);
+    assert_eq!(e.page.page, 0, "页首回退应翻回上一页");
+    assert_eq!(e.selected, e.candidates.len() - 1, "回上一页选中页尾");
 }
 
 /// 连续 `'` 忽略（不允许 `''`）：`xi'` 后按 `'` 预览不变、不产生空段怪态；
@@ -770,13 +820,11 @@ fn paging_clamps_and_resets_selected() {
     }
     let mut e = s.on_key(Key::Down);
     assert_eq!(e.page.page_count, 3);
-    assert_eq!(e.page.page, 0);
-    assert_eq!(e.selected, 0); // 单候选页 clamp
-    e = s.on_key(Key::PageDown);
-    assert_eq!(e.page.page, 1);
-    assert_eq!(e.selected, 0);
+    assert_eq!(e.page.page, 1, "单候选页页尾继续 → 翻到下一页");
+    assert_eq!(e.selected, 0); // 下一页从页首开始
     e = s.on_key(Key::PageDown);
     assert_eq!(e.page.page, 2);
+    assert_eq!(e.selected, 0);
     e = s.on_key(Key::PageDown);
     assert_eq!(e.page.page, 2); // clamp 到上限
     e = s.on_key(Key::PageUp);

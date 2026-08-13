@@ -82,7 +82,8 @@ impl Config {
             }
         };
         let text = text.trim_start_matches('\u{FEFF}'); // UTF-8 BOM
-        match serde_json::from_str::<Config>(text) {
+        let text = strip_jsonc_comments(text); // 兼容带 // 注释的配置（安装器产出的默认文件）
+        match serde_json::from_str::<Config>(&text) {
             Ok(cfg) => {
                 log_config(&format!("配置已加载：{}", path.display()));
                 cfg
@@ -112,6 +113,43 @@ pub fn default_config_path() -> Option<PathBuf> {
 
 /// 配置日志：iuv-core 无日志设施，仅在失败时静默（输入法场景由 TSF 层日志覆盖）。
 fn log_config(_msg: &str) {}
+
+/// 剥 JSONC 行注释（`//` 到行尾）：字符串内不剥（含 `\"` 转义），行尾 CR 保留。
+/// serde_json 不支持注释，安装器产出的带注释默认配置经此预处理后解析。
+fn strip_jsonc_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_str = false;
+    let mut prev_escape = false;
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_str {
+            out.push(c as char);
+            if prev_escape {
+                prev_escape = false;
+            } else if c == b'\\' {
+                prev_escape = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+            i += 1;
+        } else if c == b'"' {
+            in_str = true;
+            out.push(c as char);
+            i += 1;
+        } else if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            // 跳到行尾（保留换行符，行号不漂移）
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out.push(c as char);
+            i += 1;
+        }
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -190,6 +228,33 @@ mod tests {
         std::fs::write(&p, &bytes).unwrap();
         let c = Config::from_file(&p);
         assert_eq!(c.page_size, 8);
+    }
+
+    #[test]
+    fn from_file_jsonc_comments() {
+        // 安装器产出的带 // 注释默认配置：可解析，注释剥除后字段生效。
+        let p = tmp_file("commented.json");
+        std::fs::write(
+            &p,
+            "{\n\
+             // 每页候选数\n\
+             \"page_size\": 9, // 行尾注释\n\
+             \"candidate_orientation\": \"horizontal\" // 横排\n\
+             }",
+        )
+        .unwrap();
+        let c = Config::from_file(&p);
+        assert_eq!(c.page_size, 9);
+        assert_eq!(c.candidate_orientation, Orientation::Horizontal);
+    }
+
+    #[test]
+    fn strip_comments_keeps_strings() {
+        // 字符串值内的 //（如翻页键"//"自定义？）不被误剥；转义引号不破字符串态。
+        let src = r#"{"a": "http://x", "b": "//y"}"#;
+        assert_eq!(strip_jsonc_comments(src), r#"{"a": "http://x", "b": "//y"}"#);
+        let src2 = "{\"a\": 1 // 注释\n}";
+        assert_eq!(strip_jsonc_comments(src2), "{\"a\": 1 \n}");
     }
 
     #[test]

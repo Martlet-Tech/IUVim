@@ -56,6 +56,8 @@ const CAND_GAP: i32 = 12;
 // ===== 字体 =====
 const FONT_FACE: &str = "Microsoft YaHei UI\0";
 const FONT_PT: i32 = 14;
+/// 页码字号（主字号一半）
+const FONT_PT_SMALL: i32 = FONT_PT / 2;
 
 const CLASS_NAME: PCWSTR = w!("IuvCandidateWindow");
 
@@ -72,10 +74,12 @@ pub struct Rect {
 /// 竖排：每候选一行（`"N.候选"`），页码（`page_count > 1` 时）右对齐末行；
 /// 横排：所有候选单行从左到右，页码在行尾右侧。
 /// `snap.reading`（拼音分段）不渲染：composition 已显示，候选窗只放候选列表
-/// （微软同款，省一行高度）。`measurer` 返回文本的 (宽, 高)。
+/// （微软同款，省一行高度）。`measurer` 测量候选（主字体）、`page_measurer`
+/// 测量页码（小字号）——页码用独立小字体测量，宽度/对齐才准确。
 pub fn layout(
     snap: &UiSnapshot,
     measurer: &dyn Fn(&str) -> (i32, i32),
+    page_measurer: &dyn Fn(&str) -> (i32, i32),
     orientation: Orientation,
 ) -> (i32, i32, Vec<Rect>) {
     let mut items: Vec<(String, i32, i32)> = Vec::new();
@@ -87,7 +91,7 @@ pub fn layout(
     let show_page = snap.page.page_count > 1;
     if show_page {
         let text = format!("{}/{}", snap.page.page + 1, snap.page.page_count);
-        let (w, h) = measurer(&text);
+        let (w, h) = page_measurer(&text);
         items.push((text, w, h));
     }
     if items.is_empty() {
@@ -136,6 +140,8 @@ pub fn hit_test(rects: &[Rect], x: i32, y: i32) -> Option<usize> {
 pub struct GdiCandidateWindow {
     hwnd: HWND,
     font: HFONT,
+    /// 页码小字号（主字号一半，随窗口创建）。
+    small_font: HFONT,
     snap: UiSnapshot,
     visible: bool,
     /// 最近一次定位用的光标锚点（update 超屏时翻屏用）。
@@ -153,6 +159,7 @@ impl GdiCandidateWindow {
         GdiCandidateWindow {
             hwnd: HWND::default(),
             font: HFONT::default(),
+            small_font: HFONT::default(),
             snap: UiSnapshot::default(),
             visible: false,
             last_caret: None,
@@ -253,7 +260,9 @@ impl GdiCandidateWindow {
         // 因此 wnd_proc 经 GetWindowLongPtrW 取到的指针不会悬垂。
         unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, self as *mut Self as isize) };
         self.hwnd = hwnd;
-        self.font = create_font(self.get_dpi());
+        let dpi = self.get_dpi();
+        self.font = create_font(dpi, FONT_PT);
+        self.small_font = create_font(dpi, FONT_PT_SMALL);
     }
 
     /// 按当前 snapshot 重算尺寸 → 定位（caret 或原位）→ 无激活移动 → 同步重绘。
@@ -269,8 +278,12 @@ impl GdiCandidateWindow {
             } else {
                 HGDIOBJ::default()
             };
-            let (w, h, rects) =
-                layout(&self.snap, &|s| measure(hdc, s), self.snap.orientation);
+            let (w, h, rects) = layout(
+                &self.snap,
+                &|s| measure(hdc, s),
+                &|s| measure_with(hdc, self.small_font, s),
+                self.snap.orientation,
+            );
             self.rows = rects;
             if !old_font.is_invalid() {
                 SelectObject(hdc, old_font);
@@ -405,6 +418,11 @@ impl Drop for GdiCandidateWindow {
             let _ = unsafe { DeleteObject(self.font.into()) };
             self.font = HFONT::default();
         }
+        if !self.small_font.is_invalid() {
+            // SAFETY: DeleteObject 释放 GDI 字体对象
+            let _ = unsafe { DeleteObject(self.small_font.into()) };
+            self.small_font = HFONT::default();
+        }
     }
 }
 
@@ -524,9 +542,9 @@ fn position_in_area(caret: CaretRect, w: i32, h: i32, area: RECT) -> (i32, i32) 
 }
 
 /// 按字体缩放的字号生成字体（pt → 像素：-((dpi*pt+36)/72)，等价 MulDiv 四舍五入）。
-fn create_font(dpi: u32) -> HFONT {
+fn create_font(dpi: u32, pt: i32) -> HFONT {
     let mut lf = LOGFONTW {
-        lfHeight: -((dpi as i32 * FONT_PT + 36) / 72),
+        lfHeight: -((dpi as i32 * pt + 36) / 72),
         lfWeight: 400,
         lfCharSet: DEFAULT_CHARSET,
         lfOutPrecision: OUT_DEFAULT_PRECIS,
@@ -565,8 +583,20 @@ fn draw_text(hdc: HDC, text: &str, x: i32, y: i32, color: COLORREF, bk: COLORREF
     }
 }
 
+/// 用指定字体测量（临时切换 hdc 字体，用完恢复）。
+fn measure_with(hdc: HDC, font: HFONT, text: &str) -> (i32, i32) {
+    // SAFETY: hdc 有效；SelectObject 返回旧字体，成对恢复
+    let old = unsafe { SelectObject(hdc, font.into()) };
+    let r = measure(hdc, text);
+    if !old.is_invalid() {
+        // SAFETY: 恢复旧字体
+        unsafe { SelectObject(hdc, old) };
+    }
+    r
+}
+
 /// 由布局计算当前 snapshot 的完整内容并绘制到 DC。
-fn draw_content(hdc: HDC, snap: &UiSnapshot, w: i32, h: i32) {
+fn draw_content(hdc: HDC, snap: &UiSnapshot, w: i32, h: i32, small_font: HFONT) {
     // SAFETY: hdc 有效；brush 用后即删
     unsafe {
         let bg = CreateSolidBrush(BG_COLOR);
@@ -583,7 +613,7 @@ fn draw_content(hdc: HDC, snap: &UiSnapshot, w: i32, h: i32) {
         let _ = FrameRect(hdc, &rc, border);
         let _ = DeleteObject(border.into());
     }
-    let (_, _, rects) = layout(snap, &|s| measure(hdc, s), snap.orientation);
+    let (_, _, rects) = layout(snap, &|s| measure(hdc, s), &|s| measure_with(hdc, small_font, s), snap.orientation);
     let mut i = 0usize;
     for (ci, cand) in snap.candidates.iter().enumerate() {
         let Some(r) = rects.get(i) else {
@@ -616,7 +646,14 @@ fn draw_content(hdc: HDC, snap: &UiSnapshot, w: i32, h: i32) {
     if snap.page.page_count > 1 {
         if let Some(r) = rects.get(i) {
             let text = format!("{}/{}", snap.page.page + 1, snap.page.page_count);
-            draw_text(hdc, &text, r.x, r.y, PAGE_COLOR, BG_COLOR);
+            // SAFETY: 页码用小字号绘制，画完恢复主字体
+            unsafe {
+                let old = SelectObject(hdc, small_font.into());
+                draw_text(hdc, &text, r.x, r.y, PAGE_COLOR, BG_COLOR);
+                if !old.is_invalid() {
+                    SelectObject(hdc, old);
+                }
+            }
         }
     }
 }
@@ -690,7 +727,7 @@ fn paint(hwnd: HWND) {
         if !wnd.font.is_invalid() {
             SelectObject(mem, wnd.font.into());
         }
-        draw_content(mem, &wnd.snap, w, h);
+        draw_content(mem, &wnd.snap, w, h, wnd.small_font);
         let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
         SelectObject(mem, old_bmp);
         let _ = DeleteObject(bmp.into());
@@ -779,7 +816,7 @@ mod tests {
     #[test]
     fn layout_single_page_rows_and_size() {
         let s = snap("ni'hao", &["你好", "泥嚎"], 0, 1);
-        let (w, h, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
+        let (w, h, rects) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Vertical);
         assert_eq!(rects.len(), 2, "2 候选，reading 不渲染");
         assert_eq!(w, 40 + PAD_X * 2, "最宽行 '1.你好'=4 字");
         assert_eq!(h, PAD_Y * 2 + 20 * 2 + ROW_GAP * 1);
@@ -799,7 +836,7 @@ mod tests {
     #[test]
     fn layout_multi_page_indicator_right_aligned() {
         let s = snap("ni'hao", &["你好", "泥嚎"], 0, 3);
-        let (w, _, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
+        let (w, _, rects) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Vertical);
         assert_eq!(rects.len(), 3, "2 候选 + 页码");
         let page_rect = *rects.last().unwrap();
         assert_eq!(
@@ -814,16 +851,27 @@ mod tests {
     #[test]
     fn layout_page_indicator_wider_than_rows() {
         let s = snap("ni", &["你"], 0, 100);
-        let (w, _, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
+        let (w, _, rects) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Vertical);
         let page_rect = *rects.last().unwrap();
         assert_eq!(w, 50 + PAD_X * 2, "页码 '1/100'=5 字 50px 最宽，撑开窗口");
         assert_eq!(page_rect.x, PAD_X, "页码自己最宽时从 PAD_X 起");
     }
 
     #[test]
+    fn layout_page_uses_small_measurer() {
+        // 页码用独立小测量（page_measurer）：5px/字 → '1/100' = 25px，而非主测量 50px。
+        let s = snap("ni'hao", &["你好"], 0, 100);
+        let fake_small = |t: &str| (t.chars().count() as i32 * 5, 10);
+        let (w, _, rects) = layout(&s, &fake_measurer, &fake_small, Orientation::Vertical);
+        let page_rect = *rects.last().unwrap();
+        assert_eq!(page_rect.w, 25, "页码用 page_measurer 测量");
+        assert_eq!(w, 40 + PAD_X * 2, "页码 25 < 候选 40，窗口宽由候选决定");
+    }
+
+    #[test]
     fn layout_empty_snapshot_no_rows() {
         let s = UiSnapshot::default();
-        let (w, h, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
+        let (w, h, rects) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Vertical);
         assert!(rects.is_empty());
         assert_eq!(w, PAD_X * 2);
         assert_eq!(h, PAD_Y * 2);
@@ -833,18 +881,18 @@ mod tests {
     fn layout_ignores_reading() {
         // reading（拼音分段）不参与布局：composition 已显示，候选窗只放候选。
         let s = snap("ni'hao", &["你好"], 0, 1);
-        let (_, _, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
+        let (_, _, rects) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Vertical);
         assert_eq!(rects.len(), 1);
         assert_eq!(rects[0].y, PAD_Y);
         let s2 = snap("", &["你好"], 0, 1);
-        let (_, _, rects2) = layout(&s2, &fake_measurer, Orientation::Vertical);
+        let (_, _, rects2) = layout(&s2, &fake_measurer, &fake_measurer, Orientation::Vertical);
         assert_eq!(rects2.len(), 1, "有/无 reading 布局一致");
     }
 
     #[test]
     fn layout_candidate_widths() {
         let s = snap("ni", &["你好", "泥嚎"], 0, 1);
-        let (w, _, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
+        let (w, _, rects) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Vertical);
         assert_eq!(w, 40 + PAD_X * 2, "候选行 '1.你好'=4 字 40px 最宽");
         assert_eq!(rects[1].x, PAD_X);
     }
@@ -853,7 +901,7 @@ mod tests {
     fn layout_horizontal_single_row() {
         // 横排：候选单行从左到右，页码在行尾右侧。
         let s = snap("ni'hao", &["你好", "泥嚎", "你好吗"], 0, 2);
-        let (w, h, rects) = layout(&s, &fake_measurer, Orientation::Horizontal);
+        let (w, h, rects) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Horizontal);
         assert_eq!(rects.len(), 4, "3 候选 + 页码");
         // 候选矩形同一行（y=PAD_Y），x 递增
         assert_eq!(rects[0].y, PAD_Y);
@@ -872,7 +920,7 @@ mod tests {
     #[test]
     fn hit_test_vertical_rows() {
         let s = snap("ni'hao", &["你好", "泥嚎", "你好吗"], 0, 1);
-        let (_, _, rects) = layout(&s, &fake_measurer, Orientation::Vertical);
+        let (_, _, rects) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Vertical);
         // 命中各行：矩形左上角 / 右下角内侧
         assert_eq!(hit_test(&rects, rects[0].x, rects[0].y), Some(0));
         assert_eq!(
@@ -889,7 +937,7 @@ mod tests {
     #[test]
     fn hit_test_horizontal_blocks() {
         let s = snap("ni'hao", &["你好", "泥嚎"], 0, 2);
-        let (_, _, rects) = layout(&s, &fake_measurer, Orientation::Horizontal);
+        let (_, _, rects) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Horizontal);
         // 横排：命中各候选块；块间 gap 未命中（页码块不计入候选）
         assert_eq!(hit_test(&rects, rects[0].x + 1, rects[0].y + 1), Some(0));
         assert_eq!(hit_test(&rects, rects[1].x + 1, rects[1].y + 1), Some(1));

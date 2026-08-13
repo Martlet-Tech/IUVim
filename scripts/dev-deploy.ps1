@@ -64,6 +64,35 @@ if (-not (Test-Path $imedicSrc)) {
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
 New-Item -ItemType Directory -Force -Path $dictDir | Out-Null
 
+# ---- 2.5 生成默认配置（缺失时；带 // 注释，引擎解析兼容 JSONC）----
+$configPath = Join-Path $dictDir "config.json"
+if (-not (Test-Path $configPath)) {
+    $template = @'
+{
+  // 每页候选数（默认 5；建议 ≤9 保证数字键可全选当前页）
+  "page_size": 5,
+  // 候选窗布局：vertical = 竖排（一列）/ horizontal = 横排（单行）
+  "candidate_orientation": "vertical",
+  // 快捷键四组语义键（键位与布局方向解耦，改布局后按需自行调整）
+  "keymap": {
+    // 前页（上翻页）：默认 ↑ / PageUp / 逗号
+    "page_prev": ["PageUp", ",", "Up"],
+    // 后页（下翻页）：默认 ↓ / PageDown / 句号
+    "page_next": ["PageDown", ".", "Down"],
+    // 前一个候选项（页内左移/上移）：默认 ←
+    "candidate_prev": ["Left"],
+    // 后一个候选项（页内右移/下移）：默认 →
+    "candidate_next": ["Right"]
+  },
+  // 前缀联想（高级）：false = 候选仅精确匹配（默认）/ true = 追加前缀长词
+  "candidate_prefix": false
+}
+'@
+    [IO.File]::WriteAllText($configPath, $template, [Text.UTF8Encoding]::new($false))
+    Trace-Script "dev-deploy: 生成默认配置 $configPath"
+    Write-Host "已生成默认配置（可编辑注释后改设置）：$configPath"
+}
+
 # ---- 3. 复制（DLL 用热替换：未锁直接复制，锁了改名 .old 原位替换，零杀进程）----
 try {
     Copy-Item $imedicSrc $dictDest -Force -ErrorAction Stop
