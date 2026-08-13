@@ -83,9 +83,17 @@ try {
     }
 }
 
-# ---- 4. 安装词库（用户级数据，不锁定）----
+# ---- 4. 安装词库（用户级数据，不锁定；目标可能被引擎进程 mmap——先删后拷：
+#       映射声明 FILE_SHARE_DELETE 故删除可行、截断写被拒 ERROR_USER_MAPPED_FILE）----
 New-Item -ItemType Directory -Force -Path $dictDir | Out-Null
-Copy-Item $imedicSrc $dictDest -Force
+try {
+    if (Test-Path $dictDest) { Remove-Item $dictDest -Force }
+    Copy-Item $imedicSrc $dictDest -Force
+} catch {
+    Trace-Script "install: 词库复制失败（$dictDest）：$($_.Exception.Message)"
+    Write-Host "错误：词库复制失败：$dictDest（多为引擎进程/搜索索引器占用，注销重启后重跑）"
+    exit 1
+}
 Trace-Script "install: 词库复制 $dictDest"
 Write-Host "已安装词库：$dictDest"
 

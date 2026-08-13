@@ -84,7 +84,13 @@ pub fn layout(
 ) -> (i32, i32, Vec<Rect>) {
     let mut items: Vec<(String, i32, i32)> = Vec::new();
     for (i, cand) in snap.candidates.iter().enumerate() {
-        let text = format!("{}.{}", i + 1, cand);
+        // 原文兜底候选（text == 预编辑原文，去掉 `'` 后比较）不编号：
+        // "不认识"语义——候选窗只呈现原文，不是可数候选。
+        let text = if *cand == snap.reading.replace('\'', "") {
+            cand.clone()
+        } else {
+            format!("{}.{}", i + 1, cand)
+        };
         let (w, h) = measurer(&text);
         items.push((text, w, h));
     }
@@ -634,7 +640,11 @@ fn draw_content(hdc: HDC, snap: &UiSnapshot, w: i32, h: i32, small_font: HFONT) 
                 let _ = DeleteObject(hl.into());
             }
         }
-        let text = format!("{}.{}", ci + 1, cand);
+        let text = if *cand == snap.reading.replace('\'', "") {
+            cand.clone() // 原文兜底候选：无编号（与 layout 的测量规则一致）
+        } else {
+            format!("{}.{}", ci + 1, cand)
+        };
         let (fg, bk) = if sel {
             (HL_TEXT, HL_BG)
         } else {
@@ -887,6 +897,20 @@ mod tests {
         let s2 = snap("", &["你好"], 0, 1);
         let (_, _, rects2) = layout(&s2, &fake_measurer, &fake_measurer, Orientation::Vertical);
         assert_eq!(rects2.len(), 1, "有/无 reading 布局一致");
+    }
+
+    #[test]
+    fn layout_fallback_raw_candidate_unnumbered() {
+        // 原文兜底候选（text == reading 去撇号）不编号：测量文本是原文本身而非 "1.原文"。
+        let s = snap("i'n'pu't", &["input"], 0, 1);
+        let (w, _, _) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Vertical);
+        assert_eq!(w, 5 * 10 + PAD_X * 2, "无编号：宽 = 原文 5 字 × 10px + padding");
+        let s2 = snap("input", &["input"], 0, 1);
+        let (w2, _, _) = layout(&s2, &fake_measurer, &fake_measurer, Orientation::Vertical);
+        assert_eq!(w, w2, "reading 有无撇号判定等价");
+        let s3 = snap("ni'hao", &["你好"], 0, 1);
+        let (w3, _, _) = layout(&s3, &fake_measurer, &fake_measurer, Orientation::Vertical);
+        assert_eq!(w3, 4 * 10 + PAD_X * 2, "正常候选仍编号 '1.你好'=4 字");
     }
 
     #[test]

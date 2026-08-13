@@ -35,7 +35,7 @@ pub(crate) enum Route {
     Abbrev,
     /// 多段混合（`nhao`）→ 简拼段展开配对
     Mixed,
-    /// 单段非前缀（`i`/`u`/`v`）或空输入 → 无候选
+    /// 单段非前缀（`i`/`u`/`v`）或空输入 → 无候选（生成末尾有原文兜底，见 generate_candidates）
     Empty,
 }
 
@@ -115,7 +115,7 @@ impl Engine {
     /// 路由（M1.5，微软实测对齐，见 docs/research/msime-probe-checklist.txt）：
     /// - 整串为音节前缀（`c`/`sh`/`zho`）→ 纯单字（单字桶，词频序）
     /// - 完整单音节：无歧义（`shi`）→ 纯单字（exact 全量）；歧义（`xian`→[xi,an]）→ 全拼 k-loop
-    /// - 单段非前缀（`i`/`u`/`v`）→ 无候选
+    /// - 单段非前缀（`i`/`u`/`v`）→ 无候选（末尾兜底：原文候选，见 generate_candidates）
     /// - 多段全完整（`nihao`/`xi'an`）→ 全拼 k-loop（viterbi 组句 + 逐级枚举）
     /// - 多段全不完整（`nh`/`nhm`/`nhmsx`）→ 简拼键逐级砍尾巴（构建期键，O(1) exact）
     /// - 多段混合（`nhao`）→ 不完整段展开音节配对查询（上限内，超限降级）
@@ -172,6 +172,19 @@ impl Engine {
         let ctx = RerankCtx { raw, seg, store: store.as_ref(), config: &self.config, now };
         for stage in &self.stages {
             stage.rerank(&ctx, &mut cands);
+        }
+
+        // 兜底：所有路由均无候选且输入非空 → 原文候选（"不认识"语义：`input`/`window`/`i`
+        // 等无法命中任何词库的输入，窗口内容不空、可 1/Space 直接上屏原文）。
+        // 复用现有 Word/Char 惯例（多字符 Word、单字符 Char），不新增候选类型；
+        // 无编号呈现由 UI 按 text == 预编辑原文 判定。seg_len = 段数 → 全消费、会话结束。
+        if cands.is_empty() && !plain.is_empty() {
+            let kind = if plain.chars().count() >= 2 {
+                crate::CandidateKind::Word
+            } else {
+                crate::CandidateKind::Char
+            };
+            cands.push(crate::Candidate::new(plain.clone(), kind, plain.clone(), 0, seg.len()));
         }
         cands
     }

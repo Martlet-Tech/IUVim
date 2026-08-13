@@ -595,15 +595,19 @@ fn complete_syllable_exact_full_pool() {
     assert!(binding.candidates.iter().all(|c| c.kind == CandidateKind::Char));
 }
 
-/// 单段非前缀（v）：无候选（微软 A 组实测：i/u/v 只有字面）。
+/// 单段非前缀（v）：无词库候选，兜底原文候选（微软 A 组实测：i/u/v 只有字面）。
 #[test]
-fn non_prefix_single_letter_empty() {
+fn non_prefix_single_letter_fallback() {
     let engine = Engine::new(m15_dict(), Config::default());
     let mut s = engine.start_session();
     for c in "v".chars() {
         s.on_key(Key::Char(c));
     }
-    assert!(s.effect().candidates.is_empty());
+    let e = s.effect();
+    let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(texts, vec!["v"], "无匹配输入 → 兜底原文候选");
+    assert_eq!(e.candidates[0].kind, CandidateKind::Char, "单字符兜底用 Char");
+    assert_eq!(e.candidates[0].seg_len, 1, "seg_len=段数 → 全消费");
     let e = s.on_key(Key::Space);
     assert_eq!(e.end, Some(SessionEnd::Commit("v".into())));
 }
@@ -755,11 +759,60 @@ fn space_commits_selected() {
 fn space_without_candidates_commits_raw() {
     let engine = default_engine();
     let mut s = engine.start_session();
-    // "w" 无词条、单音节无 Sentence → 无候选
+    // "w" 无词库命中 → 兜底原文候选；空格选中兜底 → 原文上屏（与旧行为一致）
     s.on_key(Key::Char('w'));
-    assert!(s.effect().candidates.is_empty());
+    let binding = s.effect();
+    let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(texts, vec!["w"]);
     let e = s.on_key(Key::Space);
     assert_eq!(e.end, Some(SessionEnd::Commit("w".into())));
+}
+
+/// 英文串（input/window）：所有路由无命中 → 兜底原文候选，可 1/Space 直接上屏。
+#[test]
+fn english_input_falls_back_to_raw_candidate() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "input".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(texts, vec!["input"], "英文串兜底为去撇号原文");
+    assert_eq!(e.candidates[0].kind, CandidateKind::Word, "多字符兜底用 Word");
+    assert_eq!(e.candidates[0].seg_len, 5, "seg_len=段数（[i,n,p,u,t]）→ 全消费");
+
+    let e = s.on_key(Key::Digit(1));
+    assert_eq!(e.end, Some(SessionEnd::Commit("input".into())));
+}
+
+#[test]
+fn english_input_digit_and_space_commit_raw() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "window".chars() {
+        s.on_key(Key::Char(c));
+    }
+    assert_eq!(
+        s.effect().candidates.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
+        vec!["window"]
+    );
+    let e = s.on_key(Key::Space);
+    assert_eq!(e.end, Some(SessionEnd::Commit("window".into())));
+}
+
+#[test]
+fn english_forced_apostrophes_fallback_squashed() {
+    let engine = Engine::new(m15_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "i'n'pu't".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert_eq!(e.candidates[0].text, "input", "强制撇号输入兜底 text 为去撇号原文");
+    assert_eq!(e.reading, "i'n'p'u't", "composition 显示切分后的分段（fixture 无 pu 音节 → p/u 两段）");
+    let e = s.on_key(Key::Space);
+    assert_eq!(e.end, Some(SessionEnd::Commit("input".into())));
 }
 
 #[test]

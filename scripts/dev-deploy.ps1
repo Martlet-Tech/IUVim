@@ -94,14 +94,17 @@ if (-not (Test-Path $configPath)) {
 }
 
 # ---- 3. 复制（DLL 用热替换：未锁直接复制，锁了改名 .old 原位替换，零杀进程）----
+# 词库目标可能被引擎进程 mmap（映射声明 FILE_SHARE_DELETE，删除可行、截断写被拒
+# ERROR_USER_MAPPED_FILE）→ 先删后拷；失败只警告不退出——词库与 DLL 是两个独立产物，
+# 词库暂锁不应阻断 DLL 热替换（否则一次词库失败全部停摆）。
 try {
+    if (Test-Path $dictDest) { Remove-Item $dictDest -Force }
     Copy-Item $imedicSrc $dictDest -Force -ErrorAction Stop
     Trace-Script "dev-deploy: 词库复制成功 $dictDest"
 } catch {
-    Trace-Script "dev-deploy: 词库复制失败（$dictDest）"
-    Write-Host "错误：词库复制失败：$dictDest"
-    Write-Host "请关闭占用 %LOCALAPPDATA%\iuv 的进程后重跑。"
-    exit 1
+    Trace-Script "dev-deploy: 词库复制失败（$dictDest）：$($_.Exception.Message)"
+    Write-Host "警告：词库复制失败（$dictDest），本次仅部署 DLL。"
+    Write-Host "  原因多为引擎进程/搜索索引器占用；注销重启后重跑本脚本即可更新词库。"
 }
 $r = Replace-InUseDll -Src $dllSrc -Dest $destDll
 if (-not $r.Ok) { exit 1 }
