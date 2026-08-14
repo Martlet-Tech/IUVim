@@ -7,7 +7,9 @@ M1（当前里程碑）：最小可用的全拼输入法。
 ## 当前状态
 
 - [x] M1 最小 MVP：全拼打字链路（见 `docs/plan/00-overview.md`）——**已结案**（2026-08-09：手测 1-8 项通过、词库缺失透明模式通过）
-  - 已知问题：Alt+Tab 切窗口时未确认的预编辑会残留上屏（TSF 终止 composition 的标准语义，微软拼音同款行为；残留为汉字首选而非拼音原文）——M3+ 或按需处理
+  - 已知问题：Alt+Tab 切窗口残留预编辑——**已修（2026-08-14）**：未确认输入按**原文上屏**语义结束
+    （`zhujincheng` 上屏为 zhujincheng，非带撇号分节/汉字残留），与关闭输入法（Ctrl+Space）统一走
+    `flush_session`（session.pending_text() → composition.commit → 清槽；空/失败降级 cancel）。
   - **已知 bug（2026-08-11，已修）**：续接（选中间级词）后尾巴 commit 失败 `0x8000FFFF (E_UNEXPECTED)`。
     根因：选中间词走「EndComposition 上屏已选词 → 紧接 StartComposition 重建尾巴」，重建的 composition
     被 TSF 在应用（notepad 实测）的下一个 edit session 里终止（日志 `composition 终止通知`），而
@@ -69,7 +71,8 @@ M1（当前里程碑）：最小可用的全拼输入法。
 - **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
   OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；激活即打开）。前置条件：用户在
   高级键设置把"输入法/非输入法切换"设为 Ctrl+Space（"切换输入语言"热键让位，Win+Space 仍可用）。
-  已知遗留（未修）：有活动候选时按热键关闭，会话清理路径存在小 bug（2026-08-12 手测记录，待修）。
+  已知遗留（已修 2026-08-14）：有活动候选时按热键关闭，未确认输入按原文上屏（原 bug：
+  只清内存态不终止 composition → 带撇号分节预览残留；Alt+Tab 同根因一并修复）。
 
 ## 开发入口
 
