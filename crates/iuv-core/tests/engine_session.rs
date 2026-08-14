@@ -55,8 +55,14 @@ fn exact_words_order_by_weight() {
     let binding = s.effect();
     let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
     // 单音节无 Sentence；exact 顺序 = weight 降序：的/得/地
-    assert!(texts.iter().position(|t| *t == "的").unwrap() < texts.iter().position(|t| *t == "得").unwrap());
-    assert!(texts.iter().position(|t| *t == "得").unwrap() < texts.iter().position(|t| *t == "地").unwrap());
+    assert!(
+        texts.iter().position(|t| *t == "的").unwrap()
+            < texts.iter().position(|t| *t == "得").unwrap()
+    );
+    assert!(
+        texts.iter().position(|t| *t == "得").unwrap()
+            < texts.iter().position(|t| *t == "地").unwrap()
+    );
     assert_eq!(s.effect().candidates[0].text, "的");
 }
 
@@ -75,24 +81,46 @@ fn candidate_prefix_switch() {
     for c in "nihao".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
     assert!(texts.contains(&"你好".to_string()));
-    assert!(!texts.contains(&"你好啊".to_string()), "默认不应出现前缀联想词，实际：{texts:?}");
+    assert!(
+        !texts.contains(&"你好啊".to_string()),
+        "默认不应出现前缀联想词，实际：{texts:?}"
+    );
     // 开启：追加联想长词
-    let cfg = Config { candidate_prefix: true, ..Config::default() };
+    let cfg = Config {
+        candidate_prefix: true,
+        ..Config::default()
+    };
     let engine2 = Engine::new(dict, cfg);
     let mut s2 = engine2.start_session();
     for c in "nihao".chars() {
         s2.on_key(Key::Char(c));
     }
-    let texts2: Vec<String> = s2.effect().candidates.iter().map(|c| c.text.clone()).collect();
-    assert!(texts2.contains(&"你好啊".to_string()), "开启后应出现前缀联想词，实际：{texts2:?}");
+    let texts2: Vec<String> = s2
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert!(
+        texts2.contains(&"你好啊".to_string()),
+        "开启后应出现前缀联想词，实际：{texts2:?}"
+    );
 }
 
 #[test]
 fn prefix_completion_recalled() {
     // 联想开启时，未完成码 "nih" 也能通过前缀补全召回 "你好"
-    let cfg = Config { candidate_prefix: true, ..Config::default() };
+    let cfg = Config {
+        candidate_prefix: true,
+        ..Config::default()
+    };
     let engine = Engine::new(fixture_dict(), cfg);
     let mut s = engine.start_session();
     for c in "nih".chars() {
@@ -108,13 +136,21 @@ fn dedup_by_text() {
     for c in "nihao".chars() {
         s.on_key(Key::Char(c));
     }
-    let count = s.effect().candidates.iter().filter(|c| c.text == "你好").count();
+    let count = s
+        .effect()
+        .candidates
+        .iter()
+        .filter(|c| c.text == "你好")
+        .count();
     assert_eq!(count, 1);
 }
 
 #[test]
 fn max_candidates_capped() {
-    let cfg = Config { max_candidates: 3, ..Config::default() };
+    let cfg = Config {
+        max_candidates: 3,
+        ..Config::default()
+    };
     let engine = Engine::new(fixture_dict(), cfg);
     let mut s = engine.start_session();
     for c in "nihao".chars() {
@@ -129,7 +165,11 @@ fn max_candidates_capped() {
 #[test]
 fn tail_cutting_lists_all_levels_longest_first() {
     let dict = Dict::from_entries(vec![
-        ("chuang'qian'ming'yue'guang".into(), "床前明月光".into(), 8000),
+        (
+            "chuang'qian'ming'yue'guang".into(),
+            "床前明月光".into(),
+            8000,
+        ),
         ("chuang'qian'ming'yue".into(), "床前明月".into(), 7000),
         ("chuang'qian'ming".into(), "床前明".into(), 6000),
         ("chuang'qian".into(), "床前".into(), 5000),
@@ -144,11 +184,19 @@ fn tail_cutting_lists_all_levels_longest_first() {
     for c in "chuangqianmingyueguang".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
     let expect = ["床前明月光", "床前明月", "床前明", "床前", "床"];
     let mut pos = 0usize;
     for want in expect {
-        let at = texts.iter().position(|t| t == want).expect(&format!("候选应含 {want}，实际：{texts:?}"));
+        let at = texts
+            .iter()
+            .position(|t| t == want)
+            .expect(&format!("候选应含 {want}，实际：{texts:?}"));
         assert!(at >= pos, "{want} 应排在更早层级之后，实际：{texts:?}");
         pos = at;
     }
@@ -169,12 +217,23 @@ fn tail_cutting_single_char_reachable() {
     for c in "zheshi".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
     assert!(texts.contains(&"这是".to_string()), "实际：{texts:?}");
     assert!(texts.contains(&"知识".to_string()), "实际：{texts:?}");
-    let zhe = texts.iter().position(|t| t == "这").expect("单字应可及，实际：{texts:?}");
+    let zhe = texts
+        .iter()
+        .position(|t| t == "这")
+        .expect("单字应可及，实际：{texts:?}");
     let zheshi = texts.iter().position(|t| t == "这是").unwrap();
-    assert!(zheshi < zhe, "词级应在单字级之前（从长到短），实际：{texts:?}");
+    assert!(
+        zheshi < zhe,
+        "词级应在单字级之前（从长到短），实际：{texts:?}"
+    );
 }
 
 /// 无撇号 xian：枚举切分在 k=1 级内合并 [xian]+[xi,an]，跨组按权重（先/线/西安…）——
@@ -191,7 +250,12 @@ fn tail_cutting_xian_merge_by_weight() {
     for c in "xian".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
     assert_eq!(texts[0], "先");
     assert!(texts.iter().position(|t| t == "西安").unwrap() > 0);
     // 西安（6091）按权重在 先/线 之后。
@@ -216,7 +280,12 @@ fn full_pinyin_enumerates_multi_seg_variants_fenge() {
     for c in "fenge".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
     assert!(texts.contains(&"分割".to_string()), "实际：{texts:?}");
 }
 
@@ -233,7 +302,12 @@ fn full_pinyin_enumerates_multi_seg_variants_keneng() {
     for c in "keneng".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
     assert!(texts.contains(&"可能".to_string()), "实际：{texts:?}");
 }
 
@@ -249,9 +323,17 @@ fn forced_apostrophe_does_not_enumerate() {
     for c in "xi'an".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
     assert!(texts.contains(&"西安".to_string()), "实际：{texts:?}");
-    assert!(!texts.contains(&"先".to_string()), "强制切分不应枚举出 xian 键，实际：{texts:?}");
+    assert!(
+        !texts.contains(&"先".to_string()),
+        "强制切分不应枚举出 xian 键，实际：{texts:?}"
+    );
 }
 
 /// `xi'`（尾空段）后空格：消费边界按有效段数（非空段）判定——
@@ -370,7 +452,12 @@ fn consecutive_apostrophe_ignored() {
     for c in "an".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
     assert!(texts.contains(&"西安".to_string()), "实际：{texts:?}");
 }
 
@@ -379,7 +466,11 @@ fn consecutive_apostrophe_ignored() {
 /// 长句词库：整句/两字词/单字 + 尾巴整词，供续接用例。
 fn tail_dict() -> Dict {
     Dict::from_entries(vec![
-        ("chuang'qian'ming'yue'guang".into(), "床前明月光".into(), 8000),
+        (
+            "chuang'qian'ming'yue'guang".into(),
+            "床前明月光".into(),
+            8000,
+        ),
         ("chuang'qian".into(), "床前".into(), 5000),
         ("chuang".into(), "床".into(), 4000),
         ("qian".into(), "前".into(), 3000),
@@ -404,10 +495,19 @@ fn pick_middle_keeps_tail() {
     let mut s = engine.start_session();
     type_long(&mut s);
     // 选 k=2 级"床前"（候选 1 是整句，找"床前"位置）。
-    let idx = s.effect().candidates.iter().position(|c| c.text == "床前").unwrap();
+    let idx = s
+        .effect()
+        .candidates
+        .iter()
+        .position(|c| c.text == "床前")
+        .unwrap();
     let e = s.on_key(Key::Digit((idx + 1) as u8));
     assert_eq!(e.end, None, "续接不应结束会话");
-    assert_eq!(e.composition, "床前ming'yue'guang", "混合预编辑：已选汉字+尾巴拼音，实际：{}", e.composition);
+    assert_eq!(
+        e.composition, "床前ming'yue'guang",
+        "混合预编辑：已选汉字+尾巴拼音，实际：{}",
+        e.composition
+    );
     assert_eq!(e.reading, "床前ming'yue'guang");
     // 尾巴候选：整词"明月光"居首。
     assert_eq!(e.candidates[0].text, "明月光");
@@ -420,7 +520,12 @@ fn continue_then_commit_all() {
     let engine = Engine::new(tail_dict(), Config::default());
     let mut s = engine.start_session();
     type_long(&mut s);
-    let idx = s.effect().candidates.iter().position(|c| c.text == "床前").unwrap();
+    let idx = s
+        .effect()
+        .candidates
+        .iter()
+        .position(|c| c.text == "床前")
+        .unwrap();
     s.on_key(Key::Digit((idx + 1) as u8));
     // 空格上屏首选（明月光）→ 全量结束：床前明月光。
     let e = s.on_key(Key::Space);
@@ -434,12 +539,24 @@ fn backspace_pops_picked() {
     let engine = Engine::new(tail_dict(), Config::default());
     let mut s = engine.start_session();
     type_long(&mut s);
-    let idx = s.effect().candidates.iter().position(|c| c.text == "床前").unwrap();
+    let idx = s
+        .effect()
+        .candidates
+        .iter()
+        .position(|c| c.text == "床前")
+        .unwrap();
     s.on_key(Key::Digit((idx + 1) as u8));
     let e = s.on_key(Key::Backspace);
     assert_eq!(e.end, None, "回退栈顶不结束会话");
-    assert_eq!(e.composition, "chuang'qian'ming'yue'guang", "raw 恢复，实际：{}", e.composition);
-    assert!(e.candidates.iter().any(|c| c.text == "床前明月光"), "候选恢复整句");
+    assert_eq!(
+        e.composition, "chuang'qian'ming'yue'guang",
+        "raw 恢复，实际：{}",
+        e.composition
+    );
+    assert!(
+        e.candidates.iter().any(|c| c.text == "床前明月光"),
+        "候选恢复整句"
+    );
     assert!(s.is_active());
 }
 
@@ -449,7 +566,12 @@ fn esc_with_picked_commits_picked() {
     let engine = Engine::new(tail_dict(), Config::default());
     let mut s = engine.start_session();
     type_long(&mut s);
-    let idx = s.effect().candidates.iter().position(|c| c.text == "床前").unwrap();
+    let idx = s
+        .effect()
+        .candidates
+        .iter()
+        .position(|c| c.text == "床前")
+        .unwrap();
     s.on_key(Key::Digit((idx + 1) as u8));
     let e = s.on_key(Key::Esc);
     assert_eq!(e.end, Some(SessionEnd::Commit("床前".into())));
@@ -533,13 +655,19 @@ fn single_letter_chars_only() {
     let e = s.effect();
     let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["才", "财", "擦"]);
-    assert!(e.candidates.iter().all(|c| c.kind == CandidateKind::Char), "单字母档应纯单字");
+    assert!(
+        e.candidates.iter().all(|c| c.kind == CandidateKind::Char),
+        "单字母档应纯单字"
+    );
 }
 
 /// 部分音节档：sh → 纯单字（是/时/上/十/事…），无词。
 #[test]
 fn prefix_segment_chars_only() {
-    let cfg = Config { page_size: 10, ..Config::default() };
+    let cfg = Config {
+        page_size: 10,
+        ..Config::default()
+    };
     let engine = Engine::new(m15_dict(), cfg);
     let mut s = engine.start_session();
     for c in "sh".chars() {
@@ -548,7 +676,11 @@ fn prefix_segment_chars_only() {
     let binding = s.effect();
     let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["是", "时", "上", "十", "事", "市", "世"]);
-    assert!(s.effect().candidates.iter().all(|c| c.kind == CandidateKind::Char));
+    assert!(s
+        .effect()
+        .candidates
+        .iter()
+        .all(|c| c.kind == CandidateKind::Char));
 }
 
 /// 部分音节档选中候选：整串消费、上屏、会话结束（切分器前缀兜底修正后 sh 为单段，
@@ -560,7 +692,12 @@ fn prefix_select_commits_all() {
     for c in "sh".chars() {
         s.on_key(Key::Char(c));
     }
-    let idx = s.effect().candidates.iter().position(|c| c.text == "时").unwrap();
+    let idx = s
+        .effect()
+        .candidates
+        .iter()
+        .position(|c| c.text == "时")
+        .unwrap();
     let e = s.on_key(Key::Digit((idx + 1) as u8));
     assert_eq!(e.end, Some(SessionEnd::Commit("时".into())));
     assert!(!s.is_active());
@@ -583,7 +720,10 @@ fn complete_syllable_chars_only() {
 /// 不被首字母桶 top-N 截成 5 个（修正：桶混收多字词导致 shi 只剩 5 字）。
 #[test]
 fn complete_syllable_exact_full_pool() {
-    let cfg = Config { page_size: 10, ..Config::default() };
+    let cfg = Config {
+        page_size: 10,
+        ..Config::default()
+    };
     let engine = Engine::new(m15_dict(), cfg);
     let mut s = engine.start_session();
     for c in "shi".chars() {
@@ -592,7 +732,10 @@ fn complete_syllable_exact_full_pool() {
     let binding = s.effect();
     let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["是", "时", "十", "事", "市", "世"]);
-    assert!(binding.candidates.iter().all(|c| c.kind == CandidateKind::Char));
+    assert!(binding
+        .candidates
+        .iter()
+        .all(|c| c.kind == CandidateKind::Char));
 }
 
 /// 单段非前缀（v）：无词库候选，兜底原文候选（微软 A 组实测：i/u/v 只有字面）。
@@ -606,7 +749,11 @@ fn non_prefix_single_letter_fallback() {
     let e = s.effect();
     let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["v"], "无匹配输入 → 兜底原文候选");
-    assert_eq!(e.candidates[0].kind, CandidateKind::Char, "单字符兜底用 Char");
+    assert_eq!(
+        e.candidates[0].kind,
+        CandidateKind::Char,
+        "单字符兜底用 Char"
+    );
     assert_eq!(e.candidates[0].seg_len, 1, "seg_len=段数 → 全消费");
     let e = s.on_key(Key::Space);
     assert_eq!(e.end, Some(SessionEnd::Commit("v".into())));
@@ -623,7 +770,13 @@ fn abbrev_words_only_no_chars() {
     let binding = s.effect();
     let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["你好", "泥嚎"]);
-    assert!(s.effect().candidates.iter().all(|c| c.kind == CandidateKind::Word), "简拼档应纯词");
+    assert!(
+        s.effect()
+            .candidates
+            .iter()
+            .all(|c| c.kind == CandidateKind::Word),
+        "简拼档应纯词"
+    );
     assert!(!texts.contains(&"你"), "简拼候选不含单字，实际：{texts:?}");
 }
 
@@ -635,11 +788,18 @@ fn abbrev_tail_levels_longest_first() {
     for c in "nhmsx".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
     let expect = ["你还没睡醒", "你还没说", "你还没", "你好"];
     let mut pos = 0usize;
     for want in expect {
-        let at = texts.iter().position(|t| t == want)
+        let at = texts
+            .iter()
+            .position(|t| t == want)
             .unwrap_or_else(|| panic!("候选应含 {want}，实际：{texts:?}"));
         assert!(at >= pos, "{want} 应排在更长层级之后，实际：{texts:?}");
         pos = at;
@@ -654,10 +814,19 @@ fn abbrev_partial_commit_keeps_tail() {
     for c in "nhmsx".chars() {
         s.on_key(Key::Char(c));
     }
-    let idx = s.effect().candidates.iter().position(|c| c.text == "你还没说").unwrap();
+    let idx = s
+        .effect()
+        .candidates
+        .iter()
+        .position(|c| c.text == "你还没说")
+        .unwrap();
     let e = s.on_key(Key::Digit((idx + 1) as u8));
     assert_eq!(e.end, None, "部分消费不结束会话");
-    assert_eq!(e.composition, "你还没说x", "词上屏+尾巴拼音，实际：{}", e.composition);
+    assert_eq!(
+        e.composition, "你还没说x",
+        "词上屏+尾巴拼音，实际：{}",
+        e.composition
+    );
     assert!(s.is_active());
 }
 
@@ -669,7 +838,12 @@ fn mixed_nhao_finds_nihao() {
     for c in "nhao".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s.effect().candidates.iter().map(|c| c.text.clone()).collect();
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
     assert_eq!(texts[0], "你好", "混拼词应居首，实际：{texts:?}");
     assert!(texts.contains(&"泥嚎".to_string()));
     // 单字（你/那）排在词后
@@ -687,7 +861,10 @@ fn single_segment_no_truncation() {
         items.push((format!("shi"), w, 1000 - i));
     }
     let dict = Dict::from_entries(items);
-    let cfg = Config { page_size: 10, ..Config::default() };
+    let cfg = Config {
+        page_size: 10,
+        ..Config::default()
+    };
     let engine = Engine::new(dict, cfg);
     let mut s = engine.start_session();
     for c in "shi".chars() {
@@ -696,7 +873,11 @@ fn single_segment_no_truncation() {
     let e = s.effect();
     // e.candidates = 当前页（page_size 10）；全量由 page_count 体现：40 候选 = 4 页
     assert_eq!(e.candidates.len(), 10);
-    assert_eq!(e.page.page_count, 4, "40 候选应为 4 页（无 30 截断），实际：{}", e.page.page_count);
+    assert_eq!(
+        e.page.page_count, 4,
+        "40 候选应为 4 页（无 30 截断），实际：{}",
+        e.page.page_count
+    );
 }
 
 /// 简拼键整串消费：选中"你好"（k=2=n）→ 全部上屏、会话结束。
@@ -711,8 +892,6 @@ fn abbrev_full_commit_ends_session() {
     assert_eq!(e.end, Some(SessionEnd::Commit("你好".into())));
     assert!(!s.is_active());
 }
-
-
 
 #[test]
 fn type_shows_candidates() {
@@ -779,8 +958,15 @@ fn english_input_falls_back_to_raw_candidate() {
     let e = s.effect();
     let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["input"], "英文串兜底为去撇号原文");
-    assert_eq!(e.candidates[0].kind, CandidateKind::Word, "多字符兜底用 Word");
-    assert_eq!(e.candidates[0].seg_len, 5, "seg_len=段数（[i,n,p,u,t]）→ 全消费");
+    assert_eq!(
+        e.candidates[0].kind,
+        CandidateKind::Word,
+        "多字符兜底用 Word"
+    );
+    assert_eq!(
+        e.candidates[0].seg_len, 5,
+        "seg_len=段数（[i,n,p,u,t]）→ 全消费"
+    );
 
     let e = s.on_key(Key::Digit(1));
     assert_eq!(e.end, Some(SessionEnd::Commit("input".into())));
@@ -794,7 +980,11 @@ fn english_input_digit_and_space_commit_raw() {
         s.on_key(Key::Char(c));
     }
     assert_eq!(
-        s.effect().candidates.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
+        s.effect()
+            .candidates
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>(),
         vec!["window"]
     );
     let e = s.on_key(Key::Space);
@@ -809,8 +999,14 @@ fn english_forced_apostrophes_fallback_squashed() {
         s.on_key(Key::Char(c));
     }
     let e = s.effect();
-    assert_eq!(e.candidates[0].text, "input", "强制撇号输入兜底 text 为去撇号原文");
-    assert_eq!(e.reading, "i'n'p'u't", "composition 显示切分后的分段（fixture 无 pu 音节 → p/u 两段）");
+    assert_eq!(
+        e.candidates[0].text, "input",
+        "强制撇号输入兜底 text 为去撇号原文"
+    );
+    assert_eq!(
+        e.reading, "i'n'p'u't",
+        "composition 显示切分后的分段（fixture 无 pu 音节 → p/u 两段）"
+    );
     let e = s.on_key(Key::Space);
     assert_eq!(e.end, Some(SessionEnd::Commit("input".into())));
 }
@@ -865,11 +1061,18 @@ fn shiftchar_uppercase_preserves_case_through_session() {
         s.on_key(Key::ShiftChar(c));
     }
     let e = s.effect();
-    assert_eq!(e.reading, "ni'H'A'O", "大写原样进序列，切分按不可匹配字符单字母段");
+    assert_eq!(
+        e.reading, "ni'H'A'O",
+        "大写原样进序列，切分按不可匹配字符单字母段"
+    );
     let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
     assert!(texts.contains(&"你"), "候选仍从 ni 前缀出：{texts:?}");
     let e = s.on_key(Key::Enter);
-    assert_eq!(e.end, Some(SessionEnd::Commit("niHAO".into())), "commit 原样含大写");
+    assert_eq!(
+        e.end,
+        Some(SessionEnd::Commit("niHAO".into())),
+        "commit 原样含大写"
+    );
 }
 
 /// 悬空 + ShiftChar：选中 ni 候选（部分消费）→ 尾巴 HAO 悬空续接，commit 组合原样。
@@ -912,11 +1115,21 @@ fn shiftchar_starts_session_hello() {
         s.on_key(Key::Char(c));
     }
     let e = s.effect();
-    assert_eq!(e.reading, "H'e'l'l'o", "大写段不被音节表命中，按单字母段切分");
+    assert_eq!(
+        e.reading, "H'e'l'l'o",
+        "大写段不被音节表命中，按单字母段切分"
+    );
     let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
-    assert!(texts.contains(&"Hello"), "全不命中 → 兜底原文候选：{texts:?}");
+    assert!(
+        texts.contains(&"Hello"),
+        "全不命中 → 兜底原文候选：{texts:?}"
+    );
     let e = s.on_key(Key::Enter);
-    assert_eq!(e.end, Some(SessionEnd::Commit("Hello".into())), "commit 原样含大写");
+    assert_eq!(
+        e.end,
+        Some(SessionEnd::Commit("Hello".into())),
+        "commit 原样含大写"
+    );
 }
 
 #[test]
@@ -932,7 +1145,10 @@ fn esc_cancels() {
 
 #[test]
 fn paging_clamps_and_resets_selected() {
-    let cfg = Config { page_size: 1, ..Config::default() };
+    let cfg = Config {
+        page_size: 1,
+        ..Config::default()
+    };
     let engine = Engine::new(fixture_dict(), cfg);
     let mut s = engine.start_session();
     for c in "de".chars() {
@@ -994,7 +1210,10 @@ struct SpyStore {
 
 impl UserDataStore for SpyStore {
     fn record_selection(&mut self, code: &str, text: &str, _now: SystemTime) {
-        self.calls.lock().unwrap().push((code.to_string(), text.to_string()));
+        self.calls
+            .lock()
+            .unwrap()
+            .push((code.to_string(), text.to_string()));
     }
     fn power(&self, _code: &str, _text: &str, _now: SystemTime) -> f32 {
         0.0
@@ -1003,17 +1222,12 @@ impl UserDataStore for SpyStore {
 
 #[test]
 fn commit_records_selection() {
-    let store = Box::new(SpyStore { calls: Mutex::new(Vec::new()) });
+    let store = Box::new(SpyStore {
+        calls: Mutex::new(Vec::new()),
+    });
     let schema = Box::new(Quanpin::new(fixture_dict().syllables().clone()));
     let lm = Box::new(iuv_core::UnigramLm::new(1000000, 100));
-    let engine = Engine::with_parts(
-        fixture_dict(),
-        Config::default(),
-        schema,
-        lm,
-        vec![],
-        store,
-    );
+    let engine = Engine::with_parts(fixture_dict(), Config::default(), schema, lm, vec![], store);
     let mut s = engine.start_session();
     for c in "de".chars() {
         s.on_key(Key::Char(c));
@@ -1028,7 +1242,10 @@ struct SpyStoreShared(Arc<Mutex<Vec<(String, String)>>>);
 
 impl UserDataStore for SpyStoreShared {
     fn record_selection(&mut self, code: &str, text: &str, _now: SystemTime) {
-        self.0.lock().unwrap().push((code.to_string(), text.to_string()));
+        self.0
+            .lock()
+            .unwrap()
+            .push((code.to_string(), text.to_string()));
     }
     fn power(&self, _code: &str, _text: &str, _now: SystemTime) -> f32 {
         0.0
@@ -1040,7 +1257,10 @@ fn commit_records_selection_args() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let store = Box::new(SpyStoreShared(log.clone()));
     let schema = Box::new(Quanpin::new(fixture_dict().syllables().clone()));
-    let lm = Box::new(iuv_core::UnigramLm::new(fixture_dict().total_weight(), fixture_dict().entry_count()));
+    let lm = Box::new(iuv_core::UnigramLm::new(
+        fixture_dict().total_weight(),
+        fixture_dict().entry_count(),
+    ));
     let engine = Engine::with_parts(fixture_dict(), Config::default(), schema, lm, vec![], store);
     let mut s = engine.start_session();
     for c in "de".chars() {
@@ -1069,9 +1289,15 @@ impl RerankStage for SpyStage {
 
 #[test]
 fn rerank_stage_is_invoked() {
-    let stage = Box::new(SpyStage { calls: Mutex::new(0), swaps: true });
+    let stage = Box::new(SpyStage {
+        calls: Mutex::new(0),
+        swaps: true,
+    });
     let schema = Box::new(Quanpin::new(fixture_dict().syllables().clone()));
-    let lm = Box::new(iuv_core::UnigramLm::new(fixture_dict().total_weight(), fixture_dict().entry_count()));
+    let lm = Box::new(iuv_core::UnigramLm::new(
+        fixture_dict().total_weight(),
+        fixture_dict().entry_count(),
+    ));
     let engine = Engine::with_parts(
         fixture_dict(),
         Config::default(),
@@ -1104,7 +1330,10 @@ fn rerank_stage_swaps_order() {
     }
     let _ = RefCell::new(0);
     let schema = Box::new(Quanpin::new(fixture_dict().syllables().clone()));
-    let lm = Box::new(iuv_core::UnigramLm::new(fixture_dict().total_weight(), fixture_dict().entry_count()));
+    let lm = Box::new(iuv_core::UnigramLm::new(
+        fixture_dict().total_weight(),
+        fixture_dict().entry_count(),
+    ));
     let engine = Engine::with_parts(
         fixture_dict(),
         Config::default(),
@@ -1119,4 +1348,197 @@ fn rerank_stage_swaps_order() {
     }
     // SwapStage 把 的/得 互换 → 首个候选不是"的"
     assert_ne!(s.effect().candidates[0].text, "的");
+}
+
+// ===== M2 主动调权（Alt+←/→ 相邻交换权重，18-m2-user-dict.md）=====
+
+/// 输入 "de" 后的候选 text 序列。
+fn de_texts(s: &Session) -> Vec<String> {
+    s.effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect()
+}
+
+fn user_dict_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("iuv-{name}-{}.imedic", std::process::id()))
+}
+
+#[test]
+fn swap_right_moves_candidate_up_and_follows() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for c in "de".chars() {
+        s.on_key(Key::Char(c));
+    }
+    // 初始：的/得/地，selected=0
+    assert_eq!(de_texts(&s), vec!["的", "得", "地"]);
+    // Alt+→：高亮"的"与右侧"得"交换
+    s.on_key(Key::SwapRight);
+    let e = s.effect();
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    assert_eq!(texts[0], "得", "交换后得升到 1 号位，实际：{texts:?}");
+    assert_eq!(texts[1], "的");
+    assert_eq!(texts[2], "地");
+    assert_eq!(e.selected, 1, "高亮跟随被调词（的）");
+    assert!(e.end.is_none(), "交换不结束会话");
+    // 会话未结束：还能继续导航并上屏
+    s.on_key(Key::Left); // 高亮回到 得
+    let e2 = s.on_key(Key::Space);
+    assert_eq!(e2.end, Some(SessionEnd::Commit("得".into())));
+}
+
+#[test]
+fn swap_left_boundary_ignored() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for c in "de".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let before = de_texts(&s);
+    s.on_key(Key::SwapLeft); // 1 号位无左邻：忽略
+    assert_eq!(de_texts(&s), before);
+}
+
+#[test]
+fn swap_right_boundary_ignored() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for c in "de".chars() {
+        s.on_key(Key::Char(c));
+    }
+    s.on_key(Key::Right); // 高亮移到最后（地）
+    s.on_key(Key::Right);
+    let before = de_texts(&s);
+    s.on_key(Key::SwapRight); // 末位无右邻：忽略
+    assert_eq!(de_texts(&s), before);
+}
+
+#[test]
+fn swap_repeatedly_moves_up_two_steps() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for c in "de".chars() {
+        s.on_key(Key::Char(c));
+    }
+    // 高亮 地（2 号）→ Alt+← 两次 → 地升到 1 号位，高亮始终跟随
+    s.on_key(Key::Right);
+    s.on_key(Key::Right);
+    assert_eq!(s.effect().selected, 2);
+    s.on_key(Key::SwapLeft);
+    assert_eq!(de_texts(&s)[0], "的", "一次交换只上移一格：地到 1 号位");
+    assert_eq!(de_texts(&s)[1], "地");
+    assert_eq!(s.effect().selected, 1, "第一次交换后高亮跟随地（1 号）");
+    s.on_key(Key::SwapLeft);
+    let e = s.effect();
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    assert_eq!(texts[0], "地", "第二次交换后地到 1 号位，实际：{texts:?}");
+    assert_eq!(texts[1], "的");
+    assert_eq!(texts[2], "得");
+    assert_eq!(e.selected, 0);
+}
+
+#[test]
+fn swap_without_user_dict_does_not_crash() {
+    // 未 attach 用户库：交换走空库路径（不写盘），内存态也生效
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for c in "de".chars() {
+        s.on_key(Key::Char(c));
+    }
+    s.on_key(Key::SwapRight);
+    let e = s.effect();
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    assert_eq!(texts[0], "得");
+    assert_eq!(e.selected, 1);
+}
+
+#[test]
+fn swap_persists_across_sessions_in_process() {
+    let path = user_dict_path("swap-persist");
+    let _ = std::fs::remove_file(&path);
+    let engine = default_engine();
+    let _ = engine.attach_user_dict(path.clone()); // 首次无文件：降级空库（Err 仅日志）
+                                                   // 会话 1：交换
+    let mut s = engine.start_session();
+    for c in "de".chars() {
+        s.on_key(Key::Char(c));
+    }
+    s.on_key(Key::SwapRight);
+    // 会话 2：新会话候选序保持（内存态 + 写盘）
+    let mut s2 = engine.start_session();
+    for c in "de".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    assert_eq!(de_texts(&s2)[0], "得");
+    assert!(path.exists(), "swap 后用户库应写盘");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn swap_persists_to_file_for_new_process() {
+    let path = user_dict_path("swap-file");
+    let _ = std::fs::remove_file(&path);
+    // 进程 A：attach + 交换（写盘）
+    let engine = default_engine();
+    let _ = engine.attach_user_dict(path.clone()); // 首次无文件：降级空库（Err 仅日志）
+    let mut s = engine.start_session();
+    for c in "de".chars() {
+        s.on_key(Key::Char(c));
+    }
+    s.on_key(Key::SwapRight);
+    // 进程 B：新 Engine attach 同一文件 → 覆盖生效
+    let engine2 = default_engine();
+    let _ = engine2.attach_user_dict(path.clone());
+    let mut s2 = engine2.start_session();
+    for c in "de".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    assert_eq!(de_texts(&s2)[0], "得");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn swap_reloads_on_mtime_change() {
+    let path = user_dict_path("swap-reload");
+    let _ = std::fs::remove_file(&path);
+    let engine = default_engine();
+    let _ = engine.attach_user_dict(path.clone()); // 首次无文件：降级空库（Err 仅日志）
+                                                   // 会话 1：本进程写盘（得 升 1 号）
+    let mut s = engine.start_session();
+    for c in "de".chars() {
+        s.on_key(Key::Char(c));
+    }
+    s.on_key(Key::SwapRight);
+    assert_eq!(de_texts(&s)[0], "得");
+    // 外部进程改写：把"地"调成最高
+    let ext = iuv_data::UserDict::empty().apply_swap("de", "的", 100, "de", "地", 999999);
+    ext.save(&path).unwrap();
+    // 新会话：mtime 检测 → 重载外部内容（地 升 1 号）
+    let mut s2 = engine.start_session();
+    for c in "de".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    assert_eq!(de_texts(&s2)[0], "地", "外部写盘后新会话应重载生效");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn swap_ignores_sentence_candidate() {
+    // nihao 首候选是整句（Sentence，code 为 seg 拼接，无词库条目）→ 交换忽略不崩溃
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for c in "nihao".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let before = s.effect().candidates.clone();
+    s.on_key(Key::SwapRight);
+    let after = s.effect().candidates.clone();
+    assert_eq!(before[0].kind, CandidateKind::Sentence);
+    assert_eq!(after.len(), before.len());
+    assert_eq!(
+        after[0].text, before[0].text,
+        "整句候选不可交换，候选序不变"
+    );
 }

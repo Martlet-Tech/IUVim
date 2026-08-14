@@ -34,7 +34,10 @@ impl Session {
     pub fn on_key(&mut self, key: Key) -> Effect {
         // 会话结束后兜底：不再处理，返回 Cancel
         if self.end.is_some() {
-            return Effect { end: Some(SessionEnd::Cancel), ..Effect::default() };
+            return Effect {
+                end: Some(SessionEnd::Cancel),
+                ..Effect::default()
+            };
         }
         match key {
             Key::Char(c) if c.is_ascii_lowercase() || c == '\'' => {
@@ -118,6 +121,32 @@ impl Session {
             }
             Key::Up | Key::Left => self.move_selected(-1),
             Key::Down | Key::Right => self.move_selected(1),
+            // M2 主动调权（18-m2-user-dict.md）：与相邻候选交换权重。立即重排
+            // （recompute 重置 page/selected 后定位被调词），会话不结束——松手后可继续导航/上屏。
+            Key::SwapLeft | Key::SwapRight => {
+                let ps = self.page_size();
+                let idx = self.page * ps + self.selected;
+                let dir: i32 = if matches!(key, Key::SwapLeft) { -1 } else { 1 };
+                let other = idx as i32 + dir;
+                if idx >= self.all.len() || other < 0 || other as usize >= self.all.len() {
+                    // 边界（1 号位 Alt+← / 末位 Alt+→）：消费但忽略
+                } else {
+                    let keep = self.all[idx].clone();
+                    let b = &self.all[other as usize];
+                    self.engine
+                        .swap_weights(&keep.code, &keep.text, &b.code, &b.text);
+                    // 立即重排 + 高亮跟随被调词（候选 text 唯一，generate_candidates 已去重）
+                    self.recompute();
+                    if let Some(pos) = self
+                        .all
+                        .iter()
+                        .position(|c| c.code == keep.code && c.text == keep.text)
+                    {
+                        self.page = pos / ps;
+                        self.selected = pos % ps;
+                    }
+                }
+            }
             Key::Digit(_) | Key::Char(_) | Key::ShiftChar(_) => {}
         }
         self.effect()
@@ -156,7 +185,10 @@ impl Session {
 
     /// 已选词拼接文本（悬空栈：只含汉字，不含未消费拼音）。
     fn picked_text(&self) -> String {
-        self.picked.iter().map(|(t, _)| t.clone()).collect::<String>()
+        self.picked
+            .iter()
+            .map(|(t, _)| t.clone())
+            .collect::<String>()
     }
 
     /// 当前全部待上屏文本：picked 拼接 + 未消费拼音 raw。
@@ -172,7 +204,9 @@ impl Session {
     fn recompute(&mut self) {
         let plans = self.engine.schema.segment(&self.raw);
         self.seg = plans.first().cloned().unwrap_or_default();
-        self.all = self.engine.generate_candidates(&self.raw, &self.seg, plans.len());
+        self.all = self
+            .engine
+            .generate_candidates(&self.raw, &self.seg, plans.len());
         self.page = 0;
         self.selected = 0;
     }
@@ -250,7 +284,11 @@ impl Session {
             s.push_str(&tail_preview);
             s
         };
-        let selected = if page_cands.is_empty() { 0 } else { self.selected };
+        let selected = if page_cands.is_empty() {
+            0
+        } else {
+            self.selected
+        };
         Effect {
             composition: preview.clone(),
             reading: preview,

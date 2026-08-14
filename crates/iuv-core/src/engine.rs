@@ -4,11 +4,13 @@ use crate::{
     rerank::RerankCtx, schema::Quanpin, session::Session, store::NullStore, Config, InputSchema,
     LmProvider, RerankStage, UnigramLm, UserDataStore,
 };
-use iuv_data::{Dict, Entry};
+use iuv_data::{Dict, Entry, UserDict};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-    /// 引擎：进程级单例，跨线程共享。
+/// 引擎：进程级单例，跨线程共享。
 pub struct Engine {
     pub(crate) dict: Dict,
     pub(crate) config: Config,
@@ -16,6 +18,16 @@ pub struct Engine {
     pub(crate) lm: Box<dyn LmProvider>,
     pub(crate) stages: Vec<Box<dyn RerankStage>>,
     pub(crate) store: Mutex<Box<dyn UserDataStore>>,
+    /// 用户权重覆盖表状态（M2 主动调权，18-m2-user-dict.md）：路径 + 上次加载 mtime
+    /// （会话创建时检测跨进程写入的延迟生效）。
+    user_state: Mutex<UserState>,
+}
+
+/// 用户库装配状态（不可变路径 + 可变 mtime 基线）。
+#[derive(Default)]
+struct UserState {
+    path: Option<PathBuf>,
+    mtime: Option<SystemTime>,
 }
 
 /// 候选生成档位（契约 §4.2 路由表的一等概念）：输入经 `Engine::classify` 归入
@@ -63,11 +75,114 @@ impl Engine {
         stages: Vec<Box<dyn RerankStage>>,
         store: Box<dyn UserDataStore>,
     ) -> Arc<Engine> {
-        Arc::new(Engine { dict, config, schema, lm, stages, store: Mutex::new(store) })
+        Arc::new(Engine {
+            dict,
+            config,
+            schema,
+            lm,
+            stages,
+            store: Mutex::new(store),
+            user_state: Mutex::new(UserState::default()),
+        })
     }
 
     pub fn start_session(self: &Arc<Self>) -> Session {
+        self.reload_user_dict();
         Session::new(self.clone())
+    }
+
+    /// 装配用户权重覆盖表（M2 主动调权）。
+    /// **任何失败都降级为空库继续**（用户库不允许阻断输入法）：缺失/损坏 → 空
+    /// UserDict + 路径照常记录（后续 swap 写盘时创建/重建文件）。返回 `Err` 仅
+    /// 供调用方记日志，**不代表未装配**。
+    pub fn attach_user_dict(&self, path: PathBuf) -> std::io::Result<()> {
+        let mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let (user, err) = match UserDict::load(&path) {
+            Ok(u) => (u, None),
+            Err(e) => (UserDict::empty(), Some(e)),
+        };
+        self.dict.set_user(Arc::new(user));
+        *self.user_state.lock().unwrap_or_else(|e| e.into_inner()) = UserState {
+            path: Some(path),
+            mtime,
+        };
+        match err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// 用户库 mtime 检测重载（跨进程延迟生效：其他进程写盘后，本进程新会话拿到新库）。
+    /// 文件变化 → 重载成功替换；失败（删除窗口/损坏）→ 保持旧库。
+    fn reload_user_dict(&self) {
+        let state = self.user_state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(path) = state.path.clone() else {
+            return;
+        };
+        let mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if mtime == state.mtime {
+            return;
+        }
+        drop(state);
+        if let Ok(user) = UserDict::load(&path) {
+            self.dict.set_user(Arc::new(user));
+        }
+        *self.user_state.lock().unwrap_or_else(|e| e.into_inner()) = UserState {
+            path: Some(path),
+            mtime,
+        };
+    }
+
+    /// M2 主动调权：a/b 两词**交换有效权重**（绝对值覆盖，互写对方合成权重）。
+    /// 双 code：候选页内相邻词可能跨 code（单段档桶候选 sha/shi…同属 `sh`）。
+    /// 任一不在基本库（如整句候选）→ 忽略（防御即可）。
+    /// 写盘失败不阻断：内存态已生效（本次会话立即重排），持久化下次调整时重试。
+    pub(crate) fn swap_weights(&self, a_code: &str, a_word: &str, b_code: &str, b_word: &str) {
+        let Some(a_base) = self
+            .dict
+            .exact(a_code)
+            .into_iter()
+            .find(|e| e.word == a_word)
+            .map(|e| e.weight)
+        else {
+            return;
+        };
+        let Some(b_base) = self
+            .dict
+            .exact(b_code)
+            .into_iter()
+            .find(|e| e.word == b_word)
+            .map(|e| e.weight)
+        else {
+            return;
+        };
+        let user = self.dict.user();
+        let eff = |code: &str, word: &str, base: u32| -> u32 {
+            user.as_ref()
+                .and_then(|u| {
+                    u.adjusted(code)
+                        .iter()
+                        .find(|(w, _)| w == word)
+                        .map(|(_, a)| *a)
+                })
+                .unwrap_or(base)
+        };
+        let a_eff = eff(a_code, a_word, a_base);
+        let b_eff = eff(b_code, b_word, b_base);
+        let next = if let Some(u) = user.as_deref() {
+            u.apply_swap(a_code, a_word, b_eff, b_code, b_word, a_eff)
+        } else {
+            UserDict::empty().apply_swap(a_code, a_word, b_eff, b_code, b_word, a_eff)
+        };
+        // 持久化 + mtime 基线刷新（防止本进程下次会话对自写文件无谓重载）
+        let mut state = self.user_state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(path) = &state.path {
+            if next.save(path).is_ok() {
+                state.mtime = fs::metadata(path).and_then(|m| m.modified()).ok();
+            }
+        }
+        drop(state);
+        self.dict.set_user(Arc::new(next));
     }
 
     pub fn config(&self) -> &Config {
@@ -99,8 +214,10 @@ impl Engine {
             }
             return Route::Empty;
         }
-        let kinds: Vec<bool> =
-            seg.iter().map(|s| !s.is_empty() && self.is_syllable(s)).collect();
+        let kinds: Vec<bool> = seg
+            .iter()
+            .map(|s| !s.is_empty() && self.is_syllable(s))
+            .collect();
         if kinds.iter().all(|&c| c) {
             Route::FullPinyin
         } else if kinds.iter().all(|&c| !c) {
@@ -131,7 +248,9 @@ impl Engine {
         let mut cands = match self.classify(&plain, seg, plans_len) {
             Route::PrefixChars => self.single_segment_candidates(&plain),
             Route::CompleteChars => self.single_segment_candidates(&seg[0]),
-            Route::AmbiguousSyllable | Route::FullPinyin => self.full_pinyin_candidates(&raw, &plain, seg),
+            Route::AmbiguousSyllable | Route::FullPinyin => {
+                self.full_pinyin_candidates(&raw, &plain, seg)
+            }
             Route::Abbrev => self.abbrev_candidates(seg),
             Route::Mixed => self.mixed_candidates(seg),
             Route::Empty => Vec::new(),
@@ -169,7 +288,13 @@ impl Engine {
         // 依次过 stages 管线
         let now = SystemTime::now();
         let store = self.store.lock().expect("store lock poisoned");
-        let ctx = RerankCtx { raw, seg, store: store.as_ref(), config: &self.config, now };
+        let ctx = RerankCtx {
+            raw,
+            seg,
+            store: store.as_ref(),
+            config: &self.config,
+            now,
+        };
         for stage in &self.stages {
             stage.rerank(&ctx, &mut cands);
         }
@@ -184,7 +309,13 @@ impl Engine {
             } else {
                 crate::CandidateKind::Char
             };
-            cands.push(crate::Candidate::new(plain.clone(), kind, plain.clone(), 0, seg.len()));
+            cands.push(crate::Candidate::new(
+                plain.clone(),
+                kind,
+                plain.clone(),
+                0,
+                seg.len(),
+            ));
         }
         cands
     }
@@ -221,15 +352,7 @@ impl Engine {
         };
         entries
             .into_iter()
-            .map(|e| {
-                crate::Candidate::new(
-                    e.word,
-                    crate::CandidateKind::Char,
-                    e.code,
-                    e.weight,
-                    1,
-                )
-            })
+            .map(|e| crate::Candidate::new(e.word, crate::CandidateKind::Char, e.code, e.weight, 1))
             .collect()
     }
 
@@ -241,8 +364,11 @@ impl Engine {
         let n = seg.len();
         let mut cands = Vec::new();
         for k in (1..=n).rev() {
-            let key: String =
-                seg[..k].iter().filter(|s| !s.is_empty()).map(|s| s.as_str()).collect();
+            let key: String = seg[..k]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.as_str())
+                .collect();
             if key.is_empty() {
                 continue;
             }
@@ -360,7 +486,12 @@ impl Engine {
     /// for k = n..1，对前缀 `seg[0..k]` 跑 viterbi（每级 0 或 1 句）
     /// 加前缀枚举切分查 exact（词/单字）；候选按前缀长度从长到短排列，
     /// 同 k 内 Sentence 在前、词按权重降序。viterbi.rs 算法零改动。
-    fn full_pinyin_candidates(&self, raw: &str, plain: &str, seg: &[String]) -> Vec<crate::Candidate> {
+    fn full_pinyin_candidates(
+        &self,
+        raw: &str,
+        plain: &str,
+        seg: &[String],
+    ) -> Vec<crate::Candidate> {
         // 每级词候选上限（"2/3 字词时几个/十几个候选词"的规模；全局另有 max_candidates 截断）。
         const PER_LEVEL_EXACT: usize = 20;
 
@@ -389,7 +520,10 @@ impl Engine {
             let consumed_chars: usize = prefix.iter().map(|s| s.len()).sum();
             let mut keys = vec![prefix.join("'")];
             if !raw.contains('\'') {
-                for plan in self.schema.segment(&plain[..consumed_chars.min(plain.len())]) {
+                for plan in self
+                    .schema
+                    .segment(&plain[..consumed_chars.min(plain.len())])
+                {
                     keys.push(plan.join("'"));
                 }
             }
@@ -409,13 +543,7 @@ impl Engine {
                 } else {
                     crate::CandidateKind::Char
                 };
-                cands.push(crate::Candidate::new(
-                    e.word,
-                    kind,
-                    e.code,
-                    e.weight,
-                    k,
-                ));
+                cands.push(crate::Candidate::new(e.word, kind, e.code, e.weight, k));
                 pushed += 1;
                 if pushed >= PER_LEVEL_EXACT {
                     break;

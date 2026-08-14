@@ -19,26 +19,26 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VK_CAPITAL, VK_SHIFT,
 };
 use windows::Win32::UI::TextServices::{
-    GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, ITfCompartment, ITfCompartmentEventSink,
-    ITfCompartmentEventSink_Impl, ITfCompartmentMgr, ITfContext, ITfDocumentMgr,
-    ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfTextInputProcessor_Impl,
-    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfThreadMgr,
-    ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, ITfSource,
+    ITfCompartment, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr,
+    ITfContext, ITfDocumentMgr, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource,
+    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
+    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
+    GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
-use windows_core::{implement, BOOL, ComObject, Interface, IUnknownImpl, Ref, Result};
+use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, BOOL};
 
 use crate::composition::Composition;
 use crate::langbar::{self, LangBarItemButton};
 use crate::log::log_line;
 use crate::session_bridge::{apply_effect, map_key};
-use crate::ui::{CandidateUi, GdiCandidateWindow, NullCandidateUi};
 use crate::ui::CaretRect;
+use crate::ui::{CandidateUi, GdiCandidateWindow, NullCandidateUi};
 
-    /// 进程级引擎单例（契约 §7：`OnceLock<Arc<Engine>>`）。
-    /// 词典加载失败 → None = 透明模式（全部按键放行，绝不卡用户）。
-    static ENGINE: OnceLock<Option<Arc<Engine>>> = OnceLock::new();
-    /// 加载是否已启动（防重复 spawn；Activate 与 engine() 兜底并发安全）。
-    static ENGINE_LOAD_STARTED: AtomicBool = AtomicBool::new(false);
+/// 进程级引擎单例（契约 §7：`OnceLock<Arc<Engine>>`）。
+/// 词典加载失败 → None = 透明模式（全部按键放行，绝不卡用户）。
+static ENGINE: OnceLock<Option<Arc<Engine>>> = OnceLock::new();
+/// 加载是否已启动（防重复 spawn；Activate 与 engine() 兜底并发安全）。
+static ENGINE_LOAD_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// 全局活动对象计数（DllCanUnloadNow 用）：实例创建 +1，Drop −1。
 static INSTANCE_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -92,10 +92,22 @@ fn load_engine() -> Option<Arc<Engine>> {
                 path.display(),
                 dict.entry_count()
             ));
-            Some(Engine::new(dict, Config::load()))
+            let engine = Engine::new(dict, Config::load());
+            // M2 主动调权用户库装配（18-m2-user-dict.md）：缺失/损坏 → 空库继续，
+            // attach 返回 Err 仅记日志（不代表未装配——路径已记录，首次交换时创建文件）。
+            let user_path = user_dict_path();
+            if let Err(e) = engine.attach_user_dict(user_path.clone()) {
+                log_line(&format!("用户词库装配失败（空库继续，路径已记录）：{}", e));
+            } else {
+                log_line(&format!("用户词库装配成功：{}", user_path.display()));
+            }
+            Some(engine)
         }
         Err(e) => {
-            log_line(&format!("引擎加载失败：{e}（{}），进入透明模式", path.display()));
+            log_line(&format!(
+                "引擎加载失败：{e}（{}），进入透明模式",
+                path.display()
+            ));
             None
         }
     }
@@ -105,10 +117,24 @@ fn load_engine() -> Option<Arc<Engine>> {
 fn dict_path() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
         std::env::var("APPDATA")
-            .map(|a| PathBuf::from(a).join("Local").to_string_lossy().into_owned())
+            .map(|a| {
+                PathBuf::from(a)
+                    .join("Local")
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .unwrap_or_else(|_| "C:\\Users\\Default\\AppData\\Local".to_owned())
     });
-    PathBuf::from(base).join("iuv").join(crate::registration::DICT_FILENAME)
+    PathBuf::from(base)
+        .join("iuv")
+        .join(crate::registration::DICT_FILENAME)
+}
+
+/// %LOCALAPPDATA%\iuv\iuv.user.imedic（M2 用户权重覆盖表，与基本库同目录）。
+fn user_dict_path() -> PathBuf {
+    let mut p = dict_path();
+    p.set_file_name("iuv.user.imedic");
+    p
 }
 
 /// COM 边界兜底：回调内任何 panic 不得穿透到宿主进程，统一捕获降级。
@@ -166,7 +192,9 @@ impl TextService {
         let session = Rc::new(RefCell::new(None));
         let composition = Rc::new(RefCell::new(None));
         let caret = Rc::new(Cell::new(CaretRect::default()));
-        let ui_rc = Rc::new(RefCell::new(Box::new(NullCandidateUi) as Box<dyn CandidateUi>));
+        let ui_rc = Rc::new(RefCell::new(
+            Box::new(NullCandidateUi) as Box<dyn CandidateUi>
+        ));
         // 候选窗交互接线（同线程回调；点击=页内行号→Digit 键，悬停=同步 selected）。
         let mut candwin = GdiCandidateWindow::new();
         {
@@ -220,7 +248,14 @@ impl TextService {
             return false;
         }
         let vk = wparam.0 as u16;
-        let key = map_key(vk, char_code(vk), shift_pressed(), capslock_on(), ctrl_pressed(), alt_pressed());
+        let key = map_key(
+            vk,
+            char_code(vk),
+            shift_pressed(),
+            capslock_on(),
+            ctrl_pressed(),
+            alt_pressed(),
+        );
         let Some(key) = key else { return false };
         match &*self.session.borrow() {
             // 会话 active：映射键一律吃掉（含经 keymap 重映射的翻页键）。
@@ -241,7 +276,10 @@ impl TextService {
             return;
         }
         self.english_mode.store(next, Ordering::SeqCst);
-        log_line(&format!("OPENCLOSE 变化：open={open} → {}模式", if next { "英文" } else { "中文" }));
+        log_line(&format!(
+            "OPENCLOSE 变化：open={open} → {}模式",
+            if next { "英文" } else { "中文" }
+        ));
         // 同步语言栏"中/英"图标。
         if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
             langbar::refresh_lang_bar(lang_bar);
@@ -265,8 +303,24 @@ impl TextService {
             return false;
         }
 
-        let key = map_key(vk, char_code(vk), shift_pressed(), capslock_on(), ctrl_pressed(), alt_pressed());
+        let key = map_key(
+            vk,
+            char_code(vk),
+            shift_pressed(),
+            capslock_on(),
+            ctrl_pressed(),
+            alt_pressed(),
+        );
         let Some(key) = key else { return false };
+        log_line(&format!(
+            "按键：{}（{}）",
+            key.name(),
+            if self.session.borrow().is_some() {
+                "会话内"
+            } else {
+                "会话外"
+            }
+        ));
 
         // 开启新会话：仅字母键。
         if self.session.borrow().is_none() {
@@ -276,7 +330,8 @@ impl TextService {
             let mut session = engine.start_session();
             let effect = session.on_key(key);
             *self.session.borrow_mut() = Some(session);
-            *self.composition.borrow_mut() = Some(Composition::new(pic.clone(), self.client_id.get()));
+            *self.composition.borrow_mut() =
+                Some(Composition::new(pic.clone(), self.client_id.get()));
             self.dispatch(&effect);
             return true;
         }
@@ -295,7 +350,13 @@ impl TextService {
 
     /// 应用 Effect（契约 §7）：composition → 候选窗；end 则上屏/取消并清理会话。
     fn dispatch(&self, effect: &iuv_core::Effect) {
-        dispatch_effect(&self.session, &self.composition, &self.ui, &self.caret, effect)
+        dispatch_effect(
+            &self.session,
+            &self.composition,
+            &self.ui,
+            &self.caret,
+            effect,
+        )
     }
 }
 
@@ -382,9 +443,8 @@ impl TextService_Impl {
         let thread_sink: ITfThreadMgrEventSink = self.to_object().to_interface();
         let source: ITfSource = ptim.cast()?;
         // SAFETY: 同上；cookie 记录用于 UnadviseSink。
-        let cookie = unsafe {
-            source.AdviseSink(&<ITfThreadMgrEventSink as Interface>::IID, &thread_sink)?
-        };
+        let cookie =
+            unsafe { source.AdviseSink(&<ITfThreadMgrEventSink as Interface>::IID, &thread_sink)? };
         self.event_cookie.set(cookie);
 
         // 监听系统"输入法/非输入法切换"（GUID_COMPARTMENT_KEYBOARD_OPENCLOSE）：
@@ -438,7 +498,10 @@ impl TextService_Impl {
         // 点击归一为写 OPENCLOSE compartment（OnChange 统一响应）。
         let lang_bar_com = ComObject::new(LangBarItemButton::new(
             self.english_mode.clone(),
-            self.compartment.borrow().as_ref().map(|(c, _)| (c.clone(), tid)),
+            self.compartment
+                .borrow()
+                .as_ref()
+                .map(|(c, _)| (c.clone(), tid)),
         ));
         match langbar::add_to_lang_bar(ptim, &lang_bar_com) {
             Ok(()) => {
@@ -526,14 +589,24 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     }
 
     fn OnKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
-        guard(|| Ok(BOOL(i32::from(self.handle_key_down(pic.unwrap(), wparam, lparam)))))
+        guard(|| {
+            Ok(BOOL(i32::from(self.handle_key_down(
+                pic.unwrap(),
+                wparam,
+                lparam,
+            ))))
+        })
     }
 
     fn OnKeyUp(&self, _pic: Ref<ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
         Ok(BOOL(0))
     }
 
-    fn OnPreservedKey(&self, _pic: Ref<ITfContext>, _rguid: *const windows_core::GUID) -> Result<BOOL> {
+    fn OnPreservedKey(
+        &self,
+        _pic: Ref<ITfContext>,
+        _rguid: *const windows_core::GUID,
+    ) -> Result<BOOL> {
         Ok(BOOL(0))
     }
 }
@@ -550,7 +623,11 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
     }
 
     /// 焦点切换：清理会话与候选窗（契约 13 §3.3：焦点离开时 hide + 丢弃 Session）。
-    fn OnSetFocus(&self, _pdimfocus: Ref<ITfDocumentMgr>, _pdimprevfocus: Ref<ITfDocumentMgr>) -> Result<()> {
+    fn OnSetFocus(
+        &self,
+        _pdimfocus: Ref<ITfDocumentMgr>,
+        _pdimprevfocus: Ref<ITfDocumentMgr>,
+    ) -> Result<()> {
         self.ui.borrow_mut().hide();
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
