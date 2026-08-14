@@ -1,8 +1,8 @@
 # iuv 输入法（代号 iuvim，谐音"哎哟喂"）
 
 Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌控排序**——静态词频序默认稳定
-（肌肉记忆安全）+ Alt+←/→ 主动调权（绝对值覆盖，反复调整收敛，见 `docs/plan/18-m2-user-dict.md`）。
-M1（当前里程碑）：最小可用的全拼输入法。
+（肌肉记忆安全）+ Shift+←/→ 主动调权（绝对值覆盖，反复调整收敛，见 `docs/plan/18-m2-user-dict.md`）。
+M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/自造词/隐藏，已结案。
 
 ## 当前状态
 
@@ -38,13 +38,13 @@ M1（当前里程碑）：最小可用的全拼输入法。
   候选窗内容恒非空——修复英文输入时 2mm×1mm 全空候选框（根因：候选为空 + reading 非空，
   双空守卫放行 → layout 空 items → 16×8px 窗口）。候选窗对原文候选**不编号**呈现
   （text == 预编辑原文去 `'` 即判定，gdi.rs），传达"不认识"语义。
-- [ ] 大写保形进序列（2026-08-14 实现待测）：Shift/CapsLock 字母 → `Key::ShiftChar` 大写原样进 raw
+- [x] 大写保形进序列（2026-08-14 落地）：Shift/CapsLock 字母 → `Key::ShiftChar` 大写原样进 raw
   （匹配只认小写：大写不被音节表命中、按不可匹配字符处理，`niHAO` 候选仍从 `ni` 前缀出；
   commit 原样上屏 `niHAO`/`Hello`）；字母大小写 = Shift 与 CapsLock 的 XOR（CapsLock+Shift 反转小写）；
   **大写同样是开会话键**（`is_session_start_key` 字母即开会话，`Hello` 的 H 进序列而非直接上屏）。
   改动：key.rs/session.rs（ShiftChar 臂）、keymap.rs（is_session_start_key 单条件）、
   session_bridge.rs（map_key XOR）、text_service.rs（capslock_on 传参）。
-- [ ] **M2 主动调权 + 用户词库（2026-08-14 实现待测，分支 feat/m2-user-dict）**：Shift+←/→ 与页内相邻
+- [x] **M2 主动调权 + 用户词库（2026-08-14 已结案：手测通过、已并入 main）**：Shift+←/→ 与页内相邻
   候选**交换权重**（立即重排、高亮跟随、不关会话、边界忽略）；持久化为**绝对值覆盖**
   （互写对方合成权重，无 delta 魔法数字——反复调整收敛，排序决定权交还用户，替代滞回
   自动换位：滞回只防短期抖动、治不了长期漂移击穿肌肉记忆，降级为可选细节）；用户库
@@ -56,7 +56,7 @@ M1（当前里程碑）：最小可用的全拼输入法。
   改动：iuv-data（userdict.rs 新增、dict.rs merge）、iuv-core
   （key.rs SwapLeft/SwapRight、engine.rs attach/swap/mtime 重载、session.rs Swap 臂）、
   iuv-tsf（map_key、load_engine 装配、按键日志）。测试：数据层 5 + 引擎 8 + map_key 2 全绿。
-- [ ] **M2 自造词 + 隐藏（2026-08-14 实现待测）**：逐字选择（picked 全单字、≥2 字、
+- [x] **M2 自造词 + 隐藏（2026-08-14 已结案：手测通过、已并入 main）**：逐字选择（picked 全单字、≥2 字、
   全消费 commit）记录为自造词——场景 0（词库已有整词 → 跳过）/ a（无命中 → 权重 8000）/
   b（n 条命中 → 目标词位 = 首页最后：n≥page_size → avg(第 ps-1, 第 ps 位)、否则第 n 位减一，
   page_size 为变量非 magic）；自造词与覆盖统一存用户库段1（IUVUSR02 升级：+屏蔽段，
@@ -67,7 +67,8 @@ M1（当前里程碑）：最小可用的全拼输入法。
   dict.rs merged 三叠加 + exact_raw）、iuv-core（key.rs HideCandidate、engine.rs
   record_phrase/hide_entry/install_user、session.rs commit 判定 + Hide 臂 + Sentence
   屏蔽拦截）、iuv-tsf（map_key Shift+Delete）。测试：数据层 5 + 引擎 4 + 会话 7 全绿。
-- 后续：M2 钉选/屏蔽词交互（用户库段类型已预留）· M3 整句增强(LMDG)/模糊音 · M4 Tauri helper（WebView 候选窗+设置） · M5 安装器/词库导入/x86
+- 后续：M3 整句增强(LMDG)/模糊音 · M4 Tauri helper（WebView 候选窗+设置） · M5 安装器/词库导入/x86
+  - **钉选不做**（2026-08-14 用户决策）：Shift+←/→ 手动排序 + 增/删自定义已满足，显式"锁死"交互取消
 - **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
   OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；激活即打开）。前置条件：用户在
   高级键设置把"输入法/非输入法切换"设为 Ctrl+Space（"切换输入语言"热键让位，Win+Space 仍可用）。
