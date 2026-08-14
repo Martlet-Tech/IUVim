@@ -257,18 +257,43 @@ pub struct Candidate {
     pub seg_len: usize, // 该候选消费的音节段数（所在前缀级 k；续接选词推进用）
 }
 
-// ===== config.rs（W0 完整，冻结）=====
+// ===== config.rs（W0 完整；M1.5/M2 演进：+keymap/+candidate_prefix/+candidate_orientation）=====
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub page_size: usize,        // 默认 5
     pub max_candidates: usize,   // 默认 1024（单字全量可达，微软对齐；可配小值限制）
     pub max_word_syllables: usize, // lattice 词宽上限，默认 7
+    pub keymap: Keymap,          // 翻页/候选移动四组语义键（M1.5，8f479f9/d1dcfb8）
+    pub candidate_prefix: bool,  // 前缀联想开关，默认 false（候选仅 exact，微软化）
+    pub candidate_orientation: Orientation, // 候选窗布局方向，默认 Vertical
 }
-impl Default for Config { /* page_size:5, max_candidates:1024, max_word_syllables:7 */ }
+impl Default for Config { /* page_size:5, max_candidates:1024, max_word_syllables:7, keymap:默认表, candidate_prefix:false, candidate_orientation:Vertical */ }
 
-// ===== key.rs（W0 完整，冻结）=====
+// ===== key.rs（W0 完整；M1.5/M2 演进：+ShiftChar/+Left/Right/+SwapLeft/SwapRight/+HideCandidate）=====
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Key { Char(char), Backspace, Space, Enter, Esc, Digit(u8), PageUp, PageDown, Up, Down }
+pub enum Key {
+    Char(char),              // 小写字母/撇号/标点
+    ShiftChar(char),         // Shift/CapsLock 字母（大写保形进序列，144f75b）
+    Backspace, Space, Enter, Esc,
+    Digit(u8),
+    PageUp, PageDown, Up, Down,
+    Left, Right,             // 页内候选移动（M1.5，2cc189b）
+    SwapLeft, SwapRight,     // Shift+←/→ 主动调权（M2，2058399）
+    HideCandidate,           // Shift+Delete 隐藏（M2 二期，6d29b45）
+}
+
+// ===== keymap.rs（M1.5 新增，8f479f9）=====
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Keymap {
+    pub page_prev: Vec<Key>,    // 默认 PageUp/,/↑
+    pub page_next: Vec<Key>,    // 默认 PageDown/./↓
+    pub candidate_prev: Vec<Key>, // 默认 ←
+    pub candidate_next: Vec<Key>, // 默认 →
+}
+/// keymap 命中 → 归一化 PageUp/PageDown/Left/Right；未命中 → None。
+pub fn apply_keymap(key: Key, km: &Keymap) -> Key;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PageInfo { pub page: usize, pub page_count: usize, pub page_size: usize, pub total: usize }
@@ -322,14 +347,15 @@ pub struct RerankCtx<'a> {
 pub trait RerankStage: Send + Sync {
     fn rerank(&self, ctx: &RerankCtx, cands: &mut Vec<Candidate>);
 }
-/// 静态序：候选生成顺序即展示顺序（no-op）。M2 的滞回/钉选实现为新增 Stage。
+/// 静态序：候选生成顺序即展示顺序（no-op）。M2 排序决定权交还用户（主动调权/自造词/隐藏，
+/// 见 18-m2-user-dict.md；滞回/钉选方案已废弃）。
 pub struct StaticOrder;
 impl RerankStage for StaticOrder { /* 什么都不做 */ }
 
 // ===== store.rs（Agent B）=====
 pub trait UserDataStore: Send {
     fn record_selection(&mut self, code: &str, text: &str, now: std::time::SystemTime);
-    /// M2 滞回模型用（有效使用强度）；MVP NullStore 恒返回 0.0。
+    /// M2 用户数据 hook；MVP NullStore 恒返回 0.0（主动调权由 UserDict 覆盖表承载，见 §3.2）。
     fn power(&self, code: &str, text: &str, now: std::time::SystemTime) -> f32;
     fn flush(&mut self) {}  // 持久化钩子，MVP 空实现
 }

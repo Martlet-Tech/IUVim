@@ -34,7 +34,7 @@ iuv-repl <dict.imedic> --batch <拼音串>   # 批处理：打印该输入的整
 | 字母/`'` 串（如 `nihao`） | **新建** Session，逐字符喂 `Key::Char`，打印最终 Effect |
 | 空行 | 对当前会话发 `Space`（提交首选/原文） |
 | `1`..`9` | 发 `Digit(n)` |
-| `+` / `-` | `PageDown` / `PageUp` |
+| `,` / `.` | 上翻页 / 下翻页（走 `apply_keymap` 与运行时一致，默认表 8f479f9） |
 | `!` | `Esc` |
 | `q` | 退出 |
 

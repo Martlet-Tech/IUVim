@@ -54,13 +54,15 @@ scripts\install.ps1    # 复制 DLL → %ProgramFiles%\iuv、词典 → %LOCALAP
 | 1 | 输入 `nihao` | 预编辑显示 `ni'hao`（拼音分段，微软式），候选窗出现且含"你好"（纯候选列表），窗口在光标下方 |
 | 2 | 空格 | "你好"上屏，候选窗消失 |
 | 3 | 输入 `de` | 候选 的/得/地 按静态词频序 |
-| 4 | `+`/`PageDown` 翻页后按 `2` | 上屏第 2 页第 2 个候选 |
+| 4 | `.`/`PageDown`（或 `,`/`PageUp`，keymap 可配）翻页后按 `2` | 上屏第 2 页第 2 个候选 |
 | 5 | 输入中 Backspace 到空 | 预编辑与候选窗消失，再按 Backspace 删的是正文（按键放行） |
 | 6 | 输入 `abc` 按 Enter | 原文 `abc` 上屏 |
 | 7 | 输入中 Esc | 预编辑取消，正文无残留 |
-| 8 | Shift | 切英文模式，字母直出；再 Shift 回中文 |
+| 8 | 按「输入法/非输入法切换」热键（Ctrl+Space，系统机制） | 中英切换，语言栏图标跟随；再按回中文 |
 | 9 | 候选窗显示时切换到别的窗口 | 候选窗消失不残留 |
 | 10 | 删掉 `%LOCALAPPDATA%\iuv\iuv.imedic` 重试 | 输入法透明（字母直出），日志有记录，**不卡不死** |
+| 11 | 输入 `haoshi` 选"好使"按 Shift+← 两次 | 候选立即重排"好使"置顶，空格上屏；重启进程后序仍在（M2 主动调权） |
+| 12 | 逐字选词自造 + Shift+Delete | 自造词随查询出现；Shift+Delete 撤销自造/屏蔽基础库词（M2 二期） |
 
 日志：`%TEMP%\input-iuv-tsf.log` 应有 Activate、引擎加载、commit 记录。
 
@@ -73,4 +75,4 @@ scripts\install.ps1    # 复制 DLL → %ProgramFiles%\iuv、词典 → %LOCALAP
 
 - `scripts\unregister.ps1` 验证注销干净
 - 更新 `AGENTS.md` 的"当前状态"节：M1 完成度、已知问题清单
-- 向用户交付：演示路径（记事本手测）、M2（滞回排序）准备就绪确认
+- 向用户交付：演示路径（记事本手测）、M3（整句增强/模糊音）准备就绪确认

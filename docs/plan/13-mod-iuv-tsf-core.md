@@ -45,14 +45,17 @@
 （`SHGetKnownFolderPath(FOLDERID_LocalAppData)` 或环境变量 `LOCALAPPDATA` 拼接）。加载失败记日志，
 进入"透明模式"：全部按键放行。
 
-**Shift 临时英文**（必做，小功能）：Session 非 active 时按 Shift 切换 `english_mode: bool`（存在 TextService 实例上）；
-english_mode 下 `OnTestKeyDown` 一律返回 FALSE。会话 active 时 Shift 不切换（放行给会话？MVP：直接忽略）。
+**中英切换 = 系统机制**（2026-08-12 落地，d44487a）：`GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`
+compartment 为真相源——系统「输入法/非输入法切换」热键（Ctrl+Space，用户可自设）驱动
+`ITfCompartmentEventSink::OnChange`，语言栏点击归一为写该 compartment；**Shift 临时英文方案
+已移除**（依赖 app 路由键进 TSF，notepad/钉钉失效）。前置条件：用户把"输入法/非输入法切换"
+设为 Ctrl+Space（"切换输入语言"热键让位，Win+Space 仍可用）。
 
 ### 3.4 `session_bridge.rs`：按键映射 + Effect 应用（契约 §7）
 
-- vk → `Key`：`VK_A..VK_Z`→`Char(小写)`；`VK_OEM_7`(`'`)→`Char('\'')`；`VK_BACK/SPACE/RETURN/ESCAPE/PRIOR/NEXT/UP/DOWN`→对应；`VK_1..VK_9`（无 Shift）→`Digit(n)`
-- **修饰键约定**：Ctrl/Alt 按下时 `map_key` 一律返回 None（组合键如 Ctrl+S/Alt+F4 放行给应用，绝不消费）；仅 Shift 修饰参与映射（大小写/符号）
-- `OnTestKeyDown` 规则：Session active → 上表内键一律吃掉；非 active → 仅字母键吃掉（开启会话），其余放行
+- vk → `Key`：`VK_A..VK_Z`（无 Shift）→`Char(小写)`，带 Shift/CapsLock →`ShiftChar(大写)`（XOR 判定，大写保形进序列——`niHAO` 候选仍从 `ni` 出，commit 原样上屏）；`VK_OEM_7`(`'`)→`Char('\'')`；`VK_BACK/SPACE/RETURN/ESCAPE/PRIOR/NEXT/UP/DOWN/LEFT/RIGHT`→对应；`VK_1..VK_9`（无 Shift）→`Digit(n)`；`VK_LEFT/RIGHT+Shift`→`SwapLeft/SwapRight`（M2 主动调权）；`VK_DELETE+Shift`→`HideCandidate`（M2 隐藏）
+- **修饰键约定**：Ctrl/Alt 按下时 `map_key` 一律返回 None（组合键如 Ctrl+S/Alt+F4 放行给应用，绝不消费；Alt 组合 = `WM_SYSKEYDOWN` 本就不进 TSF 键 sink）；仅 Shift 修饰参与映射（大小写/符号/方向键调权）
+- `OnTestKeyDown` 规则：Session active → 上表内键一律吃掉；非 active → 仅字母键吃掉（开启会话，`is_session_start_key` 含 ShiftChar），其余放行
 - 应用 Effect：
   1. `composition.rs`：`SetText(effect.composition)`（无 composition 且有内容 → StartComposition）
   2. caret：`ITfContextView::GetTextExt(composition range, …)` → `CaretRect`（失败则用上一次位置，首次用屏幕中央）

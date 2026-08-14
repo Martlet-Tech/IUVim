@@ -57,14 +57,10 @@ cargo run -p iuv-tsf --example candwin_demo   # 人眼验收（W2 主智能体�
 
 - 主题常量集中 → M4 换 WebView 或加主题文件时只动这里
 - `CandidateUi` 不变，M4 的 `RemoteCandidateWindow` 与本实现可共存（配置选择）
-- **输入点远跳的微软式跟随（后续任务，当前为简单版）**：M1 修复期发现——候选窗可见期间
-  拖拽窗口跨屏/点击远处，光标与候选窗位置大幅偏离（>150px）。当前实现（简单版）：
-  `session_bridge::apply_effect` 检测远跳后**清除未完成输入**（cancel composition + hide），
-  用户从头再打。微软拼音行为：候选框消失但**预编辑文本保留**，继续输入时候选框在
-  新光标处重新出现，可接着输入。要做完整版需：远跳时仅 hide（保留 composition 与
-  Session），下一键 set_text 后自然走 show 分支重新定位——不动 `CandidateUi` trait，
-  只改 `session_bridge::apply_effect` 的远跳分支（由"cancel+返回 ended"改为"仅 hide"），
-  锚点维护不变。顺带可评估：同屏内大幅移动（如点击文档远处）是否也跟随。
+- **输入点远跳跟随已落地**（2026-08-11~13 迭代完成）：初版简单清除未完成输入（cancel）→ 完整版
+  仅隐藏候选窗保留 composition（d418e20）→ 判定基准改增量位移（08bd5f8，修正常打字误藏候选窗）。
+  现状：远跳时 `ui.hide`（保留 composition 与 Session），下一键 set_text 后自然走 show 分支
+  重新定位；点击/换行/拖窗跳变触发，连续打字（每键 ~15px）永不触发。
 
 ## 6. 子智能体启动提示词
 

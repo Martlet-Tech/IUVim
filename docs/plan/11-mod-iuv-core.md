@@ -57,7 +57,7 @@
 
 - `RerankStage` 管线在 `engine.rs` 里按 `Vec<Box<dyn RerankStage>>` 顺序调用；`StaticOrder` 是空操作
 - `LmProvider.log_prob` 的 `prev` 参数 MVP 忽略（n-gram 槽位）
-- `UserDataStore::power` MVP 无人调用，NullStore 返回 0（M2 滞回用）
+- `UserDataStore::power` MVP 无人调用，NullStore 返回 0（M2 主动调权已改为 UserDict 覆盖表承载，见 18-m2-user-dict.md）
 
 ## 4. 测试（必须全部实现并全绿；用 `Dict::from_entries` 造小词典）
 
