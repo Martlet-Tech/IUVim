@@ -30,7 +30,7 @@ use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, B
 use crate::composition::Composition;
 use crate::langbar::{self, LangBarItemButton};
 use crate::log::log_line;
-use crate::session_bridge::{apply_effect, map_key};
+use crate::session_bridge::{apply_effect, caps_passthrough, map_key};
 use crate::ui::CaretRect;
 use crate::ui::{CandidateUi, GdiCandidateWindow, NullCandidateUi};
 
@@ -327,11 +327,12 @@ impl TextService {
             return false;
         }
 
+        let caps = capslock_on();
         let key = map_key(
             vk,
             char_code(vk),
             shift_pressed(),
-            capslock_on(),
+            caps,
             ctrl_pressed(),
             alt_pressed(),
         );
@@ -346,9 +347,10 @@ impl TextService {
             }
         ));
 
-        // 开启新会话：仅字母键。
+        // 开启新会话：仅字母键；CapsLock 生效时字母放行直通（仿微软：Caps = 英文模式，
+        // 不建会话；会话内 Caps 字母照常进序列，避免 composition 残留错乱）。
         if self.session.borrow().is_none() {
-            if !is_session_start_key(key) {
+            if !is_session_start_key(key) || caps_passthrough(&key, caps) {
                 return false;
             }
             let mut session = engine.start_session();

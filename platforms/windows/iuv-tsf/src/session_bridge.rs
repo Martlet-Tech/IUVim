@@ -93,6 +93,14 @@ pub fn map_key(
     }
 }
 
+/// CapsLock 生效时字母键放行直通（仿微软：Caps = 英文模式，会话外不建会话）。
+/// 只作用于会话外首键；会话内 Caps 字母照常进序列（composition 残留反而更乱）。
+/// 注意：Caps 生效时 map_key 已把字母映射为大写 ShiftChar（或 Caps+Shift
+/// 反转的小写 Char）——两种形态都放行；Shift 单独的大写（无 Caps）不受影响。
+pub fn caps_passthrough(key: &Key, capslock: bool) -> bool {
+    capslock && matches!(key, Key::Char(c) | Key::ShiftChar(c) if c.is_ascii_alphabetic())
+}
+
 /// 应用键映射（快捷键 → 引擎键）。命中翻页表则重映射为 PageUp/PageDown，否则原样。
 /// 会话外开启会话判定（仅字母与 `'`；`,`/`.` 等标点放行给应用）。
 /// 两者定义在 iuv-core（config/keymap.rs），此处直接复用。
@@ -372,6 +380,20 @@ mod tests {
         assert!(!iuv_core::is_session_start_key(Key::Char('.')));
         assert!(!iuv_core::is_session_start_key(Key::Digit(1)));
         assert!(!iuv_core::is_session_start_key(Key::Space));
+    }
+
+    #[test]
+    fn caps_passthrough_letters() {
+        // CapsLock 生效：大写 ShiftChar 放行（Caps 英文模式，不建会话）
+        assert!(caps_passthrough(&Key::ShiftChar('H'), true));
+        // Caps+Shift 反转小写 Char 同样放行
+        assert!(caps_passthrough(&Key::Char('h'), true));
+        // 无 Caps：Shift 单独的大写照常进序列（M2 大写保形保留）
+        assert!(!caps_passthrough(&Key::ShiftChar('H'), false));
+        // 非字母不受 Caps 影响（数字/标点/控制键维持原判定）
+        assert!(!caps_passthrough(&Key::Digit(1), true));
+        assert!(!caps_passthrough(&Key::Char(','), true));
+        assert!(!caps_passthrough(&Key::Space, true));
     }
 
     #[test]

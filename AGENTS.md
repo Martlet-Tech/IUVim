@@ -43,8 +43,11 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   （匹配只认小写：大写不被音节表命中、按不可匹配字符处理，`niHAO` 候选仍从 `ni` 前缀出；
   commit 原样上屏 `niHAO`/`Hello`）；字母大小写 = Shift 与 CapsLock 的 XOR（CapsLock+Shift 反转小写）；
   **大写同样是开会话键**（`is_session_start_key` 字母即开会话，`Hello` 的 H 进序列而非直接上屏）。
-  改动：key.rs/session.rs（ShiftChar 臂）、keymap.rs（is_session_start_key 单条件）、
-  session_bridge.rs（map_key XOR）、text_service.rs（capslock_on 传参）。
+  **CapsLock 例外（同日追加）**：Caps 生效时会话外字母放行直通（仿微软 Caps=英文模式，
+  不建会话→游戏无预编辑/候选窗；会话内 Caps 字母照常进序列，避免 composition 残留），
+  Shift 单独大写不受影响——`session_bridge::caps_passthrough`。改动：key.rs/session.rs
+  （ShiftChar 臂）、keymap.rs（is_session_start_key 单条件）、session_bridge.rs（map_key XOR + caps_passthrough）、
+  text_service.rs（capslock_on 传参）。
 - [x] **M2 主动调权 + 用户词库（2026-08-14 已结案：手测通过、已并入 main）**：Shift+←/→ 与页内相邻
   候选**交换权重**（立即重排、高亮跟随、不关会话、边界忽略）；持久化为**绝对值覆盖**
   （互写对方合成权重，无 delta 魔法数字——反复调整收敛，排序决定权交还用户，替代滞回
