@@ -390,7 +390,11 @@ impl Session {
 
 ### 4.2 候选生成算法契约（`Engine` 内部流程，B 实现；顺序即静态展示序）
 
-设 `seg` = 方案[0]（贪心/强制切分），`n` = seg 段数。
+设 `seg` = 方案[0]，`n` = seg 段数。**方案[0] 语义（2026-08-14 修正）**：切分器输出
+仍按贪心优先（方案[0] = 贪心/强制），但**消费端 `Engine::rank_plans` 按词频重排**
+（方案 join 键 exact 词条最大权重降序，稳定保贪心原序）——分节显示/主路径跟随
+用户最可能打的词（`keneng` → `ke'neng` 可能；`dier` → `di'er` 第二，而非贪心的
+`ken'eng`/`die'r`）。切分函数零改动（全部方案被消费端使用）。
 
 **权重叠加（M2 主动调权）**：所有候选的展示权重 = 基本库 weight 经用户覆盖表
 （§3.2，`iuv.user.imedic` 绝对值覆盖）替换后的**合成权重**；合成后稳定排序
@@ -419,6 +423,11 @@ Abbrev / Mixed / Empty），`generate_candidates` 按档位 match 分派；
 | 多段全不完整（`nh`/`nhm`/`nhmsx`） | 每段非完整音节 | **简拼键逐级砍尾巴**：k=n..1 查 `dict.exact(前k段首字母串)`，纯词 |
 | 多段混合（`nhao`） | 含完整段 + 不完整段 | 不完整段展开为音节列表（源 `dict.syllables()`），逐级笛卡尔积 `exact(join("'"))`，词频合并；单级组合数 > 2000 该级降级为空 |
 
+**多段判定（2026-08-14 修正，消费端遍历所有方案）**：`classify` 不再只看贪心方案[0]——
+**存在任一全完整方案 → 全拼档**（`dier` 贪心 `[die,r]` 中 r 是音节前缀（ra/ran/…/ruo），
+按段完整性会误判 Mixed 展开出「跌入」，而 `[di,er]` 全完整方案存在却不可达「第二」）；
+否则按段完整性分派（全不完整 → 简拼；混合 → 混拼）。
+
 **兜底规则（"不认识"语义，2026-08-14）**：上述全部路由均无候选且输入非空时，
 `generate_candidates` 末尾追加一条**原文候选**（`plain` = 去 `'` 整串，`text`/`code` = plain，
 kind 按现有惯例多字符 `Word` / 单字符 `Char`，`seg_len = seg.len()` 全消费），
@@ -428,7 +437,10 @@ kind 按现有惯例多字符 `Word` / 单字符 `Char`，`seg_len = seg.len()` 
 
 **砍尾巴逐级前缀匹配**（全拼路径，`for k = n, n-1, ..., 1`，对前缀 `seg[0..k]`）：
 
-1. `k >= 2` → unigram Viterbi 最优路径（每级 0 或 1 条）→ `Candidate{ kind: Sentence, text: 路径拼接, code: seg.join("'"), weight: 0 }`；
+1. `k >= 2` → **遍历该前缀全部切分方案各跑一次** unigram Viterbi（2026-08-14：不再只看
+   方案[0]——`keneng` 的 `[ke,neng]`（可能）与 `[ken,eng]`（啃嗯）都组句，按 viterbi 分
+   降序排；词条直接命中分高者第一，组合句保留可达；raw 含撇号仅 prefix 方案组句）
+   → `Candidate{ kind: Sentence, text: 路径拼接, code: seg.join("'"), weight: 0 }`；
    空段（尾/连续 `'`）过滤后组句。
 2. 前缀 `join("'")` 再 `schema.segment` 枚举切分 → 各方案 `join("'")` 键 `dict.exact`：
    词长 ≥2 → `Word`，单字 → `Char`；同 k 内按 weight 降序，去重取前 20。

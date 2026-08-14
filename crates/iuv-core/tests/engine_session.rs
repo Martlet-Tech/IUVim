@@ -1875,3 +1875,157 @@ fn hide_candidate_selected_follows_position() {
         e.selected
     );
 }
+
+// ===== M2.5 消费端多方案（2026-08-14）：dier 第二可达 / keneng 可能第一 =====
+
+#[test]
+fn dier_second_available_first() {
+    // dier 贪心 [die,r]（r 是音节前缀被误判 Mixed 展开出"跌入"）；
+    // 修复：classify 看全部方案（[di,er] 全完整 → FullPinyin）+ rank_plans
+    // （di'er 词条权重最高 → 方案[0]）→ 「第二」第一，分节 di'er。
+    let dict = Dict::from_entries(vec![
+        ("di'er".into(), "第二".into(), 34485),
+        ("di".into(), "地".into(), 50000),
+        ("di".into(), "第".into(), 40000),
+        ("die".into(), "跌".into(), 2932),
+        ("die'ru".into(), "跌入".into(), 302),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "dier".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert_eq!(
+        e.reading, "di'er",
+        "分节显示应跟随词频最优方案，实际：{}",
+        e.reading
+    );
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    assert_eq!(
+        texts[0], "第二",
+        "第二应第一（词条 34485），实际：{texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t == "跌入"),
+        "跌入是 Mixed 误判产物，dier 不应出现：{texts:?}"
+    );
+}
+
+#[test]
+fn keneng_possible_first_keneng_second() {
+    // keneng 贪心 [ken,eng]（啃嗯）；修复：整句遍历所有方案（[ke,neng] 组出可能，
+    // 词条直接命中分高 → 第一；[ken,eng] 啃嗯 = 单字组合 → 第二，保留可达）。
+    let dict = Dict::from_entries(vec![
+        ("ke'neng".into(), "可能".into(), 8000),
+        ("ken".into(), "啃".into(), 500),
+        ("eng".into(), "嗯".into(), 400),
+        ("ke".into(), "可".into(), 60000),
+        ("neng".into(), "能".into(), 30000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "keneng".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert_eq!(
+        e.reading, "ke'neng",
+        "分节显示应跟随词频最优方案，实际：{}",
+        e.reading
+    );
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    let pos = |t: &str| texts.iter().position(|x| x == t);
+    assert_eq!(
+        pos("可能"),
+        Some(0),
+        "可能应第一（整句词条命中），实际：{texts:?}"
+    );
+    assert!(
+        pos("啃嗯").is_some() && pos("啃嗯").unwrap() > pos("可能").unwrap(),
+        "啃嗯应可达且在可能之后：{texts:?}"
+    );
+}
+
+#[test]
+fn rank_plans_prefers_weightiest_plan() {
+    // fenge 顺带受益：贪心 [feng,e]（风额）→ 词频重排 [fen,ge]（分割 8000）第一
+    let dict = Dict::from_entries(vec![
+        ("feng'e".into(), "风额".into(), 1),
+        ("fen'ge".into(), "分割".into(), 8000),
+        ("feng".into(), "风".into(), 5000),
+        ("fen".into(), "分".into(), 40000),
+        ("ge".into(), "个".into(), 50000),
+        ("e".into(), "额".into(), 3000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "fenge".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert_eq!(e.reading, "fen'ge", "分节应 fen'ge，实际：{}", e.reading);
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    // unigram LM 特性：组合单字分可能高于词条（"分个" 在 "分割" 前）——M3 语言模型治本；
+    // 本次保证：分节正确 + 分割可达（旧贪心 [feng,e] 下分割在词条路径第二，仍可达）。
+    assert!(texts.iter().any(|t| t == "分割"), "分割应可达：{texts:?}");
+}
+
+#[test]
+fn sentence_only_for_full_syllable_plans() {
+    // 含兜底段的方案不组句（2026-08-14 修复）：keneng 的 [ke,nen,g]/[ke,ne,ng]
+    // 劣质整句（可嫩g/啃嗯g/可呢ng）不得进候选——只留 [ke,neng]（可能）/[ken,eng]（啃嗯）。
+    let dict = Dict::from_entries(vec![
+        ("ke'neng".into(), "可能".into(), 8000),
+        ("ken".into(), "啃".into(), 500),
+        ("eng".into(), "嗯".into(), 400),
+        ("ke".into(), "可".into(), 60000),
+        ("neng".into(), "能".into(), 30000),
+        ("nen".into(), "嫩".into(), 100),
+        ("ne".into(), "呢".into(), 50),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "keneng".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert!(texts.iter().any(|t| t == "可能"), "可能应保留：{texts:?}");
+    assert!(
+        texts.iter().any(|t| t == "啃嗯"),
+        "啃嗯应保留（全完整方案）：{texts:?}"
+    );
+    for bad in ["可嫩g", "啃嗯g", "可呢ng", "可嫩"] {
+        assert!(
+            !texts.iter().any(|t| t == bad),
+            "劣质整句不应出现（{bad}）：{texts:?}"
+        );
+    }
+    // dier 的"跌r"（[die,r] 含兜底 r）同样消失
+    let dict2 = Dict::from_entries(vec![
+        ("di'er".into(), "第二".into(), 34485),
+        ("di".into(), "地".into(), 50000),
+        ("die".into(), "跌".into(), 2932),
+    ]);
+    let engine2 = Engine::new(dict2, Config::default());
+    let mut s2 = engine2.start_session();
+    for c in "dier".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    let texts2: Vec<String> = s2
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert!(texts2.iter().any(|t| t == "第二"), "第二应保留：{texts2:?}");
+    assert!(
+        !texts2.iter().any(|t| t == "跌r"),
+        "跌r 是含兜底段的劣质整句：{texts2:?}"
+    );
+}

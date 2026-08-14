@@ -16,14 +16,29 @@ pub fn best_sentence(
     lm: &dyn LmProvider,
     config: &Config,
 ) -> Option<Candidate> {
+    best_sentence_scored(dict, seg, lm, config).map(|(c, _)| c)
+}
+
+/// 带路径分的版本（M2.5 消费端多方案整句排序用，2026-08-14）：
+/// 返回 (候选, 路径总 log_prob)——分高 = 词条直接命中或高词频组合。
+pub fn best_sentence_scored(
+    dict: &Dict,
+    seg: &[String],
+    lm: &dyn LmProvider,
+    config: &Config,
+) -> Option<(Candidate, f64)> {
     let n = seg.len();
     if n < 2 {
         return None;
     }
-    let max_w = config.max_word_syllables.min(dict.max_word_syllables()).max(1);
+    let max_w = config
+        .max_word_syllables
+        .min(dict.max_word_syllables())
+        .max(1);
 
     // dp[i] = (log_prob, word, prev_idx, weight)——路径到位置 i 最优
-    let mut dp: Vec<(f64, Option<String>, Option<usize>, u32)> = vec![(f64::NEG_INFINITY, None, None, 0); n + 1];
+    let mut dp: Vec<(f64, Option<String>, Option<usize>, u32)> =
+        vec![(f64::NEG_INFINITY, None, None, 0); n + 1];
     dp[0] = (0.0, None, None, 0);
 
     for i in 0..n {
@@ -66,13 +81,19 @@ pub fn best_sentence(
     path.reverse();
     let text = path.join("");
     // Sentence 权重恒 0（契约 candidate.rs）；seg_len = 组句段数（消费全部 vseg 段）。
-    Some(Candidate::new(text, CandidateKind::Sentence, seg.join("'"), 0, seg.len()))
+    Some((
+        Candidate::new(text, CandidateKind::Sentence, seg.join("'"), 0, seg.len()),
+        dp[n].0,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{schema::{InputSchema, Quanpin}, UnigramLm};
+    use crate::{
+        schema::{InputSchema, Quanpin},
+        UnigramLm,
+    };
     use iuv_data::Dict;
 
     fn dict() -> Dict {

@@ -239,19 +239,22 @@ impl Engine {
         self.dict.exact(squashed_code)
     }
 
-    /// 档位判定（唯一判定点）：`plain` 为去 `'` 的整串，`plans_len` 为切分方案数。
+    /// 档位判定（唯一判定点）：`plain` 为去 `'` 的整串，`plans` 为全部切分方案
+    /// （消费端遍历所有方案，2026-08-14：多段判定不再只看贪心方案[0]）。
     /// 与契约 §4.2 路由表逐行对应：
     /// - 整串是音节真前缀 → 单字档（切分器可能把它切成多段，但微软实测只出单字）
     /// - 单段完整音节：无替代切分 → 单字档；有替代切分（xian）→ 全拼（混排西安）
     /// - 单段非前缀（i/u/v）→ 空
-    /// - 多段：按段完整性分派（全完整/全不完整/混合）
-    fn classify(&self, plain: &str, seg: &[String], plans_len: usize) -> Route {
+    /// - 多段：**存在任一全完整方案 → 全拼**（dier 贪心 [die,r] 是 Mixed，但 [di,er]
+    ///   全完整应走全拼枚举——否则「第二」不可达，实测 2026-08-14）；否则按段完整性
+    ///   分派（全不完整 → 简拼；混合 → 混拼）
+    fn classify(&self, plain: &str, seg: &[String], plans: &[Vec<String>]) -> Route {
         if !plain.is_empty() && self.is_syllable_prefix(plain) && !self.is_syllable(plain) {
             return Route::PrefixChars;
         }
         if seg.len() == 1 {
             if self.is_syllable(&seg[0]) {
-                return if plans_len > 1 {
+                return if plans.len() > 1 {
                     Route::AmbiguousSyllable
                 } else {
                     Route::CompleteChars
@@ -259,17 +262,37 @@ impl Engine {
             }
             return Route::Empty;
         }
-        let kinds: Vec<bool> = seg
+        let any_full = plans
             .iter()
-            .map(|s| !s.is_empty() && self.is_syllable(s))
-            .collect();
-        if kinds.iter().all(|&c| c) {
+            .any(|p| p.iter().all(|s| !s.is_empty() && self.is_syllable(s)));
+        if any_full {
             Route::FullPinyin
-        } else if kinds.iter().all(|&c| !c) {
+        } else if seg.iter().all(|s| !s.is_empty() && !self.is_syllable(s)) {
             Route::Abbrev
         } else {
             Route::Mixed
         }
+    }
+
+    /// 消费端方案重排（2026-08-14）：方案[0] = 词频最优而非贪心——分节显示与主路径
+    /// 跟随用户最可能打的词（keneng → ke'neng 可能；dier → di'er 第二）。
+    /// 排序键 = 方案 join 键 exact 词条最大权重（词条优先；无词条 = 0），
+    /// 稳定排序保贪心原序。切分函数零改动（消费端遍历所有方案）。
+    pub(crate) fn rank_plans(&self, plans: Vec<Vec<String>>) -> Vec<Vec<String>> {
+        if plans.len() <= 1 {
+            return plans;
+        }
+        let mut scored: Vec<(u32, usize)> = plans
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let key = p.join("'");
+                let w = self.dict.exact(&key).first().map(|e| e.weight).unwrap_or(0);
+                (w, i)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().map(|(_, i)| plans[i].clone()).collect()
     }
 
     /// 按契约 §4.2 生成候选。
@@ -287,10 +310,10 @@ impl Engine {
         &self,
         raw: &str,
         seg: &[String],
-        plans_len: usize,
+        plans: &[Vec<String>],
     ) -> Vec<crate::Candidate> {
         let plain: String = raw.chars().filter(|c| *c != '\'').collect();
-        let mut cands = match self.classify(&plain, seg, plans_len) {
+        let mut cands = match self.classify(&plain, seg, plans) {
             Route::PrefixChars => self.single_segment_candidates(&plain),
             Route::CompleteChars => self.single_segment_candidates(&seg[0]),
             Route::AmbiguousSyllable | Route::FullPinyin => {
@@ -546,25 +569,55 @@ impl Engine {
         for k in (1..=n).rev() {
             let prefix = &seg[..k];
 
-            // 1. 每级一句整句（k >= 2）。空段（尾/连续 `'`）过滤后组句，防兜底空词。
+            // 1. 每级整句——**遍历该前缀的所有切分方案**（消费端遍历所有方案，
+            //    2026-08-14：keneng 的 [ke,neng]（可能）与 [ken,eng]（啃嗯）都组句，
+            //    按 viterbi 分排序——词条直接命中分高者第一；不再只看贪心方案[0]）。
+            //    raw 含撇号（强制输入 xi'an/fen'ge）保持仅 prefix 方案组句（撇号语义不破）。
             if k >= 2 {
-                let vseg: Vec<String> = prefix.iter().filter(|s| !s.is_empty()).cloned().collect();
-                if vseg.len() >= 2 {
-                    if let Some(sentence) =
-                        crate::viterbi::best_sentence(&self.dict, &vseg, &*self.lm, &self.config)
-                    {
-                        // M2 隐藏（Shift+Delete）：屏蔽组合对整句同样生效——词条级由
-                        // Dict::merged 过滤，整句级在此拦截（用户隐藏的 (code, text)
-                        // 组合不再被 viterbi 组出；否则隐藏"手癣"后整句「手癣」
-                        // （手+癣单字）仍会出现，隐藏失效）。
-                        let blocked = self
-                            .dict
-                            .user()
-                            .map(|u| u.is_blocked(&sentence.code, &sentence.text))
-                            .unwrap_or(false);
-                        if !blocked {
-                            cands.push(sentence);
+                let consumed_chars: usize = prefix.iter().map(|s| s.len()).sum();
+                let mut sentences: Vec<(crate::Candidate, f64)> = Vec::new();
+                let plan_segs: Vec<Vec<String>> = if raw.contains('\'') {
+                    vec![prefix.to_vec()]
+                } else {
+                    self.schema
+                        .segment(&plain[..consumed_chars.min(plain.len())])
+                };
+                for plan in plan_segs {
+                    let vseg: Vec<String> =
+                        plan.iter().filter(|s| !s.is_empty()).cloned().collect();
+                    // 只对**全完整方案**组句（2026-08-14 修复）：含兜底段的方案
+                    // （[ke,nen,g] 的 g、[ke,ne,ng] 的 ng 非法音节）不组句——否则
+                    // "可嫩g/啃嗯g/可呢ng/跌r" 等劣质整句进候选（且 commit 时
+                    // seg_len > 当前段数导致数组越界 panic，实测 2026-08-14）。
+                    // 兜底段是切分"保证有解"的产物，不是真实音节，组句无意义。
+                    if vseg.len() >= 2 && vseg.iter().all(|s| self.is_syllable(s)) {
+                        if let Some((sentence, score)) = crate::viterbi::best_sentence_scored(
+                            &self.dict,
+                            &vseg,
+                            &*self.lm,
+                            &self.config,
+                        ) {
+                            // M2 隐藏（Shift+Delete）：屏蔽组合对整句同样生效——词条级由
+                            // Dict::merged 过滤，整句级在此拦截（用户隐藏的 (code, text)
+                            // 组合不再被 viterbi 组出；否则隐藏"手癣"后整句「手癣」
+                            // （手+癣单字）仍会出现，隐藏失效）。
+                            let blocked = self
+                                .dict
+                                .user()
+                                .map(|u| u.is_blocked(&sentence.code, &sentence.text))
+                                .unwrap_or(false);
+                            if !blocked {
+                                sentences.push((sentence, score));
+                            }
                         }
+                    }
+                }
+                sentences
+                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                let mut seen = std::collections::HashSet::new();
+                for (sentence, _) in sentences {
+                    if seen.insert(sentence.text.clone()) {
+                        cands.push(sentence);
                     }
                 }
             }

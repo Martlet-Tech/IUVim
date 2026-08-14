@@ -180,8 +180,11 @@ impl Session {
         let n = self.seg.iter().filter(|s| !s.is_empty()).count();
         // 学习 key：Sentence 用其覆盖的前缀段（seg[..consumed]），
         // 其余用词条自身 code（枚举变体如"西安"code="xi'an" 亦为消费键）。
+        // 夹紧 consumed.min(n)：防御 seg_len 异常 > 当前段数（2026-08-14：
+        // 劣质整句候选曾 seg_len=3 > seg 段数 2 → seg[..3] 越界 panic 被 guard
+        // 吞掉导致无法上屏——全完整过滤已治本，此处双保险）。
         let code_key = match c.kind {
-            crate::CandidateKind::Sentence => self.seg[..consumed].join("'"),
+            crate::CandidateKind::Sentence => self.seg[..consumed.min(n)].join("'"),
             _ => c.code.clone(),
         };
         self.engine.record_selection(&code_key, &c.text);
@@ -235,14 +238,17 @@ impl Session {
     }
 
     /// 重切分 → 重新生成候选 → page=0, selected=0。无候选也保持 active。
-    /// segment 返回全部切分方案；本会话使用方案[0]（贪心/强制），
-    /// engine 内部按"砍尾巴逐级前缀"（k=n..1）生成从长到短的候选。
+    /// segment 返回全部切分方案；**消费端词频重排**（engine.rank_plans，2026-08-14：
+    /// 方案[0] = 词频最优而非贪心——分节显示/主路径跟随用户最可能打的词，
+    /// keneng → ke'neng、dier → di'er），engine 内部按"砍尾巴逐级前缀"
+    /// （k=n..1）生成从长到短的候选，整句遍历所有方案。
     fn recompute(&mut self) {
         let plans = self.engine.schema.segment(&self.raw);
+        let plans = self.engine.rank_plans(plans);
         self.seg = plans.first().cloned().unwrap_or_default();
         self.all = self
             .engine
-            .generate_candidates(&self.raw, &self.seg, plans.len());
+            .generate_candidates(&self.raw, &self.seg, &plans);
         self.page = 0;
         self.selected = 0;
     }
