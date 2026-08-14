@@ -388,7 +388,7 @@ impl Engine {
         cands
     }
 
-    fn is_syllable(&self, s: &str) -> bool {
+    pub(crate) fn is_syllable(&self, s: &str) -> bool {
         self.dict.syllables().contains(s)
     }
 

@@ -317,8 +317,16 @@ impl Session {
         let page_cands = self.page_candidates().to_vec();
         // 混合预编辑（悬空显示）：已选词汉字 + 未选部分拼音分段。
         // 如选"床前"后：`床前ming'yue'guang`；commit 时由 end.text 全量替换上屏。
-        // 方案[0] join 即含用户强制分隔符（`'` 硬切分空段保留），按 `'` 即有反馈。
-        let tail_preview = self.engine.schema.display(&self.seg);
+        // **候选级切分预览（2026-08-14）**：预览跟随高亮候选的切分方式——
+        // 候选 code 本身即消费段的 ' 分隔键（fen'ge/feng'e/简拼键/整句方案 join），
+        // 加未消费尾巴（seg[consumed..]，续接还在——选"分"后尾巴 ge 续接，
+        // 预览 fen'ge 与"分割"相同是自洽的，无需分支）。导航/翻页即更新。
+        let tail_preview = if page_cands.is_empty() {
+            self.engine.schema.display(&self.seg)
+        } else {
+            let idx = self.selected.min(page_cands.len() - 1);
+            self.candidate_preview(&page_cands[idx])
+        };
         let preview = if self.picked.is_empty() {
             tail_preview
         } else {
@@ -344,6 +352,34 @@ impl Session {
             },
             end: self.end.clone(),
         }
+    }
+
+    /// 候选级切分预览：候选 code（消费段的 ' 分隔键）+ 未消费尾巴（seg[consumed..]，
+    /// 保留空段与用户强制分隔符语义——display 即 join("'")）。规则（2026-08-14）：
+    /// - **原文兜底候选**（text == plain，无匹配）：预览用 seg 切分显示——强制撇号
+    ///   输入（i'n'p'u't）的切分反馈不能丢（code = plain 已去撇号）
+    /// - **前缀档**（输入 n → 候选"你" code=ni）：消费段含不完整段且候选 code 是
+    ///   完整音节 → 预览 = 输入原样切分（"n"）——code 会超出输入误导
+    /// - 其余（全拼词条/枚举切分、简拼键 nh、混拼展开键、单字）：code + 尾巴
+    ///   （风额 → feng'e 跟随切分；分 → fen'ge 尾巴续接；你好 → nh）
+    fn candidate_preview(&self, c: &Candidate) -> String {
+        let plain: String = self.raw.chars().filter(|c| *c != '\'').collect();
+        if c.text == plain {
+            return self.engine.schema.display(&self.seg);
+        }
+        let consumed = c.seg_len.max(1).min(self.seg.len());
+        let consumed_full = self.seg[..consumed]
+            .iter()
+            .all(|s| !s.is_empty() && self.engine.is_syllable(s));
+        if !consumed_full && self.engine.is_syllable(&c.code) {
+            return self.engine.schema.display(&self.seg);
+        }
+        let mut s = c.code.clone();
+        if consumed < self.seg.len() {
+            s.push('\'');
+            s.push_str(&self.engine.schema.display(&self.seg[consumed..]));
+        }
+        s
     }
 
     /// 有未提交的原始输入（TSF 据此决定按键是否放行给应用）。

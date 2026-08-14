@@ -2029,3 +2029,112 @@ fn sentence_only_for_full_syllable_plans() {
         "跌r 是含兜底段的劣质整句：{texts2:?}"
     );
 }
+
+// ===== M2.5 候选级切分预览（2026-08-14）：导航候选 → 预览跟随其切分方式 =====
+
+#[test]
+fn preview_follows_selected_candidate_plan() {
+    // fenge：分割(fen'ge)/风额(feng'e)/分隔(fen'ge)/分个(fen'ge 整句)/分(fen+尾巴)
+    let dict = Dict::from_entries(vec![
+        ("feng'e".into(), "风额".into(), 5000),
+        ("fen'ge".into(), "分割".into(), 8000),
+        ("fen'ge".into(), "分隔".into(), 3000),
+        ("feng".into(), "风".into(), 5000),
+        ("fen".into(), "分".into(), 40000),
+        ("ge".into(), "个".into(), 50000),
+        ("e".into(), "额".into(), 3000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "fenge".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert_eq!(
+        e.reading, "fen'ge",
+        "初始高亮候选 0（分个/分割均 fen'ge），实际：{}",
+        e.reading
+    );
+    // 导航到"风额"（feng'e 词条）→ 预览跟随切分位置（按 text 定位，顺序不假设）
+    let mut guard = 0;
+    while s.effect().candidates[s.effect().selected].text != "风额" {
+        s.on_key(Key::Right);
+        guard += 1;
+        assert!(guard < 10, "候选应含风额");
+    }
+    assert_eq!(
+        s.effect().reading,
+        "feng'e",
+        "导航风额应显示 feng'e，实际：{}",
+        s.effect().reading
+    );
+    // 导航到单字"分"（k=1，seg_len=1）→ code fen + 尾巴 ge → fen'ge
+    let mut guard = 0;
+    while s.effect().candidates[s.effect().selected].text != "分" {
+        s.on_key(Key::Right);
+        guard += 1;
+        assert!(guard < 10, "候选应含单字分");
+    }
+    assert_eq!(
+        s.effect().reading,
+        "fen'ge",
+        "单字分预览 = fen + 尾巴 ge，实际：{}",
+        s.effect().reading
+    );
+    // 导航回候选 0 上屏（预览不影响 commit）
+    while s.effect().selected != 0 {
+        s.on_key(Key::Left);
+    }
+    let first = s.effect().candidates[0].text.clone();
+    let e = s.on_key(Key::Space);
+    assert_eq!(e.end, Some(SessionEnd::Commit(first)));
+}
+
+#[test]
+fn preview_prefix_segment_shows_raw_input() {
+    // 前缀档（n → 你/ni）：预览 = 输入原样"n"（候选 code 是完整音节会超出输入）
+    let dict = Dict::from_entries(vec![
+        ("ni".into(), "你".into(), 50000),
+        ("ni".into(), "泥".into(), 100),
+        ("na".into(), "那".into(), 40000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    s.on_key(Key::Char('n'));
+    let e = s.effect();
+    assert_eq!(
+        e.reading, "n",
+        "前缀档预览应为输入原样，实际：{}",
+        e.reading
+    );
+    // 简拼（nh → 你好）：预览 = 简拼键原样（fixture 手造简拼键——from_entries 不产）
+    let dict2 = Dict::from_entries(vec![
+        ("ni".into(), "你".into(), 50000),
+        ("nh".into(), "你好".into(), 8000),
+        ("nh".into(), "泥嚎".into(), 100),
+    ]);
+    let engine2 = Engine::new(dict2, Config::default());
+    let mut s2 = engine2.start_session();
+    for c in "nh".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    let e2 = s2.effect();
+    assert_eq!(e2.reading, "nh", "简拼预览应为键原样，实际：{}", e2.reading);
+}
+
+#[test]
+fn preview_fallback_candidate_keeps_forced_apostrophes() {
+    // 原文兜底候选（强制撇号）：预览保留切分显示（i'n'p'u't）
+    let dict = Dict::from_entries(vec![("ni".into(), "你".into(), 50000)]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "i'n'p'u't".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert_eq!(
+        e.reading, "i'n'p'u't",
+        "兜底候选预览应保留强制撇号切分，实际：{}",
+        e.reading
+    );
+}
