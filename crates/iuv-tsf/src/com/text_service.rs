@@ -284,13 +284,37 @@ impl TextService {
         if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
             langbar::refresh_lang_bar(lang_bar);
         }
-        // 关闭输入法时清理活动会话（Weasel 同款：close 清 composition）。
+        // 关闭输入法：未确认输入按**原文上屏**语义结束（见 flush_session）。
         if !open && (self.session.borrow().is_some() || self.composition.borrow().is_some()) {
-            self.ui.borrow_mut().hide();
-            *self.session.borrow_mut() = None;
-            *self.composition.borrow_mut() = None;
-            log_line("OPENCLOSE 关闭：清理活动会话");
+            self.flush_session();
+            log_line("OPENCLOSE 关闭：活动输入已原文上屏");
         }
+    }
+
+    /// 未确认输入以**原文上屏**并清理会话（关闭输入法 Ctrl+Space / 焦点切换 Alt+Tab 共用）。
+    ///
+    /// 用户语义：结束中文输入时，拼音原文提交上屏（`zhu'jin'cheng` 预编辑 →
+    /// `zhujincheng`——raw 是用户敲的字母串，撇号只是切分显示层）。
+    /// 修复：旧实现只清内存态不终止 TSF composition → 系统终止时带撇号的分节预览
+    /// 残留在文档（实测 2026-08-14：Ctrl+Space 后 zhu'jin'cheng 残留上屏）。
+    /// 文本为空（异常态）→ cancel 清空；commit/cancel 失败记日志不阻断（残留由系统终止兜底）。
+    fn flush_session(&self) {
+        self.ui.borrow_mut().hide();
+        let text: Option<String> = self.session.borrow().as_ref().map(|s| s.pending_text());
+        if let Some(comp) = self.composition.borrow().as_ref() {
+            match text.as_deref() {
+                Some(t) if !t.is_empty() => match comp.commit(t) {
+                    Ok(()) => log_line(&format!("会话清理：原文上屏 {t}")),
+                    Err(e) => log_line(&format!("会话清理：原文上屏失败：{e}")),
+                },
+                _ => match comp.cancel() {
+                    Ok(()) => log_line("会话清理：cancel 清空预编辑"),
+                    Err(e) => log_line(&format!("会话清理：cancel 失败：{e}")),
+                },
+            }
+        }
+        *self.session.borrow_mut() = None;
+        *self.composition.borrow_mut() = None;
     }
 
     /// OnKeyDown 完整处理：映射 → 会话推进 → 应用 Effect。
@@ -622,15 +646,20 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
         Ok(())
     }
 
-    /// 焦点切换：清理会话与候选窗（契约 13 §3.3：焦点离开时 hide + 丢弃 Session）。
+    /// 焦点切换：未确认输入按**原文上屏**语义结束（同关闭输入法），再清理会话与候选窗。
+    /// 修复：旧实现只清内存态 → 系统终止 composition 时预编辑残留（Alt+Tab 遗留问题，
+    /// 2026-08-14 与 OPENCLOSE 关闭同根因一并修复）。
     fn OnSetFocus(
         &self,
         _pdimfocus: Ref<ITfDocumentMgr>,
         _pdimprevfocus: Ref<ITfDocumentMgr>,
     ) -> Result<()> {
-        self.ui.borrow_mut().hide();
-        *self.session.borrow_mut() = None;
-        *self.composition.borrow_mut() = None;
+        if self.session.borrow().is_some() || self.composition.borrow().is_some() {
+            self.flush_session();
+            log_line("焦点切换：活动输入已原文上屏");
+        } else {
+            self.ui.borrow_mut().hide();
+        }
         Ok(())
     }
 

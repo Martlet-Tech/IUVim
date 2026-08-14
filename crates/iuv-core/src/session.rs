@@ -227,6 +227,13 @@ impl Session {
         text
     }
 
+    /// 待上屏**原文**（picked + raw，无切分撇号——raw 是用户敲的字母串，撇号只存在于
+    /// 切分显示层）。关闭输入法（Ctrl+Space）/焦点切换（Alt+Tab）时的原文上屏语义，
+    /// TSF 侧 `flush_session` 用。
+    pub fn pending_text(&self) -> String {
+        self.all_text()
+    }
+
     /// 重切分 → 重新生成候选 → page=0, selected=0。无候选也保持 active。
     /// segment 返回全部切分方案；本会话使用方案[0]（贪心/强制），
     /// engine 内部按"砍尾巴逐级前缀"（k=n..1）生成从长到短的候选。
