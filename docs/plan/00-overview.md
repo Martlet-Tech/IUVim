@@ -18,10 +18,14 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 
 ```
 ┌─────────────────────────── workspace ───────────────────────────┐
-│ crates/iuv-data   词库编译器(dictc) + 二进制格式 + Dict 查询层   │  叶 crate，无 workspace 内依赖
-│ crates/iuv-core   引擎：切分/查词/Viterbi/会话状态机/排序管线    │  依赖 iuv-data
-│ crates/iuv-repl   CLI 调试前端（不注册输入法即可测引擎）         │  依赖 iuv-core, iuv-data
-│ crates/iuv-tsf    cdylib：COM/TSF 管线 + GDI 候选窗             │  依赖 iuv-core, iuv-data
+│ crates/（跨平台层）                                               │
+│   iuv-data   词库编译器(dictc) + 二进制格式 + Dict 查询层   │  叶 crate，无 workspace 内依赖
+│   iuv-core   引擎：切分/查词/Viterbi/会话状态机/排序管线    │  依赖 iuv-data
+│   iuv-repl   CLI 调试前端（不注册输入法即可测引擎）         │  依赖 iuv-core, iuv-data
+│ platforms/（平台层，每平台一套：系统适配 + 门面）                 │
+│   windows/iuv-tsf  cdylib：COM/TSF 管线 + GDI 候选窗（Windows）  │  依赖 iuv-core, iuv-data
+│   macos/          占位（IMK 适配 + 门面规划，README）            │
+│   linux/          占位（Fcitx5/IBus 适配 + 门面规划，README）     │
 └──────────────────────────────────────────────────────────────────┘
 ```
 

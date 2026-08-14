@@ -1,6 +1,6 @@
 # 13 · 任务书 D：iuv-tsf 管线（COM/TSF + 注册）
 
-> 属主文件：`crates/iuv-tsf/src/{lib,registration,log,session_bridge,composition}.rs`、`src/com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、Cargo.toml 的 winres 配置
+> 属主文件：`platforms/windows/iuv-tsf/src/{lib,registration,log,session_bridge,composition}.rs`、`src/com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、Cargo.toml 的 winres 配置
 > 前置阅读：`00-overview.md`、`01-contract.md`（§5 接缝、§5.1 注册常量、§7 集成约定）、`30-conventions.md`
 > **禁止**修改 `src/ui/mod.rs`（W0 冻结）。候选窗只通过 `CandidateUi` trait 使用，构造 `GdiCandidateWindow` 时调用 Agent E 提供的 `ui::gdi::GdiCandidateWindow::new() -> Self`（若 W1 期间 E 尚未完成，先用 `ui/mod.rs` 临时桩 `NullCandidateUi`——W0 已在 ui/mod.rs 提供该桩）。
 

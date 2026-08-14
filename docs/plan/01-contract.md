@@ -17,7 +17,7 @@ D:\Projects\vaim\
 │   ├── download-dict.ps1          # 【Agent A】下载白霜词库
 │   ├── register.ps1               # 【Agent D】注册输入法（管理员）
 │   └── unregister.ps1             # 【Agent D】注销
-└── crates\
+└── crates\                        # 跨平台层（引擎线，纯 Rust）
     ├── iuv-data\
     │   ├── Cargo.toml             # 【W0】
     │   ├── src\lib.rs             # 【W0】模块声明 + re-export
@@ -43,21 +43,29 @@ D:\Projects\vaim\
     ├── iuv-repl\
     │   ├── Cargo.toml             # 【W0】
     │   └── src\main.rs            # 【Agent C】
-    └── iuv-tsf\
-        ├── Cargo.toml             # 【W0】
-        ├── build.rs               # 【Agent D】winres 资源
-        ├── src\lib.rs             # 【Agent D】COM 导出（DllGetClassObject 等）
-        ├── src\registration.rs    # 【W0 常量 / Agent D 实现】GUID 常量 + 注册逻辑
-        ├── src\log.rs             # 【Agent D】文件日志
-        ├── src\com\mod.rs         # 【Agent D】
-        ├── src\com\class_factory.rs   # 【Agent D】
-        ├── src\com\text_service.rs    # 【Agent D】ITfTextInputProcessorEx 等
-        ├── src\session_bridge.rs  # 【Agent D】Key 映射 + Effect 应用
-        ├── src\composition.rs     # 【Agent D】composition 封装
-        ├── src\ui\mod.rs          # 【W0】CandidateUi + UiSnapshot + 映射（完整，冻结）
-        ├── src\ui\gdi.rs          # 【Agent E】GdiCandidateWindow
-        └── examples\candwin_demo.rs   # 【Agent E】候选窗演示
+    └── platforms\                 # 平台层（每平台一套：系统适配 + 门面）
+        └── windows\
+            ├── iuv-tsf\           # TSF 管线 + GDI 候选窗（见下）
+            │   ├── Cargo.toml             # 【W0】
+            │   ├── build.rs               # 【Agent D】winres 资源
+            │   ├── src\lib.rs             # 【Agent D】COM 导出（DllGetClassObject 等）
+            │   ├── src\registration.rs    # 【W0 常量 / Agent D 实现】GUID 常量 + 注册逻辑
+            │   ├── src\log.rs             # 【Agent D】文件日志
+            │   ├── src\com\mod.rs         # 【Agent D】
+            │   ├── src\com\class_factory.rs   # 【Agent D】
+            │   ├── src\com\text_service.rs    # 【Agent D】ITfTextInputProcessorEx 等
+            │   ├── src\session_bridge.rs  # 【Agent D】Key 映射 + Effect 应用
+            │   ├── src\composition.rs     # 【Agent D】composition 封装
+            │   ├── src\ui\mod.rs          # 【W0】CandidateUi + UiSnapshot + 映射（完整，冻结）
+            │   ├── src\ui\gdi.rs          # 【Agent E】GdiCandidateWindow
+            │   └── examples\candwin_demo.rs   # 【Agent E】候选窗演示
+            └── README.md                 # 门面现状 + M4 helper 规划
 ```
+
+> 分层约定：`crates/` = 跨平台（引擎/词库/CLI，纯 Rust）；`platforms/` = 每平台一套
+> （系统适配层 + 门面）。macOS（IMK）、Linux（Fcitx5/IBus）为占位目录（README），
+> 真做时新建 crate 并加入 workspace members。跨平台分层见 `00-overview.md` §2 与
+> `platforms/*/README.md`。
 
 ## 2. 依赖（白名单，版本锁定）
 
@@ -66,7 +74,7 @@ D:\Projects\vaim\
 ```toml
 [workspace]
 resolver = "2"
-members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-repl", "crates/iuv-tsf"]
+members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-repl", "platforms/windows/iuv-tsf"]
 
 [workspace.package]
 edition = "2021"

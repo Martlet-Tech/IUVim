@@ -1,6 +1,6 @@
 # 14 · 任务书 E：iuv-tsf 候选窗（GDI 自绘）
 
-> 属主文件：`crates/iuv-tsf/src/ui/gdi.rs`、`crates/iuv-tsf/examples/candwin_demo.rs`
+> 属主文件：`platforms/windows/iuv-tsf/src/ui/gdi.rs`、`platforms/windows/iuv-tsf/examples/candwin_demo.rs`
 > 前置阅读：`00-overview.md`、`01-contract.md`（§5 接缝——`ui/mod.rs` 已冻结并完整实现）、`30-conventions.md`
 > **禁止**修改 `ui/mod.rs` 与 iuv-tsf 其他模块。与 Agent D 并行开发，对接面只有 `CandidateUi` trait。
 
@@ -68,7 +68,7 @@ cargo run -p iuv-tsf --example candwin_demo   # 人眼验收（W2 主智能体�
 你负责实现 iuv 输入法 MVP 的 GDI 候选窗（iuv-tsf 的 ui/gdi.rs）与演示 example。
 先读 D:\Projects\vaim\docs\plan\00-overview.md、01-contract.md、30-conventions.md，
 再读任务书 D:\Projects\vaim\docs\plan\14-mod-iuv-tsf-candwin.md 并严格执行。
-只能创建/修改 crates/iuv-tsf/src/ui/gdi.rs 与 crates/iuv-tsf/examples/candwin_demo.rs；
+只能创建/修改 platforms/windows/iuv-tsf/src/ui/gdi.rs 与 platforms/windows/iuv-tsf/examples/candwin_demo.rs；
 对接面只有 ui/mod.rs 里已冻结的 CandidateUi trait/UiSnapshot/CaretRect，禁止修改其他文件。
 要点：不抢焦点（NOACTIVATE/SW_SHOWNA）、双缓冲无闪烁、DPI 缩放、工作区内收、绝不 panic。
 完成后满足 DoD：cargo check -p iuv-tsf 无 warning、cargo test -p iuv-tsf 绿、example 可运行。
