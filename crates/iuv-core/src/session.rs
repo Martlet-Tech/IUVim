@@ -147,6 +147,23 @@ impl Session {
                     }
                 }
             }
+            // M2 隐藏候选（Shift+Delete）：先删用户库条目（自造词/覆盖），否则屏蔽
+            // 基础库词条。立即重排（recompute 重置 page/selected），高亮落在原位置附近。
+            Key::HideCandidate => {
+                let ps = self.page_size();
+                let idx = self.page * ps + self.selected;
+                if idx < self.all.len() {
+                    let target = self.all[idx].clone();
+                    self.engine.hide_entry(&target.code, &target.text);
+                    self.recompute();
+                    if !self.all.is_empty() {
+                        let pc = self.page_count();
+                        self.page = (idx / ps).min(pc - 1);
+                        self.selected =
+                            (idx % ps).min(self.page_candidates().len().saturating_sub(1));
+                    }
+                }
+            }
             Key::Digit(_) | Key::Char(_) | Key::ShiftChar(_) => {}
         }
         self.effect()
@@ -173,6 +190,18 @@ impl Session {
             // composition 全程覆盖整个混合预编辑文本，SetText 全量替换，无重复上屏。
             let mut text = self.picked_text();
             text.push_str(&c.text);
+            // M2 自造词（18-m2-user-dict.md）：逐字选择（picked 全部单字）+ 整串 ≥2 字
+            // → 引擎记录（场景 0/a/b 权重判定在 engine::record_phrase 内）。
+            if self.picked.len() >= 1
+                && self.picked.iter().all(|(t, _)| t.chars().count() == 1)
+                && c.text.chars().count() == 1
+                && text.chars().count() >= 2
+            {
+                let mut codes: Vec<&str> =
+                    self.picked.iter().map(|(_, code)| code.as_str()).collect();
+                codes.push(code_key.as_str());
+                self.engine.record_phrase(&codes.join("'"), &text);
+            }
             self.end = Some(SessionEnd::Commit(text));
         } else {
             // 部分消费：悬空——只入栈 + 尾巴续接，不产生任何 commit 信号；

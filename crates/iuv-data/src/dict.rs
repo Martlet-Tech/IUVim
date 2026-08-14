@@ -313,6 +313,15 @@ impl Dict {
 
     /// 精确查询：squashed_code 如 "nihao"。返回按 weight 降序（写端不变量）的物化词条。
     pub fn exact(&self, squashed_code: &str) -> Vec<Entry> {
+        if !squashed_code.is_empty() {
+            return self.merged(squashed_code, self.exact_raw(squashed_code));
+        }
+        self.exact_raw(squashed_code)
+    }
+
+    /// 基础库精确查询（不过屏蔽/覆盖/独有条目——供 effective_weight 等需要
+    /// "词条真实存在性"的内部语义使用；外部一律走 exact 的叠加视图）。
+    fn exact_raw(&self, squashed_code: &str) -> Vec<Entry> {
         let target = squashed_code.as_bytes();
         let n = self.index.len() / 4;
         if n == 0 {
@@ -323,11 +332,9 @@ impl Dict {
             return Vec::new();
         }
         let upper = self.upper_bound(target);
-        self.merged(
-            (lower..upper)
-                .map(|i| self.entry_at(self.index_off(i)))
-                .collect(),
-        )
+        (lower..upper)
+            .map(|i| self.entry_at(self.index_off(i)))
+            .collect()
     }
 
     /// 精确查询（单字视图，M1.5 单段档）：返回 code == squashed_code 的**单字**词条。
@@ -358,7 +365,7 @@ impl Dict {
             }
             out.push(self.entry_at(self.index_off(i)));
         }
-        out = self.merged(out);
+        out = self.merged("", out);
         out.truncate(limit);
         out
     }
@@ -382,7 +389,7 @@ impl Dict {
             out.push(e);
             pos = step;
         }
-        out = self.merged(out);
+        out = self.merged("", out);
         out.truncate(limit);
         out
     }
@@ -419,29 +426,51 @@ impl Dict {
         self.user.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// 词条有效权重：用户覆盖值优先，否则基本库权重。词条不在基本库 → None
-    /// （M2 无自造词，覆盖条目必须挂靠基本库词条；孤儿条目自然忽略）。
+    /// 词条有效权重：用户覆盖值优先（含自造词——覆盖表对词条来源不区分），
+    /// 否则基本库权重。均无 → None。屏蔽不影响（展示层语义，词条本身仍在）。
     pub fn effective_weight(&self, code: &str, word: &str) -> Option<u32> {
-        let base = self
-            .exact(code)
-            .into_iter()
-            .find(|e| e.word == word)?
-            .weight;
         let user = self.user();
-        let adj = user.as_ref().and_then(|u| {
+        if let Some(adj) = user.as_ref().and_then(|u| {
             u.adjusted(code)
                 .iter()
                 .find(|(w, _)| w == word)
                 .map(|(_, a)| *a)
-        });
-        Some(adj.unwrap_or(base))
+        }) {
+            return Some(adj);
+        }
+        self.exact_raw(code)
+            .into_iter()
+            .find(|e| e.word == word)
+            .map(|e| e.weight)
     }
 
     /// 应用用户覆盖 + 稳定排序（同 weight 保持输入原序）。未装配 → 快速路径原样返回。
-    fn merged(&self, mut entries: Vec<Entry>) -> Vec<Entry> {
+    /// 叠加三合一（M2）：① 屏蔽过滤（基础库词条隐藏，Shift+Delete）② 覆盖替换
+    /// ③ **追加用户库独有条目**（自造词/覆盖词不在基本库组 → 随查询结果显示）。
+    /// `code` 为本次查询键（exact 用，含空组场景）；prefix/initial_top 传 ""——
+    /// 跨 code 场景独有条目不做（低频路径，v1 取舍）。
+    fn merged(&self, code: &str, mut entries: Vec<Entry>) -> Vec<Entry> {
         let Some(user) = self.user() else {
             return entries;
         };
+        // ① 屏蔽过滤（仅作用于基本库条目——隐藏语义：先删用户库、再屏蔽基础库）
+        entries.retain(|e| !user.is_blocked(&e.code, &e.word));
+        // ③ 独有条目：查询 code 组中用户库有而基本库组没有的词条（被屏蔽的跳过）
+        if !code.is_empty() {
+            for (word, adj) in user.adjusted(code) {
+                if user.is_blocked(code, word) {
+                    continue;
+                }
+                if !entries.iter().any(|e| e.code == code && e.word == *word) {
+                    entries.push(Entry {
+                        word: word.clone(),
+                        code: code.to_string(),
+                        weight: *adj,
+                    });
+                }
+            }
+        }
+        // ② 覆盖替换（按各自 code 查，prefix/initial_top 跨 code 场景同样生效）
         for e in &mut entries {
             if let Some((_, adj)) = user.adjusted(&e.code).iter().find(|(w, _)| w == &e.word) {
                 e.weight = *adj;
@@ -725,5 +754,53 @@ mod tests {
         let de = d.exact("de");
         assert_eq!(de[0].word, "得");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn user_unique_entries_append_to_queries() {
+        // M2 自造词：词不在基本库 → merged 追加显示（zhangweiwei 逐字选后，再打整串直接出词）
+        let d = Dict::from_entries(vec![
+            ("zhang".into(), "张".into(), 90000),
+            ("zhang'wei'wei".into(), "张威威".into(), 6000),
+            ("zhang'wei'wei".into(), "张薇薇".into(), 4000),
+        ]);
+        let user = crate::userdict::UserDict::empty()
+            .set_entry("zhang'wei'wei", "张葳葳", 5000)
+            .set_entry("wei", "葳", 50);
+        d.set_user(Arc::new(user));
+        // exact：基本库 2 条 + 独有 1 条 = 3 条，按权重排序（张葳葳 5000 居中）
+        let hits = d.exact("zhang'wei'wei");
+        let texts: Vec<&str> = hits.iter().map(|e| e.word.as_str()).collect();
+        assert_eq!(texts, vec!["张威威", "张葳葳", "张薇薇"]);
+        assert_eq!(d.effective_weight("zhang'wei'wei", "张葳葳"), Some(5000));
+        // 单字组（wei）的独有条目同样追加
+        let wei = d.exact("wei");
+        assert!(wei.iter().any(|e| e.word == "葳"));
+        // 未装配用户库时查询不受影响
+        let d2 = Dict::from_entries(vec![("zhang'wei'wei".into(), "张威威".into(), 6000)]);
+        assert_eq!(d2.exact("zhang'wei'wei").len(), 1);
+    }
+
+    #[test]
+    fn user_block_hides_base_entries() {
+        // M2 隐藏：屏蔽基础库词条（Shift+Delete），查询剔除；覆盖+屏蔽叠加时屏蔽优先
+        let d = Dict::from_entries(vec![
+            ("shou'xuan".into(), "首选".into(), 8000),
+            ("shou'xuan".into(), "手癣".into(), 300),
+            ("shou'xuan".into(), "手选".into(), 100),
+        ]);
+        let user = crate::userdict::UserDict::empty().block("shou'xuan", "手癣");
+        d.set_user(Arc::new(user));
+        let hits = d.exact("shou'xuan");
+        let texts: Vec<&str> = hits.iter().map(|e| e.word.as_str()).collect();
+        assert_eq!(texts, vec!["首选", "手选"], "手癣被屏蔽，其余保序");
+        // effective_weight 语义：词仍存在（隐藏优先级在展示层）
+        assert_eq!(d.effective_weight("shou'xuan", "手癣"), Some(300));
+        // 屏蔽 + 覆盖叠加：被屏蔽的条目即使有覆盖也不出现
+        let user = crate::userdict::UserDict::empty()
+            .block("shou'xuan", "手癣")
+            .set_entry("shou'xuan", "手癣", 99999);
+        d.set_user(Arc::new(user));
+        assert!(!d.exact("shou'xuan").iter().any(|e| e.word == "手癣"));
     }
 }

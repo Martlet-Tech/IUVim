@@ -45,6 +45,7 @@ pub fn map_key(
     const VK_DOWN: u16 = 0x28;
     const VK_LEFT: u16 = 0x25;
     const VK_RIGHT: u16 = 0x27;
+    const VK_DELETE: u16 = 0x2E;
     const VK_1: u16 = 0x31;
     const VK_9: u16 = 0x39;
     const VK_A: u16 = 0x41;
@@ -67,6 +68,8 @@ pub fn map_key(
         VK_RIGHT if with_shift => Some(Key::SwapRight),
         VK_LEFT => Some(Key::Left),
         VK_RIGHT => Some(Key::Right),
+        // M2 隐藏候选：Shift+Delete（会话内消费；裸 Delete 放行给应用编辑）。
+        VK_DELETE if with_shift => Some(Key::HideCandidate),
         VK_1..=VK_9 if !with_shift => Some(Key::Digit((char_code - 0x30) as u8)),
         VK_A..=VK_Z => {
             // 字母：优先用布局字符（无 Shift 态恒小写），退化用 vk 推算。
@@ -414,6 +417,25 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn map_key_shift_delete_hide() {
+        // M2 隐藏候选：Shift+Delete → HideCandidate（会话内消费）
+        assert_eq!(
+            map_key(0x2E, 0, true, false, false, false),
+            Some(Key::HideCandidate)
+        );
+        // 裸 Delete 放行给应用（编辑删除）
+        assert_eq!(map_key(0x2E, 0, false, false, false, false), None);
+        // CapsLock 不影响（非字母键）
+        assert_eq!(
+            map_key(0x2E, 0, true, true, false, false),
+            Some(Key::HideCandidate)
+        );
+        // 组合受控：Ctrl+Delete / Alt+Delete 放行
+        assert_eq!(map_key(0x2E, 0, true, false, true, false), None);
+        assert_eq!(map_key(0x2E, 0, true, false, false, true), None);
+    }
+
     fn map_key_unknown_returns_none() {
         assert_eq!(map_key(0x10, 0, false, false, false, false), None); // Shift
         assert_eq!(map_key(0x1B, 0, false, false, false, false), Some(Key::Esc));

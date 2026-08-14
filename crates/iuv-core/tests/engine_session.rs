@@ -1605,3 +1605,273 @@ fn multisegment_k1_single_chars_full_pool() {
         "部分消费：张葳 + wei 尾巴续接，会话未结束"
     );
 }
+
+// ===== M2 二期：自造词（逐字选择记录）+ 隐藏（Shift+Delete）=====
+
+/// 逐字选出一个整词并 commit（模拟 zhangweiwei → 张/藳/藳 或 shouxuan → 手/选）。
+/// 内嵌翻页：目标字不在当前页则 PageDown 循环（任意 page_size 下可用）。
+fn select_by_chars(engine: &Arc<Engine>, input: &str, chars: &[&str]) -> Session {
+    let mut s = engine.start_session();
+    for c in input.chars() {
+        s.on_key(Key::Char(c));
+    }
+    for ch in chars {
+        let mut e = s.effect();
+        let mut guard = 0;
+        let pos = loop {
+            if let Some(p) = e.candidates.iter().position(|c| c.text == *ch) {
+                break p;
+            }
+            guard += 1;
+            assert!(guard < 200, "单字不在候选：{ch}");
+            s.on_key(Key::PageDown);
+            e = s.effect();
+        };
+        s.on_key(Key::Digit((pos + 1) as u8));
+    }
+    s
+}
+
+#[test]
+fn phrase_recording_scenario_a_no_hit() {
+    // 场景 a：zhangweiwei 词库无整词（只有单字）→ 自造「张藳藳」权重 = 8000
+    let dict = Dict::from_entries(vec![
+        ("zhang".into(), "张".into(), 90000),
+        ("wei".into(), "威".into(), 1000),
+        ("wei".into(), "藳".into(), 50),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = select_by_chars(&engine, "zhangweiwei", &["张", "藳", "藳"]);
+    assert_eq!(s.effect().end, Some(SessionEnd::Commit("张藳藳".into())));
+    // 用户库出现自造词：再打整串直接出词
+    let mut s2 = engine.start_session();
+    for c in "zhangweiwei".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s2
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert!(
+        texts.iter().any(|t| t == "张藳藳"),
+        "自造词应出现在候选：{texts:?}"
+    );
+}
+
+#[test]
+fn phrase_recording_scenario_b1_weight() {
+    // 场景 b1：shouxuan 命中 2 条（n=2 < page_size）→ 权重 < 手癖(300)，词位第 3
+    let dict = Dict::from_entries(vec![
+        ("shou'xuan".into(), "首选".into(), 8000),
+        ("shou'xuan".into(), "手癖".into(), 300),
+        ("shou".into(), "手".into(), 50000),
+        ("shou".into(), "首".into(), 40000),
+        ("xuan".into(), "选".into(), 30000),
+        ("xuan".into(), "癖".into(), 200),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = select_by_chars(&engine, "shouxuan", &["手", "选"]);
+    assert_eq!(s.effect().end, Some(SessionEnd::Commit("手选".into())));
+    // 再打整串：手选出现在候选（viterbi 整句或词位）
+    let mut s2 = engine.start_session();
+    for c in "shouxuan".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s2
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    let pos = |t: &str| texts.iter().position(|x| x == t);
+    assert!(pos("手选").is_some(), "自造词应出现在候选：{texts:?}");
+    assert!(
+        pos("手选").unwrap() < pos("手癖").unwrap(),
+        "手选先于手癖：{texts:?}"
+    );
+}
+
+#[test]
+fn phrase_recording_scenario_b2_weight() {
+    // 场景 b2：命中 6 条（n >= page_size）→ 权重 = avg(第4, 第5位) → 词位第 5
+    let dict = Dict::from_entries(vec![
+        ("zhong'xin".into(), "中心".into(), 9000),
+        ("zhong'xin".into(), "衷心".into(), 7000),
+        ("zhong'xin".into(), "钟鑫".into(), 5000),
+        ("zhong'xin".into(), "中芯".into(), 3000),
+        ("zhong'xin".into(), "众心".into(), 1000),
+        ("zhong'xin".into(), "忠信".into(), 800),
+        ("zhong".into(), "中".into(), 50000),
+        ("xin".into(), "心".into(), 40000),
+        ("xin".into(), "信".into(), 30000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    // 「中信」不在词库 → b2：权重 = avg(中芯3000, 众心1000) = 2000 → 词位 index 4
+    let mut s = select_by_chars(&engine, "zhongxin", &["中", "信"]);
+    assert_eq!(s.effect().end, Some(SessionEnd::Commit("中信".into())));
+    let mut s2 = engine.start_session();
+    for c in "zhongxin".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s2
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    let pos = |t: &str| texts.iter().position(|x| x == t);
+    assert_eq!(
+        pos("中信"),
+        Some(4),
+        "b2 权重 = avg(中芯3000, 众心1000) = 2000 → 词位 index 4：{texts:?}"
+    );
+}
+
+#[test]
+fn phrase_recording_scenario_0_skips_existing() {
+    // 场景 0：词库已有整词（张威威），逐字选出来 → 不记录（权重不被覆盖）
+    let dict = Dict::from_entries(vec![
+        ("zhang".into(), "张".into(), 90000),
+        ("wei".into(), "威".into(), 1000),
+        ("zhang'wei'wei".into(), "张威威".into(), 6000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = select_by_chars(&engine, "zhangweiwei", &["张", "威", "威"]);
+    assert_eq!(s.effect().end, Some(SessionEnd::Commit("张威威".into())));
+    let mut s2 = engine.start_session();
+    for c in "zhangweiwei".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    assert!(s2.effect().candidates.iter().any(|c| c.text == "张威威"));
+}
+
+#[test]
+fn phrase_recording_skips_non_char_selection() {
+    // 边界：picked 含词（非单字）→ 不记录
+    let dict = Dict::from_entries(vec![
+        ("zhang".into(), "张".into(), 90000),
+        ("wei'wei".into(), "威威".into(), 5000),
+        ("wei".into(), "威".into(), 1000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "zhangweiwei".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    let pos = e.candidates.iter().position(|c| c.text == "张").unwrap();
+    s.on_key(Key::Digit((pos + 1) as u8)); // 张（k1 单字）
+    let e = s.effect();
+    let pos = e.candidates.iter().position(|c| c.text == "威威").unwrap();
+    s.on_key(Key::Digit((pos + 1) as u8)); // 威威 → 全消费 commit
+    assert!(s.effect().end.is_some());
+    // 单音节单字直接选 → 不记录（picked 空）
+    let mut s3 = engine.start_session();
+    for c in "wei".chars() {
+        s3.on_key(Key::Char(c));
+    }
+    let e = s3.effect();
+    let pos = e.candidates.iter().position(|c| c.text == "威").unwrap();
+    s3.on_key(Key::Digit((pos + 1) as u8));
+    assert!(s3.effect().end.is_some());
+}
+
+#[test]
+fn hide_candidate_removes_override_then_blocks_base() {
+    // 隐藏语义：先删用户库条目（自造词），否则屏蔽基础库
+    let dict = Dict::from_entries(vec![
+        ("shou'xuan".into(), "首选".into(), 8000),
+        ("shou'xuan".into(), "手癖".into(), 300),
+        ("shou".into(), "手".into(), 50000),
+        ("shou".into(), "首".into(), 40000),
+        ("xuan".into(), "选".into(), 30000),
+        ("xuan".into(), "癖".into(), 200),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    // 先自造"手选"（b1）→ 用户库有条目
+    let mut s = select_by_chars(&engine, "shouxuan", &["手", "选"]);
+    assert!(s.effect().end.is_some());
+    // 导航到"手选"并隐藏 → 从用户库删除
+    let mut s2 = engine.start_session();
+    for c in "shouxuan".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    let e = s2.effect();
+    let pos = e.candidates.iter().position(|c| c.text == "手选").unwrap();
+    for _ in 0..pos {
+        s2.on_key(Key::Right);
+    }
+    s2.on_key(Key::HideCandidate);
+    // 隐藏自造词 = 撤销自造（用户决策 3）：词位条目删除，整句仍可组出
+    let e = s2.effect();
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    let hs: Vec<&Candidate> = e.candidates.iter().filter(|c| c.text == "手选").collect();
+    assert!(
+        hs.iter().all(|c| c.kind == CandidateKind::Sentence),
+        "自造词条目应被删除（只剩整句）：{texts:?}"
+    );
+    // 新会话：手选不再以词位出现
+    let mut s3 = engine.start_session();
+    for c in "shouxuan".chars() {
+        s3.on_key(Key::Char(c));
+    }
+    let e3 = s3.effect();
+    assert!(!e3
+        .candidates
+        .iter()
+        .any(|c| c.text == "手选" && c.kind != CandidateKind::Sentence));
+    // 隐藏基础库词"手癖" → 屏蔽
+    let mut s4 = engine.start_session();
+    for c in "shouxuan".chars() {
+        s4.on_key(Key::Char(c));
+    }
+    let e4 = s4.effect();
+    let pos = e4.candidates.iter().position(|c| c.text == "手癖").unwrap();
+    for _ in 0..pos {
+        s4.on_key(Key::Right);
+    }
+    s4.on_key(Key::HideCandidate);
+    let texts4: Vec<String> = s4
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert!(
+        !texts4.contains(&"手癖".to_string()),
+        "基础库词被屏蔽后剔除：{texts4:?}"
+    );
+    assert!(texts4.contains(&"首选".to_string()));
+    // 新会话持久生效
+    let mut s5 = engine.start_session();
+    for c in "shouxuan".chars() {
+        s5.on_key(Key::Char(c));
+    }
+    assert!(!s5.effect().candidates.iter().any(|c| c.text == "手癖"));
+}
+
+#[test]
+fn hide_candidate_selected_follows_position() {
+    // 隐藏后高亮落在原位置附近（不越界、不崩溃）
+    let dict = Dict::from_entries(vec![
+        ("shou'xuan".into(), "首选".into(), 8000),
+        ("shou'xuan".into(), "手癖".into(), 300),
+        ("shou'xuan".into(), "手选".into(), 100),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "shouxuan".chars() {
+        s.on_key(Key::Char(c));
+    }
+    s.on_key(Key::HideCandidate); // 隐藏首位（首选）
+    let e = s.effect();
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    assert_eq!(texts, vec!["手癖", "手选"]);
+    assert!(
+        e.selected < e.candidates.len(),
+        "selected 不越界：{}",
+        e.selected
+    );
+}

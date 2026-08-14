@@ -174,7 +174,12 @@ impl Engine {
         } else {
             UserDict::empty().apply_swap(a_code, a_word, b_eff, b_code, b_word, a_eff)
         };
-        // 持久化 + mtime 基线刷新（防止本进程下次会话对自写文件无谓重载）
+        self.install_user(next);
+    }
+
+    /// 替换用户库内存态并持久化（写盘失败不阻断：内存态已生效，下次调整重试）。
+    /// mtime 基线同步刷新（防止本进程下次会话对自写文件无谓重载）。
+    fn install_user(&self, next: UserDict) {
         let mut state = self.user_state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(path) = &state.path {
             if next.save(path).is_ok() {
@@ -183,6 +188,46 @@ impl Engine {
         }
         drop(state);
         self.dict.set_user(Arc::new(next));
+    }
+
+    /// M2 自造词记录（逐字选择 commit 时调用，18-m2-user-dict.md）：场景 0/a/b 权重判定。
+    /// - 0：词库（含用户库）已有整词 → 跳过（幂等：重复自造被拦截，权重不漂移）
+    /// - a：无命中 → 常量 `PHRASE_DEFAULT_WEIGHT`
+    /// - b：n 条命中 → 目标位 = 首页最后一位：n ≥ page_size → avg(cand[ps-2], cand[ps-1])
+    ///   （u64 计算防溢出）；n < page_size → cand[n-1] − 1（saturating 防 0 下溢）
+    pub(crate) fn record_phrase(&self, code: &str, text: &str) {
+        const PHRASE_DEFAULT_WEIGHT: u32 = 8000;
+        let entries = self.dict.exact(code); // 叠加视图（含用户库独有条目）
+        if entries.iter().any(|e| e.word == text) {
+            return; // 场景 0
+        }
+        let ps = self.config.page_size.max(1);
+        let n = entries.len();
+        let w = if n == 0 {
+            PHRASE_DEFAULT_WEIGHT
+        } else if n < ps {
+            entries[n - 1].weight.saturating_sub(1)
+        } else {
+            ((entries[ps - 2].weight as u64 + entries[ps - 1].weight as u64) / 2) as u32
+        };
+        let next = match self.dict.user() {
+            Some(u) => u.set_entry(code, text, w),
+            None => UserDict::empty().set_entry(code, text, w),
+        };
+        self.install_user(next);
+    }
+
+    /// M2 隐藏候选（Shift+Delete）：先删用户库条目（自造词/覆盖），
+    /// 否则屏蔽基础库词条。写盘失败不阻断（内存态已生效）。
+    pub(crate) fn hide_entry(&self, code: &str, text: &str) {
+        let next = match self.dict.user() {
+            Some(u) if u.adjusted(code).iter().any(|(w, _)| w == text) => {
+                u.remove_entry(code, text)
+            }
+            Some(u) => u.block(code, text),
+            None => UserDict::empty().block(code, text),
+        };
+        self.install_user(next);
     }
 
     pub fn config(&self) -> &Config {
@@ -508,7 +553,18 @@ impl Engine {
                     if let Some(sentence) =
                         crate::viterbi::best_sentence(&self.dict, &vseg, &*self.lm, &self.config)
                     {
-                        cands.push(sentence);
+                        // M2 隐藏（Shift+Delete）：屏蔽组合对整句同样生效——词条级由
+                        // Dict::merged 过滤，整句级在此拦截（用户隐藏的 (code, text)
+                        // 组合不再被 viterbi 组出；否则隐藏"手癣"后整句「手癣」
+                        // （手+癣单字）仍会出现，隐藏失效）。
+                        let blocked = self
+                            .dict
+                            .user()
+                            .map(|u| u.is_blocked(&sentence.code, &sentence.text))
+                            .unwrap_or(false);
+                        if !blocked {
+                            cands.push(sentence);
+                        }
                     }
                 }
             }
@@ -568,5 +624,143 @@ impl Engine {
     pub(crate) fn record_selection(&self, code: &str, text: &str) {
         let mut store = self.store.lock().expect("store lock poisoned");
         store.record_selection(code, text, SystemTime::now());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iuv_data::Dict;
+
+    fn dict_of(items: Vec<(&str, &str, u32)>) -> Dict {
+        Dict::from_entries(
+            items
+                .into_iter()
+                .map(|(c, w, wt)| (c.into(), w.into(), wt))
+                .collect(),
+        )
+    }
+
+    fn user_weight(e: &Engine, code: &str, word: &str) -> Option<u32> {
+        e.dict.user().and_then(|u| {
+            u.adjusted(code)
+                .iter()
+                .find(|(w, _)| w == word)
+                .map(|(_, a)| *a)
+        })
+    }
+
+    #[test]
+    fn record_phrase_weight_scenarios() {
+        // a：无命中 → 8000
+        let e = Engine::new(
+            dict_of(vec![
+                ("zhang".into(), "张", 90000),
+                ("wei".into(), "威", 1000),
+                ("wei".into(), "葳", 50),
+            ]),
+            Config::default(),
+        );
+        e.record_phrase("zhang'wei'wei", "张葳葳");
+        assert_eq!(
+            user_weight(&e, "zhang'wei'wei", "张葳葳"),
+            Some(8000),
+            "场景 a 常量权重"
+        );
+
+        // b1：n=2 < page_size=5 → 手癣(300)−1 = 299
+        let e = Engine::new(
+            dict_of(vec![
+                ("shou'xuan".into(), "首选", 8000),
+                ("shou'xuan".into(), "手癣", 300),
+            ]),
+            Config::default(),
+        );
+        e.record_phrase("shou'xuan", "手选");
+        assert_eq!(
+            user_weight(&e, "shou'xuan", "手选"),
+            Some(299),
+            "b1：n−1 位减一"
+        );
+
+        // b2：n=6 >= page_size=5 → avg(中芯3000, 众心1000) = 2000
+        let e = Engine::new(
+            dict_of(vec![
+                ("zhong'xin".into(), "中心", 9000),
+                ("zhong'xin".into(), "衷心", 7000),
+                ("zhong'xin".into(), "钟鑫", 5000),
+                ("zhong'xin".into(), "中芯", 3000),
+                ("zhong'xin".into(), "众心", 1000),
+                ("zhong'xin".into(), "忠信", 800),
+            ]),
+            Config::default(),
+        );
+        e.record_phrase("zhong'xin", "中信");
+        assert_eq!(
+            user_weight(&e, "zhong'xin", "中信"),
+            Some(2000),
+            "b2：avg(第4, 第5位)"
+        );
+
+        // 场景 0：词库已有 → 跳过（不记录）
+        let e = Engine::new(
+            dict_of(vec![("zhang'wei'wei".into(), "张威威", 6000)]),
+            Config::default(),
+        );
+        e.record_phrase("zhang'wei'wei", "张威威");
+        assert!(
+            user_weight(&e, "zhang'wei'wei", "张威威").is_none(),
+            "场景 0 不记录"
+        );
+
+        // 幂等：重复自造（用户库已有）→ 场景 0 拦截，权重不漂移
+        e.record_phrase("zhang'wei'wei", "张威威");
+        assert!(user_weight(&e, "zhang'wei'wei", "张威威").is_none());
+        let e2 = Engine::new(
+            dict_of(vec![
+                ("shou'xuan".into(), "首选", 8000),
+                ("shou'xuan".into(), "手癣", 300),
+            ]),
+            Config::default(),
+        );
+        e2.record_phrase("shou'xuan", "手选");
+        e2.record_phrase("shou'xuan", "手选"); // 第二次：exact 含用户库手选 → 跳过
+        assert_eq!(
+            user_weight(&e2, "shou'xuan", "手选"),
+            Some(299),
+            "重复自造权重不漂移"
+        );
+    }
+
+    #[test]
+    fn hide_entry_removes_override_then_blocks() {
+        // 用户库有条目（自造词）→ 隐藏 = 删除条目
+        let e = Engine::new(
+            dict_of(vec![
+                ("shou'xuan".into(), "首选", 8000),
+                ("shou'xuan".into(), "手癣", 300),
+            ]),
+            Config::default(),
+        );
+        e.record_phrase("shou'xuan", "手选");
+        assert!(user_weight(&e, "shou'xuan", "手选").is_some());
+        e.hide_entry("shou'xuan", "手选");
+        assert!(
+            user_weight(&e, "shou'xuan", "手选").is_none(),
+            "隐藏自造词 = 删除条目"
+        );
+        assert!(
+            !e.dict.user().unwrap().is_blocked("shou'xuan", "手选"),
+            "删除分支不写屏蔽"
+        );
+        // 无用户库条目（基础库词）→ 屏蔽
+        e.hide_entry("shou'xuan", "手癣");
+        assert!(
+            e.dict.user().unwrap().is_blocked("shou'xuan", "手癣"),
+            "基础库词 → 屏蔽"
+        );
+        // 屏蔽词条 + 整句拦截：exact 与 viterbi 都不再出现（集成测试已验证候选层）
+        let hits = e.dict.exact("shou'xuan");
+        assert!(!hits.iter().any(|x| x.word == "手癣"));
     }
 }

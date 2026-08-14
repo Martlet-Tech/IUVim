@@ -1,26 +1,33 @@
-//! 用户词库：权重覆盖表（M2 主动调权，设计见 docs/plan/18-m2-user-dict.md）。
+//! 用户词库：权重覆盖表 + 屏蔽表（M2，设计见 docs/plan/18-m2-user-dict.md）。
 //!
 //! 覆盖条目 = (code, word, adjusted_weight)——**绝对值覆盖**，无 delta 魔法数字：
 //! 用户反复调整几轮后永远收敛（覆盖旧值），不可读不可预测的残留不存在。
+//! 屏蔽条目 = (code, word)——基础库词条隐藏（Shift+Delete，决策：先删用户库条目，
+//! 无则屏蔽基础库）。
 //! 基本库（IMEDIC02 mmap 只读共享）物理不动，查询时与本表叠加（见 Dict::merged）。
 //!
-//! 文件为简单线性格式（小文件，不 mmap 零拷贝）：`IUVUSR01` magic + 条数 + 记录。
-//! 写盘 = 同目录临时文件 + sync + 先删后 rename（Windows rename 不覆盖已存在文件；
-//! 删除窗口内读侧 load 失败 → 保持旧库，下次会话重载，可接受——写入非高频）。
+//! 文件为简单线性格式（小文件，不 mmap 零拷贝）：`IUVUSR01`（覆盖表）/ `IUVUSR02`
+//! （覆盖表 + 屏蔽表），读侧按 magic 分派（01 兼容）。写盘 = 同目录临时文件 + sync +
+//! 先删后 rename（Windows rename 不覆盖已存在文件；删除窗口内读侧 load 失败 → 保持
+//! 旧库，下次会话重载，可接受——写入非高频）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// 文件头 magic（格式演进升 `IUVUSR02`，读侧按 magic 分派）。
-const MAGIC: &[u8; 8] = b"IUVUSR01";
+/// 文件头 magic。`IUVUSR01` = 仅覆盖表（旧）；`IUVUSR02` = 覆盖表 + 屏蔽表。
+const MAGIC_V1: &[u8; 8] = b"IUVUSR01";
+const MAGIC_V2: &[u8; 8] = b"IUVUSR02";
 
-/// 用户权重覆盖表：code → [(word, adjusted_weight)]（同 code 内 word 唯一）。
+/// 用户权重覆盖表 + 屏蔽表。
 /// 不可变共享（Arc 写时复制：每次调整生成新实例替换，查询无锁）。
 #[derive(Clone, Debug, Default)]
 pub struct UserDict {
+    /// 覆盖表：code → [(word, adjusted_weight)]（同 code 内 word 唯一）
     map: BTreeMap<String, Vec<(String, u32)>>,
+    /// 屏蔽表：(code, word)——基础库词条隐藏（Shift+Delete）
+    block: BTreeSet<(String, String)>,
 }
 
 impl UserDict {
@@ -37,45 +44,84 @@ impl UserDict {
             .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
     }
 
-    /// 解析字节。布局：magic(8) | u32 LE 条数 | 条数 × { u8 code_len|code |
-    /// u16 LE word_len|word | u32 LE adjusted }。
+    /// 解析字节。magic 分派：
+    /// - `IUVUSR01`：u32 覆盖条数 | 覆盖 × { u8 code_len|code | u16 word_len|word | u32 adj }
+    /// - `IUVUSR02`：u32 覆盖条数 | 覆盖 × N | u32 屏蔽条数 | 屏蔽 × { u8 code_len|code | u16 word_len|word }
     fn from_bytes(data: &[u8]) -> io::Result<UserDict> {
         let bad = |msg: &str| io::Error::new(io::ErrorKind::InvalidData, msg.to_string());
-        if data.len() < 12 || &data[..MAGIC.len()] != MAGIC {
+        if data.len() < 12 {
             return Err(bad("magic 校验失败"));
         }
-        let count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+        let (v2, pos0) = if &data[..MAGIC_V2.len()] == MAGIC_V2 {
+            (true, 8)
+        } else if &data[..MAGIC_V1.len()] == MAGIC_V1 {
+            (false, 8)
+        } else {
+            return Err(bad("magic 校验失败"));
+        };
         let mut map: BTreeMap<String, Vec<(String, u32)>> = BTreeMap::new();
-        let mut pos = 12;
-        for _ in 0..count {
+        let mut block: BTreeSet<(String, String)> = BTreeSet::new();
+        let count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+        let mut pos = pos0 + 4;
+        // 通用记录读取：返回 (code, word, 尾部偏移)；cover 为 true 时多读 u32 adj。
+        let read_record = |data: &[u8],
+                           pos: usize,
+                           cover: bool|
+         -> Result<(String, String, u32, usize), String> {
             if pos >= data.len() {
-                return Err(bad("记录截断（缺 code_len）"));
+                return Err("记录截断（缺 code_len）".into());
             }
             let code_len = data[pos] as usize;
-            pos += 1;
-            let code_end = pos + code_len;
+            let code_end = pos + 1 + code_len;
             if code_end + 2 + 4 > data.len() {
-                return Err(bad("记录截断（code 越界）"));
+                return Err("记录截断（code 越界）".into());
             }
-            let code =
-                std::str::from_utf8(&data[pos..code_end]).map_err(|_| bad("code 非 UTF-8"))?;
-            pos = code_end;
-            let word_len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
-            pos += 2;
-            let word_end = pos + word_len;
-            if word_end + 4 > data.len() {
-                return Err(bad("记录截断（word 越界）"));
+            let code = std::str::from_utf8(&data[pos + 1..code_end])
+                .map_err(|_| "code 非 UTF-8".to_string())?;
+            let wl = u16::from_le_bytes([data[code_end], data[code_end + 1]]) as usize;
+            let word_end = code_end + 2 + wl;
+            // 覆盖记录尾随 u32 adj，屏蔽记录无——按 cover 检查边界
+            let tail_len = if cover { 4 } else { 0 };
+            if word_end + tail_len > data.len() {
+                return Err("记录截断（word 越界）".into());
             }
-            let word =
-                std::str::from_utf8(&data[pos..word_end]).map_err(|_| bad("word 非 UTF-8"))?;
-            pos = word_end;
-            let adj = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
-            pos += 4;
-            map.entry(code.to_string())
-                .or_default()
-                .push((word.to_string(), adj));
+            let word = std::str::from_utf8(&data[code_end + 2..word_end])
+                .map_err(|_| "word 非 UTF-8".to_string())?;
+            let mut tail = word_end;
+            let adj = if cover {
+                let a = u32::from_le_bytes([
+                    data[word_end],
+                    data[word_end + 1],
+                    data[word_end + 2],
+                    data[word_end + 3],
+                ]);
+                tail = word_end + 4;
+                a
+            } else {
+                0
+            };
+            Ok((code.to_string(), word.to_string(), adj, tail))
+        };
+        for _ in 0..count {
+            let (code, word, adj, next) = read_record(data, pos, true).map_err(|e| bad(&e))?;
+            pos = next;
+            map.entry(code).or_default().push((word, adj));
         }
-        Ok(UserDict { map })
+        if v2 {
+            if data.len() < pos + 4 {
+                return Err(bad("屏蔽段头截断"));
+            }
+            let block_count =
+                u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                    as usize;
+            pos += 4;
+            for _ in 0..block_count {
+                let (code, word, _, next) = read_record(data, pos, false).map_err(|e| bad(&e))?;
+                pos = next;
+                block.insert((code, word));
+            }
+        }
+        Ok(UserDict { map, block })
     }
 
     /// code 命中的覆盖条目（未覆盖 → 空切片）。
@@ -104,14 +150,65 @@ impl UserDict {
         };
         upsert(a_code, a_word, a_adj);
         upsert(b_code, b_word, b_adj);
-        UserDict { map }
+        UserDict {
+            map,
+            block: self.block.clone(),
+        }
     }
 
-    /// 写盘（原子）：同目录临时文件 + sync + 先删后 rename。
+    /// 写入单条目（自造词/覆盖，upsert）。返回新 UserDict（写时复制）。
+    pub fn set_entry(&self, code: &str, word: &str, adj: u32) -> UserDict {
+        let mut map = self.map.clone();
+        let group = map.entry(code.to_string()).or_default();
+        group.retain(|(w, _)| w != word);
+        group.push((word.to_string(), adj));
+        UserDict {
+            map,
+            block: self.block.clone(),
+        }
+    }
+
+    /// 移除单条目（隐藏自造词/覆盖时用）。词条不存在 → 原样返回。返回新 UserDict。
+    pub fn remove_entry(&self, code: &str, word: &str) -> UserDict {
+        let mut map = self.map.clone();
+        let mut changed = false;
+        if let Some(group) = map.get_mut(code) {
+            let before = group.len();
+            group.retain(|(w, _)| w != word);
+            changed = group.len() != before;
+            if group.is_empty() {
+                map.remove(code);
+            }
+        }
+        if !changed {
+            return self.clone();
+        }
+        UserDict {
+            map,
+            block: self.block.clone(),
+        }
+    }
+
+    /// 屏蔽基础库词条（Shift+Delete 隐藏；幂等）。返回新 UserDict。
+    pub fn block(&self, code: &str, word: &str) -> UserDict {
+        let mut block = self.block.clone();
+        block.insert((code.to_string(), word.to_string()));
+        UserDict {
+            map: self.map.clone(),
+            block,
+        }
+    }
+
+    /// (code, word) 是否被屏蔽。
+    pub fn is_blocked(&self, code: &str, word: &str) -> bool {
+        self.block.contains(&(code.to_string(), word.to_string()))
+    }
+
+    /// 写盘（原子，恒写 `IUVUSR02`）：同目录临时文件 + sync + 先删后 rename。
     /// 失败 → `Err`（内存态已生效，持久化可下次调整重试）。
     pub fn save(&self, path: &Path) -> io::Result<()> {
         let mut buf = Vec::with_capacity(64 + self.map.len() * 32);
-        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(MAGIC_V2);
         let count: u32 = self.map.values().map(|v| v.len()).sum::<usize>() as u32;
         buf.extend_from_slice(&count.to_le_bytes());
         for (code, entries) in &self.map {
@@ -122,6 +219,14 @@ impl UserDict {
                 buf.extend_from_slice(word.as_bytes());
                 buf.extend_from_slice(&adj.to_le_bytes());
             }
+        }
+        let block_count: u32 = self.block.len() as u32;
+        buf.extend_from_slice(&block_count.to_le_bytes());
+        for (code, word) in &self.block {
+            buf.push(code.len() as u8);
+            buf.extend_from_slice(code.as_bytes());
+            buf.extend_from_slice(&(word.len() as u16).to_le_bytes());
+            buf.extend_from_slice(word.as_bytes());
         }
         let tmp = tmp_path(path);
         let mut f = fs::File::create(&tmp)
@@ -191,6 +296,71 @@ mod tests {
         let path = std::env::temp_dir().join("iuv-userdict-nonexistent.imedic");
         let _ = fs::remove_file(&path);
         assert!(UserDict::load(&path).is_err());
+    }
+
+    #[test]
+    fn v2_roundtrip_with_block() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("iuv-userdict-v2-{}.imedic", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let u = UserDict::empty()
+            .set_entry("zhang'wei'wei", "张葳葳", 8000)
+            .block("shou'xuan", "手癣")
+            .block("shou'xuan", "手癣"); // 幂等
+        u.save(&path).unwrap();
+        let back = UserDict::load(&path).unwrap();
+        assert!(back
+            .adjusted("zhang'wei'wei")
+            .iter()
+            .any(|(w, a)| w == "张葳葳" && *a == 8000));
+        assert!(back.is_blocked("shou'xuan", "手癣"));
+        assert!(!back.is_blocked("shou'xuan", "手选"));
+        assert!(!back.is_blocked("zhang'wei'wei", "张葳葳"));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn v1_file_compat_read() {
+        // 手工构造 IUVUSR01 字节（覆盖表，无屏蔽段）："de"→得 100000
+        let mut buf = b"IUVUSR01".to_vec();
+        buf.extend_from_slice(&[1, 0, 0, 0]);
+        buf.push(2);
+        buf.extend_from_slice(b"de");
+        buf.extend_from_slice(&3u16.to_le_bytes()); // "得" UTF-8 3 字节
+        buf.extend_from_slice("得".as_bytes());
+        buf.extend_from_slice(&100000u32.to_le_bytes());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("iuv-userdict-v1-{}.imedic", std::process::id()));
+        fs::write(&path, &buf).unwrap();
+        let u = UserDict::load(&path).unwrap();
+        assert!(u
+            .adjusted("de")
+            .iter()
+            .any(|(w, a)| w == "得" && *a == 100000));
+        assert!(!u.is_blocked("de", "得"));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn remove_entry_removes_self_word() {
+        let u = UserDict::empty()
+            .set_entry("de", "的", 100)
+            .set_entry("de", "得", 200)
+            .set_entry("nihao", "你好", 500);
+        // 移除组内一条：另一条保留
+        let u = u.remove_entry("de", "得");
+        assert!(!u.adjusted("de").iter().any(|(w, _)| w == "得"));
+        assert!(u.adjusted("de").iter().any(|(w, _)| w == "的"));
+        // 移除最后一条：组消失
+        let u = u.remove_entry("de", "的");
+        assert!(u.adjusted("de").is_empty());
+        // 移除不存在的词条：原样返回（含其他组不受影响）
+        let u = u.remove_entry("nihao", "不存在");
+        assert!(u.adjusted("nihao").iter().any(|(w, _)| w == "你好"));
+        // 屏蔽表在写时复制中保留
+        let u = u.block("de", "的");
+        let u2 = u.remove_entry("nihao", "你好");
+        assert!(u2.is_blocked("de", "的"));
     }
 
     #[test]

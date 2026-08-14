@@ -196,23 +196,27 @@ pub fn compile_files(inputs: &[std::path::PathBuf], output: &std::path::Path) ->
 未知段类型 → 加载器忽略（未来屏蔽段/用户段前向兼容）；IMEDIC01 旧格式不再支持读。
 ```
 
-### 3.2 用户权重覆盖表（`iuv.user.imedic`，IUVUSR01，M2 主动调权）
+### 3.2 用户权重覆盖表（`iuv.user.imedic`，IUVUSR02，M2 主动调权 + 自造词/隐藏）
 
-**绝对值覆盖**（无 delta 魔法数字，反复调整收敛）：用户 Alt+←/→ 与相邻候选交换权重
-= 双方互写对方**合成权重**（覆盖值优先、否则基本库权重）。文件为简单线性格式
-（小文件，不 mmap 零拷贝），**基本库物理不动**（mmap 只读共享、全系统一份页缓存），
-查询时叠加（见 §4.2 权重叠加）：
+**绝对值覆盖**（无 delta 魔法数字，反复调整收敛）：用户 Shift+←/→ 与相邻候选交换权重
+= 双方互写对方**合成权重**（覆盖值优先、否则基本库权重）。**自造词**（逐字选择 commit）
+与覆盖统一存段1（来源不区分，权重按场景 0/a/b 判定，见 18-m2-user-dict.md §3.5）。
+**隐藏**（Shift+Delete）＝先删用户库条目，否则写屏蔽段（基础库词条隐藏，含 viterbi
+整句拦截）。文件为简单线性格式（小文件，不 mmap 零拷贝），**基本库物理不动**
+（mmap 只读共享、全系统一份页缓存），查询时叠加（见 §4.2 权重叠加）：
 
 ```
-[0..8]  magic = b"IUVUSR01"
-[8..12] u32 LE 条数
-每条:   u8 code_len | code | u16 word_len | word | u32 adjusted
+[0..8]   magic = b"IUVUSR02"（01 = 旧格式仅覆盖表，读兼容）
+[8..12]  u32 覆盖条数
+每条:    u8 code_len | code | u16 word_len | word | u32 adjusted
+         u32 屏蔽条数
+每条:    u8 code_len | code | u16 word_len | word
 ```
 
 ```rust
 // ===== userdict.rs（M2 新增）=====
 #[derive(Clone, Debug, Default)]
-pub struct UserDict;  // 覆盖表：code → [(word, adjusted)]（同 code 内 word 唯一）
+pub struct UserDict;  // 覆盖表 code → [(word, adj)] + 屏蔽表 (code, word) 集合
 
 impl UserDict {
     pub fn empty() -> UserDict;
@@ -222,14 +226,18 @@ impl UserDict {
     /// 返回新实例（写时复制，Arc 共享替换）。
     pub fn apply_swap(&self, a_code: &str, a_word: &str, a_adj: u32,
                       b_code: &str, b_word: &str, b_adj: u32) -> UserDict;
-    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()>; // 原子：临时文件 + 先删后 rename
+    pub fn set_entry(&self, code: &str, word: &str, adj: u32) -> UserDict;   // 自造词/覆盖 upsert
+    pub fn remove_entry(&self, code: &str, word: &str) -> UserDict;          // 隐藏自造词 = 删除条目
+    pub fn block(&self, code: &str, word: &str) -> UserDict;                 // 屏蔽基础库词条（幂等）
+    pub fn is_blocked(&self, code: &str, word: &str) -> bool;
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()>; // 原子：临时文件 + 先删后 rename，恒写 02
 }
 
 // ===== Dict 新增（M2）=====
 impl Dict {
     pub fn set_user(&self, user: std::sync::Arc<UserDict>);  // 装配（Arc 写时复制替换）
     pub fn user(&self) -> Option<std::sync::Arc<UserDict>>;
-    pub fn effective_weight(&self, code: &str, word: &str) -> Option<u32>; // 覆盖优先，否则 base；词条不存在 → None
+    pub fn effective_weight(&self, code: &str, word: &str) -> Option<u32>; // 覆盖（含自造）优先，否则 base；均无 → None
 }
 ```
 
@@ -372,6 +380,7 @@ impl Session {
 | `PageUp/PageDown` | page ±1，clamp 到 `[0, page_count−1]`，selected 归 0 |
 | `Up/Down` | selected ±1，clamp 到 `[0, 当前页候选数−1]` |
 | `SwapLeft/SwapRight`（Shift+←/→，**M2 主动调权**） | 页内高亮候选与相邻候选**交换权重**（绝对值覆盖，互写对方合成权重）→ 立即重排候选 + **高亮跟随被调词**；会话不结束（松手后可继续导航/上屏）。边界（1 号位左 / 末位右）→ 消费但忽略。写用户库（§3.2）失败不阻断（内存态已生效）。**选 Shift 而非 Alt/Ctrl**：Alt 组合 = `WM_SYSKEYDOWN` 不经过 TSF 键 sink（机制死路）；Ctrl 冲突大（应用词跳转 + 「Ctrl 一律放行」红线）；Shift+方向键无大小写语义（见 18-m2-user-dict.md 附录） |
+| `HideCandidate`（Shift+Delete，**M2 隐藏**） | 高亮候选 → 先删用户库条目（自造词/覆盖 = 撤销自造），否则**屏蔽基础库词条**（§3.2 段2）→ 立即重排 + 高亮落在原位置附近。**viterbi 整句同样拦截**（被屏蔽组合不再组出）。裸 Delete 放行给应用 |
 | commit 发生时 | 调 `store.record_selection(code_key, text, now)`：Word/Char 用候选自身 `code`，Sentence 用 `seg[..consumed].join("'")`（其覆盖的前缀段） |
 | **选词（续接）** | 候选消费 `seg_len` 段：`seg_len >= 当前段数` → `end = Commit(picked.join + 词)` 会话结束；`seg_len < 当前段数` → **悬空**：`picked.push((词, code_key))`、`raw = seg[seg_len..].join("'")` 重算候选（会话继续，**不产生任何 commit 信号**；已选词仅通过 composition 混合显示反馈，见 Effect.composition） |
 | **Backspace（有 picked）** | pop picked 栈顶，其 code 拼回 raw 头部（`code + "'" + raw`，raw 空则直接 code），重算候选——取消一次已选，而非删拼音 |

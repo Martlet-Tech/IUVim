@@ -26,6 +26,9 @@ pub enum Key {
     /// 仅 TSF 产生（Alt+←/→），不参与 config 序列化（from_name 不可达，同 ShiftChar 先例）。
     SwapLeft,
     SwapRight,
+    /// 隐藏候选（M2 二期）：Shift+Delete——先删用户库条目（自造词/覆盖），
+    /// 否则屏蔽基础库词条。仅 TSF 产生，不参与 config 序列化（同 ShiftChar 先例）。
+    HideCandidate,
 }
 
 impl Key {
@@ -47,6 +50,7 @@ impl Key {
             Key::Right => "Right".into(),
             Key::SwapLeft => "SwapLeft".into(),
             Key::SwapRight => "SwapRight".into(),
+            Key::HideCandidate => "HideCandidate".into(),
         }
     }
 

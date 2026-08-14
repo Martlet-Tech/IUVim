@@ -54,6 +54,17 @@ M1（当前里程碑）：最小可用的全拼输入法。
   改动：iuv-data（userdict.rs 新增、dict.rs merge）、iuv-core
   （key.rs SwapLeft/SwapRight、engine.rs attach/swap/mtime 重载、session.rs Swap 臂）、
   iuv-tsf（map_key、load_engine 装配、按键日志）。测试：数据层 5 + 引擎 8 + map_key 2 全绿。
+- [ ] **M2 自造词 + 隐藏（2026-08-14 实现待测）**：逐字选择（picked 全单字、≥2 字、
+  全消费 commit）记录为自造词——场景 0（词库已有整词 → 跳过）/ a（无命中 → 权重 8000）/
+  b（n 条命中 → 目标词位 = 首页最后：n≥page_size → avg(第 ps-1, 第 ps 位)、否则第 n 位减一，
+  page_size 为变量非 magic）；自造词与覆盖统一存用户库段1（IUVUSR02 升级：+屏蔽段，
+  magic 分派兼容读 01 旧文件），**Dict::merged 追加用户库独有条目**（词不在基本库组 →
+  随查询显示，viterbi 整句同吃到）；Shift+Delete 隐藏——先删用户库条目（撤销自造），
+  否则屏蔽基础库词条（**viterbi 整句同样拦截**，否则隐藏"手癣"后整句仍被组出）；
+  裸 Delete 放行给应用。改动：iuv-data（userdict.rs 02 格式/block/remove_entry、
+  dict.rs merged 三叠加 + exact_raw）、iuv-core（key.rs HideCandidate、engine.rs
+  record_phrase/hide_entry/install_user、session.rs commit 判定 + Hide 臂 + Sentence
+  屏蔽拦截）、iuv-tsf（map_key Shift+Delete）。测试：数据层 5 + 引擎 4 + 会话 7 全绿。
 - 后续：M2 钉选/屏蔽词交互（用户库段类型已预留）· M3 整句增强(LMDG)/模糊音 · M4 Tauri helper（WebView 候选窗+设置） · M5 安装器/词库导入/x86
 - **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
   OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；激活即打开）。前置条件：用户在
