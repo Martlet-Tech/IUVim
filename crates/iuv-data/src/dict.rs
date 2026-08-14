@@ -3,13 +3,14 @@
 //! 接口契约 01-contract.md §3（`exact` 系列返回物化 `Vec<Entry>`）。
 
 use crate::format::{
-    self, SEG_BUCKETS, SEG_INDEX, SEG_META, SEG_RECORDS, SEG_HEADER_LEN, FILE_HEADER_LEN, MAGIC,
+    self, FILE_HEADER_LEN, MAGIC, SEG_BUCKETS, SEG_HEADER_LEN, SEG_INDEX, SEG_META, SEG_RECORDS,
 };
 use crate::mmap::MappedFile;
+use crate::userdict::UserDict;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// 词条。`code` 为 squashed 全拼（无空格全小写，音节间 `'` 分隔），与查询键同形。
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -40,6 +41,9 @@ pub struct Dict {
     entry_count: usize,
     max_word_syllables: usize,
     syllables: BTreeSet<String>,
+    /// 用户权重覆盖表（M2 主动调权，18-m2-user-dict.md）。None = 未装配；
+    /// Arc 写时复制（swap 整体替换），查询只 clone 引用（无锁读）。
+    user: Mutex<Option<Arc<UserDict>>>,
 }
 
 impl Clone for Dict {
@@ -54,6 +58,7 @@ impl Clone for Dict {
             entry_count: self.entry_count,
             max_word_syllables: self.max_word_syllables,
             syllables: self.syllables.clone(),
+            user: Mutex::new(self.user.lock().unwrap_or_else(|e| e.into_inner()).clone()),
         }
     }
 }
@@ -71,6 +76,7 @@ impl Default for Dict {
             entry_count: 0,
             max_word_syllables: 0,
             syllables: BTreeSet::new(),
+            user: Mutex::new(None),
         }
     }
 }
@@ -87,30 +93,29 @@ pub(crate) static SYLLABLES: &[&str] = &[
     "duan", "dui", "dun", "duo", "e", "ei", "en", "eng", "er", "fa", "fan", "fang", "fei", "fen",
     "feng", "fo", "fou", "fu", "ga", "gai", "gan", "gang", "gao", "ge", "gei", "gen", "geng",
     "gong", "gou", "gu", "gua", "guai", "guan", "guang", "gui", "gun", "guo", "ha", "hai", "han",
-    "hang", "hao", "he", "hei", "hen", "heng", "hong", "hou", "hu", "hua", "huai", "huan",
-    "huang", "hui", "hun", "huo", "ji", "jia", "jian", "jiang", "jiao", "jie", "jin", "jing",
-    "jiong", "jiu", "ju", "juan", "jue", "jun", "ka", "kai", "kan", "kang", "kao", "ke", "ken",
-    "keng", "kong", "kou", "ku", "kua", "kuai", "kuan", "kuang", "kui", "kun", "kuo", "la",
-    "lai", "lan", "lang", "lao", "le", "lei", "leng", "li", "lia", "lian", "liang", "liao",
-    "lie", "lin", "ling", "liu", "lo", "long", "lou", "lu", "luan", "lun", "luo", "lv", "lve",
-    "ma", "mai", "man", "mang", "mao", "me", "mei", "men", "meng", "mi", "mian", "miao", "mie",
-    "min", "ming", "miu", "mo", "mou", "mu", "na", "nai", "nan", "nang", "nao", "ne", "nei",
-    "nen", "neng", "ni", "nian", "niang", "niao", "nie", "nin", "ning", "niu", "nong", "nou",
-    "nu", "nuan", "nuo", "nv", "nve", "o", "ou", "pa", "pai", "pan", "pang", "pao", "pei", "pen",
-    "peng", "pi", "pian", "piao", "pie", "pin", "ping", "po", "pou", "pu", "qi", "qia", "qian",
-    "qiang", "qiao", "qie", "qin", "qing", "qiong", "qiu", "qu", "quan", "que", "qun", "ran",
-    "rang", "rao", "re", "ren", "reng", "ri", "rong", "rou", "ru", "ruan", "rui", "run", "ruo",
-    "sa", "sai", "san", "sang", "sao", "se", "sen", "seng", "sha", "shai", "shan", "shang",
-    "shao", "she", "shei", "shen", "sheng", "shi", "shou", "shu", "shua", "shuai", "shuan",
-    "shuang", "shui", "shun", "shuo", "si", "song", "sou", "su", "suan", "sui", "sun", "suo",
-    "ta", "tai", "tan", "tang", "tao", "te", "teng", "ti", "tian", "tiao", "tie", "ting", "tong",
-    "tou", "tu", "tuan", "tui", "tun", "tuo", "wa", "wai", "wan", "wang", "wei", "wen", "weng",
-    "wo", "wu", "xi", "xia", "xian", "xiang", "xiao", "xie", "xin", "xing", "xiong", "xiu",
-    "xu", "xuan", "xue", "xun", "ya", "yan", "yang", "yao", "ye", "yi", "yin", "ying", "yo",
-    "yong", "you", "yu", "yuan", "yue", "yun", "za", "zai", "zan", "zang", "zao", "ze", "zei",
-    "zen", "zeng", "zha", "zhai", "zhan", "zhang", "zhao", "zhe", "zhei", "zhen", "zheng",
-    "zhi", "zhong", "zhou", "zhu", "zhua", "zhuai", "zhuan", "zhuang", "zhui", "zhun", "zhuo",
-    "zi", "zong", "zou", "zu", "zuan", "zui", "zun", "zuo",
+    "hang", "hao", "he", "hei", "hen", "heng", "hong", "hou", "hu", "hua", "huai", "huan", "huang",
+    "hui", "hun", "huo", "ji", "jia", "jian", "jiang", "jiao", "jie", "jin", "jing", "jiong",
+    "jiu", "ju", "juan", "jue", "jun", "ka", "kai", "kan", "kang", "kao", "ke", "ken", "keng",
+    "kong", "kou", "ku", "kua", "kuai", "kuan", "kuang", "kui", "kun", "kuo", "la", "lai", "lan",
+    "lang", "lao", "le", "lei", "leng", "li", "lia", "lian", "liang", "liao", "lie", "lin", "ling",
+    "liu", "lo", "long", "lou", "lu", "luan", "lun", "luo", "lv", "lve", "ma", "mai", "man",
+    "mang", "mao", "me", "mei", "men", "meng", "mi", "mian", "miao", "mie", "min", "ming", "miu",
+    "mo", "mou", "mu", "na", "nai", "nan", "nang", "nao", "ne", "nei", "nen", "neng", "ni", "nian",
+    "niang", "niao", "nie", "nin", "ning", "niu", "nong", "nou", "nu", "nuan", "nuo", "nv", "nve",
+    "o", "ou", "pa", "pai", "pan", "pang", "pao", "pei", "pen", "peng", "pi", "pian", "piao",
+    "pie", "pin", "ping", "po", "pou", "pu", "qi", "qia", "qian", "qiang", "qiao", "qie", "qin",
+    "qing", "qiong", "qiu", "qu", "quan", "que", "qun", "ran", "rang", "rao", "re", "ren", "reng",
+    "ri", "rong", "rou", "ru", "ruan", "rui", "run", "ruo", "sa", "sai", "san", "sang", "sao",
+    "se", "sen", "seng", "sha", "shai", "shan", "shang", "shao", "she", "shei", "shen", "sheng",
+    "shi", "shou", "shu", "shua", "shuai", "shuan", "shuang", "shui", "shun", "shuo", "si", "song",
+    "sou", "su", "suan", "sui", "sun", "suo", "ta", "tai", "tan", "tang", "tao", "te", "teng",
+    "ti", "tian", "tiao", "tie", "ting", "tong", "tou", "tu", "tuan", "tui", "tun", "tuo", "wa",
+    "wai", "wan", "wang", "wei", "wen", "weng", "wo", "wu", "xi", "xia", "xian", "xiang", "xiao",
+    "xie", "xin", "xing", "xiong", "xiu", "xu", "xuan", "xue", "xun", "ya", "yan", "yang", "yao",
+    "ye", "yi", "yin", "ying", "yo", "yong", "you", "yu", "yuan", "yue", "yun", "za", "zai", "zan",
+    "zang", "zao", "ze", "zei", "zen", "zeng", "zha", "zhai", "zhan", "zhang", "zhao", "zhe",
+    "zhei", "zhen", "zheng", "zhi", "zhong", "zhou", "zhu", "zhua", "zhuai", "zhuan", "zhuang",
+    "zhui", "zhun", "zhuo", "zi", "zong", "zou", "zu", "zuan", "zui", "zun", "zuo",
 ];
 
 /// 判定一段字符串是否为标准合法音节（二分查找）。
@@ -197,8 +202,14 @@ impl Dict {
             return Err(bad("元数据段过短".into()));
         }
         let total = u64::from_le_bytes([
-            bytes[m.start], bytes[m.start + 1], bytes[m.start + 2], bytes[m.start + 3],
-            bytes[m.start + 4], bytes[m.start + 5], bytes[m.start + 6], bytes[m.start + 7],
+            bytes[m.start],
+            bytes[m.start + 1],
+            bytes[m.start + 2],
+            bytes[m.start + 3],
+            bytes[m.start + 4],
+            bytes[m.start + 5],
+            bytes[m.start + 6],
+            bytes[m.start + 7],
         ]);
         let entry_count = u32_at(bytes, m.start + 8) as usize;
         let max_word_syllables = u32_at(bytes, m.start + 12) as usize;
@@ -215,8 +226,8 @@ impl Dict {
             if end > m.end {
                 return Err(bad("音节表截断".into()));
             }
-            let s = std::str::from_utf8(&bytes[pos..end])
-                .map_err(|_| bad("音节非 UTF-8".into()))?;
+            let s =
+                std::str::from_utf8(&bytes[pos..end]).map_err(|_| bad("音节非 UTF-8".into()))?;
             syllables.insert(s.to_string());
             pos = end;
         }
@@ -234,8 +245,7 @@ impl Dict {
         // ---- 段4 记录体：逐条边界扫描（防截断/坏字节；不校验排序）----
         let mut pos = records.start;
         while pos < records.end {
-            let step = record_step(&bytes[pos..records.end])
-                .map_err(|m| bad(m))?;
+            let step = record_step(&bytes[pos..records.end]).map_err(|m| bad(m))?;
             pos += step;
         }
 
@@ -278,6 +288,7 @@ impl Dict {
             entry_count,
             max_word_syllables,
             syllables,
+            user: Mutex::new(None),
         })
     }
 
@@ -312,7 +323,11 @@ impl Dict {
             return Vec::new();
         }
         let upper = self.upper_bound(target);
-        (lower..upper).map(|i| self.entry_at(self.index_off(i))).collect()
+        self.merged(
+            (lower..upper)
+                .map(|i| self.entry_at(self.index_off(i)))
+                .collect(),
+        )
     }
 
     /// 精确查询（单字视图，M1.5 单段档）：返回 code == squashed_code 的**单字**词条。
@@ -343,7 +358,7 @@ impl Dict {
             }
             out.push(self.entry_at(self.index_off(i)));
         }
-        out.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
+        out = self.merged(out);
         out.truncate(limit);
         out
     }
@@ -367,6 +382,8 @@ impl Dict {
             out.push(e);
             pos = step;
         }
+        out = self.merged(out);
+        out.truncate(limit);
         out
     }
 
@@ -388,6 +405,50 @@ impl Dict {
     /// 最长词的音节数（lattice 宽度上限）。
     pub fn max_word_syllables(&self) -> usize {
         self.max_word_syllables
+    }
+
+    // ===== 用户权重覆盖表（M2 主动调权，18-m2-user-dict.md）=====
+
+    /// 装配用户覆盖表（Arc 引用；调整时整体替换，查询零锁）。
+    pub fn set_user(&self, user: Arc<UserDict>) {
+        *self.user.lock().unwrap_or_else(|e| e.into_inner()) = Some(user);
+    }
+
+    /// 当前用户覆盖表（未装配 → None）。
+    pub fn user(&self) -> Option<Arc<UserDict>> {
+        self.user.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// 词条有效权重：用户覆盖值优先，否则基本库权重。词条不在基本库 → None
+    /// （M2 无自造词，覆盖条目必须挂靠基本库词条；孤儿条目自然忽略）。
+    pub fn effective_weight(&self, code: &str, word: &str) -> Option<u32> {
+        let base = self
+            .exact(code)
+            .into_iter()
+            .find(|e| e.word == word)?
+            .weight;
+        let user = self.user();
+        let adj = user.as_ref().and_then(|u| {
+            u.adjusted(code)
+                .iter()
+                .find(|(w, _)| w == word)
+                .map(|(_, a)| *a)
+        });
+        Some(adj.unwrap_or(base))
+    }
+
+    /// 应用用户覆盖 + 稳定排序（同 weight 保持输入原序）。未装配 → 快速路径原样返回。
+    fn merged(&self, mut entries: Vec<Entry>) -> Vec<Entry> {
+        let Some(user) = self.user() else {
+            return entries;
+        };
+        for e in &mut entries {
+            if let Some((_, adj)) = user.adjusted(&e.code).iter().find(|(w, _)| w == &e.word) {
+                e.weight = *adj;
+            }
+        }
+        entries.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
+        entries
     }
 
     // ===== 内部：索引二分 / 记录物化（视图已校验，索引直接）=====
@@ -521,7 +582,10 @@ mod tests {
     #[test]
     fn totals_and_syllables() {
         let d = sample();
-        assert_eq!(d.total_weight(), 100000 + 300 + 200 + 8000 + 100 + 500 + 50 + 10);
+        assert_eq!(
+            d.total_weight(),
+            100000 + 300 + 200 + 8000 + 100 + 500 + 50 + 10
+        );
         assert_eq!(d.entry_count(), 8); // "你好" 重复条目去重
         assert!(d.syllables().contains("ni"));
         assert!(d.syllables().contains("hao"));
@@ -564,7 +628,9 @@ mod tests {
         // 灌入超过 INITIAL_BUCKET_SIZE 的同首字母单字，验证截断
         let mut items = Vec::new();
         for i in 0..(INITIAL_BUCKET_SIZE + 100) {
-            let w = char::from_u32(0x4e00 + (i % 2000) as u32).unwrap().to_string();
+            let w = char::from_u32(0x4e00 + (i % 2000) as u32)
+                .unwrap()
+                .to_string();
             items.push((format!("b{}", i % 50), w, i as u32));
         }
         // 多字词不入桶：再加一批 2 字词验证不占桶位
@@ -574,7 +640,10 @@ mod tests {
         let d = Dict::from_entries(items);
         let top = d.initial_top('b', usize::MAX);
         assert_eq!(top.len(), INITIAL_BUCKET_SIZE);
-        assert!(top.iter().all(|e| e.word.chars().count() == 1), "桶应只含单字");
+        assert!(
+            top.iter().all(|e| e.word.chars().count() == 1),
+            "桶应只含单字"
+        );
     }
 
     #[test]
@@ -584,5 +653,77 @@ mod tests {
         assert!(d.exact("nihao").is_empty());
         assert!(d.initial_top('a', 10).is_empty());
         assert_eq!(d.total_weight(), 0);
+    }
+
+    #[test]
+    fn user_overlay_merges_into_queries() {
+        let d = sample();
+        // 未装配：原始序（的/得/地）
+        let de = d.exact("de");
+        assert_eq!(de[0].word, "的");
+        assert_eq!(de[1].word, "得");
+        // 装配覆盖：得 ↔ 地 交换（得升到首位、地降到最后）
+        let user = crate::userdict::UserDict::empty()
+            .apply_swap("de", "的", 200, "de", "得", 100000)
+            .apply_swap("de", "地", 0, "de", "的", 200);
+        d.set_user(Arc::new(user));
+        let de = d.exact("de");
+        let words: Vec<&str> = de.iter().map(|e| e.word.as_str()).collect();
+        assert_eq!(words, vec!["得", "的", "地"]);
+        assert_eq!(de[0].weight, 100000);
+        // effective_weight：覆盖值优先、未覆盖回基本库、不存在词条为 None
+        assert_eq!(d.effective_weight("de", "得"), Some(100000));
+        assert_eq!(d.effective_weight("de", "地"), Some(0));
+        assert_eq!(d.effective_weight("de", "的"), Some(200));
+        assert_eq!(d.effective_weight("nihao", "你好"), Some(8000));
+        assert_eq!(d.effective_weight("nihao", "不存在词"), None);
+        // exact_single 继承 merge（单段档路径）
+        let d2 = Dict::from_entries(vec![
+            ("de".into(), "的".into(), 100),
+            ("de".into(), "得".into(), 50),
+        ]);
+        let user = crate::userdict::UserDict::empty().apply_swap("de", "的", 10, "de", "得", 200);
+        d2.set_user(Arc::new(user));
+        assert_eq!(d2.exact_single("de")[0].word, "得");
+        // prefix 同样 merge（低频联想路径）：同 code 相邻交换后跨 code 全局排序
+        let d3 = Dict::from_entries(vec![
+            ("nima".into(), "尼玛".into(), 10),
+            ("nima".into(), "你吗".into(), 5),
+            ("nihao".into(), "你好".into(), 100),
+            ("nish".into(), "你失".into(), 50),
+        ]);
+        let user =
+            crate::userdict::UserDict::empty().apply_swap("nima", "尼玛", 5, "nima", "你吗", 1000);
+        d3.set_user(Arc::new(user));
+        let hits = d3.prefix("ni", 10);
+        assert_eq!(hits[0].word, "你吗", "覆盖后权重领先");
+        // 稳定排序：同 weight 保持基本库原序
+        let d4 = Dict::from_entries(vec![
+            ("abc".into(), "A".into(), 500),
+            ("abc".into(), "B".into(), 500),
+        ]);
+        d4.set_user(Arc::new(
+            crate::userdict::UserDict::empty().apply_swap("abc", "A", 500, "abc", "B", 500),
+        ));
+        let e4 = d4.exact("abc");
+        assert_eq!(e4[0].word, "A");
+        assert_eq!(e4[1].word, "B");
+    }
+
+    #[test]
+    fn user_swap_roundtrip_through_dict() {
+        // 端到端：swap（写盘）→ 新 Dict 装配加载 → merge 一致（跨进程持久化语义）
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("iuv-dict-user-swap-{}.imedic", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let d = sample();
+        let user =
+            crate::userdict::UserDict::empty().apply_swap("de", "的", 100, "de", "得", 100000);
+        user.save(&path).unwrap();
+        let loaded = crate::userdict::UserDict::load(&path).unwrap();
+        d.set_user(Arc::new(loaded));
+        let de = d.exact("de");
+        assert_eq!(de[0].word, "得");
+        let _ = std::fs::remove_file(&path);
     }
 }

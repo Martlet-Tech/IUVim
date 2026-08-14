@@ -1,7 +1,8 @@
 # iuv 输入法（代号 iuvim，谐音"哎哟喂"）
 
-Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**滞回稳定排序**——词频接近时候选顺序锁定可盲打，
-优势累积到阈值才换位。M1（当前里程碑）：最小可用的全拼输入法。
+Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌控排序**——静态词频序默认稳定
+（肌肉记忆安全）+ Alt+←/→ 主动调权（绝对值覆盖，反复调整收敛，见 `docs/plan/18-m2-user-dict.md`）。
+M1（当前里程碑）：最小可用的全拼输入法。
 
 ## 当前状态
 
@@ -41,7 +42,19 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**滞回稳�
   **大写同样是开会话键**（`is_session_start_key` 字母即开会话，`Hello` 的 H 进序列而非直接上屏）。
   改动：key.rs/session.rs（ShiftChar 臂）、keymap.rs（is_session_start_key 单条件）、
   session_bridge.rs（map_key XOR）、text_service.rs（capslock_on 传参）。
-- 后续：M2 滞回/学习/钉选 · M3 整句增强(LMDG)/简拼/模糊音 · M4 Tauri helper（WebView 候选窗+设置） · M5 安装器/词库导入/x86
+- [ ] **M2 主动调权 + 用户词库（2026-08-14 实现待测，分支 feat/m2-user-dict）**：Shift+←/→ 与页内相邻
+  候选**交换权重**（立即重排、高亮跟随、不关会话、边界忽略）；持久化为**绝对值覆盖**
+  （互写对方合成权重，无 delta 魔法数字——反复调整收敛，排序决定权交还用户，替代滞回
+  自动换位：滞回只防短期抖动、治不了长期漂移击穿肌肉记忆，降级为可选细节）；用户库
+  `iuv.user.imedic`（IUVUSR01 线性格式，覆盖表内存 BTreeMap + 写时复制）与基本库查询时
+  **叠加**（merge 下沉 Dict 查询层，引擎算法零改动；基本库 mmap 只读不动）；跨进程
+  **会话级 mtime 重载**延迟生效；写盘 = 临时文件 + 先删后 rename 原子替换，失败不阻断
+  （内存态已生效）；TSF 键位选 Shift（**Alt 组合 = WM_SYSKEYDOWN 不进 TSF 键 sink，
+  机制死路**——快捷键设计红线，见 18-m2-user-dict.md 附录；Ctrl 冲突大保持放行）。
+  改动：iuv-data（userdict.rs 新增、dict.rs merge）、iuv-core
+  （key.rs SwapLeft/SwapRight、engine.rs attach/swap/mtime 重载、session.rs Swap 臂）、
+  iuv-tsf（map_key、load_engine 装配、按键日志）。测试：数据层 5 + 引擎 8 + map_key 2 全绿。
+- 后续：M2 钉选/屏蔽词交互（用户库段类型已预留）· M3 整句增强(LMDG)/模糊音 · M4 Tauri helper（WebView 候选窗+设置） · M5 安装器/词库导入/x86
 - **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
   OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；激活即打开）。前置条件：用户在
   高级键设置把"输入法/非输入法切换"设为 Ctrl+Space（"切换输入语言"热键让位，Win+Space 仍可用）。

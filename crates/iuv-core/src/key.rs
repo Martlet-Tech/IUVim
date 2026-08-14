@@ -22,6 +22,10 @@ pub enum Key {
     Down,
     Left,
     Right,
+    /// 主动调权（M2，18-m2-user-dict.md）：与左侧/右侧**相邻候选**交换权重。
+    /// 仅 TSF 产生（Alt+←/→），不参与 config 序列化（from_name 不可达，同 ShiftChar 先例）。
+    SwapLeft,
+    SwapRight,
 }
 
 impl Key {
@@ -41,6 +45,8 @@ impl Key {
             Key::Down => "Down".into(),
             Key::Left => "Left".into(),
             Key::Right => "Right".into(),
+            Key::SwapLeft => "SwapLeft".into(),
+            Key::SwapRight => "SwapRight".into(),
         }
     }
 
