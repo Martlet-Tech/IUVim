@@ -1542,3 +1542,66 @@ fn swap_ignores_sentence_candidate() {
         "整句候选不可交换，候选序不变"
     );
 }
+
+// ===== M2 修复：多段全拼 k=1 单字全量（低频字可达）=====
+
+#[test]
+fn multisegment_k1_single_chars_full_pool() {
+    // zhangweiwei → 选张 → weiwei 续接，低频单字「葳」翻页可达。
+    // 旧实现 PER_LEVEL_EXACT=20 把单字截在词频前 20（低频字卡死边界）；
+    // 新实现 k=1 走单段档逻辑：单字全量（微软对齐：多段输入翻页可达单字）。
+    let mut items: Vec<(String, String, u32)> = vec![
+        ("zhang".into(), "张".into(), 90000),
+        ("zhang".into(), "章".into(), 8000),
+        ("zhang".into(), "长".into(), 5000),
+        ("zhang'wei".into(), "张威".into(), 6000),
+        ("zhang'wei'wei".into(), "张威威".into(), 5000),
+        ("zhang'wei'wei".into(), "张薇薇".into(), 4000),
+        ("wei'wei".into(), "薇薇".into(), 8000),
+        ("wei'wei".into(), "巍巍".into(), 7000),
+    ];
+    // wei 单字 30 个（词频降序）+ 低频「葳」= 第 31 位：旧 20 上限必砍，新全量可达
+    for i in 0..30u32 {
+        items.push((
+            "wei".into(),
+            char::from_u32(0x4E00 + i).unwrap().to_string(),
+            1000 - i * 10,
+        ));
+    }
+    items.push(("wei".into(), "葳".into(), 50));
+    let mut cfg = Config::default();
+    cfg.page_size = 100; // 一页全显，断言免翻页
+    let engine = Engine::new(Dict::from_entries(items), cfg);
+
+    // zhangweiwei：k3 词 2 + k2 词 1 + k1 zhang 单字全量 3 = 6 候选；张 = 第 4 位
+    let mut s = engine.start_session();
+    for c in "zhangweiwei".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert_eq!(
+        e.page.total, 6,
+        "zhangweiwei 候选总量，实际：{}",
+        e.page.total
+    );
+    assert_eq!(e.candidates[3].text, "张");
+
+    // 选张 → 悬空续接 weiwei：k2 词 2 + k1 wei 单字全量 31 = 33 候选；葳 = 第 33 位
+    s.on_key(Key::Digit(4));
+    let e = s.effect();
+    assert_eq!(
+        e.page.total, 33,
+        "wei 单字全量应进候选（旧 20 上限只有 22）"
+    );
+    assert!(
+        e.candidates.iter().any(|c| c.text == "葳"),
+        "低频单字应可达（全量词频序第 31 位）"
+    );
+    // 上屏链路完整：选葳 → 张+葳 commit，尾巴 wei 续接
+    let idx = e.candidates.iter().position(|c| c.text == "葳").unwrap();
+    let e2 = s.on_key(Key::Digit((idx + 1) as u8));
+    assert!(
+        e2.end.is_none(),
+        "部分消费：张葳 + wei 尾巴续接，会话未结束"
+    );
+}

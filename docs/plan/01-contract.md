@@ -253,10 +253,10 @@ pub struct Candidate {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Config {
     pub page_size: usize,        // 默认 5
-    pub max_candidates: usize,   // 默认 200
+    pub max_candidates: usize,   // 默认 1024（单字全量可达，微软对齐；可配小值限制）
     pub max_word_syllables: usize, // lattice 词宽上限，默认 7
 }
-impl Default for Config { /* page_size:5, max_candidates:200, max_word_syllables:7 */ }
+impl Default for Config { /* page_size:5, max_candidates:1024, max_word_syllables:7 */ }
 
 // ===== key.rs（W0 完整，冻结）=====
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

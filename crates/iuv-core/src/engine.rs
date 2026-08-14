@@ -549,6 +549,16 @@ impl Engine {
                     break;
                 }
             }
+
+            // 3. 最后一级（k=1，第一段单字）**追加单字全量**（微软对齐：多段输入翻页
+            //    可达低频同音字，如 zhangweiwei→选张→weiwei 续接翻页取「葳」；原
+            //    PER_LEVEL_EXACT=20 把低频字卡在边界，实测 2026-08-14）。追加而非
+            //    替换：歧义单音节（xian→[xi,an]）的枚举替代切分词（西安）必须保留，
+            //    重复单字由 generate_candidates 末尾全局 text 去重兜底（保序先见先留）。
+            //    单段档语义：完整音节 → exact_single 全量；严格前缀 → 首字母桶。
+            if k == 1 {
+                cands.extend(self.single_segment_candidates(&seg[0]));
+            }
         }
 
         cands

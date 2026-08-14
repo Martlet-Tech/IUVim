@@ -29,14 +29,15 @@ impl Default for Orientation {
 
 /// 引擎配置。
 ///
-/// 默认值：page_size=5, max_candidates=200, max_word_syllables=7,
+/// 默认值：page_size=5, max_candidates=1024, max_word_syllables=7,
 /// 翻页键 上=PageUp/,/↑、下=PageDown/./↓，候选移动 左=←、右=→，布局竖排。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// 每页候选数（默认 5；建议 ≤9 保证数字键可全选当前页）
     pub page_size: usize,
-    /// 全表候选上限
+    /// 全表候选上限（默认 1024：单字全量可达——wei 450/sh 978 同音字全给翻页可达，
+    /// 微软对齐；极端多段输入的总量预算，可配小值限制）
     pub max_candidates: usize,
     /// lattice 词宽上限
     pub max_word_syllables: usize,
@@ -52,7 +53,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             page_size: 5,
-            max_candidates: 200,
+            max_candidates: 1024,
             max_word_syllables: 7,
             keymap: Keymap::default(),
             candidate_prefix: false,
@@ -165,7 +166,7 @@ mod tests {
     fn default_values() {
         let c = Config::default();
         assert_eq!(c.page_size, 5);
-        assert_eq!(c.max_candidates, 200);
+        assert_eq!(c.max_candidates, 1024);
         assert_eq!(c.max_word_syllables, 7);
         assert!(!c.candidate_prefix);
         assert!(c.keymap.page_prev.contains(&Key::Char(',')));
@@ -186,7 +187,7 @@ mod tests {
         // 只写 page_size，其余字段自动补默认（#[serde(default)]）。
         let c: Config = serde_json::from_str(r#"{ "page_size": 9 }"#).unwrap();
         assert_eq!(c.page_size, 9);
-        assert_eq!(c.max_candidates, 200);
+        assert_eq!(c.max_candidates, 1024);
         assert_eq!(c.keymap.page_next, Keymap::default().page_next);
     }
 
