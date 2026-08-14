@@ -48,6 +48,13 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   Shift 单独大写不受影响——`session_bridge::caps_passthrough`。改动：key.rs/session.rs
   （ShiftChar 臂）、keymap.rs（is_session_start_key 单条件）、session_bridge.rs（map_key XOR + caps_passthrough）、
   text_service.rs（capslock_on 传参）。
+- [x] **按键直通白名单（2026-08-14 待测）**：`config.json` 新字段 `passthrough_apps`（exe 名列表，
+  大小写不敏感精确匹配，仿 Weasel PR #1049），命中进程 TSF 层**全部按键放行**——不建会话、
+  无候选窗/预编辑，输入法在该进程完全透明（游戏 WASD 直达，与 Caps 直通正交互补：Caps 管
+  "Caps 状态"、白名单管"特定进程"）。名单为空零开销（不查进程名）；判定在 handle_key_down
+  最前部（english_mode 检查后）——`session_bridge::is_passthrough_app` + `log::module_name` 复用。
+  改动：iuv-core config（字段+测试）、iuv-tsf（is_passthrough_app/log 公开/判定）、契约/任务书同步。
+  边界：名单进程无法中文输入；config 改后需重载输入法（热重载不做）。
 - [x] **M2 主动调权 + 用户词库（2026-08-14 已结案：手测通过、已并入 main）**：Shift+←/→ 与页内相邻
   候选**交换权重**（立即重排、高亮跟随、不关会话、边界忽略）；持久化为**绝对值覆盖**
   （互写对方合成权重，无 delta 魔法数字——反复调整收敛，排序决定权交还用户，替代滞回

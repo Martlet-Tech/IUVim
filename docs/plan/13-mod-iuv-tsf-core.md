@@ -55,7 +55,7 @@ compartment 为真相源——系统「输入法/非输入法切换」热键（C
 
 - vk → `Key`：`VK_A..VK_Z`（无 Shift）→`Char(小写)`，带 Shift/CapsLock →`ShiftChar(大写)`（XOR 判定，大写保形进序列——`niHAO` 候选仍从 `ni` 出，commit 原样上屏）；`VK_OEM_7`(`'`)→`Char('\'')`；`VK_BACK/SPACE/RETURN/ESCAPE/PRIOR/NEXT/UP/DOWN/LEFT/RIGHT`→对应；`VK_1..VK_9`（无 Shift）→`Digit(n)`；`VK_LEFT/RIGHT+Shift`→`SwapLeft/SwapRight`（M2 主动调权）；`VK_DELETE+Shift`→`HideCandidate`（M2 隐藏）
 - **修饰键约定**：Ctrl/Alt 按下时 `map_key` 一律返回 None（组合键如 Ctrl+S/Alt+F4 放行给应用，绝不消费；Alt 组合 = `WM_SYSKEYDOWN` 本就不进 TSF 键 sink）；仅 Shift 修饰参与映射（大小写/符号/方向键调权）
-- `OnTestKeyDown` 规则：Session active → 上表内键一律吃掉；非 active → 仅字母键吃掉（开启会话，`is_session_start_key` 含 ShiftChar），其余放行。**CapsLock 例外**（2026-08-14）：Caps 生效时会话外字母一律放行直通（Caps = 英文模式，不建会话；会话内 Caps 字母照常进序列）——`session_bridge::caps_passthrough`
+- `OnTestKeyDown` 规则：Session active → 上表内键一律吃掉；非 active → 仅字母键吃掉（开启会话，`is_session_start_key` 含 ShiftChar），其余放行。**CapsLock 例外**（2026-08-14）：Caps 生效时会话外字母一律放行直通（Caps = 英文模式，不建会话；会话内 Caps 字母照常进序列）——`session_bridge::caps_passthrough`。**直通白名单**（同日）：`config.passthrough_apps` 命中进程（exe 名大小写不敏感精确匹配）→ 全部按键放行（不建会话/无候选窗，游戏透明）——`session_bridge::is_passthrough_app`，名单为空零开销
 - 应用 Effect：
   1. `composition.rs`：`SetText(effect.composition)`（无 composition 且有内容 → StartComposition）
   2. caret：`ITfContextView::GetTextExt(composition range, …)` → `CaretRect`（失败则用上一次位置，首次用屏幕中央）

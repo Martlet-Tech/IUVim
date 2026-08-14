@@ -265,7 +265,7 @@ pub struct Candidate {
     pub seg_len: usize, // 该候选消费的音节段数（所在前缀级 k；续接选词推进用）
 }
 
-// ===== config.rs（W0 完整；M1.5/M2 演进：+keymap/+candidate_prefix/+candidate_orientation）=====
+// ===== config.rs（W0 完整；M1.5/M2 演进：+keymap/+candidate_prefix/+candidate_orientation/+passthrough_apps）=====
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -275,8 +275,9 @@ pub struct Config {
     pub keymap: Keymap,          // 翻页/候选移动四组语义键（M1.5，8f479f9/d1dcfb8）
     pub candidate_prefix: bool,  // 前缀联想开关，默认 false（候选仅 exact，微软化）
     pub candidate_orientation: Orientation, // 候选窗布局方向，默认 Vertical
+    pub passthrough_apps: Vec<String>, // 按键直通白名单（exe 名，大小写不敏感精确匹配，TSF 层消费）
 }
-impl Default for Config { /* page_size:5, max_candidates:1024, max_word_syllables:7, keymap:默认表, candidate_prefix:false, candidate_orientation:Vertical */ }
+impl Default for Config { /* page_size:5, max_candidates:1024, max_word_syllables:7, keymap:默认表, candidate_prefix:false, candidate_orientation:Vertical, passthrough_apps:空 */ }
 
 // ===== key.rs（W0 完整；M1.5/M2 演进：+ShiftChar/+Left/Right/+SwapLeft/SwapRight/+HideCandidate）=====
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

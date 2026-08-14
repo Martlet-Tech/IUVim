@@ -29,8 +29,8 @@ use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, B
 
 use crate::composition::Composition;
 use crate::langbar::{self, LangBarItemButton};
-use crate::log::log_line;
-use crate::session_bridge::{apply_effect, caps_passthrough, map_key};
+use crate::log::{self, log_line};
+use crate::session_bridge::{apply_effect, caps_passthrough, is_passthrough_app, map_key};
 use crate::ui::CaretRect;
 use crate::ui::{CandidateUi, GdiCandidateWindow, NullCandidateUi};
 
@@ -324,6 +324,13 @@ impl TextService {
 
         let vk = wparam.0 as u16;
         if self.english_mode.load(Ordering::SeqCst) {
+            return false;
+        }
+
+        // 按键直通白名单：命中进程全部按键放行（不建会话/无候选窗），名单为空零开销。
+        if !config.passthrough_apps.is_empty()
+            && is_passthrough_app(&log::module_name(), &config.passthrough_apps)
+        {
             return false;
         }
 

@@ -41,8 +41,8 @@ fn process_id() -> u32 {
     unsafe { GetCurrentProcessId() }
 }
 
-/// 当前模块文件名（如 "notepad.exe"），失败返回空串。
-fn module_name() -> String {
+/// 当前模块文件名（如 "notepad.exe"），失败返回空串。白名单判定复用（进程 exe 名）。
+pub fn module_name() -> String {
     let mut buf = [0u16; 512];
     // SAFETY: GetModuleFileNameW 写入我们提供的 512 宽的缓冲，返回实际写入长度。
     let len = unsafe { GetModuleFileNameW(None, &mut buf) };

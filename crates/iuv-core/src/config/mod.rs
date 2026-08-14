@@ -47,6 +47,9 @@ pub struct Config {
     pub candidate_prefix: bool,
     /// 候选窗布局方向（竖排/横排）
     pub candidate_orientation: Orientation,
+    /// 按键直通进程名单：命中进程（exe 名，大小写不敏感精确匹配）TSF 层全部按键放行，
+    /// 不建会话/无候选窗（输入法在该进程完全透明，游戏场景）。默认空 = 不启用。
+    pub passthrough_apps: Vec<String>,
 }
 
 impl Default for Config {
@@ -58,6 +61,7 @@ impl Default for Config {
             keymap: Keymap::default(),
             candidate_prefix: false,
             candidate_orientation: Orientation::Vertical,
+            passthrough_apps: Vec::new(),
         }
     }
 }
@@ -171,6 +175,8 @@ mod tests {
         assert!(!c.candidate_prefix);
         assert!(c.keymap.page_prev.contains(&Key::Char(',')));
         assert!(c.keymap.page_next.contains(&Key::Char('.')));
+        // 直通名单默认空（不启用）
+        assert!(c.passthrough_apps.is_empty());
     }
 
     #[test]
@@ -218,6 +224,22 @@ mod tests {
         assert!(c.keymap.page_prev.contains(&Key::Char('[')));
         // 未写的 page_next 用默认
         assert!(c.keymap.page_next.contains(&Key::Char('.')));
+    }
+
+    #[test]
+    fn passthrough_apps_parse() {
+        // 白名单解析：精确进程名列表
+        let p = tmp_file("passthrough.json");
+        std::fs::write(
+            &p,
+            r#"{ "passthrough_apps": ["cyberpunk2077.exe", "dota2.exe"] }"#,
+        )
+        .unwrap();
+        let c = Config::from_file(&p);
+        assert_eq!(
+            c.passthrough_apps,
+            vec!["cyberpunk2077.exe".to_owned(), "dota2.exe".to_owned()]
+        );
     }
 
     #[test]

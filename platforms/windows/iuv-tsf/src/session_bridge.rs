@@ -101,6 +101,13 @@ pub fn caps_passthrough(key: &Key, capslock: bool) -> bool {
     capslock && matches!(key, Key::Char(c) | Key::ShiftChar(c) if c.is_ascii_alphabetic())
 }
 
+/// 进程 exe 名是否命中按键直通白名单（大小写不敏感精确匹配，仿 Weasel PR #1049）。
+/// 命中进程的全部按键由 TSF 层放行：不建会话、无候选窗（输入法在该进程完全透明）。
+/// 名单为空时直接 false（零开销，不查进程名）。
+pub fn is_passthrough_app(exe: &str, list: &[String]) -> bool {
+    list.iter().any(|app| app.eq_ignore_ascii_case(exe))
+}
+
 /// 应用键映射（快捷键 → 引擎键）。命中翻页表则重映射为 PageUp/PageDown，否则原样。
 /// 会话外开启会话判定（仅字母与 `'`；`,`/`.` 等标点放行给应用）。
 /// 两者定义在 iuv-core（config/keymap.rs），此处直接复用。
@@ -394,6 +401,23 @@ mod tests {
         assert!(!caps_passthrough(&Key::Digit(1), true));
         assert!(!caps_passthrough(&Key::Char(','), true));
         assert!(!caps_passthrough(&Key::Space, true));
+    }
+
+    #[test]
+    fn passthrough_app_match() {
+        let list = vec!["cyberpunk2077.exe".to_owned(), "dota2.exe".to_owned()];
+        // 命中（精确 exe 名）
+        assert!(is_passthrough_app("cyberpunk2077.exe", &list));
+        assert!(is_passthrough_app("dota2.exe", &list));
+        // 大小写不敏感
+        assert!(is_passthrough_app("Cyberpunk2077.EXE", &list));
+        assert!(is_passthrough_app("DOTA2.exe", &list));
+        // 未命中 / 名单为空
+        assert!(!is_passthrough_app("notepad.exe", &list));
+        assert!(!is_passthrough_app("cyberpunk2077.exe", &[]));
+        // 非精确子串不命中
+        assert!(!is_passthrough_app("cyberpunk", &list));
+        assert!(!is_passthrough_app("xcyberpunk2077.exe", &list));
     }
 
     #[test]
