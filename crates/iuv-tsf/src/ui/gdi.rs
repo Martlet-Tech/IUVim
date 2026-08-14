@@ -297,29 +297,13 @@ impl GdiCandidateWindow {
             ReleaseDC(Some(self.hwnd), hdc);
 
             let (x, y) = match caret {
-                Some(c) => {
-                    crate::log::log_line(&format!(
-                        "[candwin] 定位输入：caret=({},{},{},{}) 窗口尺寸=({},{})",
-                        c.x, c.y, c.w, c.h, w, h
-                    ));
-                    position_for(c, w, h)
-                }
+                Some(c) => position_for(c, w, h),
                 None => {
                     let mut rc = RECT::default();
                     let _ = GetWindowRect(self.hwnd, &mut rc);
-                    let (x, y) =
-                        update_position((rc.left, rc.top), w, h, work_area_for(self.hwnd), self.last_caret);
-                    crate::log::log_line(&format!(
-                        "[candwin] 原位更新：GetWindowRect=({},{},{},{}) 窗口尺寸=({},{}) 修正后=({},{})",
-                        rc.left, rc.top, rc.right, rc.bottom, w, h, x, y
-                    ));
-                    (x, y)
+                    update_position((rc.left, rc.top), w, h, work_area_for(self.hwnd), self.last_caret)
                 }
             };
-            crate::log::log_line(&format!(
-                "[candwin] 定位结果：目标=({},{}) 尺寸=({},{})",
-                x, y, w, h
-            ));
             // SAFETY: 仅移动/改尺寸，不激活（SWP_NOACTIVATE），保持 z 序（置顶组内不变）
             let _ = SetWindowPos(self.hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
             // SAFETY: 全量无效化并同步重绘（双缓冲，无闪烁）
@@ -378,10 +362,6 @@ impl CandidateUi for GdiCandidateWindow {
             let w = rc.right - rc.left;
             let h = rc.bottom - rc.top;
             let (x, y) = position_for(caret, w, h);
-            crate::log::log_line(&format!(
-                "[candwin] move_to：caret=({},{}) -> 目标=({},{}) 尺寸=({},{})",
-                caret.x, caret.y, x, y, w, h
-            ));
             // SAFETY: 仅移动（SWP_NOSIZE），不激活
             let _ = SetWindowPos(
                 self.hwnd,

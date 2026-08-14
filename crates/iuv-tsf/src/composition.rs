@@ -185,10 +185,6 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
                     .as_ref()
                     .cloned()
                     .ok_or_else(|| windows_core::Error::from_hresult(windows::Win32::Foundation::E_FAIL))?;
-                log_line(&format!(
-                    "do_edit_session: GetSelection range ptr={:p}",
-                    sel[0].range.as_ref().map(|r| r.as_raw()).unwrap_or(std::ptr::null_mut())
-                ));
                 // SAFETY: ITfContextComposition 为 ITfContext 的标准支持接口。
                 let context_comp: ITfContextComposition = trace_step("cast ITfContextComposition", || {
                     self.context.cast()
@@ -268,10 +264,6 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
                 w: rc.right - rc.left,
                 h: rc.bottom - rc.top,
             };
-            log_line(&format!(
-                "[caret] 最终 CaretRect（屏幕坐标，无转换）：x={} y={} w={} h={}",
-                rect.x, rect.y, rect.w, rect.h
-            ));
             *self.caret.borrow_mut() = Some(rect);
         }
         Ok(())
@@ -281,10 +273,7 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
 /// 分步调试日志：每个 TSF 调用包装一层，成功打 OK，失败打 HRESULT 并短路。
 fn trace_step<T>(name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
     match f() {
-        Ok(v) => {
-            log_line(&format!("do_edit_session: {name} OK"));
-            Ok(v)
-        }
+        Ok(v) => Ok(v),
         Err(e) => {
             log_line(&format!("do_edit_session: {name} 失败：{e:?}"));
             Err(e)

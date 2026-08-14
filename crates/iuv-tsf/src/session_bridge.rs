@@ -147,10 +147,6 @@ pub fn apply_effect(
             let prev_caret = *caret; // 跳变检测基准：上一次光标（增量位移）
             match composition.set_text(&effect.composition) {
                 Ok(Some(rect)) => {
-                    log_line(&format!(
-                        "[caret] set_text 返回新光标：x={} y={} w={} h={}",
-                        rect.x, rect.y, rect.w, rect.h
-                    ));
                     *caret = rect;
                 }
                 Ok(None) => {
@@ -187,18 +183,10 @@ pub fn apply_effect(
                     ui.hide();
                     false
                 } else {
-                    log_line(&format!(
-                        "[candwin] 窗口已可见，update（不动位置），当前 caret：x={} y={}",
-                        caret.x, caret.y
-                    ));
                     ui.update(&snap);
                     false
                 }
             } else {
-                log_line(&format!(
-                    "[candwin] 首次 show，caret：x={} y={} w={} h={}",
-                    caret.x, caret.y, caret.w, caret.h
-                ));
                 ui.show(&snap, *caret);
                 false
             }
