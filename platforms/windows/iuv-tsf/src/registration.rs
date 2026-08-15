@@ -10,8 +10,8 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
-    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, GUID_TFCAT_TIP_KEYBOARD, ITfCategoryMgr,
-    ITfInputProcessorProfiles,
+    GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+    GUID_TFCAT_TIP_KEYBOARD, ITfCategoryMgr, ITfInputProcessorProfiles,
 };
 use windows_core::{GUID, HRESULT, Result};
 use windows_registry::CLASSES_ROOT;
@@ -151,6 +151,14 @@ fn register_with_tsf(dll: &str) -> Result<()> {
             e
         })?;
     crate::log::log_line("RegisterCategory(IMMERSIVESUPPORT) OK");
+    // 输入模式 compartment 支持（老式/IMM 场景兼容——同微软拼音/老 Rime 的注册，
+    // 缺此类别时老游戏（WoW 1.12 等）不激活本 TIP）
+    unsafe { category_mgr.RegisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, &clsid()) }
+        .map_err(|e| {
+            crate::log::log_line(&format!("RegisterCategory(INPUTMODECOMPARTMENT) 失败：{e:?}"));
+            e
+        })?;
+    crate::log::log_line("RegisterCategory(INPUTMODECOMPARTMENT) OK");
     // 系统托盘/语言栏兼容
     unsafe { category_mgr.RegisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, &clsid()) }
         .map_err(|e| {
@@ -183,6 +191,7 @@ fn unregister_with_tsf() -> Result<()> {
     unsafe {
         let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIP_KEYBOARD, &clsid());
         let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, &clsid());
+        let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, &clsid());
         let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, &clsid());
     }
     Ok(())

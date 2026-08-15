@@ -264,7 +264,8 @@ impl GdiCandidateWindow {
         };
         // SAFETY: self 仅在创建线程存活；Drop 先清零 GWLP_USERDATA 再销毁窗口，
         // 因此 wnd_proc 经 GetWindowLongPtrW 取到的指针不会悬垂。
-        unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, self as *mut Self as isize) };
+        // `as usize as _` 按平台推断：x64 = isize（指针同宽），x86 = i32（32 位指针无损）。
+        unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, self as *mut Self as usize as _) };
         self.hwnd = hwnd;
         let dpi = self.get_dpi();
         self.font = create_font(dpi, FONT_PT);
