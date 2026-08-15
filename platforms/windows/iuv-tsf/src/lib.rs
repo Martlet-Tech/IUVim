@@ -9,6 +9,7 @@ pub mod log;
 pub mod registration;
 pub mod session_bridge;
 pub mod ui;
+pub mod ui_element;
 
 pub(crate) mod com;
 

@@ -33,6 +33,7 @@ use crate::log::{self, log_line};
 use crate::session_bridge::{apply_effect, caps_passthrough, is_passthrough_app, map_key};
 use crate::ui::CaretRect;
 use crate::ui::{CandidateUi, GdiCandidateWindow, NullCandidateUi};
+use crate::ui_element::CandidateElementHost;
 
 /// 进程级引擎单例（契约 §7：`OnceLock<Arc<Engine>>`）。
 /// 词典加载失败 → None = 透明模式（全部按键放行，绝不卡用户）。
@@ -184,6 +185,8 @@ pub(crate) struct TextService {
     english_mode: Arc<AtomicBool>,
     /// 语言栏"中/英"切换图标（Activate 挂载，Deactivate 卸载）。
     lang_bar: RefCell<Option<ComObject<LangBarItemButton>>>,
+    /// TSF 候选 UI 元素宿主（WoW 游戏内候选框实验）。Rc 共享：dispatch 路径同线程访问。
+    cand_elem: Rc<RefCell<CandidateElementHost>>,
 }
 
 impl TextService {
@@ -192,6 +195,7 @@ impl TextService {
         let session = Rc::new(RefCell::new(None));
         let composition = Rc::new(RefCell::new(None));
         let caret = Rc::new(Cell::new(CaretRect::default()));
+        let cand_elem = Rc::new(RefCell::new(CandidateElementHost::new()));
         let ui_rc = Rc::new(RefCell::new(
             Box::new(NullCandidateUi) as Box<dyn CandidateUi>
         ));
@@ -202,6 +206,7 @@ impl TextService {
             let c = composition.clone();
             let u = ui_rc.clone();
             let ca = caret.clone();
+            let ce = cand_elem.clone();
             candwin.set_on_click(Some(Box::new(move |row: usize| {
                 // Digit 键位上限 1-9（row 0-8）；超限忽略（page_size 配置极端时防御）。
                 if row >= 9 {
@@ -212,7 +217,7 @@ impl TextService {
                     .as_mut()
                     .map(|sess: &mut Session| sess.on_key(Key::Digit((row + 1) as u8)));
                 if let Some(e) = effect {
-                    dispatch_effect(&s, &c, &u, &ca, &e);
+                    dispatch_effect(&s, &c, &u, &ca, &ce, &e);
                 }
             })));
             let s = session.clone();
@@ -232,6 +237,7 @@ impl TextService {
             composition,
             ui: ui_rc,
             caret,
+            cand_elem,
             english_mode: Arc::new(AtomicBool::new(false)),
             lang_bar: RefCell::new(None),
         }
@@ -300,6 +306,7 @@ impl TextService {
     /// 文本为空（异常态）→ cancel 清空；commit/cancel 失败记日志不阻断（残留由系统终止兜底）。
     fn flush_session(&self) {
         self.ui.borrow_mut().hide();
+        self.cand_elem.borrow_mut().end();
         let text: Option<String> = self.session.borrow().as_ref().map(|s| s.pending_text());
         if let Some(comp) = self.composition.borrow().as_ref() {
             match text.as_deref() {
@@ -388,20 +395,28 @@ impl TextService {
             &self.composition,
             &self.ui,
             &self.caret,
+            &self.cand_elem,
             effect,
         )
     }
 }
 
 /// dispatch 的自由函数版：候选窗点击回调（同线程）与 TextService 共用同一路径。
-/// 经 Rc 共享槽访问 session/composition/ui/caret；orientation 取自引擎配置。
+/// 经 Rc 共享槽访问 session/composition/ui/caret/cand_elem；orientation 取自引擎配置。
 fn dispatch_effect(
     session: &Rc<RefCell<Option<Session>>>,
     composition: &Rc<RefCell<Option<Composition>>>,
     ui: &Rc<RefCell<Box<dyn CandidateUi>>>,
     caret: &Rc<Cell<CaretRect>>,
+    cand_elem: &Rc<RefCell<CandidateElementHost>>,
     effect: &iuv_core::Effect,
 ) {
+    // TSF 候选 UI 元素同步（与自绘窗平行）：候选非空 → Begin/Update；空 → End。
+    // effect.end 的提交/取消路径统一走 ended 分支 End，这里跳过避免多余一次 Update。
+    if effect.end.is_none() {
+        let snap = crate::ui::effect_to_snapshot(effect);
+        cand_elem.borrow_mut().sync(&snap);
+    }
     let orientation = engine()
         .map(|e| e.config().candidate_orientation)
         .unwrap_or_default();
@@ -442,6 +457,7 @@ fn dispatch_effect(
     caret.set(caret_pos);
     if ended {
         ui.borrow_mut().hide();
+        cand_elem.borrow_mut().end();
         *session.borrow_mut() = None;
         *composition.borrow_mut() = None;
         if degraded {
@@ -465,6 +481,10 @@ impl TextService_Impl {
     fn activate(&self, ptim: &ITfThreadMgr, tid: u32) -> Result<()> {
         *self.thread_mgr.borrow_mut() = Some(ptim.clone());
         self.client_id.set(tid);
+
+        // TSF 3.0 候选 UI 元素（WoW 游戏内候选框实验）：QI ITfUIElementMgr。
+        // 失败仅记日志（元素机制不可用 = 现状行为，输入法不受影响）。
+        self.cand_elem.borrow_mut().attach(ptim);
 
         // AdviseKeyEventSink：按键事件走本对象（经 ITfKeystrokeMgr，TSF 标准流程）。
         let key_sink: ITfKeyEventSink = self.to_object().to_interface();
@@ -550,8 +570,9 @@ impl TextService_Impl {
 
     /// Deactivate 公共清理。
     fn deactivate(&self) {
-        // 焦点清理：隐藏候选窗、丢弃会话与 composition。
+        // 焦点清理：隐藏候选窗、结束候选元素、丢弃会话与 composition。
         self.ui.borrow_mut().hide();
+        self.cand_elem.borrow_mut().clear();
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
 
@@ -668,6 +689,7 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
             log_line("焦点切换：活动输入已原文上屏");
         } else {
             self.ui.borrow_mut().hide();
+            self.cand_elem.borrow_mut().end();
         }
         Ok(())
     }
