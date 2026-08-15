@@ -27,14 +27,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iuv-ime"
-version = "0.1.0"
-dependencies = [
- "windows",
- "winres",
-]
-
-[[package]]
 name = "iuv-repl"
 version = "0.1.0"
 dependencies = [
