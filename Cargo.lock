@@ -35,13 +35,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iuv-ime-probe"
-version = "0.1.0"
-dependencies = [
- "windows",
-]
-
-[[package]]
 name = "iuv-repl"
 version = "0.1.0"
 dependencies = [

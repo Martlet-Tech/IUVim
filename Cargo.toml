@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-ime", "platforms/windows/iuv-ime-probe"]
+members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-ime"]
 
 [workspace.package]
 edition = "2021"
