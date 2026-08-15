@@ -9,9 +9,11 @@ use windows::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
 };
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
-    GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
-    GUID_TFCAT_TIP_KEYBOARD, ITfCategoryMgr, ITfInputProcessorProfiles,
+    CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, GUID_TFCAT_CATEGORY_OF_TIP,
+    GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, GUID_TFCAT_TIPCAP_COMLESS,
+    GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT,
+    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, GUID_TFCAT_TIPCAP_UIELEMENTENABLED, GUID_TFCAT_TIP_KEYBOARD,
+    ITfCategoryMgr, ITfInputProcessorProfiles,
 };
 use windows_core::{GUID, HRESULT, Result};
 use windows_registry::CLASSES_ROOT;
@@ -166,6 +168,36 @@ fn register_with_tsf(dll: &str) -> Result<()> {
             e
         })?;
     crate::log::log_line("RegisterCategory(SYSTRAYSUPPORT) OK");
+    // ---- 剩余 4 类别（2026-08-16 补齐：原为手动注册表，WoW 激活/候选 UI 元素依赖，见 63c6833）----
+    // 显示属性提供者（系统/应用经 ITfDisplayAttributeProvider 查询预编辑属性）。
+    unsafe { category_mgr.RegisterCategory(&clsid(), &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, &clsid()) }
+        .map_err(|e| {
+            crate::log::log_line(&format!("RegisterCategory(DISPLAYATTRIBUTEPROVIDER) 失败：{e:?}"));
+            e
+        })?;
+    crate::log::log_line("RegisterCategory(DISPLAYATTRIBUTEPROVIDER) OK");
+    // COMLESS：老式/IMM 场景激活的关键类别（对齐 QQ——8 类别中主嫌疑，
+    // 缺此类别时 WoW 1.12 等老进程不激活本 TIP）。
+    unsafe { category_mgr.RegisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_COMLESS, &clsid()) }
+        .map_err(|e| {
+            crate::log::log_line(&format!("RegisterCategory(COMLESS) 失败：{e:?}"));
+            e
+        })?;
+    crate::log::log_line("RegisterCategory(COMLESS) OK");
+    // UI 元素启用：TSF 3.0 候选 UI 元素（ITfCandidateListUIElement）被系统消费的前提。
+    unsafe { category_mgr.RegisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_UIELEMENTENABLED, &clsid()) }
+        .map_err(|e| {
+            crate::log::log_line(&format!("RegisterCategory(UIELEMENTENABLED) 失败：{e:?}"));
+            e
+        })?;
+    crate::log::log_line("RegisterCategory(UIELEMENTENABLED) OK");
+    // 输入法类别（语言栏/输入指示器展示为中文输入法）。
+    unsafe { category_mgr.RegisterCategory(&clsid(), &GUID_TFCAT_CATEGORY_OF_TIP, &clsid()) }
+        .map_err(|e| {
+            crate::log::log_line(&format!("RegisterCategory(CATEGORY_OF_TIP) 失败：{e:?}"));
+            e
+        })?;
+    crate::log::log_line("RegisterCategory(CATEGORY_OF_TIP) OK");
     Ok(())
 }
 
@@ -193,6 +225,10 @@ fn unregister_with_tsf() -> Result<()> {
         let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, &clsid());
         let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, &clsid());
         let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, &clsid());
+        let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, &clsid());
+        let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_COMLESS, &clsid());
+        let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_TIPCAP_UIELEMENTENABLED, &clsid());
+        let _ = category_mgr.UnregisterCategory(&clsid(), &GUID_TFCAT_CATEGORY_OF_TIP, &clsid());
     }
     Ok(())
 }

@@ -547,6 +547,21 @@ pub const PROFILE_DESCRIPTION: &str = "iuv 输入法";
 pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
 ```
 
+### 5.2 TSF 类别注册清单（register_with_tsf，8 类别，2026-08-16 对齐 QQ）
+
+| 类别 GUID | windows-rs 常量 | 用途 |
+|---|---|---|
+| `34745C63-...` | `GUID_TFCAT_TIP_KEYBOARD` | 键盘 TIP（核心类别） |
+| `13A016DF-...` | `GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT` | TSF 3.0 客户端（Windows Terminal/UWP）加载前提 |
+| `CCF05DD7-...` | `GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT` | 老式/IMM 场景兼容（缺此类别时 WoW 1.12 等不激活） |
+| `25504FB4-...` | `GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT` | 系统托盘/语言栏兼容 |
+| `364215D9-...` | `GUID_TFCAT_TIPCAP_COMLESS` | 老式/IMM 进程激活关键类别（对齐 QQ，8 类别主嫌疑） |
+| `49D2F9CF-...` | `GUID_TFCAT_TIPCAP_UIELEMENTENABLED` | TSF 3.0 候选 UI 元素（游戏内候选栏）被系统消费前提 |
+| `046B8C80-...` | `GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER` | 显示属性提供者（预编辑属性查询） |
+| `534C48C1-...` | `GUID_TFCAT_CATEGORY_OF_TIP` | 输入法类别（语言栏/输入指示器展示为中文输入法） |
+
+注册/注销双路径（`DllRegisterServer`/`DllUnregisterServer`）；32/64 位注册表视图分别由对应位数的 `regsvr32` 写入（部署脚本两个都跑）。原 4 类别（KEYBOARD/IMMERSIVE/INPUTMODECOMPARTMENT/SYSTRAY）为 63c6833 前已有；后 4 类别（COMLESS/UIELEMENTENABLED/DISPLAYATTRIBUTEPROVIDER/CATEGORY_OF_TIP）2026-08-16 落代码（此前为手动注册表，WoW 激活/候选元素依赖）。
+
 ## 6. 文件属主矩阵（W1 并行防冲突）
 
 | 路径 | 属主 | 状态 |
@@ -560,6 +575,7 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
 | `iuv-tsf/src/ui/mod.rs` | 主智能体 | W0 **完整实现**，冻结 |
 | `iuv-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs` | **Agent E** | W1 |
 | `iuv-tsf/src/{lib,registration,log,session_bridge,composition,langbar}.rs`、`com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、`Cargo.toml` 内 winres 配置 | **Agent D** | W1 |
+| `iuv-tsf/src/ui_element.rs` | 主智能体 | wow-ime（2026-08-16） |
 
 规则：只允许改自己属主的文件；发现契约缺陷 → 报告主智能体，禁止私改他人文件。
 
@@ -580,3 +596,12 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
   Activate 时"激活即打开"（初始 VT_EMPTY/关闭 → 写 open=1，保持切入即中文）；compartment 缺失/写失败时本地翻转兜底。
 - 引擎在 DLL 内进程级单例（`OnceLock<Arc<Engine>>`），词典路径 `%LOCALAPPDATA%\iuv\iuv.imedic`（用户级数据；DLL 本体在 `%ProgramFiles%\iuv\`）；
   加载失败：日志记录，所有字母键原样放行（输入法"透明"，绝不卡用户）。
+- **候选 UI 元素（`ui_element.rs`，wow-ime 2026-08-16）**：候选变化时经 `ITfUIElementMgr`
+  （`ITfThreadMgr::QueryInterface` 获取）Begin/Update/End 同步 `ITfCandidateListUIElement`——
+  数据语义对齐 CANDIDATELIST：`GetCount`=候选总数（全量）、`GetString(uindex)`=全局索引、
+  `GetSelection`=**全局索引**（page×page_size+selected，游戏翻页校验 dwSelection 所在页区间，
+  页内索引会导致游戏候选栏翻页关闭）、`GetPageIndex`=每页起始数组。桥把元素数据转给 IMM
+  应用（游戏）自绘候选栏；TSF 应用（notepad）pbshow=true 自绘窗照常。
+- **自绘窗自动抑制（`ImmDetect`，wow-ime 2026-08-16）**：GetTextExt 退化矩形（w/h≤2）连续 3 次
+  = IMM 客户端（游戏自绘候选栏）→ `GdiCandidateWindow::set_suppressed(true)`（show/update 空操作）；
+  任意一次非退化立即恢复。pbshow 不可靠（IMM 应用恒 true——系统认为 TIP 自绘，但桥同时转候选给游戏）。
