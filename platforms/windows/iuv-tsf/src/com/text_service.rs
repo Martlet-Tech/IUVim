@@ -693,6 +693,9 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
     /// 焦点切换：未确认输入按**原文上屏**语义结束（同关闭输入法），再清理会话与候选窗。
     /// 修复：旧实现只清内存态 → 系统终止 composition 时预编辑残留（Alt+Tab 遗留问题，
     /// 2026-08-14 与 OPENCLOSE 关闭同根因一并修复）。
+    /// 已知遗留（2026-08-16，wow-ime）：全屏游戏（WoW 1.12）Alt+Tab 往返后焦点窗口的
+    /// 输入法关联会被系统重置（QQ 拼音实测同样——通病，非本输入法问题）——回来打字
+    /// 可能英文直通（托盘图标不刷新误导）；用户侧用 Win+Space 切回即可，不做程序干预。
     fn OnSetFocus(
         &self,
         _pdimfocus: Ref<ITfDocumentMgr>,

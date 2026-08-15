@@ -1,14 +1,29 @@
 //! TSF 候选 UI 元素：把候选数据暴露给系统（TSF→IMM 桥 / 应用 ITfUIElementSink）。
 //! WoW 实验（wow-ime 分支）：桥消费候选元素 → 游戏发 IMN_OPENCANDIDATE →
-//! ImmGetCandidateList 有数据 → 游戏内候选框（QQ 机制逆向，见 AGENTS.md 结论）。
+//! ImmGetCandidateList 有数据 → 游戏内候选框（QQ 机制逆向）。
 //!
 //! ITfUIElementMgr 由 TSF manager 实现，text service 经
 //! ITfThreadMgr::QueryInterface(IID_ITfUIElementMgr) 获取（微软文档原文）。
 //! BeginUIElement 的 pbshow 返回系统判定：false = 系统/桥接管候选显示
 //! （TIP 不应自绘——游戏内框场景）；true = TIP 自绘（notepad 场景维持现状）。
+//! 实测（2026-08-16）：IMM 应用（WoW）pbshow=true（系统认为 TIP 自绘），但桥
+//! **同时**把候选转给游戏（游戏也画）——所以自绘窗隐藏不能靠 pbshow，靠
+//! ImmDetect（text_service.rs：GetTextExt 退化矩形 w/h<=2 连续 3 次 = IMM 客户端
+//! → GdiCandidateWindow::set_suppressed）。
 //!
-//! 第一轮实验：元素全流程 + 关键点位日志；自绘窗行为不变（pbshow 只记录，
-//! 实测游戏内框出现后再决定隐藏策略——避免两头空）。
+//! 桥对元素的数据消费（日志实证）：候选变化（Update）时拉 GetCount/GetString
+//! （**全量**，全局索引）/GetPageIndex/GetCurrentPage/GetSelection；翻页时只拉
+//! 元数据（字符串缓存不变）。
+//!
+//! 候选数据语义（CANDIDATELIST 文档对齐，2026-08-16 翻页消失修复的根因）：
+//! - GetCount = 候选**总数**（全量）；GetString(uindex) = **全局索引**；
+//! - GetSelection = **全局索引**（page*page_size+selected）——游戏翻页时校验
+//!   dwSelection 是否落在 [dwPageStart, dwPageStart+dwPageSize) 内，页内索引
+//!   导致页≠0 时候选栏被游戏关闭（页 0 正常、翻页消失、翻回页 0 恢复）。
+//! - GetPageIndex = 每页起始索引数组（步进 page_size）；GetCurrentPage = 当前页。
+//!
+//! 游戏内候选栏的显示/翻页/高亮全部由游戏自己渲染（IMM 客户端模式）——本模块
+//! 只提供数据，不画任何 UI；自绘窗（GDI）供 TSF 应用（notepad 等）使用。
 
 use std::cell::{Cell, RefCell};
 
@@ -325,6 +340,10 @@ impl ITfCandidateListUIElement_Impl for CandidateElement_Impl {
     }
 }
 
+// ITfCandidateListUIElementBehavior：候选列表的"控制侧"接口（TSF 3.0）。
+// 当前仅观察位：WoW/notepad 实测桥从未调用（选词由 TSF 按键路径驱动、游戏内框
+// 只是显示，游戏不实现 TSF 3.0 控制接口）——保留保险（若未来桥/应用使用，
+// 可联动引擎：SetSelection→session.set_selected、Finalize→commit、Abort→cancel）。
 impl ITfCandidateListUIElementBehavior_Impl for CandidateElement_Impl {
     fn SetSelection(&self, nindex: u32) -> Result<()> {
         log_line(&format!(
