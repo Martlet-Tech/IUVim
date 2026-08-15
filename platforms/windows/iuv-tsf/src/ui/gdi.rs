@@ -158,6 +158,8 @@ pub struct GdiCandidateWindow {
     click: Option<Box<dyn Fn(usize)>>,
     /// 悬停候选回调（行号 0 起，行变化才触发；None = 未接线）。
     hover: Option<Box<dyn Fn(usize)>>,
+    /// 抑制显示：IMM 应用（游戏自绘候选栏）时静默（show/update 空操作）。
+    suppressed: bool,
 }
 
 impl GdiCandidateWindow {
@@ -172,6 +174,7 @@ impl GdiCandidateWindow {
             rows: Vec::new(),
             click: None,
             hover: None,
+            suppressed: false,
         }
     }
 
@@ -322,6 +325,9 @@ impl Default for GdiCandidateWindow {
 
 impl CandidateUi for GdiCandidateWindow {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect) {
+        if self.suppressed {
+            return; // IMM 应用：游戏自绘候选栏，本窗静默
+        }
         if snap.reading.is_empty() && snap.candidates.is_empty() {
             crate::log::log_line("[candwin] show：快照为空，转 hide");
             self.hide();
@@ -342,6 +348,9 @@ impl CandidateUi for GdiCandidateWindow {
     }
 
     fn update(&mut self, snap: &UiSnapshot) {
+        if self.suppressed {
+            return; // IMM 应用：本窗静默
+        }
         self.snap = snap.clone();
         if self.hwnd.is_invalid() || !self.visible {
             return;
@@ -386,6 +395,17 @@ impl CandidateUi for GdiCandidateWindow {
 
     fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    fn set_suppressed(&mut self, suppressed: bool) {
+        if self.suppressed == suppressed {
+            return;
+        }
+        self.suppressed = suppressed;
+        if suppressed {
+            // 抑制开启：立即隐藏已显示的窗口（游戏自绘候选栏接管）。
+            self.hide();
+        }
     }
 }
 
@@ -793,6 +813,7 @@ mod tests {
         UiSnapshot {
             reading: reading.to_string(),
             candidates: candidates.iter().map(|s| s.to_string()).collect(),
+            all_candidates: candidates.iter().map(|s| s.to_string()).collect(),
             selected: 0,
             page: PageInfo {
                 page,

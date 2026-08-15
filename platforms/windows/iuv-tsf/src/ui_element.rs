@@ -159,7 +159,9 @@ impl CandidateElementHost {
 struct CandidateElement {
     /// 关联线程管理器：GetDocumentMgr 现场取焦点文档（桥可能校验文档上下文）。
     thread_mgr: RefCell<Option<ITfThreadMgr>>,
-    /// 页内候选文本（与自绘窗 UiSnapshot 同源）。
+    /// 全量候选文本（所有页，全局索引）。桥构造 IMM CANDIDATELIST 的完整数据源
+    /// ——游戏翻页从全量切片（2026-08-16 实测：只给当前页 → 翻页后游戏内候选栏
+    /// 消失，回第 0 页恢复；QQ 提供全量 → 翻页正常）。
     candidates: RefCell<Vec<String>>,
     selected: Cell<u32>,
     page: Cell<u32>,
@@ -182,13 +184,22 @@ impl CandidateElement {
         }
     }
 
-    /// 刷新候选数据（TextService 在 Begin/Update 前调用）。
+    /// 刷新候选数据（TextService 在 Begin/Update 前调用）：
+    /// 全量候选（桥/游戏翻页数据源，dwCount）+ 全局选中（dwSelection 语义）+
+    /// 当前页/页大小（dwPageStart/dwPageSize 数据源）。
     fn update_data(&self, snap: &UiSnapshot) {
-        self.candidates.replace(snap.candidates.clone());
-        self.selected.set(snap.selected as u32);
+        self.candidates.replace(snap.all_candidates.clone());
+        let ps = snap.page.page_size.max(1);
+        // dwSelection 为全局索引（CANDIDATELIST 文档语义："Index of the selected
+        // candidate string"）——翻页后游戏校验 dwSelection 是否落在 [dwPageStart,
+        // dwPageStart+dwPageSize) 内，页内索引导致页≠0 时候选栏被游戏关闭
+        // （2026-08-16 实测：页 0 正常、翻页消失、翻回恢复；QQ 全局索引翻页正常）。
+        self.selected.set((snap.page.page * ps + snap.selected.min(ps - 1)) as u32);
         self.page.set(snap.page.page as u32);
-        self.page_count.set(snap.page.page_count.max(1) as u32);
-        self.page_size.set(snap.page.page_size.max(1) as u32);
+        let total = self.candidates.borrow().len();
+        self.page_count
+            .set((total.div_ceil(ps)).max(1) as u32);
+        self.page_size.set(ps as u32);
     }
 }
 
@@ -259,6 +270,7 @@ impl ITfCandidateListUIElement_Impl for CandidateElement_Impl {
     }
 
     fn GetString(&self, uindex: u32) -> Result<BSTR> {
+        // 全局索引（全量候选）——桥构造完整 CANDIDATELIST、游戏翻页切片的数据源。
         let text = self
             .candidates
             .borrow()
@@ -269,7 +281,7 @@ impl ITfCandidateListUIElement_Impl for CandidateElement_Impl {
             "[uielem] GetString({uindex}) 被调：{}",
             if text.is_empty() { "<空/越界>" } else { &text }
         ));
-        if text.is_empty() && uindex as usize >= self.candidates.borrow().len() {
+        if uindex as usize >= self.candidates.borrow().len() {
             return Err(windows_core::Error::from_hresult(E_INVALIDARG));
         }
         Ok(BSTR::from(text.as_str()))

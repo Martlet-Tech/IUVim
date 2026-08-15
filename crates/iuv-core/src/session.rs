@@ -343,6 +343,7 @@ impl Session {
             composition: preview.clone(),
             reading: preview,
             candidates: page_cands,
+            all_candidates: self.all.clone(),
             selected,
             page: PageInfo {
                 page: self.page,

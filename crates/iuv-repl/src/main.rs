@@ -174,7 +174,8 @@ fn collect_all(engine: &Arc<Engine>, raw: &str) -> Effect {
         e = session.on_key(Key::PageDown);
         all.extend(e.candidates.clone());
     }
-    e.candidates = all;
+    e.candidates = all.clone();
+    e.all_candidates = all;
     e
 }
 

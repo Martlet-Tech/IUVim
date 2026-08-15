@@ -25,9 +25,11 @@ const PAGES: [&[&str]; 4] = [
 ];
 
 fn make_snapshot(page: usize) -> UiSnapshot {
+    let all: Vec<String> = PAGES.iter().flat_map(|p| p.iter()).map(|s| s.to_string()).collect();
     UiSnapshot {
         reading: "ni'hao".to_string(),
         candidates: PAGES[page].iter().map(|s| s.to_string()).collect(),
+        all_candidates: all,
         selected: page % PAGES[page].len(),
         page: PageInfo {
             page,

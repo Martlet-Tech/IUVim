@@ -122,6 +122,10 @@ pub struct Effect {
     pub reading: String,
     /// 当前页候选（页内索引 0 起）
     pub candidates: Vec<Candidate>,
+    /// 全量候选（所有页，按页内序）。TSF 候选 UI 元素（WoW 游戏内候选栏）数据源：
+    /// 桥按全量构造 IMM CANDIDATELIST，游戏翻页从全量切片——当前页候选不够翻页
+    /// （2026-08-16 实测：翻页后游戏内候选栏消失，回第 0 页恢复）。
+    pub all_candidates: Vec<Candidate>,
     /// 页内高亮索引
     pub selected: usize,
     pub page: PageInfo,

@@ -25,6 +25,9 @@ pub struct UiSnapshot {
     pub reading: String,
     /// 页内候选文本
     pub candidates: Vec<String>,
+    /// 全量候选文本（所有页，按页内序）。TSF 候选 UI 元素数据源（游戏内候选栏
+    /// 翻页切片用）；自绘窗只消费当前页 candidates。
+    pub all_candidates: Vec<String>,
     pub selected: usize,
     pub page: PageInfo,
     /// 布局方向（竖排/横排）；effect_to_snapshot 默认竖排，TSF 侧从 config 填
@@ -36,6 +39,7 @@ pub fn effect_to_snapshot(e: &Effect) -> UiSnapshot {
     UiSnapshot {
         reading: e.reading.clone(),
         candidates: e.candidates.iter().map(|c| c.text.clone()).collect(),
+        all_candidates: e.all_candidates.iter().map(|c| c.text.clone()).collect(),
         selected: e.selected,
         page: e.page.clone(),
         orientation: Orientation::default(),
@@ -49,6 +53,9 @@ pub trait CandidateUi {
     fn move_to(&mut self, caret: CaretRect);
     fn hide(&mut self);
     fn is_visible(&self) -> bool;
+    /// 抑制显示：IMM 应用（游戏自绘候选栏）时静默——show/update 空操作，
+    /// 开启瞬间隐藏已显示窗口；false 恢复。引擎/元素/交互逻辑不受影响。
+    fn set_suppressed(&mut self, suppressed: bool);
 }
 
 /// 空实现桩：Agent D 在 Agent E 完成前用它联调管线。
@@ -62,6 +69,7 @@ impl CandidateUi for NullCandidateUi {
     fn is_visible(&self) -> bool {
         false
     }
+    fn set_suppressed(&mut self, _suppressed: bool) {}
 }
 
 #[cfg(test)]
@@ -73,10 +81,12 @@ mod tests {
     fn effect_to_snapshot_maps_fields() {
         let mut e = Effect::default();
         e.reading = "ni'hao".into();
-        e.candidates = vec![
+        let cands = vec![
             Candidate::new("你好", CandidateKind::Word, "nihao", 1, 2),
             Candidate::new("泥嚎", CandidateKind::Word, "nihao", 2, 2),
         ];
+        e.candidates = cands.clone();
+        e.all_candidates = cands;
         e.selected = 1;
         e.page = PageInfo {
             page: 0,
@@ -87,6 +97,7 @@ mod tests {
         let snap = effect_to_snapshot(&e);
         assert_eq!(snap.reading, "ni'hao");
         assert_eq!(snap.candidates, vec!["你好", "泥嚎"]);
+        assert_eq!(snap.all_candidates, vec!["你好", "泥嚎"]);
         assert_eq!(snap.selected, 1);
         assert_eq!(snap.page.page_count, 2);
     }
