@@ -52,7 +52,7 @@ TSF 会话进程（iuv-tsf）
 | 3 | 会话进程客户端 | ✅ iuv-tsf/src/daemon_client.rs + iuv-core engine UserMutation/UserRemote + poll + 降级 |
 | 4 | 入口（去托盘） | ✅ 语言栏「中/英」按钮右键菜单（InitMenu：设置/关于）；**托盘已删**（21-m5 重定义） |
 | 5 | 设置页 | ✅ daemon 主线程 eframe：主题/直通名单/用户库管理；键位自定义灰置（M7）；保存写 config + config_epoch 广播 |
-| 6 | 生命周期 | ⏳ 首会话拉起 daemon（CreateProcess）未做——**现状：手动启动或 dev-deploy 拉起**；Quit 管道命令干净退出；崩溃恢复 = 会话降级自读文件；安装器自启归 M7 |
+| 6 | 生命周期 | ✅ **首会话拉起已实现**（2026-08-17）：`DaemonClient::ensure_daemon`（Activate 检测离线 → 60s 节流 → CreateProcessW CREATE_NO_WINDOW 拉起 DLL 同目录 iuv-daemon.exe，搜狗同款 IME 惰性拉起）；dev-deploy 部署 daemon exe；Quit 管道命令干净退出；崩溃恢复 = 会话降级自读文件；卸载清理归 M7 完整安装器 |
 | 7 | 文档同步 | ✅ 本文 + 01-contract/00-overview/AGENTS（见文末变更记录） |
 
 ## 5. 已知风险与取舍
@@ -66,7 +66,9 @@ TSF 会话进程（iuv-tsf）
 - eframe 0.36 MSRV = 1.95（daemon 单独 `rust-version = "1.95"`；workspace 声明 1.89 是 M4 前下限，不冲突）
 - **winit 事件循环只能在主线程**（独立线程 panic，2026-08-17 实测）→ daemon 主线程 =
   命令轮询 + eframe 设置窗；管道/共享段在后台线程
-- **首会话自动拉起未实现**（M7）：daemon 需手动启动或 dev-deploy 拉起；未启动时会话走降级路径
+- **首会话自动拉起已实现**（M7 首期）：Activate 检测 daemon 离线（共享段不存在）→ 60s 冷却节流 →
+  `CreateProcessW`（CREATE_NO_WINDOW）拉起 DLL 同目录 `iuv-daemon.exe`；多进程并发拉起由 daemon
+  单实例互斥兜底；daemon 被杀 → 下次任意应用切到 iuv 自动恢复
 - x86：守护进程无需注入宿主，架构独立，无 32 位宿主风险（M7 一并验证）
 
 ## 6. 会话进程客户端对接规格（实现参照）

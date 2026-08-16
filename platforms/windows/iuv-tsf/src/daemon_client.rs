@@ -13,12 +13,20 @@
 //! 全部 IO 失败静默降级（记日志），不 panic（DLL 内硬性约定）。
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use iuv_core::{Engine, UserMutation, UserRemote};
 use iuv_data::{PipeClient, Request, Response, ShmReader};
+use windows::Win32::System::Threading::{
+    CreateProcessW, STARTUPINFOW, PROCESS_INFORMATION, CREATE_NO_WINDOW,
+};
 
 use crate::log::log_line;
+
+/// daemon 自启节流（秒）：Activate 检测离线后 60s 内不重复拉起（防多进程/多键风暴；
+/// 并发拉起由 daemon 单实例互斥兜底）。
+const LAUNCH_COOLDOWN_SECS: u64 = 60;
 
 /// M6 daemon 客户端。单实例经 `Arc` 与引擎 `user_remote` 共享（text_service 持一份、
 /// 引擎持一份），全部方法 `&self`（内部 Mutex）。
@@ -57,6 +65,62 @@ impl DaemonClient {
             last_epoch: Mutex::new(0),
             user_path,
             online: Mutex::new(false),
+        }
+    }
+
+    /// 守护进程自启（M7，搜狗同款 IME 惰性拉起机制）：daemon 不在线且冷却期满 →
+    /// `CreateProcessW` 拉起 DLL 同目录 `iuv-daemon.exe`（后台无控制台，异步不等待）。
+    /// Activate 时调用（用户切到本输入法的时机）。返回 true = daemon 已在线/已拉起；
+    /// false = 离线且未拉起（冷却中/路径缺失/失败——静默降级，绝不 panic）。
+    pub fn ensure_daemon(&self) -> bool {
+        // 1. 在线检测：共享段存在即在线（daemon 建段）。
+        if ShmReader::open().is_ok() {
+            return true;
+        }
+        // 2. 冷却节流（进程级）：60s 内仅尝试一次。
+        if !launch_cooldown_ok() {
+            return false;
+        }
+        // 3. 路径解析：DLL 同目录 iuv-daemon.exe（安装目录 = %ProgramFiles%\iuv\，
+        //    dev/test 目录同样成立）。
+        let Some(exe) = daemon_exe_path() else {
+            log_line("[daemon] 自启：未找到 iuv-daemon.exe（DLL 同目录），跳过");
+            return false;
+        };
+        // 4. 拉起（异步，不等待；CREATE_NO_WINDOW 后台无控制台）。
+        let mut cmd: Vec<u16> = exe.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+        // SAFETY: STARTUPINFOW/PROCESS_INFORMATION 全程存活；cmdline 可写缓冲（系统可改）。
+        let mut si = STARTUPINFOW::default();
+        si.cb = size_of::<STARTUPINFOW>() as u32;
+        let mut pi = PROCESS_INFORMATION::default();
+        let r = unsafe {
+            CreateProcessW(
+                None,
+                Some(windows::core::PWSTR(cmd.as_mut_ptr())),
+                None,
+                None,
+                false,
+                CREATE_NO_WINDOW,
+                None,
+                None,
+                &si,
+                &mut pi,
+            )
+        };
+        match r {
+            Ok(()) => {
+                // SAFETY: pi 句柄用完即关（daemon 独立生命周期，不等待不管理）。
+                unsafe {
+                    let _ = windows::Win32::Foundation::CloseHandle(pi.hProcess);
+                    let _ = windows::Win32::Foundation::CloseHandle(pi.hThread);
+                }
+                log_line(&format!("[daemon] 已拉起守护进程：{exe:?}"));
+                true
+            }
+            Err(e) => {
+                log_line(&format!("[daemon] 自启失败：{e:?}"));
+                false
+            }
         }
     }
 
@@ -261,11 +325,67 @@ pub(crate) fn response_ok(resp: &Response) -> bool {
     matches!(resp, Response::Ok { .. })
 }
 
+/// 自启冷却（进程级）：距上次尝试 ≥ `LAUNCH_COOLDOWN_SECS` 才允许再次拉起。
+/// 通过则更新上次尝试时间戳。纯函数化便于单测（注入 now）。
+fn launch_cooldown_ok() -> bool {
+    launch_cooldown_ok_at(now_unix_secs())
+}
+
+fn launch_cooldown_ok_at(now: u64) -> bool {
+    static LAST_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+    let last = LAST_ATTEMPT.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < LAUNCH_COOLDOWN_SECS {
+        return false;
+    }
+    // 乐观更新：并发窗口内多进程同时通过（可接受，daemon 互斥兜底）。
+    let _ = LAST_ATTEMPT.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed);
+    true
+}
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// DLL 同目录 `iuv-daemon.exe` 的路径（安装目录 = %ProgramFiles%\iuv\，dev 同目录成立）。
+/// 不存在 → None。
+fn daemon_exe_path() -> Option<std::ffi::OsString> {
+    let dll = crate::registration::dll_path();
+    if dll.is_empty() {
+        return None;
+    }
+    let exe = std::path::PathBuf::from(&dll).parent()?.join("iuv-daemon.exe");
+    if exe.is_file() {
+        Some(exe.into_os_string())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use iuv_core::Config;
     use iuv_data::{Dict, ShmWriter, UserDict};
+
+    /// 自启冷却：60s 内第二次尝试被拒；期满放行。
+    #[test]
+    fn launch_cooldown_gates_attempts() {
+        // 静态 LAST_ATTEMPT 可能被其他测试污染——用大时间差保证首次必然放行。
+        let t0 = now_unix_secs().saturating_add(1_000_000);
+        assert!(launch_cooldown_ok_at(t0), "首次尝试放行");
+        assert!(
+            !launch_cooldown_ok_at(t0 + 10),
+            "10s 内冷却：拒绝"
+        );
+        assert!(
+            !launch_cooldown_ok_at(t0 + 59),
+            "59s 内冷却：拒绝"
+        );
+        assert!(launch_cooldown_ok_at(t0 + 61), "期满放行");
+    }
 
     /// 请求映射纯函数：UserMutation → Request 一一对应。
     #[test]

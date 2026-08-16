@@ -84,7 +84,8 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   （TSF InitMenu/ITfMenu 官方机制），`21-m5-tray-menu.md`
   · **M6 守护进程——已实现（2026-08-16，2026-08-17 修正）**：iuv-daemon exe 唯一持有用户库（共享段 + 命名管道 IPC +
   egui 设置页主线程），会话进程 daemon_client（共享段只读引用 + 写走管道 + 离线降级本地 + config 热载），`22-m6-daemon.md`
-  · M7 安装器/词库导入/x86（含 daemon 首会话自启、键位热载）
+  · **M7 安装器/词库导入/x86（daemon 首会话自启已实现——2026-08-17：Activate 检测离线 → 60s 节流 →
+    CreateProcessW 拉起 DLL 同目录 iuv-daemon.exe，搜狗同款惰性拉起；dev-deploy 已部署 daemon；键位热载仍待）**
   - **钉选不做**（2026-08-14 用户决策）：Shift+←/→ 手动排序 + 增/删自定义已满足，显式"锁死"交互取消
   - **Tauri 已废**（2026-08-16 用户决策）：M4 不做 WebView helper；候选窗/菜单用 iuv-ui 自绘（tiny-skia），设置页 M6 用 egui/eframe
   - **无独立托盘图标**（2026-08-17 用户决策）：右键菜单挂语言栏「中/英」按钮（TSF InitMenu），托盘/自绘菜单窗口已删；

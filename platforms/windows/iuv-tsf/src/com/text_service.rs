@@ -649,6 +649,13 @@ impl TextService_Impl {
         }
 
         log_line(&format!("Activate：tid={tid}"));
+
+        // M7 daemon 自启（IME 惰性拉起，搜狗同款）：离线且冷却期满 → CreateProcess
+        // 拉起 DLL 同目录 iuv-daemon.exe（后台无控制台，异步不等待；失败静默降级）。
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            client.ensure_daemon();
+        }
+
         Ok(())
     }
 
