@@ -317,10 +317,12 @@ impl Session {
         let page_cands = self.page_candidates().to_vec();
         // 混合预编辑（悬空显示）：已选词汉字 + 未选部分拼音分段。
         // 如选"床前"后：`床前ming'yue'guang`；commit 时由 end.text 全量替换上屏。
-        // **候选级切分预览（2026-08-14）**：预览跟随高亮候选的切分方式——
-        // 候选 code 本身即消费段的 ' 分隔键（fen'ge/feng'e/简拼键/整句方案 join），
-        // 加未消费尾巴（seg[consumed..]，续接还在——选"分"后尾巴 ge 续接，
-        // 预览 fen'ge 与"分割"相同是自洽的，无需分支）。导航/翻页即更新。
+        // **预编辑显示规则（2026-08-16，对齐主流输入法）**：
+        // 1. 只显示用户输入的字母 + ' 分节（绝不出现超出输入的扩展——禁止 ji'shi'ben）；
+        // 2. 有匹配（输入可扩展成词）→ 分节显示（' 连接，边界 = 输入合法切分）；
+        // 3. 分节边界可跟随候选（导航变化，但切分必须基于输入）：xian→西安 显示 xi'an；
+        // 4. 无匹配（input 逐扩展无词）→ 原样不分节（input）；
+        // 5. 用户按的 ' 恒保留参与分节（xi'、zhu'jincheng→zhu'jin'cheng）。
         let tail_preview = if page_cands.is_empty() {
             self.engine.schema.display(&self.seg)
         } else {
@@ -355,32 +357,40 @@ impl Session {
         }
     }
 
-    /// 候选级切分预览：候选 code（消费段的 ' 分隔键）+ 未消费尾巴（seg[consumed..]，
-    /// 保留空段与用户强制分隔符语义——display 即 join("'")）。规则（2026-08-14）：
-    /// - **原文兜底候选**（text == plain，无匹配）：预览用 seg 切分显示——强制撇号
-    ///   输入（i'n'p'u't）的切分反馈不能丢（code = plain 已去撇号）
-    /// - **前缀档**（输入 n → 候选"你" code=ni）：消费段含不完整段且候选 code 是
-    ///   完整音节 → 预览 = 输入原样切分（"n"）——code 会超出输入误导
-    /// - 其余（全拼词条/枚举切分、简拼键 nh、混拼展开键、单字）：code + 尾巴
-    ///   （风额 → feng'e 跟随切分；分 → fen'ge 尾巴续接；你好 → nh）
+    /// 预编辑显示（对齐主流输入法，2026-08-16 修正规则）。判定顺序：
+    /// 1. **用户强制撇号**（raw 含 `'`）：恒输入切分（用户 `'` 参与分节显示——
+    ///    schema 硬边界，空段保留），不跟随候选——xi' → "xi'"、zhu'jincheng → zhu'jin'cheng；
+    /// 2. **原文兜底**（text == 输入去撇号，无匹配）：原样 plain（不分节）——input → "input"；
+    /// 3. **消费段不完整**（简拼整词 jisb→记事本/jishiben、简拼键 nh、前缀档 n→你）：
+    ///    输入切分（display(seg)）——jisb → "ji's'b"、nh → "n'h"、n → "n"（候选 code 超出输入/非全音节不跟随）；
+    /// 4. **消费段完整 且 候选 code（去撇号）== 输入**：跟随候选切分（code + 尾巴）——
+    ///    xian→西安 "xi'an"、fenge→分割 "fen'ge"/风额 "feng'e"；
+    /// 5. 其余（单字"分"等 code≠输入）：输入切分（display(seg)）——fenge 导航到"分"仍 "fen'ge"。
     fn candidate_preview(&self, c: &Candidate) -> String {
+        if self.raw.contains('\'') {
+            return self.engine.schema.display(&self.seg);
+        }
         let plain: String = self.raw.chars().filter(|c| *c != '\'').collect();
         if c.text == plain {
-            return self.engine.schema.display(&self.seg);
+            return plain;
         }
         let consumed = c.seg_len.max(1).min(self.seg.len());
         let consumed_full = self.seg[..consumed]
             .iter()
             .all(|s| !s.is_empty() && self.engine.is_syllable(s));
-        if !consumed_full && self.engine.is_syllable(&c.code) {
+        if !consumed_full {
             return self.engine.schema.display(&self.seg);
         }
-        let mut s = c.code.clone();
-        if consumed < self.seg.len() {
-            s.push('\'');
-            s.push_str(&self.engine.schema.display(&self.seg[consumed..]));
+        let code_plain: String = c.code.chars().filter(|c| *c != '\'').collect();
+        if code_plain == plain {
+            let mut s = c.code.clone();
+            if consumed < self.seg.len() {
+                s.push('\'');
+                s.push_str(&self.engine.schema.display(&self.seg[consumed..]));
+            }
+            return s;
         }
-        s
+        self.engine.schema.display(&self.seg)
     }
 
     /// 有未提交的原始输入（TSF 据此决定按键是否放行给应用）。

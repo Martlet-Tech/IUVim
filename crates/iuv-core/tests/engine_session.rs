@@ -1116,8 +1116,8 @@ fn shiftchar_starts_session_hello() {
     }
     let e = s.effect();
     assert_eq!(
-        e.reading, "H'e'l'l'o",
-        "大写段不被音节表命中，按单字母段切分"
+        e.reading, "Hello",
+        "大写段无匹配（兜底原文候选）→ 原样显示不分节（对齐主流：input 无匹配原样）"
     );
     let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
     assert!(
@@ -2030,10 +2030,10 @@ fn sentence_only_for_full_syllable_plans() {
     );
 }
 
-// ===== M2.5 候选级切分预览（2026-08-14）：导航候选 → 预览跟随其切分方式 =====
+// ===== 预编辑显示规则（2026-08-16，对齐主流）：只显示用户输入+分节；有匹配分节、无匹配原样；分节可跟随候选（基于输入）=====
 
 #[test]
-fn preview_follows_selected_candidate_plan() {
+fn preview_follows_candidate_when_code_matches() {
     // fenge：分割(fen'ge)/风额(feng'e)/分隔(fen'ge)/分个(fen'ge 整句)/分(fen+尾巴)
     let dict = Dict::from_entries(vec![
         ("feng'e".into(), "风额".into(), 5000),
@@ -2055,7 +2055,7 @@ fn preview_follows_selected_candidate_plan() {
         "初始高亮候选 0（分个/分割均 fen'ge），实际：{}",
         e.reading
     );
-    // 导航到"风额"（feng'e 词条）→ 预览跟随切分位置（按 text 定位，顺序不假设）
+    // 导航到"风额"（feng'e 词条，code==输入 fenge）→ 跟随候选切分 feng'e（主流行为）
     let mut guard = 0;
     while s.effect().candidates[s.effect().selected].text != "风额" {
         s.on_key(Key::Right);
@@ -2065,10 +2065,10 @@ fn preview_follows_selected_candidate_plan() {
     assert_eq!(
         s.effect().reading,
         "feng'e",
-        "导航风额应显示 feng'e，实际：{}",
+        "导航风额应跟随切分 feng'e，实际：{}",
         s.effect().reading
     );
-    // 导航到单字"分"（k=1，seg_len=1）→ code fen + 尾巴 ge → fen'ge
+    // 导航到单字"分"（code=fen≠输入 fenge）→ 输入切分 fen'ge（不跟随单字）
     let mut guard = 0;
     while s.effect().candidates[s.effect().selected].text != "分" {
         s.on_key(Key::Right);
@@ -2078,7 +2078,7 @@ fn preview_follows_selected_candidate_plan() {
     assert_eq!(
         s.effect().reading,
         "fen'ge",
-        "单字分预览 = fen + 尾巴 ge，实际：{}",
+        "单字分 code≠输入，预编辑仍输入切分 fen'ge，实际：{}",
         s.effect().reading
     );
     // 导航回候选 0 上屏（预览不影响 commit）
@@ -2091,8 +2091,8 @@ fn preview_follows_selected_candidate_plan() {
 }
 
 #[test]
-fn preview_prefix_segment_shows_raw_input() {
-    // 前缀档（n → 你/ni）：预览 = 输入原样"n"（候选 code 是完整音节会超出输入）
+fn editorial_preview_uses_schema_display() {
+    // 前缀档（n → 你/ni）：预编辑 = 切分显示 "n"
     let dict = Dict::from_entries(vec![
         ("ni".into(), "你".into(), 50000),
         ("ni".into(), "泥".into(), 100),
@@ -2104,10 +2104,10 @@ fn preview_prefix_segment_shows_raw_input() {
     let e = s.effect();
     assert_eq!(
         e.reading, "n",
-        "前缀档预览应为输入原样，实际：{}",
+        "前缀档预编辑 = 切分显示，实际：{}",
         e.reading
     );
-    // 简拼（nh → 你好）：预览 = 简拼键原样（fixture 手造简拼键——from_entries 不产）
+    // 简拼（nh）：预编辑 = 引擎切分 n'h（不跟随候选 code "nh"）
     let dict2 = Dict::from_entries(vec![
         ("ni".into(), "你".into(), 50000),
         ("nh".into(), "你好".into(), 8000),
@@ -2119,12 +2119,12 @@ fn preview_prefix_segment_shows_raw_input() {
         s2.on_key(Key::Char(c));
     }
     let e2 = s2.effect();
-    assert_eq!(e2.reading, "nh", "简拼预览应为键原样，实际：{}", e2.reading);
+    assert_eq!(e2.reading, "n'h", "简拼预编辑 = 切分显示，实际：{}", e2.reading);
 }
 
 #[test]
-fn preview_fallback_candidate_keeps_forced_apostrophes() {
-    // 原文兜底候选（强制撇号）：预览保留切分显示（i'n'p'u't）
+fn editorial_preview_keeps_forced_apostrophes() {
+    // 原文兜底候选（强制撇号）：预编辑保留切分显示（i'n'p'u't）
     let dict = Dict::from_entries(vec![("ni".into(), "你".into(), 50000)]);
     let engine = Engine::new(dict, Config::default());
     let mut s = engine.start_session();
@@ -2134,7 +2134,84 @@ fn preview_fallback_candidate_keeps_forced_apostrophes() {
     let e = s.effect();
     assert_eq!(
         e.reading, "i'n'p'u't",
-        "兜底候选预览应保留强制撇号切分，实际：{}",
+        "预编辑保留强制撇号切分，实际：{}",
         e.reading
+    );
+}
+
+/// 预编辑规则对齐主流（2026-08-16）：只显示用户输入+分节；有匹配分节、无匹配原样；
+/// 分节可跟随候选（基于输入）；用户强制撇号保留。
+#[test]
+fn preview_editorial_rules_aligned_with_mainstream() {
+    // jisb → 简拼整词场景（词条 code=jishiben≠jisb，fixture 无简拼键不产整词候选——
+    // 用"几"（ji 前缀，code≠输入）验证同一规则）：输入切分 ji's'b（不跟随——核心修复）
+    let dict = Dict::from_entries(vec![
+        ("jishiben".into(), "记事本".into(), 50000),
+        ("ji".into(), "几".into(), 5000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "jisb".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert_eq!(
+        e.reading, "ji's'b",
+        "简拼整词不跟随（jishiben≠jisb），实际：{}",
+        e.reading
+    );
+
+    // xian → 导航到"西安"（code=xi'an==xian）：跟随切分 xi'an
+    let dict2 = Dict::from_entries(vec![
+        ("xi'an".into(), "西安".into(), 50000),
+        ("xian".into(), "先".into(), 40000),
+        ("xian".into(), "线".into(), 30000),
+    ]);
+    let engine2 = Engine::new(dict2, Config::default());
+    let mut s2 = engine2.start_session();
+    for c in "xian".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    let mut guard = 0;
+    while s2.effect().candidates[s2.effect().selected].text != "西安" {
+        s2.on_key(Key::Right);
+        guard += 1;
+        assert!(guard < 10, "候选应含西安");
+    }
+    assert_eq!(
+        s2.effect().reading, "xi'an",
+        "西安跟随切分 xi'an，实际：{}",
+        s2.effect().reading
+    );
+
+    // input 无匹配：原样不分节
+    let dict3 = Dict::from_entries(vec![("ni".into(), "你".into(), 50000)]);
+    let engine3 = Engine::new(dict3, Config::default());
+    let mut s3 = engine3.start_session();
+    for c in "input".chars() {
+        s3.on_key(Key::Char(c));
+    }
+    assert_eq!(
+        s3.effect().reading, "input",
+        "无匹配原样不分节，实际：{}",
+        s3.effect().reading
+    );
+
+    // 用户强制撇号保留参与分节：zhu'jincheng → zhu'jin'cheng
+    let dict4 = Dict::from_entries(vec![
+        ("zhujincheng".into(), "朱金成".into(), 50000),
+        ("zhu".into(), "朱".into(), 40000),
+        ("jin".into(), "金".into(), 30000),
+        ("cheng".into(), "成".into(), 30000),
+    ]);
+    let engine4 = Engine::new(dict4, Config::default());
+    let mut s4 = engine4.start_session();
+    for c in "zhu'jincheng".chars() {
+        s4.on_key(Key::Char(c));
+    }
+    assert_eq!(
+        s4.effect().reading, "zhu'jin'cheng",
+        "用户'保留参与分节，实际：{}",
+        s4.effect().reading
     );
 }
