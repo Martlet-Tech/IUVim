@@ -14,8 +14,8 @@ pub mod viterbi;
 
 pub use candidate::{Candidate, CandidateKind};
 pub use config::keymap::{apply_keymap, is_session_start_key};
-pub use config::{Config, Keymap, Orientation};
-pub use engine::Engine;
+pub use config::{Config, Keymap, Orientation, ThemeChoice};
+pub use engine::{Engine, UserMutation, UserRemote};
 pub use key::{Effect, Key, PageInfo, SessionEnd};
 pub use lm::{LmProvider, UnigramLm};
 pub use rerank::{RerankCtx, RerankStage, StaticOrder};

@@ -1,0 +1,12 @@
+[package]
+name = "iuv-ui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "跨平台候选窗/菜单绘图层（tiny-skia + cosmic-text），M4 起候选窗渲染核心"
+
+[dependencies]
+iuv-core = { workspace = true }
+tiny-skia = { workspace = true }
+cosmic-text = { workspace = true }

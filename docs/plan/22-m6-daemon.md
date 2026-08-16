@@ -1,6 +1,6 @@
 # 22 · 任务书 M6：进程分离——守护进程持有用户库 + 设置页
 
-> 状态：规划（2026-08-16）。前置阅读：`00-overview.md`、`01-contract.md`（§3.2 用户库）、
+> 状态：**已实现**（2026-08-16 完成，待手测验收）。前置阅读：`00-overview.md`、`01-contract.md`（§3.2 用户库）、
 > `18-m2-user-dict.md`（现状多写者）、`19-m4-cross-render.md`、`21-m5-tray-menu.md`。
 > 决策记录：用户确认"会话进程只拿词库引用，守护进程持有 + 托盘设置页"（2026-08-16）。
 
@@ -48,15 +48,15 @@ TSF 会话进程（iuv-tsf）
 
 ## 4. 任务清单
 
-| # | 任务 | 产出/要点 |
+| # | 任务 | 状态 |
 |---|---|---|
-| 1 | iuv-data 共享段扩展 | 共享内存布局定义 + 版本化读写（元数据/表序列化，复用 02 格式）+ 单测 |
-| 2 | iuv-daemon 骨架 | 新 crate（workspace member，纯 Rust）：管道服务 + 用户库内存态 + 共享段发布 + 聚合写盘 |
-| 3 | 会话进程客户端 | 管道客户端 + 共享段只读映射 + 版本检测重载；降级路径（守护缺失 → 自读文件现状）全回归 |
-| 4 | 托盘接管 | 守护进程托管 M5 托盘 + 自绘菜单；M5 单实例机制退役 |
-| 5 | 设置页 | egui/eframe 内嵌守护进程：主题/键位/词库管理/直通名单；保存写 config + 广播 |
-| 6 | 生命周期 | 首会话拉起 / 崩溃重启 / 托盘退出；与安装/卸载脚本联动（M7 正式化） |
-| 7 | 文档同步 | 00-overview、01-contract（白名单/属主矩阵/§3.2）、18-m2 槽位、AGENTS.md |
+| 1 | iuv-data 共享段扩展 | ✅ iuv-data/src/shm.rs（IUVSHM01 header+版本化+config_epoch，ShmWriter/ShmReader） |
+| 2 | iuv-daemon 骨架 | ✅ platforms/windows/iuv-daemon（管道服务/用户库内存态/共享段发布/聚合写盘/托盘/设置页） |
+| 3 | 会话进程客户端 | ✅ iuv-tsf/src/daemon_client.rs + iuv-core engine UserMutation/UserRemote + poll + 降级 |
+| 4 | 托盘接管 | ✅ daemon 内置托盘（互斥 `Local\iuv-tray-host` 与会话共享）；会话 daemon 在线时不托管 |
+| 5 | 设置页 | ✅ daemon 内 egui/eframe：主题/直通名单/用户库管理；键位自定义灰置（M7）；保存写 config + config_epoch 广播 |
+| 6 | 生命周期 | ⏳ 首会话拉起 daemon（CreateProcess）未做——**现状：手动启动或 dev-deploy 拉起**；崩溃恢复 = 会话降级自读文件已生效；托盘退出已实现；安装器自启归 M7 |
+| 7 | 文档同步 | ✅ 本文 + 01-contract/00-overview/AGENTS（见文末变更记录） |
 
 ## 5. 已知风险与取舍
 
@@ -64,23 +64,36 @@ TSF 会话进程（iuv-tsf）
   不允许读到半新半旧（版本号与数据区写序：先写数据后 bump 版本）
 - IPC 失败语义：写请求丢失 → 会话内降级（调权/隐藏立即失效于本会话但保留内存态）；
   降级优先级高于一切，**绝不挂键/拖慢按键**
-- 守护进程崩溃恢复：会话检测管道断开 → 尝试重启守护 → 期间降级自读文件
+- 守护进程崩溃恢复：会话检测管道断开 → 降级自读文件 + 管道重连一次；共享段随最后持有者关闭销毁
 - 双进程写 config 竞争：设置页写 config 为唯一写者（会话进程只读 config）
-- egui/eframe 引入 = 白名单变更（需主智能体批准，锁版本）；DLL 体积不增（守护进程独立 exe）
+- eframe 0.36 MSRV = 1.95（daemon 单独 `rust-version = "1.95"`；workspace 声明 1.89 是 M4 前下限，不冲突）
+- **首会话自动拉起未实现**（M7）：daemon 需手动启动或 dev-deploy 拉起；未启动时会话走降级路径
 - x86：守护进程无需注入宿主，架构独立，无 32 位宿主风险（M7 一并验证）
 
-## 6. 槽位
+## 6. 会话进程客户端对接规格（实现参照）
+
+- **读**：`iuv_data::shm::ShmReader::open()` → `version()`/`config_epoch()`/`read() -> Option<UserDict>`；
+  会话每键 `poll()` 检测 version 变化 → `Engine::set_user_dict`；config_epoch 变化 → 重载 config.json →
+  `Engine::set_config` + `CandwinCandidateWindow::set_theme`
+- **写**：`iuv_data::ipc::{PipeClient::connect, Request::Swap/Set/Remove/Block, Response}`；
+  engine 层抽象 `UserMutation` + `UserRemote` trait（`Engine::set_user_remote`）——写操作构造 mutation，
+  远端 `apply` 成功 → 跳过本地写盘、仅内存态更新；失败/离线 → 本地写盘兜底
+- **降级**：daemon 离线（ShmReader 打开失败 / 管道连接失败）→ 全部走现状路径（自读文件 + mtime 重载已远端模式关闭），绝不挂键
+- **托盘优先级**：`daemon_client::should_host_tray()`——daemon 在线 → 会话不托管托盘
+- **engine API 变更**：`config()` 由 `&Config` 改 `Config`（克隆快照）；新增 `set_config`/`set_user_dict`/`set_user_remote`
+
+## 7. 槽位
 
 - M7 安装器：守护进程自启注册、卸载清理、词库导入（写库走守护进程 IPC）
 - 跨设备同步（18-m2 槽位）：守护进程为天然载体（统一出口）
 - macOS/Linux：守护进程概念跨平台（会话/守护分离逻辑在 iuv-data 层），托盘/设置页各平台自写
 
-## 7. DoD
+## 8. DoD（已实现部分）
 
 ```
-cargo check --workspace / cargo test --workspace     # 全绿
-cargo build -p iuv-daemon --release                  # 产出守护进程 exe
-cargo build -p iuv-tsf --release                     # 会话进程（客户端 + 降级）
-手测：双进程同时输入（词库即时一致）；守护杀死后打字不挂（降级）；重启后恢复；
-设置页改主题/键位即时生效；托盘菜单全功能；崩溃重启
+cargo check --workspace / cargo test --workspace     # ✅ 全绿（247 通过）
+cargo build -p iuv-daemon --release                  # ✅ 产出 iuv-daemon.exe
+cargo build -p iuv-tsf --release                     # ✅ 产出 iuv_tsf.dll（客户端 + 降级）
+待手测：双进程同时输入（词库即时一致）；守护杀死后打字不挂（降级）；重启后恢复；
+设置页改主题/直通名单即时生效；托盘菜单全功能
 ```

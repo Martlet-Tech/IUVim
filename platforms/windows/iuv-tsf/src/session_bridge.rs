@@ -451,7 +451,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn map_key_shift_delete_hide() {
         // M2 隐藏候选：Shift+Delete → HideCandidate（会话内消费）
         assert_eq!(
@@ -470,6 +469,7 @@ mod tests {
         assert_eq!(map_key(0x2E, 0, true, false, false, true), None);
     }
 
+    #[test]
     fn map_key_unknown_returns_none() {
         assert_eq!(map_key(0x10, 0, false, false, false, false), None); // Shift
         assert_eq!(map_key(0x1B, 0, false, false, false, false), Some(Key::Esc));

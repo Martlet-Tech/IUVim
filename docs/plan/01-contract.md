@@ -57,7 +57,7 @@ D:\Projects\vaim\
             │   ├── src\session_bridge.rs  # 【Agent D】Key 映射 + Effect 应用
             │   ├── src\composition.rs     # 【Agent D】composition 封装
             │   ├── src\ui\mod.rs          # 【W0】CandidateUi + UiSnapshot + 映射（完整，冻结）
-            │   ├── src\ui\gdi.rs          # 【Agent E】GdiCandidateWindow
+            │   ├── src\ui\candwin.rs      # 【Agent E】CandwinCandidateWindow（M4：D2D/DComp + iuv-ui 渲染）
             │   └── examples\candwin_demo.rs   # 【Agent E】候选窗演示
             └── README.md                 # 门面现状 + M4~M6 规划（跨平台渲染/托盘/守护进程）
 ```
@@ -74,25 +74,27 @@ D:\Projects\vaim\
 ```toml
 [workspace]
 resolver = "2"
-members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf"]
-# M6 追加：platforms/windows/iuv-daemon
+members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-daemon"]
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.89"
 license = "MIT"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation", "Win32_Graphics", "Win32_Graphics_Gdi",
-    "Win32_Graphics_Direct2D", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11",
-    "Win32_Graphics_Dxgi", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dwm",
+    "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_DirectComposition", "Win32_Graphics_Dwm",
     "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Ole",
     "Win32_System_Pipes", "Win32_System_SystemServices", "Win32_System_Threading",
     "Win32_System_Variant", "Win32_System_WindowsProgramming", "Win32_UI_Input",
-    "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell_PropertiesSystem",
-    "Win32_UI_TextServices", "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_TextServices",
+    "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem",
+    "Win32_Security", "Win32_System_Memory", "Win32_System_IO",
 ] }
 windows-core = "0.62"
 windows-registry = "0.6"
@@ -117,7 +119,7 @@ codegen-units = 1
 | iuv-ui | `tiny-skia`、`cosmic-text`（workspace）；`iuv-core`（workspace，Theme 消费） |
 | iuv-repl | `iuv-core`、`iuv-data`（workspace） |
 | iuv-tsf | `iuv-core`、`iuv-data`、`iuv-ui`、`windows`、`windows-core`、`windows-registry`（workspace）；build-dep：`winres = "0.1"` |
-| iuv-daemon（M6 新增） | `iuv-data`、`iuv-ui`（workspace）；egui/eframe（M6 批准时锁版本） |
+| iuv-daemon（M6 已实现） | `iuv-data`、`iuv-ui`（workspace）、`windows`、`windows-core`、`serde`、`serde_json`（workspace）、`eframe = "0.36"`（egui 经其重导出；rust-version 单独 1.95） |
 
 ### 2.3 iuv-tsf Cargo.toml 要点
 
@@ -528,9 +530,10 @@ pub struct UiSnapshot {
 /// Effect → UiSnapshot（W0 实现完整：取 effect.reading / 页内候选 text / selected / page）。
 pub fn effect_to_snapshot(e: &Effect) -> UiSnapshot { /* ... */ }
 
-/// 候选窗抽象。MVP 实现 = GdiCandidateWindow（ui/gdi.rs，Agent E）；
-/// **M4 起**：渲染层换 iuv-ui（tiny-skia + cosmic-text）+ D2D/DComp 呈现（ui/candwin.rs，
-/// 见 `19-m4-cross-render.md`），trait 签名不变，COM 层零改动。
+/// 候选窗抽象。MVP 实现 = GdiCandidateWindow（ui/gdi.rs，Agent E；M4 已下线）；
+/// **M4 起**：实现 = CandwinCandidateWindow（ui/candwin.rs）：渲染层 iuv-ui
+/// （tiny-skia + cosmic-text）+ D2D/DComp 呈现（见 `19-m4-cross-render.md`），
+/// trait 签名不变，COM 层零改动。
 pub trait CandidateUi {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect);
     fn update(&mut self, snap: &UiSnapshot);
@@ -583,8 +586,11 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
 | `crates/iuv-repl/**` | **Agent C** | W1 |
 | `iuv-tsf/src/ui/mod.rs` | 主智能体 | W0 **完整实现**，冻结 |
 | `iuv-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs` | **Agent E** | W1（M4 起 gdi.rs → `candwin.rs`，渲染层归 iuv-ui） |
-| `crates/iuv-ui/**` | 主智能体 | M4 新增 |
-| `iuv-tsf/src/ui/candwin.rs`、`iuv-tsf/src/tray.rs` | 主智能体 | M4/M5 新增 |
+| `crates/iuv-ui/**` | 主智能体 | M4 已实现（2026-08-16） |
+| `iuv-tsf/src/ui/candwin.rs` | 主智能体 | M4 已实现（D2D/DComp 呈现） |
+| `iuv-tsf/src/tray.rs`、`src/ui/menu_window.rs` | 主智能体 | M5 已实现 |
+| `iuv-data/src/{shm,ipc}.rs`、`iuv-daemon/**` | 主智能体 | M6 已实现 |
+| `iuv-tsf/src/daemon_client.rs` | 主智能体 | M6 已实现 |
 | `iuv-tsf/src/{lib,registration,log,session_bridge,composition,langbar}.rs`、`com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、`Cargo.toml` 内 winres 配置 | **Agent D** | W1 |
 | `iuv-tsf/src/ui_element.rs` | 主智能体 | wow-ime（2026-08-16） |
 
@@ -614,5 +620,5 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
   页内索引会导致游戏候选栏翻页关闭）、`GetPageIndex`=每页起始数组。桥把元素数据转给 IMM
   应用（游戏）自绘候选栏；TSF 应用（notepad）pbshow=true 自绘窗照常。
 - **自绘窗自动抑制（`ImmDetect`，wow-ime 2026-08-16）**：GetTextExt 退化矩形（w/h≤2）连续 3 次
-  = IMM 客户端（游戏自绘候选栏）→ `GdiCandidateWindow::set_suppressed(true)`（show/update 空操作）；
+  = IMM 客户端（游戏自绘候选栏）→ `CandwinCandidateWindow::set_suppressed(true)`（show/update 空操作）；
   任意一次非退化立即恢复。pbshow 不可靠（IMM 应用恒 true——系统认为 TIP 自绘，但桥同时转候选给游戏）。

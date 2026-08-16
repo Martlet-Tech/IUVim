@@ -10,9 +10,9 @@
 
 ## 门面（候选窗）现状
 
-- `iuv-tsf/src/ui/`：`CandidateUi` trait（冻结）+ `GdiCandidateWindow`（GDI 自绘，进程内）
-- 能力：竖/横排、页码、悬停高亮、点击选词、翻页环绕、DPI 缩放、工作区内收
-- 局限：进程内绘制（每应用一份）、无圆角/透明/皮肤
+- `iuv-tsf/src/ui/`：`CandidateUi` trait（冻结）+ `CandwinCandidateWindow`（D2D/DComp 呈现 + iuv-ui 绘图，M4 落地）
+- 能力：竖/横排、页码、悬停高亮、点击选词、翻页环绕、DPI 缩放、工作区内收、
+  真透明圆角/阴影、浅色/深色主题（config `theme` 字段）
 
 ## M4 跨平台渲染规划（`docs/plan/19-m4-cross-render.md`）
 

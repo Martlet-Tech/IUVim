@@ -44,10 +44,38 @@ impl UserDict {
             .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
     }
 
+    /// 序列化为 `IUVUSR02` 线性字节（覆盖表段 + 屏蔽表段，magic 开头，无文件 IO）。
+    /// 共享内存段（M6 shm）与 `save()` 共用同一序列化——写盘 = to_bytes + 原子替换，
+    /// 共享段 = to_bytes 拷入数据区，两侧字节完全一致（`to_bytes == 文件内容` 有测试锁定）。
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(64 + self.map.len() * 32);
+        buf.extend_from_slice(MAGIC_V2);
+        let count: u32 = self.map.values().map(|v| v.len()).sum::<usize>() as u32;
+        buf.extend_from_slice(&count.to_le_bytes());
+        for (code, entries) in &self.map {
+            for (word, adj) in entries {
+                buf.push(code.len() as u8);
+                buf.extend_from_slice(code.as_bytes());
+                buf.extend_from_slice(&(word.len() as u16).to_le_bytes());
+                buf.extend_from_slice(word.as_bytes());
+                buf.extend_from_slice(&adj.to_le_bytes());
+            }
+        }
+        let block_count: u32 = self.block.len() as u32;
+        buf.extend_from_slice(&block_count.to_le_bytes());
+        for (code, word) in &self.block {
+            buf.push(code.len() as u8);
+            buf.extend_from_slice(code.as_bytes());
+            buf.extend_from_slice(&(word.len() as u16).to_le_bytes());
+            buf.extend_from_slice(word.as_bytes());
+        }
+        buf
+    }
+
     /// 解析字节。magic 分派：
     /// - `IUVUSR01`：u32 覆盖条数 | 覆盖 × { u8 code_len|code | u16 word_len|word | u32 adj }
     /// - `IUVUSR02`：u32 覆盖条数 | 覆盖 × N | u32 屏蔽条数 | 屏蔽 × { u8 code_len|code | u16 word_len|word }
-    fn from_bytes(data: &[u8]) -> io::Result<UserDict> {
+    pub fn from_bytes(data: &[u8]) -> io::Result<UserDict> {
         let bad = |msg: &str| io::Error::new(io::ErrorKind::InvalidData, msg.to_string());
         if data.len() < 12 {
             return Err(bad("magic 校验失败"));
@@ -204,30 +232,32 @@ impl UserDict {
         self.block.contains(&(code.to_string(), word.to_string()))
     }
 
+    /// 覆盖表条目总数（M6 设置页显示用）。
+    pub fn cover_count(&self) -> usize {
+        self.map.values().map(|v| v.len()).sum()
+    }
+
+    /// 屏蔽表条目总数（M6 设置页显示用）。
+    pub fn block_count(&self) -> usize {
+        self.block.len()
+    }
+
+    /// 遍历全部覆盖条目 `(code, word, adj)`（M6 设置页列表用）。
+    pub fn cover_iter(&self) -> impl Iterator<Item = (&str, &str, u32)> {
+        self.map
+            .iter()
+            .flat_map(|(code, v)| v.iter().map(move |(w, a)| (code.as_str(), w.as_str(), *a)))
+    }
+
+    /// 遍历全部屏蔽条目 `(code, word)`（M6 设置页列表用）。
+    pub fn block_iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.block.iter().map(|(c, w)| (c.as_str(), w.as_str()))
+    }
+
     /// 写盘（原子，恒写 `IUVUSR02`）：同目录临时文件 + sync + 先删后 rename。
     /// 失败 → `Err`（内存态已生效，持久化可下次调整重试）。
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        let mut buf = Vec::with_capacity(64 + self.map.len() * 32);
-        buf.extend_from_slice(MAGIC_V2);
-        let count: u32 = self.map.values().map(|v| v.len()).sum::<usize>() as u32;
-        buf.extend_from_slice(&count.to_le_bytes());
-        for (code, entries) in &self.map {
-            for (word, adj) in entries {
-                buf.push(code.len() as u8);
-                buf.extend_from_slice(code.as_bytes());
-                buf.extend_from_slice(&(word.len() as u16).to_le_bytes());
-                buf.extend_from_slice(word.as_bytes());
-                buf.extend_from_slice(&adj.to_le_bytes());
-            }
-        }
-        let block_count: u32 = self.block.len() as u32;
-        buf.extend_from_slice(&block_count.to_le_bytes());
-        for (code, word) in &self.block {
-            buf.push(code.len() as u8);
-            buf.extend_from_slice(code.as_bytes());
-            buf.extend_from_slice(&(word.len() as u16).to_le_bytes());
-            buf.extend_from_slice(word.as_bytes());
-        }
+        let buf = self.to_bytes();
         let tmp = tmp_path(path);
         let mut f = fs::File::create(&tmp)
             .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", tmp.display())))?;
@@ -375,6 +405,41 @@ mod tests {
         bad.extend_from_slice(&[3, b'n', b'i']);
         fs::write(&path, bad).unwrap();
         assert!(UserDict::load(&path).is_err());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn to_bytes_from_bytes_roundtrip() {
+        let u = UserDict::empty()
+            .apply_swap("haoshi", "好使", 5800, "haoshi", "耗时", 3800)
+            .set_entry("zhang'wei'wei", "张葳葳", 8000)
+            .block("shou'xuan", "手癣");
+        let bytes = u.to_bytes();
+        assert!(bytes.starts_with(MAGIC_V2), "恒写 IUVUSR02");
+        let back = UserDict::from_bytes(&bytes).unwrap();
+        assert_eq!(back.to_bytes(), bytes, "再序列化字节完全一致（无歧义编码）");
+        assert!(back
+            .adjusted("haoshi")
+            .iter()
+            .any(|(w, a)| w == "好使" && *a == 5800));
+        assert!(back
+            .adjusted("zhang'wei'wei")
+            .iter()
+            .any(|(w, a)| w == "张葳葳" && *a == 8000));
+        assert!(back.is_blocked("shou'xuan", "手癣"));
+    }
+
+    #[test]
+    fn to_bytes_matches_save_file_content() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("iuv-userdict-bytes-{}.imedic", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let u = UserDict::empty()
+            .set_entry("nihao", "你好", 9000)
+            .block("de", "的");
+        u.save(&path).unwrap();
+        let file_bytes = fs::read(&path).unwrap();
+        assert_eq!(file_bytes, u.to_bytes(), "文件内容 == to_bytes（共享段/写盘同字节）");
         let _ = fs::remove_file(&path);
     }
 }

@@ -78,9 +78,15 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   dict.rs merged 三叠加 + exact_raw）、iuv-core（key.rs HideCandidate、engine.rs
   record_phrase/hide_entry/install_user、session.rs commit 判定 + Hide 臂 + Sentence
   屏蔽拦截）、iuv-tsf（map_key Shift+Delete）。测试：数据层 5 + 引擎 4 + 会话 7 全绿。
-- 后续：M3 整句增强(LMDG)/模糊音 · **M4 跨平台渲染候选窗**（tiny-skia+cosmic-text 绘图 + D2D/DComp 呈现 + 浅色/深色主题 + 圆角阴影，`19-m4-cross-render.md`）· **M5 托盘图标 + 自绘右键菜单**（`21-m5-tray-menu.md`）· **M6 守护进程**（唯一持有用户库 + 共享段只读引用 + 管道写请求 + egui/eframe 设置页 + 托盘接管，`22-m6-daemon.md`）· M7 安装器/词库导入/x86
+- 后续：M3 整句增强(LMDG)/模糊音 · **M4 跨平台渲染候选窗——已实现（2026-08-16，ui-rewrite 分支待手测）**：
+  tiny-skia+cosmic-text 绘图（crates/iuv-ui）+ D2D/DComp 呈现（ui/candwin.rs）+ 浅色/深色主题 + 圆角阴影，`19-m4-cross-render.md`
+  · **M5 托盘图标 + 自绘右键菜单——已实现（同日）**：`tray.rs` + `ui/menu_window.rs`（单实例互斥托管），`21-m5-tray-menu.md`
+  · **M6 守护进程——已实现（同日）**：iuv-daemon exe 唯一持有用户库（共享段 + 命名管道 IPC + egui 设置页 + 托盘接管），
+  会话进程 daemon_client（共享段只读引用 + 写走管道 + 离线降级本地 + config 热载），`22-m6-daemon.md`
+  · M7 安装器/词库导入/x86（含 daemon 首会话自启、键位热载）
   - **钉选不做**（2026-08-14 用户决策）：Shift+←/→ 手动排序 + 增/删自定义已满足，显式"锁死"交互取消
   - **Tauri 已废**（2026-08-16 用户决策）：M4 不做 WebView helper；候选窗/菜单用 iuv-ui 自绘（tiny-skia），设置页 M6 用 egui/eframe
+  - **M4~M6 待手测项**（2026-08-16 完成后未验收）：M4 真透明圆角/阴影/深色主题/不抢焦点/多显示器 DPI；M5 托盘唯一性/菜单交互；M6 双进程即时一致/守护杀死降级/设置页热载
 - **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
   OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；激活即打开）。前置条件：用户在
   高级键设置把"输入法/非输入法切换"设为 Ctrl+Space（"切换输入语言"热键让位，Win+Space 仍可用）。
@@ -98,10 +104,10 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
 |---|---|
 | `crates/iuv-data` | 词库编译器 dictc + 二进制格式 + Dict 查询层 + 用户库（跨平台） |
 | `crates/iuv-core` | 引擎：切分/候选生成/unigram Viterbi/会话状态机/排序管线（跨平台纯 Rust） |
-| `crates/iuv-ui` | 候选窗/菜单绘图层：tiny-skia + cosmic-text + Theme（跨平台纯 Rust，M4 起） |
+| `crates/iuv-ui` | 候选窗/菜单绘图层：tiny-skia + cosmic-text + Theme（跨平台纯 Rust，M4 已实现） |
 | `crates/iuv-repl` | CLI 调试前端（跨平台） |
-| `platforms/windows/iuv-tsf` | cdylib：COM/TSF 管线 + 候选窗窗口层（D2D/DComp 呈现）+ 语言栏"中/英"切换图标（Windows） |
-| `platforms/windows/iuv-daemon` | 守护进程 exe：持有用户库 + 托盘 + 设置页（M6） |
+| `platforms/windows/iuv-tsf` | cdylib：COM/TSF 管线 + 候选窗窗口层（D2D/DComp 呈现）+ 托盘/菜单 + 语言栏"中/英"切换图标（Windows） |
+| `platforms/windows/iuv-daemon` | 守护进程 exe：唯一持有用户库（共享段+管道 IPC）+ 托盘 + egui 设置页（M6 已实现） |
 | `platforms/{macos,linux}/` | 占位：IMK / Fcitx5·IBus 适配层 + 门面规划（README，见各目录） |
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |
 | `scripts/` | download-dict / install / uninstall / dev-deploy（热部署） / iuv-common（共享库：提权/日志/ctfmon/延迟清理/Replace-InUseDll） |

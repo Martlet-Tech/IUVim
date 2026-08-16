@@ -1,6 +1,6 @@
 # 19 · 任务书 M4：跨平台渲染候选窗（去 Tauri 决议）
 
-> 状态：规划（2026-08-16）。前置阅读：`00-overview.md`、`01-contract.md`、`14-mod-iuv-tsf-candwin.md`（现状 GDI 实现）、`30-conventions.md`。
+> 状态：**已实现**（2026-08-16 完成，待手测验收）。前置阅读：`00-overview.md`、`01-contract.md`、`14-mod-iuv-tsf-candwin.md`（现状 GDI 实现）、`30-conventions.md`。
 > **M4 重定义**（用户决策）：不再做 Tauri helper；候选窗渲染层整体替换为**跨平台纯 Rust 绘图栈**，
 > Windows 呈现用 **D2D + DirectComposition**（真透明圆角/阴影）。设置/词库管理 UI 与进程分离
 > 归 M6 守护进程（见 `22-m6-daemon.md`）。

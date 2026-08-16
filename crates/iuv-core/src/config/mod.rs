@@ -27,6 +27,23 @@ impl Default for Orientation {
     }
 }
 
+/// 候选窗/菜单主题（M4 起，见 `docs/plan/19-m4-cross-render.md`）。
+/// 呈现层（iuv-tsf candwin.rs）装配时映射到 iuv-ui 的 `theme_light()`/`theme_dark()`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    /// 浅色（默认）：白底近黑字（对齐原 GDI 观感）
+    Light,
+    /// 深色：0x202020 系底 + 浅色字
+    Dark,
+}
+
+impl Default for ThemeChoice {
+    fn default() -> Self {
+        ThemeChoice::Light
+    }
+}
+
 /// 引擎配置。
 ///
 /// 默认值：page_size=5, max_candidates=1024, max_word_syllables=7,
@@ -50,6 +67,12 @@ pub struct Config {
     /// 按键直通进程名单：命中进程（exe 名，大小写不敏感精确匹配）TSF 层全部按键放行，
     /// 不建会话/无候选窗（输入法在该进程完全透明，游戏场景）。默认空 = 不启用。
     pub passthrough_apps: Vec<String>,
+    /// 候选窗主题（light/dark，默认 light；M4 起生效，见 19-m4-cross-render.md）。
+    /// 深色切换需重载输入法生效（热切换 M6 设置页做）。
+    pub theme: ThemeChoice,
+    /// 通知区托盘图标 + 右键菜单（M5 起生效，见 21-m5-tray-menu.md）。
+    /// 默认开；关 = 本进程不托管托盘（单实例协调同步跳过）。
+    pub tray_icon: bool,
 }
 
 impl Default for Config {
@@ -62,6 +85,8 @@ impl Default for Config {
             candidate_prefix: false,
             candidate_orientation: Orientation::Vertical,
             passthrough_apps: Vec::new(),
+            theme: ThemeChoice::Light,
+            tray_icon: true,
         }
     }
 }
@@ -82,7 +107,10 @@ impl Config {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) => {
-                log_config(&format!("配置加载失败（{e}）：{}，使用默认配置", path.display()));
+                log_config(&format!(
+                    "配置加载失败（{e}）：{}，使用默认配置",
+                    path.display()
+                ));
                 return Config::default();
             }
         };
@@ -94,7 +122,10 @@ impl Config {
                 cfg
             }
             Err(e) => {
-                log_config(&format!("配置解析失败（{e}）：{}，使用默认配置", path.display()));
+                log_config(&format!(
+                    "配置解析失败（{e}）：{}，使用默认配置",
+                    path.display()
+                ));
                 Config::default()
             }
         }
@@ -177,6 +208,19 @@ mod tests {
         assert!(c.keymap.page_next.contains(&Key::Char('.')));
         // 直通名单默认空（不启用）
         assert!(c.passthrough_apps.is_empty());
+        // 主题默认浅色
+        assert_eq!(c.theme, ThemeChoice::Light);
+        // 托盘默认开启（M5）
+        assert!(c.tray_icon);
+    }
+
+    #[test]
+    fn tray_icon_deserialize_false() {
+        // 显式 false：托盘关闭；缺字段（#[serde(default)]）→ 默认 true。
+        let c: Config = serde_json::from_str(r#"{ "tray_icon": false }"#).unwrap();
+        assert!(!c.tray_icon);
+        let c2: Config = serde_json::from_str(r#"{ "page_size": 5 }"#).unwrap();
+        assert!(c2.tray_icon, "缺字段补默认 true");
     }
 
     #[test]
@@ -275,7 +319,10 @@ mod tests {
     fn strip_comments_keeps_strings() {
         // 字符串值内的 //（如翻页键"//"自定义？）不被误剥；转义引号不破字符串态。
         let src = r#"{"a": "http://x", "b": "//y"}"#;
-        assert_eq!(strip_jsonc_comments(src), r#"{"a": "http://x", "b": "//y"}"#);
+        assert_eq!(
+            strip_jsonc_comments(src),
+            r#"{"a": "http://x", "b": "//y"}"#
+        );
         let src2 = "{\"a\": 1 // 注释\n}";
         assert_eq!(strip_jsonc_comments(src2), "{\"a\": 1 \n}");
     }
@@ -286,5 +333,41 @@ mod tests {
         assert_eq!(c.is_page_key(Key::Char(',')), Some(Key::PageUp));
         assert_eq!(c.is_page_key(Key::Char('.')), Some(Key::PageDown));
         assert_eq!(c.is_page_key(Key::Char('a')), None);
+    }
+
+    #[test]
+    fn theme_defaults_light() {
+        let c = Config::default();
+        assert_eq!(c.theme, ThemeChoice::Light);
+        // serde 序列化：light
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("\"theme\":\"light\""));
+    }
+
+    #[test]
+    fn theme_deserialize_dark() {
+        let c: Config = serde_json::from_str(r#"{ "theme": "dark" }"#).unwrap();
+        assert_eq!(c.theme, ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn theme_unknown_value_falls_back_default() {
+        // 未知枚举值：serde 拒绝 → from_file 整体回退默认（theme = Light）。
+        let p = tmp_file("theme_bad.json");
+        std::fs::write(&p, r#"{ "theme": "rainbow" }"#).unwrap();
+        let c = Config::from_file(&p);
+        assert_eq!(c.theme, ThemeChoice::Light);
+        // 缺字段（#[serde(default)]）→ 默认 Light
+        let c2: Config = serde_json::from_str(r#"{ "page_size": 5 }"#).unwrap();
+        assert_eq!(c2.theme, ThemeChoice::Light);
+    }
+
+    #[test]
+    fn theme_roundtrip() {
+        let c: Config = serde_json::from_str(r#"{ "theme": "dark" }"#).unwrap();
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("\"theme\":\"dark\""));
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.theme, ThemeChoice::Dark);
     }
 }

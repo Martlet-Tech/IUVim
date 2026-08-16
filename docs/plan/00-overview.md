@@ -79,8 +79,8 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 | `12-mod-iuv-repl.md` | 任务书 C：CLI 调试前端 |
 | `13-mod-iuv-tsf-core.md` | 任务书 D：COM/TSF 管线 + 注册 |
 | `14-mod-iuv-tsf-candwin.md` | 任务书 E：GDI 候选窗 + 演示程序（M4 起被 `19` 替代，历史保留） |
-| `19-m4-cross-render.md` | **M4**：跨平台渲染候选窗（tiny-skia + D2D/DComp 呈现 + 主题） |
-| `21-m5-tray-menu.md` | **M5**：托盘图标 + 自绘右键菜单 |
-| `22-m6-daemon.md` | **M6**：守护进程（持有用户库 + 设置页 + 托盘接管） |
+| `19-m4-cross-render.md` | **M4 已实现**：跨平台渲染候选窗（tiny-skia + D2D/DComp 呈现 + 主题） |
+| `21-m5-tray-menu.md` | **M5 已实现**：托盘图标 + 自绘右键菜单 |
+| `22-m6-daemon.md` | **M6 已实现**：守护进程（持有用户库 + 设置页 + 托盘接管） |
 | `20-assembly.md` | W2 集成组装手册（主智能体用） |
 | `30-conventions.md` | 全局约定：代码风格、错误处理、日志、测试纪律 |
