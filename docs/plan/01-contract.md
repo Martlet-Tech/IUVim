@@ -59,7 +59,7 @@ D:\Projects\vaim\
             │   ├── src\ui\mod.rs          # 【W0】CandidateUi + UiSnapshot + 映射（完整，冻结）
             │   ├── src\ui\gdi.rs          # 【Agent E】GdiCandidateWindow
             │   └── examples\candwin_demo.rs   # 【Agent E】候选窗演示
-            └── README.md                 # 门面现状 + M4 helper 规划
+            └── README.md                 # 门面现状 + M4~M6 规划（跨平台渲染/托盘/守护进程）
 ```
 
 > 分层约定：`crates/` = 跨平台（引擎/词库/CLI，纯 Rust）；`platforms/` = 每平台一套
@@ -74,7 +74,8 @@ D:\Projects\vaim\
 ```toml
 [workspace]
 resolver = "2"
-members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-repl", "platforms/windows/iuv-tsf"]
+members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf"]
+# M6 追加：platforms/windows/iuv-daemon
 
 [workspace.package]
 edition = "2021"
@@ -85,17 +86,22 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation", "Win32_Graphics", "Win32_Graphics_Gdi",
+    "Win32_Graphics_Direct2D", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dwm",
     "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Ole",
-    "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Variant",
-    "Win32_System_WindowsProgramming", "Win32_UI_Input",
-    "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_TextServices",
-    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Pipes", "Win32_System_SystemServices", "Win32_System_Threading",
+    "Win32_System_Variant", "Win32_System_WindowsProgramming", "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_TextServices", "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "0.62"
 windows-registry = "0.6"
 serde_json = "1"
+tiny-skia = "0.12"
+cosmic-text = "0.19"
 iuv-data = { path = "crates/iuv-data" }
 iuv-core = { path = "crates/iuv-core" }
+iuv-ui = { path = "crates/iuv-ui" }
 
 [profile.release]
 lto = "fat"
@@ -108,8 +114,10 @@ codegen-units = 1
 |---|---|
 | iuv-data | `serde`（workspace） |
 | iuv-core | `serde`（workspace）、`serde_json`（workspace）、`iuv-data`（workspace） |
+| iuv-ui | `tiny-skia`、`cosmic-text`（workspace）；`iuv-core`（workspace，Theme 消费） |
 | iuv-repl | `iuv-core`、`iuv-data`（workspace） |
-| iuv-tsf | `iuv-core`、`iuv-data`、`windows`、`windows-core`、`windows-registry`（workspace）；build-dep：`winres = "0.1"` |
+| iuv-tsf | `iuv-core`、`iuv-data`、`iuv-ui`、`windows`、`windows-core`、`windows-registry`（workspace）；build-dep：`winres = "0.1"` |
+| iuv-daemon（M6 新增） | `iuv-data`、`iuv-ui`（workspace）；egui/eframe（M6 批准时锁版本） |
 
 ### 2.3 iuv-tsf Cargo.toml 要点
 
@@ -521,7 +529,8 @@ pub struct UiSnapshot {
 pub fn effect_to_snapshot(e: &Effect) -> UiSnapshot { /* ... */ }
 
 /// 候选窗抽象。MVP 实现 = GdiCandidateWindow（ui/gdi.rs，Agent E）；
-/// M4 增加 RemoteCandidateWindow（IPC 转发 Tauri helper），COM 层零改动。
+/// **M4 起**：渲染层换 iuv-ui（tiny-skia + cosmic-text）+ D2D/DComp 呈现（ui/candwin.rs，
+/// 见 `19-m4-cross-render.md`），trait 签名不变，COM 层零改动。
 pub trait CandidateUi {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect);
     fn update(&mut self, snap: &UiSnapshot);
@@ -573,7 +582,9 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
 | `iuv-core/src/{schema,lm,viterbi,rerank,store,engine,session}.rs`、`tests/**` | **Agent B** | W1 |
 | `crates/iuv-repl/**` | **Agent C** | W1 |
 | `iuv-tsf/src/ui/mod.rs` | 主智能体 | W0 **完整实现**，冻结 |
-| `iuv-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs` | **Agent E** | W1 |
+| `iuv-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs` | **Agent E** | W1（M4 起 gdi.rs → `candwin.rs`，渲染层归 iuv-ui） |
+| `crates/iuv-ui/**` | 主智能体 | M4 新增 |
+| `iuv-tsf/src/ui/candwin.rs`、`iuv-tsf/src/tray.rs` | 主智能体 | M4/M5 新增 |
 | `iuv-tsf/src/{lib,registration,log,session_bridge,composition,langbar}.rs`、`com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、`Cargo.toml` 内 winres 配置 | **Agent D** | W1 |
 | `iuv-tsf/src/ui_element.rs` | 主智能体 | wow-ime（2026-08-16） |
 

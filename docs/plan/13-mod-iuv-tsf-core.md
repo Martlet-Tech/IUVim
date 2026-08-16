@@ -101,8 +101,8 @@ cargo build -p iuv-tsf --release       # 产出 iuv_tsf.dll
 
 ## 5. 槽位
 
-- `CandidateUi` trait 即 M4 WebView 候选窗槽位；TSF 层只持有 `Box<dyn CandidateUi>`
-- 引擎访问走 `Arc<Engine>`；M4 换 PipeBackend 时只改 `session_bridge` 的会话来源
+- `CandidateUi` trait 即 M4+ 跨平台渲染槽位（iuv-ui 实现，`19-m4-cross-render.md`）；TSF 层只持有 `Box<dyn CandidateUi>`
+- 引擎访问走 `Arc<Engine>`；M6 守护进程接管用户库后只改 `session_bridge`/`engine` 的库来源（共享段 + 管道客户端，`22-m6-daemon.md`）
 - 按键映射表集中一个函数，M3+ 加双拼/快捷键只动这里
 
 ## 6. 子智能体启动提示词

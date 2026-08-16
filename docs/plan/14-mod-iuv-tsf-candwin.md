@@ -27,7 +27,7 @@ impl super::CandidateUi for GdiCandidateWindow { /* show/update/move_to/hide/is_
 - 尺寸：`GetTextExtentPoint32W` 逐行测量取最大宽 + padding；高 = 行高×行数；每次 update 重算并 `SetWindowPos(SWP_NOACTIVATE)`
 - 字体：`Microsoft YaHei UI`，按 `GetDpiForWindow`（失败退回 HDC `LOGPIXELSY`）缩放，字号 14pt 等比
 - 定位：`show/move_to` 把窗口放在 caret 下方；超出工作区（`SystemParametersInfoW(SPI_GETWORKAREA)`）则右/下边界内收，必要时翻到 caret 上方
-- 颜色：硬编码一套浅色主题常量（背景白、文字黑、高亮 #0078D7 系），集中文件顶部——M4 主题槽位
+- 颜色：硬编码一套浅色主题常量（背景白、文字黑、高亮 #0078D7 系），集中文件顶部——M4 起迁 iuv-ui `Theme`（`19-m4-cross-render.md`）
 - 生命周期：`new()` 不建窗；首次 `show` 懒建（窗口必须建在调用线程——TSF 回调线程有消息循环，成立）；
   `Drop` 时 `DestroyWindow`
 - 所有 unsafe 块写 `// SAFETY:` 注释；**绝不 panic**（DLL 里 panic 会拖垮宿主进程）：绘制失败静默隐藏
@@ -55,8 +55,9 @@ cargo run -p iuv-tsf --example candwin_demo   # 人眼验收（W2 主智能体�
 
 ## 5. 槽位
 
-- 主题常量集中 → M4 换 WebView 或加主题文件时只动这里
-- `CandidateUi` 不变，M4 的 `RemoteCandidateWindow` 与本实现可共存（配置选择）
+- 主题常量集中 → M4 起迁移 iuv-ui `Theme` 结构体（浅色/深色可配，见 `19-m4-cross-render.md`）
+- `CandidateUi` 不变；M4 渲染层替换（iuv-ui + D2D/DComp 呈现）与 `GdiCandidateWindow`
+  并存过渡（M4 落地下线 gdi.rs），配置选择
 - **输入点远跳跟随已落地**（2026-08-11~13 迭代完成）：初版简单清除未完成输入（cancel）→ 完整版
   仅隐藏候选窗保留 composition（d418e20）→ 判定基准改增量位移（08bd5f8，修正常打字误藏候选窗）。
   现状：远跳时 `ui.hide`（保留 composition 与 Session），下一键 set_text 后自然走 show 分支

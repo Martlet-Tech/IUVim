@@ -4,8 +4,9 @@
 
 | 路径 | 说明 | 状态 |
 |---|---|---|
-| `iuv-tsf/` | TSF 输入法管线（COM/TSF + GDI 候选窗 + 语言栏）+ 注册 | 已实施（M1~M2） |
-| `README.md` | 本文档：门面现状 + M4 helper 规划 | — |
+| `iuv-tsf/` | TSF 输入法管线（COM/TSF + 候选窗窗口层 + 语言栏）+ 注册 | 已实施（M1~M2）；M4 起渲染层换 iuv-ui |
+| `iuv-daemon/` | 守护进程 exe：持有用户库 + 托盘 + 设置页 | M6（`docs/plan/22-m6-daemon.md`） |
+| `README.md` | 本文档：门面现状 + M4~M6 规划 | — |
 
 ## 门面（候选窗）现状
 
@@ -13,13 +14,25 @@
 - 能力：竖/横排、页码、悬停高亮、点击选词、翻页环绕、DPI 缩放、工作区内收
 - 局限：进程内绘制（每应用一份）、无圆角/透明/皮肤
 
-## M4 helper 规划（候选窗独立进程）
+## M4 跨平台渲染规划（`docs/plan/19-m4-cross-render.md`）
 
-**决策记录（2026-08-14 讨论定稿）**：
-- **门面与系统适配层分离**：`iuv-helper` 独立进程（全局单实例）持有渲染后端，TSF DLL 经命名管道发 `UiSnapshot`（文本/高亮/页码/光标坐标）
-- **渲染后端能力探测**（不硬编码版本分支）：`D2D1CreateFactory` 成功 → D2D；失败（无 Platform Update/RDP/无 GPU）→ GDI 兜底（现有 1152 行 gdi.rs 平移）
-- **跨平台分层不变**：引擎线（iuv-core/iuv-data）纯 Rust 跨平台；Windows 只写适配层 + 门面
-- 生命周期：懒启动 + 崩溃自动重启；helper 未就绪期间 DLL 降级（不显示候选窗，打字直通）
-- `CandidateUi` trait 不变 → COM 层零改动（契约 §5 已预留 `RemoteCandidateWindow` 槽位）
+**决策记录（2026-08-16 定稿）**：
+- **Tauri/WebView 已废**：候选窗每帧自绘场景，改跨平台纯 Rust 绘图栈
+- 绘图：`crates/iuv-ui`（tiny-skia 0.12 + cosmic-text 0.19 + fontdb 系统字体），跨平台一份
+- 呈现：**D2D 1.1 + DirectComposition**（真透明圆角/阴影，微软拼音同款路线）——
+  `HwndRenderTarget` 无 per-pixel alpha，必须 DComp surface 走 DWM 合成
+- 主题：`Theme` 结构体 + config 浅色/深色；候选窗交互语义（不抢焦点/无闪烁/DPI）不变
+- macOS/Linux：复用 iuv-ui，各自写窗口层 + 呈现层（CALayer/X11）
+
+## M5 托盘规划（`docs/plan/21-m5-tray-menu.md`）
+
+- 通知区托盘图标 + **自绘右键菜单**（iuv-ui 渲染，圆角/阴影与候选窗同风格）
+- 单实例协调：首个会话进程托管（命名互斥），M6 守护进程接管后机制退役
+
+## M6 守护进程规划（`docs/plan/22-m6-daemon.md`）
+
+- 独立 exe：唯一持有用户库（共享段只读引用 + 命名管道写请求）、托盘接管、
+  egui/eframe 设置页（主题/键位/词库管理）
+- 会话进程降级路径：守护进程缺失 → 自读文件现状，绝不挂键
 
 **明确不做**：Windows XP 兼容（Rust 1.85 最低 Win7；XP 主用 IMM32，TSF 残废版——Weasel 2019 年 2.0 起放弃 XP 同因）。
