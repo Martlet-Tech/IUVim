@@ -60,35 +60,6 @@ impl DaemonClient {
         }
     }
 
-    /// 检测 daemon 在线：管道 connect + Ping。成功缓存句柄；连接失败 / Ping 超时 → false。
-    /// daemon 崩溃后连接断开 → 清缓存（下次重连），返回 false。
-    pub fn daemon_online(&self) -> bool {
-        let mut pipe = self.pipe.lock().unwrap_or_else(|e| e.into_inner());
-        if pipe.is_none() {
-            match PipeClient::connect() {
-                Ok(c) => *pipe = Some(c),
-                Err(e) => {
-                    log_line(&format!("[daemon] 管道连接失败（daemon 不在线）：{e}"));
-                    return false;
-                }
-            }
-        }
-        let client = pipe.as_ref().expect("已连接（上方刚置位）");
-        match client.request(&Request::Ping) {
-            Ok(Response::Ok { .. }) => true,
-            Ok(Response::Err { msg }) => {
-                // 守护进程在线但异常：仍视为在线（写请求会再次判定，Err → 降级）。
-                log_line(&format!("[daemon] Ping 响应 Err：{msg}"));
-                true
-            }
-            Err(e) => {
-                log_line(&format!("[daemon] Ping 失败（连接断开，清缓存）：{e}"));
-                *pipe = None;
-                false
-            }
-        }
-    }
-
     /// 轮询共享段（text_service 每键 handle_key_down 最前部调用；低成本：读 u32 版本）。
     ///
     /// 逻辑（22-m6-daemon.md「会话进程客户端对接规格」）：

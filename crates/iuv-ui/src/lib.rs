@@ -2,7 +2,7 @@
 //!
 //! 纯 Rust 光栅栈：tiny-skia 0.12（矢量光栅）+ cosmic-text 0.19（字体发现/整形/布局/字形光栅），
 //! 无任何 C 依赖。渲染产出 `Surface`（premultiplied BGRA 像素缓冲，无 stride 填充）——
-//! Windows 呈现层（D2D/DirectComposition）直接 `CreateBitmap` 直供；macOS/Linux
+//! Windows 呈现层（ULW DIB / D2D 等）直接消费像素缓冲；macOS/Linux
 //! 平台层自行转格式。
 //!
 //! 设计约束（见 19-m4-cross-render.md §3 / 30-conventions.md）：

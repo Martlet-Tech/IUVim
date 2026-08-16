@@ -110,7 +110,7 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
 | `crates/iuv-core` | 引擎：切分/候选生成/unigram Viterbi/会话状态机/排序管线（跨平台纯 Rust） |
 | `crates/iuv-ui` | 候选窗/菜单绘图层：tiny-skia + cosmic-text + Theme（跨平台纯 Rust，M4 已实现） |
 | `crates/iuv-repl` | CLI 调试前端（跨平台） |
-| `platforms/windows/iuv-tsf` | cdylib：COM/TSF 管线 + 候选窗窗口层（D2D/DComp 呈现）+ 语言栏"中/英"切换图标/右键菜单（Windows） |
+| `platforms/windows/iuv-tsf` | cdylib：COM/TSF 管线 + 候选窗窗口层（ULW 呈现）+ 语言栏"中/英"切换图标/右键菜单（Windows） |
 | `platforms/windows/iuv-daemon` | 守护进程 exe：唯一持有用户库（共享段+管道 IPC）+ egui 设置页（M6 已实现，纯后台无图标） |
 | `platforms/{macos,linux}/` | 占位：IMK / Fcitx5·IBus 适配层 + 门面规划（README，见各目录） |
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |

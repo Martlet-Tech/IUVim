@@ -7,7 +7,7 @@
 
 ## 1. 目标（验收一句话）
 
-候选窗从 GDI 自绘换成 **iuv-ui（tiny-skia + cosmic-text）绘图 + D2D/DComp 呈现**：
+候选窗从 GDI 自绘换成 **iuv-ui（tiny-skia + cosmic-text）绘图 + UpdateLayeredWindow 呈现**：
 真透明圆角矩形 + 阴影、浅色/深色主题（config 可配）、不抢焦点/无闪烁/DPI/工作区内收等
 既有行为语义不变。GDI 绘图 API（TextOut/FillRect/CreateFont 等）在 iuv-tsf 中全部移除，
 仅窗口管理（HWND/消息循环/鼠标）保留。
@@ -18,16 +18,15 @@
   Tauri/WebView 太重，且候选窗每帧自绘场景用 WebView 是浪费。
 - 候选窗是"每像素自绘"场景（无控件、全部自定义绘制），适合**底层绘图库**而非 GUI 框架。
 - 真透明圆角需要 per-pixel alpha 合成：GDI blit 做不到（不透明）；D2D `HwndRenderTarget`
-  也做不到（画在普通窗口表面，无 DWM alpha 合成）——**必须 D2D 1.1 DeviceContext +
-  DirectComposition surface**（微软拼音/新版 Weasel 同款路线），DWM 合成 per-pixel 透明。
-- **BeginDraw 关联坑（2026-08-17 实测修复）**：`IDCompositionSurface::BeginDraw(iid=
-  ID2D1DeviceContext)` 要求 DComp 设备**关联了 Direct2D 设备**（须经 `DCompositionCreateDevice2`
-  的 renderingDevice 参数）；用旧 `DCompositionCreateDevice`（仅 DXGI 关联）会恒返回
-  `E_INVALIDARG`（0x80070057）→ 候选窗/菜单窗全部画不出。且 windows-rs 0.62 的
-  `DCompositionCreateDevice2` 生成参数有疑（3 参数 vs 真实 COM 4 参数）。**稳妥路径**：
-  保留 `DCompositionCreateDevice`，`BeginDraw` 请求 `IDXGISurface`，再用 D2D
-  `CreateBitmapFromDxgiSurface` + `SetTarget` + `BeginDraw/DrawBitmap/EndDraw` 手动绘制
-  （见 candwin.rs `upload`）。
+  也做不到（画在普通窗口表面，无 DWM alpha 合成）。两条 D2D/DComp 路线 **2026-08-17 实测均失败**：
+  - `DCompositionCreateDevice`（仅 DXGI 关联）下 `BeginDraw(iid=ID2D1DeviceContext)` 恒
+    `E_INVALIDARG`（要求 DComp 设备关联 D2D，须 `DCompositionCreateDevice2`；而 windows-rs 0.62
+    该函数生成参数有疑——3 参数 vs 真实 COM 4 参数）
+  - 绕行 `BeginDraw(IDXGISurface)` + D2D `CreateBitmapFromDxgiSurface` + `SetTarget` 手动绘制，
+    `CreateBitmapFromDxgiSurface` 亦恒 `E_INVALIDARG`（D2D↔DComp surface 互操作不可靠）
+- **最终定稿（Y 路线）**：`WS_EX_LAYERED` + `UpdateLayeredWindow`（ULW_ALPHA + AC_SRC_ALPHA）
+  per-pixel premultiplied 合成——零 GPU 设备依赖，DIB 直拷 iuv-ui 缓冲，一次调用定位+定尺寸+上屏；
+  圆角外点击穿透（WM_NCHITTEST）保留。共享呈现模块 `ui/ulw.rs`（候选窗/菜单窗复用）。
 - 文本 ClearType → 灰度 AA（cosmic-text 默认）：14pt 下略淡，手测验收可接受。
 - 绘图逻辑在 iuv-ui（跨平台一份），macOS/Linux 候选窗将来只写各自窗口层 + 呈现层。
 
@@ -44,13 +43,12 @@ crates/iuv-ui（新增，跨平台纯 Rust，无 C 依赖）
                绘制：圆角矩形底（含 alpha）+ 阴影（模糊）→ 行高亮 → 文本 → 页码小字
 
 platforms/windows/iuv-tsf/src/ui/candwin.rs（gdi.rs 改造/改名）
-├── 保留：窗口类注册 / CreateWindowExW(WS_EX_TOPMOST|TOOLWINDOW|NOACTIVATE) / wnd_proc
+├── 保留：窗口类注册 / CreateWindowExW(WS_EX_TOPMOST|TOOLWINDOW|NOACTIVATE|LAYERED) / wnd_proc
 │         鼠标交互（悬停/点击/命中）/ show/update/move_to/hide/set_suppressed
 │         定位纯函数 / DPI（LOGPIXELSY 路径）
 ├── 删：CreateFontIndirectW/TextOutW/FillRect/FrameRect/GetTextExtentPoint32W/内存 DC 双缓冲
-└── 换：D3D11 设备（WARP 软件回退）→ D2D1.1 DeviceContext → IDCompositionSurface
-         WM_PAINT：iuv-ui render → surface BeginDraw(IDXGISurface) → CreateBitmapFromDxgiSurface
-                   → SetTarget → CreateBitmap + DrawBitmap(1:1) → EndDraw → Commit
+└── 换：ui/ulw.rs 共享呈现——iuv-ui render → 32bpp 自顶向下 DIB 直拷 premultiplied BGRA
+         → UpdateLayeredWindow（定位+定尺寸+per-pixel alpha 一次完成）
          WM_NCHITTEST：按圆角几何判断，圆角外返回 HTTRANSPARENT（点击穿透到下层）
 ```
 
@@ -62,7 +60,7 @@ platforms/windows/iuv-tsf/src/ui/candwin.rs（gdi.rs 改造/改名）
 | 2 | theme.rs + layout.rs | Theme 结构体 + light/dark；layout/hit_test/position 自 gdi.rs 迁入，测试全量随迁 |
 | 3 | text.rs | fontdb `load_system_fonts` + cosmic-text FontSystem/Buffer；measure（供 layout）与 draw 共用同一布局 |
 | 4 | render.rs | 圆角矩形 + 阴影 + 行高亮 + 页码 → premultiplied RGBA；像素级单测（背景色/高亮/圆角外 alpha=0） |
-| 5 | iuv-tsf candwin.rs 重写 | 窗口层保留；呈现换 D2D/DComp；`CandidateUi` trait 签名零改动；DComp 初始化失败 → 静默降级隐藏（绝不 panic） |
+| 5 | iuv-tsf candwin.rs 重写 | 窗口层保留；呈现换 ULW（共享 ui/ulw.rs）；`CandidateUi` trait 签名零改动；失败 → 静默降级隐藏（绝不 panic） |
 | 6 | config theme 字段 | iuv-core Config + `theme: ThemeChoice`（light/dark，默认 light）+ 测试；text_service 装配时传入候选窗 |
 | 7 | candwin_demo 更新 | 走 iuv-ui 渲染路径；演示深色主题切换 |
 | 8 | 文档同步 | 00-overview（架构图/已知简化/索引）、01-contract（白名单/属主矩阵/M4 描述）、13/14 任务书槽位、AGENTS.md |
@@ -71,10 +69,10 @@ platforms/windows/iuv-tsf/src/ui/candwin.rs（gdi.rs 改造/改名）
 ## 5. 已知风险与取舍
 
 - ClearType → 灰度 AA：14pt 略淡（已接受，手测验收可读性）
-- DComp 依赖 DWM：游戏路径候选窗已被抑制（IMM 检测）不显示，无冲突；
-  独占全屏游戏下 DWM 行为不影响主路径
-- D3D11 无 GPU 进程：WARP 软件回退；初始化失败静默降级（维持"绝不 panic"哲学）
-- 32 位进程（WoW 等）：D2D/DComp 系统组件全架构支持，无额外风险
+- Layered 窗口（ULW）：老牌 per-pixel 合成机制，远程桌面/部分驱动有历史兼容问题；
+  无效果器（阴影由 iuv-ui 软件画）；每键全量重传（~300×200 性能无虞）
+- 无 GPU 设备依赖：无 D3D/D2D 初始化失败面（DComp 路线实测 E_INVALIDARG 已弃，见 §2）
+- 32 位进程（WoW 等）：纯 GDI/User32 路径，无额外风险
 - DLL 体积 +1~2MB（fat LTO 下可接受）
 - fontdb 首扫 C:\Windows\Fonts 元数据：候选窗首显可能有一次几十 ms 延迟，
   手测确认；不可接受则懒加载/缓存
@@ -82,8 +80,9 @@ platforms/windows/iuv-tsf/src/ui/candwin.rs（gdi.rs 改造/改名）
 
 ## 6. 槽位
 
-- `CandidateUi` trait 不变：M5 托盘菜单（`21-m5-tray-menu.md`）与 M6 守护进程
+- `CandidateUi` trait 不变：M5 语言栏菜单（`21-m5-tray-menu.md`）与 M6 守护进程
   （`22-m6-daemon.md`）都只消费渲染栈，不动本接缝
+- `ui/ulw.rs` 共享呈现模块：候选窗与自绘菜单窗复用（DIB/ULW 单一实现）
 - iuv-ui 的 render 抽象（Surface 缓冲 + Theme）即 M6 守护进程设置页/托盘菜单复用的基础；
   egui/eframe 届时另行引入，与 tiny-skia 栈并存（菜单/候选窗自绘、设置页用控件库）
 - macOS/Linux：iuv-ui 直接复用，平台层只写窗口 + 呈现（CALayer/X11）

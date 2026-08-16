@@ -16,39 +16,23 @@ use iuv_ui::{menu_hit_test, render_menu, MenuEntry, TextRenderer, Theme};
 use iuv_ui::layout::Rect;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    GetLastError, COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE,
-    WPARAM,
+    GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW,
-    MonitorFromPoint, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
-    BI_RGB, AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION, HBITMAP, HDC, RGBQUAD,
-    MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    GetDC, GetMonitorInfoW, MonitorFromPoint, ReleaseDC, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect,
-    RegisterClassExW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow, UpdateLayeredWindow,
-    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, SW_HIDE, SW_SHOW, ULW_ALPHA,
+    RegisterClassExW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
+    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, SW_HIDE, SW_SHOW,
     WM_ACTIVATE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT,
     WM_RBUTTONDOWN, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     WA_INACTIVE,
 };
 
 const CLASS_NAME: PCWSTR = w!("IuvMenuWindow");
-
-/// ULW 呈现缓存（同 candwin：内存 DC + 32bpp 自顶向下 DIB，内存序 BGRA）。
-struct UlwState {
-    hdc_src: HDC,
-    dib: HBITMAP,
-    bits: *mut u8,
-    w: u32,
-    h: u32,
-}
-
-// SAFETY: UlwState 仅在创建线程使用，bits 指针不跨线程传递。
-unsafe impl Send for UlwState {}
 
 /// 自绘菜单窗口：置顶、圆角阴影、悬停高亮、点击回调、Esc/失焦/外部点击关闭。
 /// `new` 不建窗；首次 `show_at` 懒建（窗口必须建在调用线程）。
@@ -60,7 +44,7 @@ pub struct MenuWindow {
     selected: Option<usize>,
     theme: Theme,
     text: Option<TextRenderer>,
-    ulw: Option<UlwState>,
+    ulw: super::ulw::UlwSurface,
     /// 最近一次布局的行矩形（命中测试用）。
     rows: Vec<Rect>,
     /// 点击回调（菜单项 id；None = 未接线）。
@@ -80,7 +64,7 @@ impl MenuWindow {
             selected: None,
             theme,
             text: None,
-            ulw: None,
+            ulw: super::ulw::UlwSurface::new(),
             rows: Vec::new(),
             on_select,
             visible: false,
@@ -107,9 +91,6 @@ impl MenuWindow {
         self.rows = rows;
         // 定位：菜单左上角锚定点击点（右/下越界内收到工作区）。
         let (x, y) = self.clamp_pos(x, y, surf.w as i32, surf.h as i32);
-        if !self.ensure_dib(&surf) {
-            return;
-        }
         self.present(&surf, x, y, surf.w as i32, surf.h as i32);
         // SAFETY: SW_SHOW 显示；SetForegroundWindow 尝试激活（收 Esc/键盘）；
         // 被系统前台限制拒绝时菜单仍可见（鼠标交互可用，键盘导航降级）。
@@ -148,9 +129,6 @@ impl MenuWindow {
         // SAFETY: GetWindowRect 读当前窗口矩形
         let mut rc = RECT::default();
         if unsafe { GetWindowRect(self.hwnd, &mut rc) }.is_err() {
-            return;
-        }
-        if !self.ensure_dib(&surf) {
             return;
         }
         self.present(
@@ -271,127 +249,9 @@ impl MenuWindow {
         (x.max(area.left), y.max(area.top))
     }
 
-    /// ULW 上屏（同 candwin：DIB 直拷 + UpdateLayeredWindow 一次定位/定尺寸/合成）。
+    /// ULW 呈现（共享模块 ulw.rs）。失败静默（记日志，不 panic）。
     fn present(&mut self, surf: &iuv_ui::Surface, x: i32, y: i32, w: i32, h: i32) {
-        let Some(ulw) = self.ulw.as_ref() else {
-            return;
-        };
-        // SAFETY: bits 由 ensure_dib 以 surf 尺寸创建，拷贝长度 = surf 全量，不越界。
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                surf.pixels.as_ptr(),
-                ulw.bits,
-                (surf.w as usize) * (surf.h as usize) * 4,
-            );
-        }
-        // SAFETY: hdcDst = 桌面 DC；ULW_ALPHA + AC_SRC_ALPHA per-pixel premultiplied 合成。
-        let dst = POINT { x, y };
-        let size = SIZE { cx: w, cy: h };
-        let src = POINT { x: 0, y: 0 };
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
-            BlendFlags: 0,
-            SourceConstantAlpha: 255,
-            AlphaFormat: AC_SRC_ALPHA as u8,
-        };
-        let hdc_dst = unsafe { GetDC(None) };
-        if hdc_dst.is_invalid() {
-            crate::log::log_line("[menuwin] GetDC(桌面) 失败");
-            return;
-        }
-        let r = unsafe {
-            UpdateLayeredWindow(
-                self.hwnd,
-                Some(hdc_dst),
-                Some(&dst),
-                Some(&size),
-                Some(ulw.hdc_src),
-                Some(&src),
-                COLORREF(0),
-                Some(&blend),
-                ULW_ALPHA,
-            )
-        };
-        // SAFETY: GetDC/ReleaseDC 配对
-        let _ = unsafe { ReleaseDC(None, hdc_dst) };
-        if r.is_err() {
-            crate::log::log_line(&format!(
-                "[menuwin] UpdateLayeredWindow 失败：{:?}",
-                r.unwrap_err()
-            ));
-        }
-    }
-
-    /// 确保 DIB 匹配 surf 尺寸（变化重建）。失败返回 false。
-    fn ensure_dib(&mut self, surf: &iuv_ui::Surface) -> bool {
-        let need = match self.ulw.as_ref() {
-            Some(ulw) => ulw.w != surf.w || ulw.h != surf.h,
-            None => true,
-        };
-        if !need {
-            return true;
-        }
-        if let Some(ulw) = self.ulw.take() {
-            // SAFETY: 先删 DC（选中对象不受影响），再删 DIB 对象。
-            unsafe {
-                let _ = DeleteDC(ulw.hdc_src);
-                let _ = DeleteObject(ulw.dib.into());
-            }
-        }
-        // SAFETY: CreateCompatibleDC(None) 以桌面 DC 为模板创建内存 DC。
-        let hdc = unsafe { CreateCompatibleDC(None) };
-        if hdc.is_invalid() {
-            crate::log::log_line("[menuwin] CreateCompatibleDC 失败");
-            return false;
-        }
-        // 32bpp 自顶向下（biHeight 负数）；内存序 = BGRA little-endian，与 iuv-ui 一致。
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: surf.w as i32,
-                biHeight: -(surf.h as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            bmiColors: [RGBQUAD::default(); 1],
-        };
-        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        // SAFETY: bmi 与 bits 输出在调用期间有效；DIB_RGB_COLORS 平台调色板；无文件映射。
-        let dib = match unsafe {
-            CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
-        } {
-            Ok(d) => d,
-            Err(e) => {
-                crate::log::log_line(&format!("[menuwin] CreateDIBSection 失败：{e:?}"));
-                // SAFETY: DC 未选中任何对象，可立即删除。
-                unsafe {
-                    let _ = DeleteDC(hdc);
-                }
-                return false;
-            }
-        };
-        if bits.is_null() {
-            // SAFETY: DIB 成功但无像素指针（理论不发生）：释放后降级。
-            unsafe {
-                let _ = DeleteObject(dib.into());
-                let _ = DeleteDC(hdc);
-            }
-            return false;
-        }
-        // SAFETY: 选中 DIB 到内存 DC（ULW 的 hdcSrc 数据源）。
-        unsafe {
-            let _ = SelectObject(hdc, dib.into());
-        }
-        self.ulw = Some(UlwState {
-            hdc_src: hdc,
-            dib,
-            bits: bits as *mut u8,
-            w: surf.w,
-            h: surf.h,
-        });
-        true
+        self.ulw.upload(self.hwnd, surf, x, y, w, h, "[menuwin]");
     }
 }
 
@@ -406,13 +266,7 @@ impl Drop for MenuWindow {
             };
             self.hwnd = HWND::default();
         }
-        if let Some(ulw) = self.ulw.take() {
-            // SAFETY: 同 ensure_dib 释放顺序（DC 已不引用 DIB）。
-            unsafe {
-                let _ = DeleteDC(ulw.hdc_src);
-                let _ = DeleteObject(ulw.dib.into());
-            }
-        }
+        // ulw（DIB/DC）与 text 按字段声明序自然 drop。
     }
 }
 

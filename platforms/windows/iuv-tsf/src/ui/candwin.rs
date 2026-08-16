@@ -31,43 +31,23 @@ use iuv_ui::layout::{Area, Rect};
 use iuv_ui::{hit_test, render_candidate, update_position, TextRenderer, Theme, FONT_PX_96};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    GetLastError, COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE,
-    WPARAM,
-};
-use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-    BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB, AC_SRC_ALPHA, AC_SRC_OVER,
-    BLENDFUNCTION, HBITMAP, HDC, RGBQUAD,
+    GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect,
     RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW,
-    UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HTCLIENT, HTTRANSPARENT,
-    MA_NOACTIVATE, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, ULW_ALPHA, WM_ERASEBKGND, WM_LBUTTONDOWN,
-    WM_MBUTTONDOWN, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HTCLIENT, HTTRANSPARENT, MA_NOACTIVATE,
+    SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSEXW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const CLASS_NAME: PCWSTR = w!("IuvCandidateWindow");
 
 /// 主字号（px @96dpi）；dpi 缩放由每帧 scale 处理。
 const FONT_PX: f32 = FONT_PX_96;
-
-/// ULW 呈现缓存：内存 DC + 32bpp 自顶向下 DIB section（内存序 BGRA 与 iuv-ui
-/// Surface 一致，premultiplied 直拷）。尺寸变化时重建。
-struct UlwState {
-    hdc_src: HDC,
-    dib: HBITMAP,
-    /// DIB 像素基址（bits 由 GDI 分配；配合 w/h 使用，生命周期同 dib）。
-    bits: *mut u8,
-    w: u32,
-    h: u32,
-}
-
-// SAFETY: UlwState 仅在创建线程使用（TSF 回调线程），bits 指针不跨线程传递。
-unsafe impl Send for UlwState {}
 
 /// ULW 自绘候选窗：无边框、置顶、不抢焦点、真透明圆角/阴影。
 /// `new(theme)` 不建窗；首次 `show` 懒建（窗口必须建在调用线程）。
@@ -90,8 +70,8 @@ pub struct CandwinCandidateWindow {
     theme: Theme,
     /// 文本渲染器（fontdb 首扫只在窗口创建时一次；每帧 measure+draw 复用）。
     text: Option<TextRenderer>,
-    /// ULW 呈现缓存（窗口创建时初始化；失败 = 候选窗不显示）。
-    ulw: Option<UlwState>,
+    /// ULW 呈现缓存（懒建；尺寸变化自动重建 DIB）。
+    ulw: super::ulw::UlwSurface,
 }
 
 impl CandwinCandidateWindow {
@@ -108,7 +88,7 @@ impl CandwinCandidateWindow {
             suppressed: false,
             theme,
             text: None,
-            ulw: None,
+            ulw: super::ulw::UlwSurface::new(),
         }
     }
 
@@ -337,138 +317,10 @@ impl CandwinCandidateWindow {
 
     /// ULW 呈现：确保 DIB（尺寸变化重建）→ 拷贝 premultiplied BGRA → 上屏。
     /// 失败记日志，静默降级（不 panic）。
+    /// ULW 呈现（共享模块 ulw.rs：DIB 重建 + 像素直拷 + UpdateLayeredWindow
+    /// 一次定位/定尺寸/per-pixel alpha 合成）。失败静默（记日志，不 panic）。
     fn present(&mut self, surf: &iuv_ui::Surface, x: i32, y: i32, w: i32, h: i32) {
-        if self.hwnd.is_invalid() || w <= 0 || h <= 0 {
-            return;
-        }
-        if !self.ensure_dib(surf) {
-            return;
-        }
-        let Some(ulw) = self.ulw.as_ref() else {
-            return;
-        };
-        // 像素直拷（DIB 内存序 BGRA 与 iuv-ui Surface 一致，无 stride 填充）
-        // SAFETY: bits 由 ensure_dib 以 surf 尺寸创建，拷贝长度 = surf 全量，不越界。
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                surf.pixels.as_ptr(),
-                ulw.bits,
-                (surf.w as usize) * (surf.h as usize) * 4,
-            );
-        }
-        // SAFETY: hdcDst = 桌面 DC（DWM 合成目标）；ULW_ALPHA + AC_SRC_ALPHA =
-        // per-pixel premultiplied 合成；ptDst 屏幕坐标定位；psize 窗口尺寸（ULW 同步调整）。
-        let dst = POINT { x, y };
-        let size = SIZE { cx: w, cy: h };
-        let src = POINT { x: 0, y: 0 };
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
-            BlendFlags: 0,
-            SourceConstantAlpha: 255,
-            AlphaFormat: AC_SRC_ALPHA as u8,
-        };
-        let hdc_dst = unsafe { GetDC(None) };
-        if hdc_dst.is_invalid() {
-            crate::log::log_line("[candwin] GetDC(桌面) 失败");
-            return;
-        }
-        let r = unsafe {
-            UpdateLayeredWindow(
-                self.hwnd,
-                Some(hdc_dst),
-                Some(&dst),
-                Some(&size),
-                Some(ulw.hdc_src),
-                Some(&src),
-                COLORREF(0),
-                Some(&blend),
-                ULW_ALPHA,
-            )
-        };
-        // SAFETY: GetDC/ReleaseDC 配对
-        let _ = unsafe { ReleaseDC(None, hdc_dst) };
-        if r.is_err() {
-            crate::log::log_line(&format!(
-                "[candwin] UpdateLayeredWindow 失败：{:?}",
-                r.unwrap_err()
-            ));
-        }
-    }
-
-    /// 确保 DIB section 匹配 surf 尺寸（变化重建：内存 DC + 32bpp 自顶向下 DIB，
-    /// bits 直拷 premultiplied BGRA）。失败返回 false（记日志，不 panic）。
-    fn ensure_dib(&mut self, surf: &iuv_ui::Surface) -> bool {
-        let need = match self.ulw.as_ref() {
-            Some(ulw) => ulw.w != surf.w || ulw.h != surf.h,
-            None => true,
-        };
-        if !need {
-            return true;
-        }
-        // 释放旧 DIB/DC（先删 DC——选中对象不受影响；再删 DIB 对象）。
-        if let Some(ulw) = self.ulw.take() {
-            // SAFETY: DeleteDC 释放内存 DC；DIB 对象随后独立 DeleteObject（DC 已不引用）。
-            unsafe {
-                let _ = DeleteDC(ulw.hdc_src);
-                let _ = DeleteObject(ulw.dib.into());
-            }
-        }
-        // 新建内存 DC。
-        // SAFETY: CreateCompatibleDC(None) 以桌面 DC 为模板创建内存 DC。
-        let hdc = unsafe { CreateCompatibleDC(None) };
-        if hdc.is_invalid() {
-            crate::log::log_line("[candwin] CreateCompatibleDC 失败");
-            return false;
-        }
-        // 32bpp 自顶向下（biHeight 负数）；内存序 = BGRA little-endian，与 iuv-ui 一致。
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: surf.w as i32,
-                biHeight: -(surf.h as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            bmiColors: [RGBQUAD::default(); 1],
-        };
-        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        // SAFETY: bmi 与 bits 输出在调用期间有效；DIB_RGB_COLORS 平台调色板；无文件映射。
-        let dib = match unsafe {
-            CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
-        } {
-            Ok(d) => d,
-            Err(e) => {
-                crate::log::log_line(&format!("[candwin] CreateDIBSection 失败：{e:?}"));
-                // SAFETY: DC 未选中任何对象，可立即删除。
-                unsafe {
-                    let _ = DeleteDC(hdc);
-                }
-                return false;
-            }
-        };
-        if bits.is_null() {
-            crate::log::log_line("[candwin] CreateDIBSection 返回空位图指针");
-            // SAFETY: DIB 创建成功但无像素指针（理论不发生）：释放后降级。
-            unsafe {
-                let _ = DeleteObject(dib.into());
-                let _ = DeleteDC(hdc);
-            }
-            return false;
-        }
-        // SAFETY: 选中 DIB 到内存 DC（ULW 的 hdcSrc 数据源）。
-        unsafe {
-            let _ = SelectObject(hdc, dib.into());
-        }
-        self.ulw = Some(UlwState {
-            hdc_src: hdc,
-            dib,
-            bits: bits as *mut u8,
-            w: surf.w,
-            h: surf.h,
-        });
-        true
+        self.ulw.upload(self.hwnd, surf, x, y, w, h, "[candwin]");
     }
 }
 
@@ -657,15 +509,7 @@ impl Drop for CandwinCandidateWindow {
             };
             self.hwnd = HWND::default();
         }
-        // ULW 呈现缓存：先删内存 DC（选中对象不受影响），再删 DIB 对象。
-        if let Some(ulw) = self.ulw.take() {
-            // SAFETY: 同 ensure_dib 释放顺序（DC 已不引用 DIB）。
-            unsafe {
-                let _ = DeleteDC(ulw.hdc_src);
-                let _ = DeleteObject(ulw.dib.into());
-            }
-        }
-        // text 字段按声明序自然 drop。
+        // ulw（DIB/DC）与 text 按字段声明序自然 drop。
     }
 }
 

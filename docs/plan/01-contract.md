@@ -57,7 +57,7 @@ D:\Projects\vaim\
             │   ├── src\session_bridge.rs  # 【Agent D】Key 映射 + Effect 应用
             │   ├── src\composition.rs     # 【Agent D】composition 封装
             │   ├── src\ui\mod.rs          # 【W0】CandidateUi + UiSnapshot + 映射（完整，冻结）
-            │   ├── src\ui\candwin.rs      # 【Agent E】CandwinCandidateWindow（M4：D2D/DComp + iuv-ui 渲染）
+            │   ├── src\ui\candwin.rs      # 【Agent E】CandwinCandidateWindow（M4：ULW + iuv-ui 渲染）
             │   └── examples\candwin_demo.rs   # 【Agent E】候选窗演示
             └── README.md                 # 门面现状 + M4~M6 规划（跨平台渲染/托盘/守护进程）
 ```
@@ -85,16 +85,11 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation", "Win32_Graphics", "Win32_Graphics_Gdi",
-    "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common",
-    "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11",
-    "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common",
-    "Win32_Graphics_DirectComposition", "Win32_Graphics_Dwm",
-    "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Ole",
-    "Win32_System_Pipes", "Win32_System_SystemServices", "Win32_System_Threading",
-    "Win32_System_Variant", "Win32_System_WindowsProgramming", "Win32_UI_Input",
-    "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_TextServices",
-    "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem",
-    "Win32_Security", "Win32_System_Memory", "Win32_System_IO",
+    "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Memory",
+    "Win32_System_Ole", "Win32_System_Pipes", "Win32_System_Threading",
+    "Win32_System_Variant", "Win32_Storage_FileSystem", "Win32_System_IO",
+    "Win32_Security", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_TextServices",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "0.62"
 windows-registry = "0.6"
@@ -532,7 +527,7 @@ pub fn effect_to_snapshot(e: &Effect) -> UiSnapshot { /* ... */ }
 
 /// 候选窗抽象。MVP 实现 = GdiCandidateWindow（ui/gdi.rs，Agent E；M4 已下线）；
 /// **M4 起**：实现 = CandwinCandidateWindow（ui/candwin.rs）：渲染层 iuv-ui
-/// （tiny-skia + cosmic-text）+ D2D/DComp 呈现（见 `19-m4-cross-render.md`），
+/// （tiny-skia + cosmic-text）+ ULW 呈现（见 `19-m4-cross-render.md`），
 /// trait 签名不变，COM 层零改动。
 pub trait CandidateUi {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect);
@@ -587,7 +582,7 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
 | `iuv-tsf/src/ui/mod.rs` | 主智能体 | W0 **完整实现**，冻结 |
 | `iuv-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs` | **Agent E** | W1（M4 起 gdi.rs → `candwin.rs`，渲染层归 iuv-ui） |
 | `crates/iuv-ui/**` | 主智能体 | M4 已实现（2026-08-16） |
-| `iuv-tsf/src/ui/candwin.rs` | 主智能体 | M4 已实现（D2D/DComp 呈现） |
+| `iuv-tsf/src/ui/candwin.rs` | 主智能体 | M4 已实现（ULW 呈现） |
 | `iuv-tsf/src/langbar.rs`（右键菜单部分） | 主智能体 | M5 已实现（语言栏右键菜单，2026-08-17 重定义） |
 | `iuv-data/src/{shm,ipc}.rs`、`iuv-daemon/**` | 主智能体 | M6 已实现 |
 | `iuv-tsf/src/daemon_client.rs` | 主智能体 | M6 已实现 |

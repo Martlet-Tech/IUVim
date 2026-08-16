@@ -5,7 +5,7 @@
 //! 全程 tiny-skia 纯 safe API；分配失败/非法参数静默降级返回空 `Surface`，绝不 panic。
 //!
 //! `Surface.pixels` 为 **premultiplied BGRA**、u32 对齐行、无 stride 填充——
-//! Windows 呈现层 `ID2D1Bitmap::CopyFromMemory`/`CreateBitmap` 直供；
+//! Windows 呈现层（ULW 32bpp DIB / D2D CreateBitmap 等）直供；
 //! 其他平台自行转格式。
 
 use tiny_skia::{FillRule, Paint, Path, PathBuilder, Pixmap, Rect, Stroke, Transform};
@@ -285,7 +285,7 @@ fn render_to_surface(
         pixmap.stroke_path(path, &paint, &stroke, Transform::identity(), None);
     }
     // tiny-skia 0.12 像素缓冲为 premultiplied RGBA（内存序 r,g,b,a）；
-    // Surface 契约要求 premultiplied BGRA（D2D CreateBitmap 直供）——交换每像素 R/B。
+    // Surface 契约要求 premultiplied BGRA（Windows ULW DIB / D2D 直供）——交换每像素 R/B。
     let data = pixmap.data();
     let mut pixels = Vec::with_capacity(data.len());
     pixels.extend_from_slice(data);

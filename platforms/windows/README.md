@@ -10,7 +10,7 @@
 
 ## 门面（候选窗）现状
 
-- `iuv-tsf/src/ui/`：`CandidateUi` trait（冻结）+ `CandwinCandidateWindow`（D2D/DComp 呈现 + iuv-ui 绘图，M4 落地）
+- `iuv-tsf/src/ui/`：`CandidateUi` trait（冻结）+ `CandwinCandidateWindow`（ULW 呈现 + iuv-ui 绘图，M4 落地；共享呈现 `ui/ulw.rs`）
 - 能力：竖/横排、页码、悬停高亮、点击选词、翻页环绕、DPI 缩放、工作区内收、
   真透明圆角/阴影、浅色/深色主题（config `theme` 字段）
 
@@ -19,8 +19,8 @@
 **决策记录（2026-08-16 定稿）**：
 - **Tauri/WebView 已废**：候选窗每帧自绘场景，改跨平台纯 Rust 绘图栈
 - 绘图：`crates/iuv-ui`（tiny-skia 0.12 + cosmic-text 0.19 + fontdb 系统字体），跨平台一份
-- 呈现：**D2D 1.1 + DirectComposition**（真透明圆角/阴影，微软拼音同款路线）——
-  `HwndRenderTarget` 无 per-pixel alpha，必须 DComp surface 走 DWM 合成
+- 呈现：**UpdateLayeredWindow**（WS_EX_LAYERED + ULW_ALPHA per-pixel 合成，真透明圆角/阴影）——
+  D2D/DComp 路线 2026-08-17 实测 E_INVALIDARG 弃用（见 19-m4 §2）；共享呈现模块 `ui/ulw.rs`
 - 主题：`Theme` 结构体 + config 浅色/深色；候选窗交互语义（不抢焦点/无闪烁/DPI）不变
 - macOS/Linux：复用 iuv-ui，各自写窗口层 + 呈现层（CALayer/X11）
 

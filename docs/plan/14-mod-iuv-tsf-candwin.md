@@ -56,7 +56,7 @@ cargo run -p iuv-tsf --example candwin_demo   # 人眼验收（W2 主智能体�
 ## 5. 槽位
 
 - 主题常量集中 → M4 起迁移 iuv-ui `Theme` 结构体（浅色/深色可配，见 `19-m4-cross-render.md`）
-- `CandidateUi` 不变；M4 渲染层替换（iuv-ui + D2D/DComp 呈现）与 `GdiCandidateWindow`
+- `CandidateUi` 不变；M4 渲染层替换（iuv-ui + ULW 呈现，见 `19-m4-cross-render.md`）与 `GdiCandidateWindow`
   并存过渡（M4 落地下线 gdi.rs），配置选择
 - **输入点远跳跟随已落地**（2026-08-11~13 迭代完成）：初版简单清除未完成输入（cancel）→ 完整版
   仅隐藏候选窗保留 composition（d418e20）→ 判定基准改增量位移（08bd5f8，修正常打字误藏候选窗）。

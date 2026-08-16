@@ -1,9 +1,9 @@
-//! 候选窗演示程序（契约 14-mod-iuv-tsf-candwin.md §3；M4 起走 iuv-ui + D2D/DComp 呈现）。
+//! 候选窗演示程序（契约 14-mod-iuv-tsf-candwin.md §3；M4 起走 iuv-ui + ULW 呈现）。
 //! 运行：`cargo run -p iuv-tsf --example candwin_demo`
 //!
 //! 人眼验收要点：
 //! - 不抢焦点：打开记事本让光标闪烁，候选窗不应夺取键盘焦点；
-//! - 无闪烁：翻页/移动过程平滑，无白闪（DComp 合成，DWM per-pixel 透明）；
+//! - 无闪烁：翻页/移动过程平滑，无白闪（UpdateLayeredWindow，DWM per-pixel 透明）；
 //! - 真透明圆角 + 阴影：圆角外透出下层窗口内容；
 //! - 高亮正确：每页高亮行随翻页轮换；
 //! - 尺寸自适应：翻页时窗口随内容自动缩放；
@@ -70,8 +70,8 @@ fn pump_messages() -> bool {
 }
 
 fn main() {
-    println!("IUV 输入法 候选窗演示（iuv-ui + D2D/DComp）—— 按 Esc 退出（建议同时打开记事本观察不抢焦点）");
-    // 浅色 + 深色两窗并排演示：验证主题差异与 DComp 多目标共存。
+    println!("IUV 输入法 候选窗演示（iuv-ui + ULW）—— 按 Esc 退出（建议同时打开记事本观察不抢焦点）");
+    // 浅色 + 深色两窗并排演示：验证主题差异。
     let mut light = CandwinCandidateWindow::new(iuv_ui::theme_light());
     let mut dark = CandwinCandidateWindow::new(iuv_ui::theme_dark());
     let mut tick: u32 = 0;

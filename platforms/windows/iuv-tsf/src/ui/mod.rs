@@ -1,15 +1,16 @@
 //! 候选窗抽象与 Effect → UiSnapshot 映射。W0 完整实现，冻结。
 //! MVP 实现 = GdiCandidateWindow（Agent E）；M4 起 = CandwinCandidateWindow
-//! （D2D + DirectComposition 呈现，iuv-ui 绘图），类型与快照自 iuv-ui 迁出。
+//! （ULW 呈现 + iuv-ui 绘图，见 19-m4-cross-render.md），类型与快照自 iuv-ui 迁出。
 
 pub mod candwin;
 pub mod menu_window;
+pub mod ulw;
 pub use candwin::CandwinCandidateWindow;
 pub use menu_window::MenuWindow;
 pub use iuv_core::Orientation;
 pub use iuv_ui::{effect_to_snapshot, CaretRect, UiSnapshot};
 
-/// 候选窗抽象。M4 起实现 = CandwinCandidateWindow（iuv-ui 渲染 + D2D/DComp 呈现），
+/// 候选窗抽象。M4 起实现 = CandwinCandidateWindow（iuv-ui 渲染 + ULW 呈现），
 /// 见 `19-m4-cross-render.md`。COM 层零改动。
 pub trait CandidateUi {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect);

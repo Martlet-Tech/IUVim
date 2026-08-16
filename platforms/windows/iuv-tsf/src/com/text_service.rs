@@ -176,7 +176,7 @@ pub(crate) struct TextService {
     session: Rc<RefCell<Option<Session>>>,
     /// composition 封装（随会话创建/销毁）。Rc 共享：候选窗回调 dispatch 用。
     composition: Rc<RefCell<Option<Composition>>>,
-    /// 候选窗：CandwinCandidateWindow（M4：D2D/DComp 呈现，iuv-ui 绘图）。Rc 共享：同上。
+    /// 候选窗：CandwinCandidateWindow（M4：ULW 呈现，iuv-ui 绘图）。Rc 共享：同上。
     /// 具体类型（非 `Box<dyn>`）：M6 配置热载需直调 `set_theme`；交互/效果应用同槽。
     ui: Rc<RefCell<CandwinCandidateWindow>>,
     /// 上一次光标矩形（GetTextExt 失败时复用；首次用屏幕中央）。Rc 共享：同上。

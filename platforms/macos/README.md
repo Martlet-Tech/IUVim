@@ -21,5 +21,5 @@
 | 层 | Windows | macOS |
 |---|---|---|
 | 系统适配 | `iuv-tsf`（TSF） | IMK 插件（未建） |
-| 门面 | iuv-ui 绘图 + D2D/DComp 呈现（M4） | iuv-ui 绘图 + NSWindow/CALayer（未建） |
+| 门面 | iuv-ui 绘图 + ULW 呈现（M4） | iuv-ui 绘图 + NSWindow/CALayer（未建） |
 | 引擎 | iuv-core（共用） | iuv-core（共用，零改动） |
