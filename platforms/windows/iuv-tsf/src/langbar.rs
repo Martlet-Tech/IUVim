@@ -28,8 +28,8 @@ use windows::Win32::UI::TextServices::{
     GUID_LBI_INPUTMODE, ITfCompartment, ITfLangBarItemButton, ITfLangBarItemButton_Impl,
     ITfLangBarItemMgr, ITfLangBarItemSink, ITfLangBarItem_Impl, ITfMenu, ITfSource,
     ITfSource_Impl, ITfThreadMgr, TfLBIClick, TF_LANGBARITEMINFO, TF_LBI_CLK_LEFT,
-    TF_LBI_ICON, TF_LBI_STATUS, TF_LBI_STATUS_HIDDEN, TF_LBI_STYLE_BTN_BUTTON,
-    TF_LBI_STYLE_SHOWNINTRAY,
+    TF_LBI_CLK_RIGHT, TF_LBI_ICON, TF_LBI_STATUS, TF_LBI_STATUS_HIDDEN,
+    TF_LBI_STYLE_BTN_BUTTON, TF_LBI_STYLE_SHOWNINTRAY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, LoadImageW, HICON, IMAGE_ICON, LR_SHARED, SM_CXSMICON, SM_CYSMICON,
@@ -37,6 +37,25 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows_core::{implement, BSTR, BOOL, ComObject, GUID, Interface, PCWSTR, Ref, Result, IUnknown};
 
 use crate::log::log_line;
+use iuv_data::Request;
+use iuv_ui::{MenuEntry, Theme};
+
+/// 「关于」对话框（自绘菜单与 InitMenu 菜单共用）。
+fn show_about() {
+    let text = "iuv 输入法（代号 iuvim，谐音\"哎哟喂\"）\nRust + TSF 的 Windows 中文输入法。";
+    let title = "关于 iuv";
+    let text_wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let title_wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: 静态 UTF-16 缓冲 NUL 结尾；MB_OK 无回调。
+    let _ = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            None,
+            windows::core::PCWSTR(text_wide.as_ptr()),
+            windows::core::PCWSTR(title_wide.as_ptr()),
+            windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE::default(),
+        )
+    };
+}
 
 /// 语言栏塞入的 sink cookie（唯一即可，Weasel 用固定值，这里同款）。
 const SINK_COOKIE: u32 = 0x42424242;
@@ -171,15 +190,30 @@ pub(crate) struct LangBarItemButton {
     sink: RefCell<Option<ITfLangBarItemSink>>,
     /// 状态位（TF_LBI_STATUS_*，MVP 仅 HIDDEN 会用到）。
     status: Cell<u32>,
+    /// M6 daemon 客户端：右键菜单「设置」→ 管道 `OpenSettings` 通知守护进程弹设置页
+    /// （2026-08-17 用户决策：无独立托盘图标，入口全走语言栏菜单）。
+    daemon: Arc<crate::daemon_client::DaemonClient>,
+    /// 自绘右键菜单窗口（懒建；Win10/11 输入法区域右键走 OnClick(RIGHT)，InitMenu 不触发）。
+    menu: RefCell<Option<crate::ui::menu_window::MenuWindow>>,
+    /// 菜单主题（与候选窗一致，构造时由 text_service 从 config 注入）。
+    menu_theme: Theme,
 }
 
 impl LangBarItemButton {
-    pub(crate) fn new(mode: Arc<AtomicBool>, compartment: Option<(ITfCompartment, u32)>) -> Self {
+    pub(crate) fn new(
+        mode: Arc<AtomicBool>,
+        compartment: Option<(ITfCompartment, u32)>,
+        daemon: Arc<crate::daemon_client::DaemonClient>,
+        menu_theme: Theme,
+    ) -> Self {
         LangBarItemButton {
             mode,
             compartment: RefCell::new(compartment),
             sink: RefCell::new(None),
             status: Cell::new(0),
+            daemon,
+            menu: RefCell::new(None),
+            menu_theme,
         }
     }
 
@@ -220,6 +254,40 @@ impl LangBarItemButton {
             self.refresh();
         }
     }
+
+    /// 右键菜单：懒建自绘菜单窗（iuv-ui 渲染 + ULW 呈现），在按钮位置弹出。
+    /// 菜单项：设置 / 关于（无"退出"——用户 2026-08-17 决策）。
+    fn show_menu(&self, pt: &POINT) {
+        let mut m = self.menu.borrow_mut();
+        if m.is_none() {
+            const MENU_SETTINGS: u16 = 1;
+            const MENU_ABOUT: u16 = 2;
+            let items = vec![
+                MenuEntry::new("设置".to_string(), MENU_SETTINGS),
+                MenuEntry::new("关于".to_string(), MENU_ABOUT),
+            ];
+            let daemon = self.daemon.clone();
+            *m = Some(crate::ui::menu_window::MenuWindow::new(
+                self.menu_theme.clone(),
+                items,
+                Some(Box::new(move |id| match id {
+                    MENU_SETTINGS => {
+                        log_line("语言栏菜单：设置 → 通知守护进程打开设置页");
+                        let _ = daemon.send_request(&Request::OpenSettings);
+                    }
+                    MENU_ABOUT => {
+                        log_line("语言栏菜单：关于");
+                        show_about();
+                    }
+                    _ => log_line(&format!("语言栏菜单：未知项 {id}")),
+                })),
+            ));
+        }
+        if let Some(w) = m.as_mut() {
+            log_line("语言栏菜单：右键弹出自绘菜单");
+            w.show_at(pt.x, pt.y);
+        }
+    }
 }
 
 // ---- ITfLangBarItem ----
@@ -248,18 +316,59 @@ impl ITfLangBarItem_Impl for LangBarItemButton_Impl {
 // ---- ITfLangBarItemButton ----
 
 impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
-    fn OnClick(&self, click: TfLBIClick, _pt: &POINT, _prcarea: *const RECT) -> Result<()> {
+    fn OnClick(&self, click: TfLBIClick, pt: &POINT, _prcarea: *const RECT) -> Result<()> {
         if click == TF_LBI_CLK_LEFT {
             self.toggle_mode();
+        } else if click == TF_LBI_CLK_RIGHT {
+            // Win10/11 输入法区域右键不触发 InitMenu（2026-08-17 实测零日志），
+            // 走 OnClick(TF_LBI_CLK_RIGHT) 自绘菜单（搜狗等第三方输入法同款路径）。
+            self.show_menu(pt);
         }
         Ok(())
     }
 
-    fn InitMenu(&self, _pmenu: Ref<ITfMenu>) -> Result<()> {
+    fn InitMenu(&self, pmenu: Ref<ITfMenu>) -> Result<()> {
+        // 右键"中/英"按钮 → 语言栏上下文菜单（TSF 官方机制：语言栏弹菜单前调 InitMenu，
+        // 我们经 ITfMenu::AddMenuItem 塞入自定义项；OnMenuSelect 分发）。
+        // 2026-08-17 用户决策：入口全走语言栏菜单，无独立托盘图标。菜单项无"退出"。
+        const MENU_SETTINGS: u32 = 1;
+        const MENU_ABOUT: u32 = 2;
+        let Some(menu) = pmenu.as_ref() else {
+            log_line("语言栏菜单：InitMenu 收到空 ITfMenu");
+            return Ok(());
+        };
+        let items: &[(&str, u32)] = &[("设置", MENU_SETTINGS), ("关于", MENU_ABOUT)];
+        for (label, wid) in items {
+            let text: Vec<u16> = label.encode_utf16().collect();
+            // SAFETY: AddMenuItem 同步复制菜单文本；hbmp/hbmpmask 空位图；无子菜单。
+            let _ = unsafe {
+                menu.AddMenuItem(
+                    *wid,
+                    0,
+                    windows::Win32::Graphics::Gdi::HBITMAP::default(),
+                    windows::Win32::Graphics::Gdi::HBITMAP::default(),
+                    &text,
+                    &mut None,
+                )
+            };
+        }
         Ok(())
     }
 
-    fn OnMenuSelect(&self, _wid: u32) -> Result<()> {
+    fn OnMenuSelect(&self, wid: u32) -> Result<()> {
+        const MENU_SETTINGS: u32 = 1;
+        const MENU_ABOUT: u32 = 2;
+        match wid {
+            MENU_SETTINGS => {
+                log_line("语言栏菜单：设置 → 通知守护进程打开设置页");
+                let _ = self.daemon.send_request(&Request::OpenSettings);
+            }
+            MENU_ABOUT => {
+                log_line("语言栏菜单：关于");
+                show_about();
+            }
+            _ => log_line(&format!("语言栏菜单：未知项 {wid}")),
+        }
         Ok(())
     }
 

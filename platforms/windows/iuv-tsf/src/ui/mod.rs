@@ -9,7 +9,8 @@ pub use menu_window::MenuWindow;
 pub use iuv_core::Orientation;
 pub use iuv_ui::{effect_to_snapshot, CaretRect, UiSnapshot};
 
-/// 候选窗抽象。M4 增加 RemoteCandidateWindow（IPC 转发 Tauri helper），COM 层零改动。
+/// 候选窗抽象。M4 起实现 = CandwinCandidateWindow（iuv-ui 渲染 + D2D/DComp 呈现），
+/// 见 `19-m4-cross-render.md`。COM 层零改动。
 pub trait CandidateUi {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect);
     fn update(&mut self, snap: &UiSnapshot);

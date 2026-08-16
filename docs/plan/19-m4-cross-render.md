@@ -1,6 +1,6 @@
 # 19 · 任务书 M4：跨平台渲染候选窗（去 Tauri 决议）
 
-> 状态：**已实现**（2026-08-16 完成，待手测验收）。前置阅读：`00-overview.md`、`01-contract.md`、`14-mod-iuv-tsf-candwin.md`（现状 GDI 实现）、`30-conventions.md`。
+> 状态：**已实现**（2026-08-16 完成；2026-08-17 修复候选窗不可见：DComp 关联 D2D 问题）。待手测验收。前置阅读：`00-overview.md`、`01-contract.md`、`14-mod-iuv-tsf-candwin.md`（现状 GDI 实现）、`30-conventions.md`。
 > **M4 重定义**（用户决策）：不再做 Tauri helper；候选窗渲染层整体替换为**跨平台纯 Rust 绘图栈**，
 > Windows 呈现用 **D2D + DirectComposition**（真透明圆角/阴影）。设置/词库管理 UI 与进程分离
 > 归 M6 守护进程（见 `22-m6-daemon.md`）。
@@ -20,6 +20,14 @@
 - 真透明圆角需要 per-pixel alpha 合成：GDI blit 做不到（不透明）；D2D `HwndRenderTarget`
   也做不到（画在普通窗口表面，无 DWM alpha 合成）——**必须 D2D 1.1 DeviceContext +
   DirectComposition surface**（微软拼音/新版 Weasel 同款路线），DWM 合成 per-pixel 透明。
+- **BeginDraw 关联坑（2026-08-17 实测修复）**：`IDCompositionSurface::BeginDraw(iid=
+  ID2D1DeviceContext)` 要求 DComp 设备**关联了 Direct2D 设备**（须经 `DCompositionCreateDevice2`
+  的 renderingDevice 参数）；用旧 `DCompositionCreateDevice`（仅 DXGI 关联）会恒返回
+  `E_INVALIDARG`（0x80070057）→ 候选窗/菜单窗全部画不出。且 windows-rs 0.62 的
+  `DCompositionCreateDevice2` 生成参数有疑（3 参数 vs 真实 COM 4 参数）。**稳妥路径**：
+  保留 `DCompositionCreateDevice`，`BeginDraw` 请求 `IDXGISurface`，再用 D2D
+  `CreateBitmapFromDxgiSurface` + `SetTarget` + `BeginDraw/DrawBitmap/EndDraw` 手动绘制
+  （见 candwin.rs `upload`）。
 - 文本 ClearType → 灰度 AA（cosmic-text 默认）：14pt 下略淡，手测验收可接受。
 - 绘图逻辑在 iuv-ui（跨平台一份），macOS/Linux 候选窗将来只写各自窗口层 + 呈现层。
 
@@ -41,7 +49,8 @@ platforms/windows/iuv-tsf/src/ui/candwin.rs（gdi.rs 改造/改名）
 │         定位纯函数 / DPI（LOGPIXELSY 路径）
 ├── 删：CreateFontIndirectW/TextOutW/FillRect/FrameRect/GetTextExtentPoint32W/内存 DC 双缓冲
 └── 换：D3D11 设备（WARP 软件回退）→ D2D1.1 DeviceContext → IDCompositionSurface
-         WM_PAINT：iuv-ui render → surface BeginDraw → CreateBitmap + DrawBitmap(1:1) → EndDraw → Commit
+         WM_PAINT：iuv-ui render → surface BeginDraw(IDXGISurface) → CreateBitmapFromDxgiSurface
+                   → SetTarget → CreateBitmap + DrawBitmap(1:1) → EndDraw → Commit
          WM_NCHITTEST：按圆角几何判断，圆角外返回 HTTRANSPARENT（点击穿透到下层）
 ```
 

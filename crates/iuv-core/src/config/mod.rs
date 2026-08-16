@@ -70,9 +70,6 @@ pub struct Config {
     /// 候选窗主题（light/dark，默认 light；M4 起生效，见 19-m4-cross-render.md）。
     /// 深色切换需重载输入法生效（热切换 M6 设置页做）。
     pub theme: ThemeChoice,
-    /// 通知区托盘图标 + 右键菜单（M5 起生效，见 21-m5-tray-menu.md）。
-    /// 默认开；关 = 本进程不托管托盘（单实例协调同步跳过）。
-    pub tray_icon: bool,
 }
 
 impl Default for Config {
@@ -86,7 +83,6 @@ impl Default for Config {
             candidate_orientation: Orientation::Vertical,
             passthrough_apps: Vec::new(),
             theme: ThemeChoice::Light,
-            tray_icon: true,
         }
     }
 }
@@ -210,17 +206,15 @@ mod tests {
         assert!(c.passthrough_apps.is_empty());
         // 主题默认浅色
         assert_eq!(c.theme, ThemeChoice::Light);
-        // 托盘默认开启（M5）
-        assert!(c.tray_icon);
     }
 
     #[test]
-    fn tray_icon_deserialize_false() {
-        // 显式 false：托盘关闭；缺字段（#[serde(default)]）→ 默认 true。
-        let c: Config = serde_json::from_str(r#"{ "tray_icon": false }"#).unwrap();
-        assert!(!c.tray_icon);
+    fn theme_deserialize() {
+        // 显式 dark / 缺字段（#[serde(default)]）→ 默认 light。
+        let c: Config = serde_json::from_str(r#"{ "theme": "dark" }"#).unwrap();
+        assert_eq!(c.theme, ThemeChoice::Dark);
         let c2: Config = serde_json::from_str(r#"{ "page_size": 5 }"#).unwrap();
-        assert!(c2.tray_icon, "缺字段补默认 true");
+        assert_eq!(c2.theme, ThemeChoice::Light, "缺字段补默认 light");
     }
 
     #[test]

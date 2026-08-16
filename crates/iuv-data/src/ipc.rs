@@ -90,6 +90,10 @@ pub enum Request {
     Block { code: String, word: String },
     /// 健康检查：探测 daemon 在线 + 拿当前 version。
     Ping,
+    /// M6 语言栏菜单「设置」：通知 daemon 打开设置页（不触碰用户库）。
+    OpenSettings,
+    /// M6 语言栏菜单/卸载脚本：通知 daemon 干净退出（写盘后退出）。
+    Quit,
 }
 
 /// 守护进程 → 会话进程的响应。
@@ -177,6 +181,12 @@ pub fn encode_request(req: &Request) -> Vec<u8> {
         Request::Ping => {
             out.push(0x05);
         }
+        Request::OpenSettings => {
+            out.push(0x06);
+        }
+        Request::Quit => {
+            out.push(0x07);
+        }
     }
     out
 }
@@ -249,6 +259,14 @@ pub fn decode_request(payload: &[u8]) -> io::Result<Request> {
         0x05 => {
             r.finish()?;
             Ok(Request::Ping)
+        }
+        0x06 => {
+            r.finish()?;
+            Ok(Request::OpenSettings)
+        }
+        0x07 => {
+            r.finish()?;
+            Ok(Request::Quit)
         }
         t => Err(bad(&format!("未知 Request tag 0x{t:02X}"))),
     }

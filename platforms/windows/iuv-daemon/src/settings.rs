@@ -1,15 +1,13 @@
-//! 设置窗口（egui/eframe，独立线程运行）。
+//! 设置窗口（egui/eframe，**主线程**运行）。
 //!
-//! eframe 自带 winit 事件循环独占所在线程，故守护进程主线程跑 Win32 托盘消息循环、
-//! 设置窗口在**独立线程**跑 `eframe::run_native`。跨线程联动：
-//! - 托盘菜单「打开设置」→ `open()`：无窗口则 spawn 线程；有窗口则
-//!   `ViewportCommand::Visible(true)` + `request_repaint()` 唤出；
-//! - 托盘「退出」→ 主线程置 `close_settings` → 设置线程检测到后
-//!   `ViewportCommand::Close` 关闭窗口 → run_native 返回 → 线程结束（清 settings_ctx）。
+//! winit 事件循环只能在进程主线程创建（独立线程会 panic，实测 2026-08-17），
+//! 故守护进程主线程 = eframe 事件循环宿主：轮询 `open_settings` 标志，
+//! 语言栏菜单「设置」（管道 `OpenSettings`）置位后主线程 `run_settings` 弹窗
+//! （阻塞至关窗，关窗后继续后台常驻轮询）。管道/共享段在独立线程，不受影响。
 //!
 //! 设置项（保存 → 写 config.json → bump config_epoch 广播给会话进程）：
 //! 主题（浅色/深色）、按键直通名单（passthrough_apps）、用户库管理（列表 + 清除全部）、
-//! 键位自定义（**灰置占位，M7**）。绝不 panic：线程体包 `catch_unwind`，失败只记日志。
+//! 键位自定义（**灰置占位，M7**）。绝不 panic：run_settings 包 `catch_unwind`。
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -21,54 +19,8 @@ use crate::config;
 use crate::log;
 use crate::state::DaemonState;
 
-/// 设置窗口线程名。
-const THREAD_NAME: &str = "iuv-settings";
-
-/// 打开/唤出设置窗口（托盘菜单入口；可在主线程调用）。
-pub fn open(state: &Arc<DaemonState>) {
-    let has_window = state
-        .settings_ctx
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .is_some();
-    if has_window {
-        // 已有窗口：显示（可能被最小化）+ 重绘。
-        if let Some(ctx) = state
-            .settings_ctx
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-        {
-            let _ = ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.request_repaint();
-        }
-        return;
-    }
-    spawn(state.clone());
-}
-
-/// 起设置窗口线程。线程体绝不 panic（catch_unwind 兜底，失败记日志）。
-fn spawn(state: Arc<DaemonState>) {
-    let spawned = std::thread::Builder::new()
-        .name(THREAD_NAME.to_string())
-        .spawn(move || {
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _ = run_settings(&state);
-            }));
-            if r.is_err() {
-                log::log_line("[settings] 设置窗口线程 panic（已捕获）");
-            }
-            // 线程结束：清 ctx（供 open() 判断重建窗口）。
-            *state.settings_ctx.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        });
-    match spawned {
-        Ok(_) => log::log_line("[settings] 设置窗口线程已启动"),
-        Err(e) => log::log_line(&format!("[settings] 启动设置窗口线程失败: {e}")),
-    }
-}
-
-/// eframe 窗口主体（阻塞直到窗口关闭）。
-fn run_settings(state: &Arc<DaemonState>) -> eframe::Result {
+/// eframe 窗口主体（阻塞直到窗口关闭；主线程调用）。返回 Ok(()) = 正常关闭。
+pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([420.0, 560.0])
@@ -77,11 +29,62 @@ fn run_settings(state: &Arc<DaemonState>) -> eframe::Result {
         ..Default::default()
     };
     let state = state.clone();
-    eframe::run_native(
-        "iuv 设置",
-        options,
-        Box::new(move |_cc| Ok(Box::new(SettingsApp::new(state)))),
-    )
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eframe::run_native(
+            "iuv 设置",
+            options,
+            Box::new(move |cc| {
+                install_cjk_font(&cc.egui_ctx);
+                Ok(Box::new(SettingsApp::new(state)))
+            }),
+        )
+    }));
+    match r {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            log::log_line(&format!("[settings] eframe 运行错误: {e}"));
+            Err(e.to_string())
+        }
+        Err(_) => {
+            log::log_line("[settings] eframe 主线程 panic（已捕获）");
+            Err("eframe panic".into())
+        }
+    }
+}
+
+/// 注入系统中文字体（egui 内置字体不含 CJK 字形——中文显示为豆腐块，2026-08-17 实测）。
+/// Proportional 与 Monospace 两族末尾追加为 fallback（设置页用户库列表用 monospace）。
+/// 找不到字体 → 记日志，维持默认字体（仅异常环境中文乱码）。
+fn install_cjk_font(ctx: &egui::Context) {
+    let Some(bytes) = load_cjk_font_bytes() else {
+        log::log_line("[settings] 未找到系统中文字体，设置页用默认字体（中文可能乱码）");
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .font_data
+        .insert("iuv-cjk".to_owned(), egui::FontData::from_owned(bytes).into());
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("iuv-cjk".to_owned());
+    }
+    ctx.set_fonts(fonts);
+    log::log_line("[settings] 已注入系统中文字体（微软雅黑等）");
+}
+
+/// 定位系统中文字体文件（WINDIR\Fonts 候选，取第一个存在；TTC 由 ab_glyph 取首 face）。
+fn load_cjk_font_bytes() -> Option<Vec<u8>> {
+    let windir = std::env::var("WINDIR").ok()?;
+    for name in ["msyh.ttc", "msyh.ttf", "Deng.ttf", "simsun.ttc", "simhei.ttf"] {
+        let path = std::path::PathBuf::from(&windir).join("Fonts").join(name);
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                log::log_line(&format!("[settings] 使用中文字体：{path:?}"));
+                return Some(bytes);
+            }
+            Err(_) => continue,
+        }
+    }
+    None
 }
 
 /// 设置页 UI 状态。

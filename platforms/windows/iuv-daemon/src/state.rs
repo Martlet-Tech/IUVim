@@ -26,6 +26,10 @@ pub struct DaemonState {
     pub settings_ctx: Mutex<Option<egui::Context>>,
     /// 退出信号：主线程置位 → 设置线程收到后关闭窗口。
     pub close_settings: AtomicBool,
+    /// 语言栏菜单「设置」命令：主线程轮询发现后 run_settings 弹窗（egui 常驻线程）。
+    pub open_settings: AtomicBool,
+    /// 语言栏菜单/卸载「退出」命令：主线程轮询发现后退出主循环。
+    pub quit_flag: AtomicBool,
     /// 当前配置快照（设置页保存后更新；托盘菜单主题读取）。
     pub config: Mutex<DaemonConfig>,
     /// 用户库文件路径（写盘目标）。
@@ -45,6 +49,8 @@ impl DaemonState {
             dirty: AtomicBool::new(false),
             settings_ctx: Mutex::new(None),
             close_settings: AtomicBool::new(false),
+            open_settings: AtomicBool::new(false),
+            quit_flag: AtomicBool::new(false),
             config: Mutex::new(config),
             user_dict_path,
         })

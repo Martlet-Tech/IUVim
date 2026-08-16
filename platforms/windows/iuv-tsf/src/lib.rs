@@ -9,7 +9,6 @@ pub mod langbar;
 pub mod log;
 pub mod registration;
 pub mod session_bridge;
-pub mod tray;
 pub mod ui;
 pub mod ui_element;
 

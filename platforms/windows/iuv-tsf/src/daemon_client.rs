@@ -89,11 +89,6 @@ impl DaemonClient {
         }
     }
 
-    /// 托盘托管判定（M6）：daemon 在线 → 会话进程不托管托盘（守护进程托管）。
-    pub fn should_host_tray(&self) -> bool {
-        !self.daemon_online()
-    }
-
     /// 轮询共享段（text_service 每键 handle_key_down 最前部调用；低成本：读 u32 版本）。
     ///
     /// 逻辑（22-m6-daemon.md「会话进程客户端对接规格」）：
@@ -444,15 +439,12 @@ mod tests {
         );
     }
 
-    /// 未运行 daemon 时 should_host_tray = true（会话可托管托盘）；poll 离线返回 false。
+    /// 离线路径不 panic（假设 daemon 未运行/管道名固定不可假名——仅断言分支可达）。
     #[cfg(windows)]
     #[test]
     fn offline_degrade_paths() {
-        // 注意：本测试假设 daemon 未运行（CI/开发机常态）。若 daemon 运行中会失败——
-        // 用临时假名不可行（管道名固定），仅断言不 panic + 分支可达。
         let client = DaemonClient::new(std::env::temp_dir().join("offline.imedic"));
         let engine = Arc::new(Engine::new(Dict::default(), Config::default()));
         let _ = client.poll(&engine, |_| {});
-        let _ = client.should_host_tray();
     }
 }

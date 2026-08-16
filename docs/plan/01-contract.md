@@ -588,7 +588,7 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
 | `iuv-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs` | **Agent E** | W1（M4 起 gdi.rs → `candwin.rs`，渲染层归 iuv-ui） |
 | `crates/iuv-ui/**` | 主智能体 | M4 已实现（2026-08-16） |
 | `iuv-tsf/src/ui/candwin.rs` | 主智能体 | M4 已实现（D2D/DComp 呈现） |
-| `iuv-tsf/src/tray.rs`、`src/ui/menu_window.rs` | 主智能体 | M5 已实现 |
+| `iuv-tsf/src/langbar.rs`（右键菜单部分） | 主智能体 | M5 已实现（语言栏右键菜单，2026-08-17 重定义） |
 | `iuv-data/src/{shm,ipc}.rs`、`iuv-daemon/**` | 主智能体 | M6 已实现 |
 | `iuv-tsf/src/daemon_client.rs` | 主智能体 | M6 已实现 |
 | `iuv-tsf/src/{lib,registration,log,session_bridge,composition,langbar}.rs`、`com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、`Cargo.toml` 内 winres 配置 | **Agent D** | W1 |

@@ -1,27 +1,27 @@
-//! D2D 1.1 + DirectComposition 候选窗实现（M4 起，替代 gdi.rs）。
+//! UpdateLayeredWindow 候选窗实现（M4 起，2026-08-17 定稿为 ULW 路线）。
 //! 契约 01-contract.md §5、任务书 14-mod-iuv-tsf-candwin.md、19-m4-cross-render.md §3。
 //! 无边框 / 置顶 / **不抢焦点**（`WS_EX_NOACTIVATE` + `SW_SHOWNA`，绝不 `SetForegroundWindow`/`SetFocus`）；
-//! 呈现 = iuv-ui（tiny-skia + cosmic-text）软件光栅 → D2D 1.1 DeviceContext 直供
-//! DirectComposition surface → DWM per-pixel 透明合成（真透明圆角/阴影）；
+//! 呈现 = iuv-ui（tiny-skia + cosmic-text）软件光栅 premultiplied BGRA →
+//! `WS_EX_LAYERED` + `UpdateLayeredWindow`（ULW_ALPHA）交 DWM per-pixel 合成
+//! （真透明圆角/阴影）。**无任何 GPU 设备依赖**（D3D11/D2D/DComp 路线已弃——
+//! DComp 关联 D2D 的 BeginDraw 恒 E_INVALIDARG，且 D2D↔DComp surface 互操作
+//! CreateBitmapFromDxgiSurface 亦 E_INVALIDARG，2026-08-17 实测，见 19-m4 §5）。
 //! 全部对外方法不返回错误：任何失败静默降级（隐藏窗口 / 不显示），**绝不 panic**。
 //!
-//! 渲染管线（每帧 show/update/WM_PAINT 统一走 `paint`）：
+//! 渲染管线（每帧 show/update/悬停重绘统一走 `present`）：
 //! 1. `scale = dpi/96`（LOGPIXELSY 路径，同 gdi.rs）
 //! 2. `iuv_ui::render_candidate(&snap, &theme, scale, &mut text)` → `Surface`
 //!    （premultiplied BGRA，尺寸含阴影外缘）
-//! 3. surface 尺寸变化 → `IDCompositionDevice::CreateSurface(w, h,
-//!    DXGI_FORMAT_B8G8R8A8_UNORM_PREMULTIPLIED, DXGI_ALPHA_MODE_PREMULTIPLIED)`，
-//!    `visual->SetContent(surface)`
-//! 4. `surface->BeginDraw` → `ID2D1DeviceContext::CreateBitmap`（内存像素直供，1:1）
-//!    → `DrawBitmap` → 释放 ctx → `surface->EndDraw()` → `device->Commit()`
-//!
-//! 初始化失败路径：D3D11 硬件设备失败 → WARP 软件兜底 → 再失败 → `degraded`
-//! （候选窗永不显示，输入法主体不受影响）。全部失败记日志，绝不 panic。
+//! 3. 尺寸变化 → 重建 DIB section（32bpp 自顶向下，内存序 BGRA 与 Surface 一致）
+//! 4. `UpdateLayeredWindow(hwnd, dst=桌面, &pt{窗口位置}, &size, hdc_src(DIB),
+//!    &pt{0,0}, 0, &blend{AC_SRC_OVER, 255, AC_SRC_ALPHA}, ULW_ALPHA)`
+//!    ——一次调用同时定位 + 定尺寸 + 上屏；DWM per-pixel alpha 合成。
 //!
 //! 已知限制（M4 接受，见任务书 §5 槽位）：
 //! - 主题在装配时注入（config 读一次）；config 热改深色切换不做（M6 设置页做重载）。
 //! - DPI 变化不监听（冻结 feature 集无 HiDpi）：每帧按 LOGPIXELSY 现取。
 //! - 窗口必须由调用线程创建/销毁（TSF 回调线程有消息循环，成立）；`Drop` 需在同一线程。
+//! - Layered 窗口全量重传（~300×200 每键一次，性能无虞）；无效果器（阴影由 iuv-ui 软件画）。
 
 use std::mem::size_of;
 use std::sync::OnceLock;
@@ -31,70 +31,45 @@ use iuv_ui::layout::{Area, Rect};
 use iuv_ui::{hit_test, render_candidate, update_position, TextRenderer, Theme, FONT_PX_96};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    GetLastError, COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE,
+    WPARAM,
 };
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+use windows::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+    BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB, AC_SRC_ALPHA, AC_SRC_OVER,
+    BLENDFUNCTION, HBITMAP, HDC, RGBQUAD,
 };
-use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateDevice, ID2D1Device, ID2D1DeviceContext, D2D1_BITMAP_PROPERTIES1,
-    D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
-};
-use windows::Win32::Graphics::Direct3D::{
-    D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0,
-    D3D_FEATURE_LEVEL_11_1,
-};
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
-};
-use windows::Win32::Graphics::DirectComposition::{
-    DCompositionCreateDevice, IDCompositionDevice, IDCompositionSurface, IDCompositionTarget,
-    IDCompositionVisual,
-};
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM,
-};
-use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect,
     RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW,
-    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HTCLIENT, HTTRANSPARENT, MA_NOACTIVATE, SPI_GETWORKAREA,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST,
-    WM_PAINT, WM_RBUTTONDOWN, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HTCLIENT, HTTRANSPARENT,
+    MA_NOACTIVATE, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, ULW_ALPHA, WM_ERASEBKGND, WM_LBUTTONDOWN,
+    WM_MBUTTONDOWN, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
-use windows_core::Interface;
 
 const CLASS_NAME: PCWSTR = w!("IuvCandidateWindow");
 
 /// 主字号（px @96dpi）；dpi 缩放由每帧 scale 处理。
 const FONT_PX: f32 = FONT_PX_96;
 
-/// D2D/DComp 渲染资源（与窗口同生命周期）。
-/// 字段声明序 = 释放逆序（surface → visual → target → dcomp device → d2d → d3d）；
-/// windows-rs 对象 drop 即 COM 引用计数释放，顺序仅为整洁约束。
-struct RenderState {
-    /// 合成 surface（首次上屏时创建；尺寸变化时重建 + 重挂 SetContent）。
-    surface: Option<IDCompositionSurface>,
-    visual: IDCompositionVisual,
-    /// 目标/设备句柄：初始化后只做持有（COM 引用计数保证 DWM 侧引用有效），不直接读写。
-    #[allow(dead_code)]
-    target: IDCompositionTarget,
-    device: IDCompositionDevice,
-    /// 设备句柄：只做持有（每帧 DeviceContext 由 BeginDraw 产出，无需预建）。
-    #[allow(dead_code)]
-    d2d: ID2D1Device,
-    /// 设备句柄：只做持有（D3D 设备生命周期必须长于 D2D/DComp）。
-    #[allow(dead_code)]
-    d3d: ID3D11Device,
-    /// 当前 surface 尺寸（变化时重建 surface + 重挂 SetContent）。
-    surface_w: u32,
-    surface_h: u32,
+/// ULW 呈现缓存：内存 DC + 32bpp 自顶向下 DIB section（内存序 BGRA 与 iuv-ui
+/// Surface 一致，premultiplied 直拷）。尺寸变化时重建。
+struct UlwState {
+    hdc_src: HDC,
+    dib: HBITMAP,
+    /// DIB 像素基址（bits 由 GDI 分配；配合 w/h 使用，生命周期同 dib）。
+    bits: *mut u8,
+    w: u32,
+    h: u32,
 }
 
-/// D2D/DComp 自绘候选窗：无边框、置顶、不抢焦点、真透明圆角/阴影。
+// SAFETY: UlwState 仅在创建线程使用（TSF 回调线程），bits 指针不跨线程传递。
+unsafe impl Send for UlwState {}
+
+/// ULW 自绘候选窗：无边框、置顶、不抢焦点、真透明圆角/阴影。
 /// `new(theme)` 不建窗；首次 `show` 懒建（窗口必须建在调用线程）。
 pub struct CandwinCandidateWindow {
     hwnd: HWND,
@@ -115,10 +90,8 @@ pub struct CandwinCandidateWindow {
     theme: Theme,
     /// 文本渲染器（fontdb 首扫只在窗口创建时一次；每帧 measure+draw 复用）。
     text: Option<TextRenderer>,
-    /// D2D/DComp 资源（窗口创建时初始化；失败 = degraded，候选窗永不显示）。
-    render: Option<RenderState>,
-    /// 渲染资源创建失败：show/update 静默（维持"绝不 panic"哲学，输入法不受影响）。
-    degraded: bool,
+    /// ULW 呈现缓存（窗口创建时初始化；失败 = 候选窗不显示）。
+    ulw: Option<UlwState>,
 }
 
 impl CandwinCandidateWindow {
@@ -135,8 +108,7 @@ impl CandwinCandidateWindow {
             suppressed: false,
             theme,
             text: None,
-            render: None,
-            degraded: false,
+            ulw: None,
         }
     }
 
@@ -150,17 +122,11 @@ impl CandwinCandidateWindow {
         self.hover = cb;
     }
 
-    /// M6 热载主题（config_epoch 变化 → 设置页保存后触发）：存字段，下帧 paint 生效；
-    /// 窗口已建 → 触发重绘（即时切换，无需重载输入法）。
+    /// M6 热载主题（config_epoch 变化 → 设置页保存后触发）：存字段 + 原位重绘
+    /// （即时切换，无需重载输入法）。
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
-        if !self.hwnd.is_invalid() {
-            // SAFETY: InvalidateRect/UpdateWindow 触发 WM_PAINT（paint 用新主题全量重渲染）。
-            let _ = unsafe {
-                windows::Win32::Graphics::Gdi::InvalidateRect(Some(self.hwnd), None, false)
-            };
-            let _ = unsafe { windows::Win32::Graphics::Gdi::UpdateWindow(self.hwnd) };
-        }
+        self.repaint();
     }
 
     /// 进程内注册一次窗口类；失败（非"已注册"）记日志，不 panic。
@@ -210,8 +176,8 @@ impl CandwinCandidateWindow {
         }
     }
 
-    /// 懒建窗口 + 渲染资源（D3D11 → D2D1.1 → DComp + TextRenderer）。
-    /// 失败仅记日志并保持 `hwnd` 无效 / `degraded`（后续调用静默降级）。
+    /// 懒建窗口 + 文本渲染器（ULW 呈现缓存随首次 present 建立，无设备初始化）。
+    /// 失败仅记日志并保持 `hwnd` 无效（后续调用静默降级）。
     fn ensure_window(&mut self) {
         if !self.hwnd.is_invalid() {
             return;
@@ -223,10 +189,12 @@ impl CandwinCandidateWindow {
             crate::log::log_line("[candwin] GetModuleHandleW 失败");
             return;
         }
-        // SAFETY: WS_EX_TOPMOST|TOOLWINDOW|NOACTIVATE 保证置顶且不抢焦点；WS_POPUP 无边框
+        // SAFETY: WS_EX_TOPMOST|TOOLWINDOW|NOACTIVATE 保证置顶且不抢焦点；
+        // WS_EX_LAYERED = per-pixel alpha 合成（UpdateLayeredWindow 前置条件）；
+        // WS_POPUP 无边框。
         let hwnd = unsafe {
             CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
                 CLASS_NAME,
                 PCWSTR::null(),
                 WS_POPUP,
@@ -252,15 +220,6 @@ impl CandwinCandidateWindow {
 
         // TextRenderer：fontdb 首扫系统字体（几十 ms，仅窗口创建时一次，可接受）。
         self.text = Some(TextRenderer::new());
-
-        // D2D/DComp 渲染资源：硬件失败 → WARP 兜底 → 再失败 → degraded（永不显示）。
-        match create_render_state(hwnd) {
-            Some(state) => self.render = Some(state),
-            None => {
-                self.degraded = true;
-                crate::log::log_line("[candwin] D2D/DComp 初始化失败：候选窗降级隐藏（不显示）");
-            }
-        }
     }
 
     /// 渲染当前 snapshot → Surface（含阴影外缘尺寸；失败返回 None）。
@@ -328,7 +287,8 @@ impl CandwinCandidateWindow {
         }
     }
 
-    /// 按当前 snapshot 重算尺寸 → 定位（caret 或原位）→ 无激活移动 → 同步上屏。
+    /// 按当前 snapshot 重算尺寸 → 定位（caret 或原位）→ ULW 上屏
+    /// （一次调用同时定位 ptDst + 定尺寸 psize + per-pixel alpha 合成）。
     fn apply_layout_and_pos(&mut self, caret: Option<CaretRect>) {
         let Some(surf) = self.frame() else {
             return;
@@ -350,240 +310,166 @@ impl CandwinCandidateWindow {
                 )
             }
         };
-        // SAFETY: 仅移动/改尺寸，不激活（SWP_NOACTIVATE），保持 z 序（置顶组内不变）
-        let _ = unsafe { SetWindowPos(self.hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER) };
-        self.upload(&surf);
+        self.present(&surf, x, y, w, h);
     }
 
-    /// Surface → DComp surface（首次/尺寸变化时创建 + 重挂 SetContent）→ 上屏。
-    /// 失败记日志，静默降级（不 panic）。
-    fn upload(&mut self, surf: &iuv_ui::Surface) {
-        let Some(state) = self.render.as_mut() else {
-            return;
-        };
-        if state.surface.is_none() || state.surface_w != surf.w || state.surface_h != surf.h {
-            // SAFETY: 创建/重建合成 surface：DWM 合成 per-pixel 透明
-            // （DXGI_ALPHA_MODE_PREMULTIPLIED；格式 B8G8R8A8_UNORM 即 premultiplied 载体，
-            // windows-rs 无 *_PREMULTIPLIED 常量——DXGI 语义由 alpha mode 表达）。
-            match unsafe {
-                state.device.CreateSurface(
-                    surf.w,
-                    surf.h,
-                    DXGI_FORMAT_B8G8R8A8_UNORM,
-                    DXGI_ALPHA_MODE_PREMULTIPLIED,
-                )
-            } {
-                Ok(surface) => {
-                    // SAFETY: 视觉树内容 = surface（DWM 直读像素缓冲）
-                    if unsafe { state.visual.SetContent(&surface) }.is_err() {
-                        crate::log::log_line("[candwin] SetContent 失败");
-                        return;
-                    }
-                    state.surface = Some(surface);
-                    state.surface_w = surf.w;
-                    state.surface_h = surf.h;
-                }
-                Err(e) => {
-                    crate::log::log_line(&format!("[candwin] CreateSurface 失败：{e:?}"));
-                    return;
-                }
-            }
-        }
-        let Some(surface) = state.surface.as_ref() else {
-            return;
-        };
-        // SAFETY: BeginDraw 返回 ID2D1DeviceContext（iid 由 windows-rs 泛型填充）；
-        // ctx 在 EndDraw 前释放（作用域块），updateoffset 输出本次更新的原点。
-        let mut offset = POINT::default();
-        let ctx: ID2D1DeviceContext = match unsafe { surface.BeginDraw(None, &mut offset) } {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                crate::log::log_line(&format!("[candwin] BeginDraw 失败：{e:?}"));
-                return;
-            }
-        };
-        {
-            let props = D2D1_BITMAP_PROPERTIES1 {
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                ..Default::default()
-            };
-            let size = D2D_SIZE_U {
-                width: surf.w,
-                height: surf.h,
-            };
-            // SAFETY: iuv-ui Surface 契约 = premultiplied BGRA、无 stride 填充 → 直供 1:1
-            let bitmap = match unsafe {
-                ctx.CreateBitmap(
-                    size,
-                    Some(surf.pixels.as_ptr() as *const core::ffi::c_void),
-                    surf.w * 4,
-                    &props,
-                )
-            } {
-                Ok(b) => b,
-                Err(e) => {
-                    crate::log::log_line(&format!("[candwin] CreateBitmap 失败：{e:?}"));
-                    let _ = unsafe { surface.EndDraw() };
-                    return;
-                }
-            };
-            let dest = D2D_RECT_F {
-                left: offset.x as f32,
-                top: offset.y as f32,
-                right: offset.x as f32 + surf.w as f32,
-                bottom: offset.y as f32 + surf.h as f32,
-            };
-            // SAFETY: 1:1 像素映射（NEAREST_NEIGHBOR 禁插值，与 iuv-ui 像素精确对应）
-            let _ = unsafe {
-                ctx.DrawBitmap(
-                    &bitmap,
-                    Some(&dest),
-                    1.0,
-                    D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
-                    None,
-                    None,
-                )
-            };
-        }
-        // ctx 已释放 → EndDraw → Commit（DWM 合成一帧）
-        if unsafe { surface.EndDraw() }.is_err() {
-            crate::log::log_line("[candwin] EndDraw 失败");
+    /// 原位重绘（悬停高亮 / 主题热载）：读当前窗口矩形 → 渲染 → ULW 上屏。
+    fn repaint(&mut self) {
+        if self.hwnd.is_invalid() || !self.visible {
             return;
         }
-        if unsafe { state.device.Commit() }.is_err() {
-            crate::log::log_line("[candwin] Commit 失败");
-        }
-    }
-
-    /// WM_PAINT 统一入口：重渲染当前 snapshot → 防御性尺寸对齐 → 上屏。
-    /// BeginPaint/EndPaint 由调用方（wnd_proc）负责校验区管理。
-    fn paint(&mut self) {
         let Some(surf) = self.frame() else {
             return;
         };
-        // 防御：尺寸与窗口矩形不一致（理论不发生，WM_PAINT 迟到）→ 先改窗尺寸再上屏
         // SAFETY: GetWindowRect 读当前窗口矩形
         let mut rc = RECT::default();
-        if unsafe { GetWindowRect(self.hwnd, &mut rc) }.is_ok() {
-            let w = (rc.right - rc.left) as u32;
-            let h = (rc.bottom - rc.top) as u32;
-            if w != surf.w || h != surf.h {
-                // SAFETY: 仅改尺寸，不激活（SWP_NOACTIVATE），保持 z 序
-                let _ = unsafe {
-                    SetWindowPos(
-                        self.hwnd,
-                        None,
-                        rc.left,
-                        rc.top,
-                        surf.w as i32,
-                        surf.h as i32,
-                        SWP_NOACTIVATE | SWP_NOZORDER,
-                    )
-                };
-            }
+        if unsafe { GetWindowRect(self.hwnd, &mut rc) }.is_err() {
+            return;
         }
-        self.upload(&surf);
+        self.present(
+            &surf,
+            rc.left,
+            rc.top,
+            rc.right - rc.left,
+            rc.bottom - rc.top,
+        );
     }
-}
 
-/// 创建 D3D11（硬件 → WARP 兜底）+ D2D1.1 设备 + DComp 设备/目标/视觉。
-/// 失败返回 None（调用方置 degraded，候选窗永不显示）。
-fn create_render_state(hwnd: HWND) -> Option<RenderState> {
-    // SAFETY: D3D11CreateDevice 标准创建设备调用；NULL adapter = 首选硬件。
-    // BGRA_SUPPORT 是 D2D 互操作的硬性要求（D2D1CreateDevice 前必须置位）。
-    let mut d3d: Option<ID3D11Device> = None;
-    let mut last = None;
-    for driver in [D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP] {
-        last = Some(driver);
+    /// ULW 呈现：确保 DIB（尺寸变化重建）→ 拷贝 premultiplied BGRA → 上屏。
+    /// 失败记日志，静默降级（不 panic）。
+    fn present(&mut self, surf: &iuv_ui::Surface, x: i32, y: i32, w: i32, h: i32) {
+        if self.hwnd.is_invalid() || w <= 0 || h <= 0 {
+            return;
+        }
+        if !self.ensure_dib(surf) {
+            return;
+        }
+        let Some(ulw) = self.ulw.as_ref() else {
+            return;
+        };
+        // 像素直拷（DIB 内存序 BGRA 与 iuv-ui Surface 一致，无 stride 填充）
+        // SAFETY: bits 由 ensure_dib 以 surf 尺寸创建，拷贝长度 = surf 全量，不越界。
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                surf.pixels.as_ptr(),
+                ulw.bits,
+                (surf.w as usize) * (surf.h as usize) * 4,
+            );
+        }
+        // SAFETY: hdcDst = 桌面 DC（DWM 合成目标）；ULW_ALPHA + AC_SRC_ALPHA =
+        // per-pixel premultiplied 合成；ptDst 屏幕坐标定位；psize 窗口尺寸（ULW 同步调整）。
+        let dst = POINT { x, y };
+        let size = SIZE { cx: w, cy: h };
+        let src = POINT { x: 0, y: 0 };
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        let hdc_dst = unsafe { GetDC(None) };
+        if hdc_dst.is_invalid() {
+            crate::log::log_line("[candwin] GetDC(桌面) 失败");
+            return;
+        }
         let r = unsafe {
-            D3D11CreateDevice(
-                Option::<&IDXGIAdapter>::None,
-                driver,
-                windows::Win32::Foundation::HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                Some(&[
-                    D3D_FEATURE_LEVEL_11_1,
-                    D3D_FEATURE_LEVEL_11_0,
-                    D3D_FEATURE_LEVEL_10_0,
-                ]),
-                D3D11_SDK_VERSION,
-                Some(&mut d3d as *mut Option<ID3D11Device>),
-                None,
-                None,
+            UpdateLayeredWindow(
+                self.hwnd,
+                Some(hdc_dst),
+                Some(&dst),
+                Some(&size),
+                Some(ulw.hdc_src),
+                Some(&src),
+                COLORREF(0),
+                Some(&blend),
+                ULW_ALPHA,
             )
         };
-        if r.is_ok() {
-            break;
+        // SAFETY: GetDC/ReleaseDC 配对
+        let _ = unsafe { ReleaseDC(None, hdc_dst) };
+        if r.is_err() {
+            crate::log::log_line(&format!(
+                "[candwin] UpdateLayeredWindow 失败：{:?}",
+                r.unwrap_err()
+            ));
         }
     }
-    let d3d = match d3d {
-        Some(d) => d,
-        None => {
-            crate::log::log_line(&format!(
-                "[candwin] D3D11CreateDevice 失败（{last:?} 与 WARP 均不可用）"
-            ));
-            return None;
+
+    /// 确保 DIB section 匹配 surf 尺寸（变化重建：内存 DC + 32bpp 自顶向下 DIB，
+    /// bits 直拷 premultiplied BGRA）。失败返回 false（记日志，不 panic）。
+    fn ensure_dib(&mut self, surf: &iuv_ui::Surface) -> bool {
+        let need = match self.ulw.as_ref() {
+            Some(ulw) => ulw.w != surf.w || ulw.h != surf.h,
+            None => true,
+        };
+        if !need {
+            return true;
         }
-    };
-    // SAFETY: ID3D11Device → IDXGIDevice（D2D/DComp 都吃 DXGI 设备）
-    let dxgi: IDXGIDevice = match d3d.cast() {
-        Ok(d) => d,
-        Err(e) => {
-            crate::log::log_line(&format!("[candwin] 获取 IDXGIDevice 失败：{e:?}"));
-            return None;
+        // 释放旧 DIB/DC（先删 DC——选中对象不受影响；再删 DIB 对象）。
+        if let Some(ulw) = self.ulw.take() {
+            // SAFETY: DeleteDC 释放内存 DC；DIB 对象随后独立 DeleteObject（DC 已不引用）。
+            unsafe {
+                let _ = DeleteDC(ulw.hdc_src);
+                let _ = DeleteObject(ulw.dib.into());
+            }
         }
-    };
-    // SAFETY: D2D1CreateDevice 标准调用（D2D1.1 路径，无需 D2D1CreateFactory）
-    let d2d: ID2D1Device = match unsafe { D2D1CreateDevice(&dxgi, None) } {
-        Ok(d) => d,
-        Err(e) => {
-            crate::log::log_line(&format!("[candwin] D2D1CreateDevice 失败：{e:?}"));
-            return None;
+        // 新建内存 DC。
+        // SAFETY: CreateCompatibleDC(None) 以桌面 DC 为模板创建内存 DC。
+        let hdc = unsafe { CreateCompatibleDC(None) };
+        if hdc.is_invalid() {
+            crate::log::log_line("[candwin] CreateCompatibleDC 失败");
+            return false;
         }
-    };
-    // SAFETY: DCompositionCreateDevice 标准调用；返回类型泛型指定 IDCompositionDevice
-    let device: IDCompositionDevice =
-        match unsafe { DCompositionCreateDevice::<_, IDCompositionDevice>(&dxgi) } {
+        // 32bpp 自顶向下（biHeight 负数）；内存序 = BGRA little-endian，与 iuv-ui 一致。
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: surf.w as i32,
+                biHeight: -(surf.h as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            bmiColors: [RGBQUAD::default(); 1],
+        };
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: bmi 与 bits 输出在调用期间有效；DIB_RGB_COLORS 平台调色板；无文件映射。
+        let dib = match unsafe {
+            CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+        } {
             Ok(d) => d,
             Err(e) => {
-                crate::log::log_line(&format!("[candwin] DCompositionCreateDevice 失败：{e:?}"));
-                return None;
+                crate::log::log_line(&format!("[candwin] CreateDIBSection 失败：{e:?}"));
+                // SAFETY: DC 未选中任何对象，可立即删除。
+                unsafe {
+                    let _ = DeleteDC(hdc);
+                }
+                return false;
             }
         };
-    // SAFETY: topmost=true = 视觉树置顶合成（配合 WS_EX_TOPMOST 窗口）
-    let target: IDCompositionTarget = match unsafe { device.CreateTargetForHwnd(hwnd, true) } {
-        Ok(t) => t,
-        Err(e) => {
-            crate::log::log_line(&format!("[candwin] CreateTargetForHwnd 失败：{e:?}"));
-            return None;
+        if bits.is_null() {
+            crate::log::log_line("[candwin] CreateDIBSection 返回空位图指针");
+            // SAFETY: DIB 创建成功但无像素指针（理论不发生）：释放后降级。
+            unsafe {
+                let _ = DeleteObject(dib.into());
+                let _ = DeleteDC(hdc);
+            }
+            return false;
         }
-    };
-    // SAFETY: 视觉树根 = visual；surface 在首次上屏时创建并 SetContent
-    let visual: IDCompositionVisual = match unsafe { device.CreateVisual() } {
-        Ok(v) => v,
-        Err(e) => {
-            crate::log::log_line(&format!("[candwin] CreateVisual 失败：{e:?}"));
-            return None;
+        // SAFETY: 选中 DIB 到内存 DC（ULW 的 hdcSrc 数据源）。
+        unsafe {
+            let _ = SelectObject(hdc, dib.into());
         }
-    };
-    if unsafe { target.SetRoot(&visual) }.is_err() {
-        crate::log::log_line("[candwin] SetRoot 失败");
-        return None;
+        self.ulw = Some(UlwState {
+            hdc_src: hdc,
+            dib,
+            bits: bits as *mut u8,
+            w: surf.w,
+            h: surf.h,
+        });
+        true
     }
-    Some(RenderState {
-        // surface 首次上屏时按真实尺寸创建（upload 尺寸分支）
-        surface: None,
-        visual,
-        target,
-        device,
-        d2d,
-        d3d,
-        surface_w: 0,
-        surface_h: 0,
-    })
 }
 
 /// 窗口所在显示器的物理工作区；失败兜底近乎全屏区域。
@@ -692,9 +578,6 @@ impl CandidateUi for CandwinCandidateWindow {
                 return; // 建窗失败：静默降级（绝不 panic）
             }
         }
-        if self.degraded {
-            return; // 渲染资源创建失败：静默不显示（输入法主体不受影响）
-        }
         self.apply_layout_and_pos(Some(caret));
         // SAFETY: SW_SHOWNA 显示但不激活——绝不抢焦点
         let _ = unsafe { ShowWindow(self.hwnd, SW_SHOWNA) };
@@ -706,14 +589,14 @@ impl CandidateUi for CandwinCandidateWindow {
             return; // IMM 应用：本窗静默
         }
         self.snap = snap.clone();
-        if self.hwnd.is_invalid() || !self.visible || self.degraded {
+        if self.hwnd.is_invalid() || !self.visible {
             return;
         }
         self.apply_layout_and_pos(None);
     }
 
     fn move_to(&mut self, caret: CaretRect) {
-        if self.hwnd.is_invalid() || !self.visible || self.degraded {
+        if self.hwnd.is_invalid() || !self.visible {
             return;
         }
         self.last_caret = Some(caret);
@@ -726,7 +609,7 @@ impl CandidateUi for CandwinCandidateWindow {
             let w = rc.right - rc.left;
             let h = rc.bottom - rc.top;
             let (x, y) = position_for(caret, w, h);
-            // SAFETY: 仅移动（SWP_NOSIZE），不激活
+            // SAFETY: 仅移动（SWP_NOSIZE），不激活；layered 窗口内容由 DWM 缓存随动
             let _ = SetWindowPos(
                 self.hwnd,
                 None,
@@ -774,8 +657,15 @@ impl Drop for CandwinCandidateWindow {
             };
             self.hwnd = HWND::default();
         }
-        // render / text 字段按声明序自然 drop（COM 引用计数释放，
-        // 顺序 surface → visual → target → device → d2d → d3d）。
+        // ULW 呈现缓存：先删内存 DC（选中对象不受影响），再删 DIB 对象。
+        if let Some(ulw) = self.ulw.take() {
+            // SAFETY: 同 ensure_dib 释放顺序（DC 已不引用 DIB）。
+            unsafe {
+                let _ = DeleteDC(ulw.hdc_src);
+                let _ = DeleteObject(ulw.dib.into());
+            }
+        }
+        // text 字段按声明序自然 drop。
     }
 }
 
@@ -841,13 +731,15 @@ fn get_self_mut(hwnd: HWND) -> Option<&'static mut CandwinCandidateWindow> {
     }
 }
 
-/// 类窗口过程：WM_PAINT 走 iuv-ui 渲染 + DComp 上屏（BeginPaint 校验区管理）；
-/// WM_ERASEBKGND 返回 1（DComp 合成窗口无 GDI 背景可擦）；
+/// 类窗口过程：WM_PAINT 只做 BeginPaint/EndPaint 校验区管理（ULW 内容不画窗口 DC，
+/// 每帧内容由 UpdateLayeredWindow 直接送 DWM 合成）；
+/// WM_ERASEBKGND 返回 1（layered 窗口无 GDI 背景可擦）；
 /// WM_NCHITTEST 按圆角几何判定（圆角外 HTTRANSPARENT 点击穿透）；
 /// 鼠标交互：WM_MOUSEACTIVATE 显式 MA_NOACTIVATE（点击候选窗绝不改变激活——
 /// 无 owner popup 的激活转移会让宿主（WinUI3 记事本实测）失活崩 TSF，2026-08-13）；
-/// WM_MOUSEMOVE 悬停命中 → 本地高亮 + 回调同步会话；WM_LBUTTONDOWN 命中 → 点击回调
-/// 选词上屏；其余鼠标消息一律吞掉（不回 DefWindowProc，杜绝默认行为）。
+/// WM_MOUSEMOVE 悬停命中 → 本地高亮 + 回调同步会话 + ULW 原位重绘；
+/// WM_LBUTTONDOWN 命中 → 点击回调选词上屏；其余鼠标消息一律吞掉
+/// （不回 DefWindowProc，杜绝默认行为）。
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -857,14 +749,11 @@ unsafe extern "system" fn wnd_proc(
     match msg {
         WM_PAINT => {
             // SAFETY: BeginPaint 仅允许在 WM_PAINT 内调用；hwnd 由消息循环保证有效。
-            // DComp 呈现不画进窗口 DC，但必须成对调用以校验更新区（防 WM_PAINT 风暴）。
+            // ULW 呈现不画进窗口 DC，但必须成对调用以校验更新区（防 WM_PAINT 风暴）。
             let mut ps = windows::Win32::Graphics::Gdi::PAINTSTRUCT::default();
             let hdc = windows::Win32::Graphics::Gdi::BeginPaint(hwnd, &mut ps);
             if !hdc.is_invalid() {
                 let _ = windows::Win32::Graphics::Gdi::EndPaint(hwnd, &ps);
-            }
-            if let Some(wnd) = get_self_mut(hwnd) {
-                wnd.paint();
             }
             LRESULT(0)
         }
@@ -898,10 +787,8 @@ unsafe extern "system" fn wnd_proc(
                         if let Some(cb) = wnd.hover.as_ref() {
                             cb(row);
                         }
-                        // SAFETY: 悬停行变化 → 本地重绘高亮（WM_PAINT 走全量重渲染）
-                        let _ =
-                            windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false);
-                        let _ = windows::Win32::Graphics::Gdi::UpdateWindow(hwnd);
+                        // SAFETY: 悬停行变化 → ULW 原位重绘高亮（无 WM_PAINT 依赖）
+                        wnd.repaint();
                     }
                 }
             }

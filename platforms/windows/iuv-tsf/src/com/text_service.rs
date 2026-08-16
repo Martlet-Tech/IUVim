@@ -191,10 +191,6 @@ pub(crate) struct TextService {
     /// IMM 应用检测（GetTextExt 退化矩形）：命中 → 抑制自绘候选窗（游戏自绘候选栏）。
     /// Rc 共享：dispatch 路径同线程访问（候选窗点击回调共用）。
     imm_detect: Rc<RefCell<ImmDetect>>,
-    /// M5 托盘宿主守卫（单实例：首个会话进程托管；None = 未启用/他进程已托管/失败）。
-    /// Deactivate 不撤托盘——随 TextService Drop 清理（TrayHost::drop → teardown）。
-    /// M6：daemon 在线时会话进程不托管（守护进程唯一托管）。
-    tray_host: RefCell<Option<crate::tray::TrayHost>>,
     /// M6 daemon 客户端（共享段读取 + 管道写；Arc 与引擎 UserRemote 共享）。
     /// Deactivate 不撤——随进程/实例生命周期（TextService Drop 释放）。
     daemon: RefCell<Option<Arc<DaemonClient>>>,
@@ -262,7 +258,6 @@ impl TextService {
             imm_detect,
             english_mode: Arc::new(AtomicBool::new(false)),
             lang_bar: RefCell::new(None),
-            tray_host: RefCell::new(None),
             daemon: RefCell::new(None),
             remote_registered: Cell::new(false),
         }
@@ -615,23 +610,6 @@ impl TextService_Impl {
         // 首次按键不再同步加载卡顿；加载完成前按键透明放行。
         start_engine_load();
 
-        // 挂载语言栏"中/英"切换图标（失败仅记日志，不影响输入法主体）。
-        // 点击归一为写 OPENCLOSE compartment（OnChange 统一响应）。
-        let lang_bar_com = ComObject::new(LangBarItemButton::new(
-            self.english_mode.clone(),
-            self.compartment
-                .borrow()
-                .as_ref()
-                .map(|(c, _)| (c.clone(), tid)),
-        ));
-        match langbar::add_to_lang_bar(ptim, &lang_bar_com) {
-            Ok(()) => {
-                *self.lang_bar.borrow_mut() = Some(lang_bar_com);
-                log_line("语言栏图标挂载成功");
-            }
-            Err(e) => log_line(&format!("语言栏图标挂载失败：{e:?}（不影响输入法）")),
-        }
-
         // M6 daemon 客户端装配：user_path = 现有 iuv.user.imedic 路径逻辑。共享段只读
         // 引用 + 管道写；daemon 不在线 → 引擎写路径自动降级本地写盘（绝不挂键）。
         // 引擎可能在后台加载未完成（engine()=None），远端写后端延迟到首键补注册
@@ -646,18 +624,28 @@ impl TextService_Impl {
         }
         *self.daemon.borrow_mut() = Some(daemon.clone());
 
-        // M5/M6 托盘：配置开启且 daemon 不在线 → 会话进程托管（daemon 在线由守护进程
-        // 唯一托管）。Deactivate 不撤托盘——托盘随进程/实例生命周期（TrayHost drop）。
-        let tray_cfg = iuv_core::Config::load();
-        *self.tray_host.borrow_mut() = if tray_cfg.tray_icon && daemon.should_host_tray() {
-            crate::tray::try_host()
-        } else {
-            None
+        // 挂载语言栏"中/英"切换图标（失败仅记日志，不影响输入法主体）。
+        // 点击归一为写 OPENCLOSE compartment（OnChange 统一响应）；右键弹自定义菜单
+        // （设置/关于，经 daemon 客户端发管道命令，2026-08-17 决策：无独立托盘图标）。
+        let menu_theme = match iuv_core::Config::load().theme {
+            iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
+            iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
         };
-        if self.tray_host.borrow().is_some() {
-            log_line("Activate：托盘图标已托管（daemon 离线，会话进程接管）");
-        } else if tray_cfg.tray_icon {
-            log_line("Activate：托盘未托管（daemon 在线 / 他进程已托管 / 建图标失败，静默）");
+        let lang_bar_com = ComObject::new(LangBarItemButton::new(
+            self.english_mode.clone(),
+            self.compartment
+                .borrow()
+                .as_ref()
+                .map(|(c, _)| (c.clone(), tid)),
+            daemon,
+            menu_theme,
+        ));
+        match langbar::add_to_lang_bar(ptim, &lang_bar_com) {
+            Ok(()) => {
+                *self.lang_bar.borrow_mut() = Some(lang_bar_com);
+                log_line("语言栏图标挂载成功");
+            }
+            Err(e) => log_line(&format!("语言栏图标挂载失败：{e:?}（不影响输入法）")),
         }
 
         log_line(&format!("Activate：tid={tid}"));

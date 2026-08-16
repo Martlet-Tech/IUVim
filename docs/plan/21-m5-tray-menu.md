@@ -1,87 +1,70 @@
-# 21 · 任务书 M5：托盘图标 + 右键菜单（新渲染层）
+# 21 · 任务书 M5：语言栏右键菜单（2026-08-17 重定义，去托盘）
 
-> 状态：**已实现**（2026-08-16 完成，待手测验收）。前置阅读：`00-overview.md`、`01-contract.md`、`19-m4-cross-render.md`（渲染栈）、`30-conventions.md`。
-> 范围决策（用户拍板）：第二轮做**托盘图标 + 右键菜单**（非候选窗右键菜单）；菜单用 M4 的
-> iuv-ui 渲染栈**自绘**（圆角/阴影/主题与候选窗一致）。设置页本身归 M6 守护进程。
+> 状态：**已实现**（2026-08-17 重定义后完成，待手测验收）。前置阅读：`00-overview.md`、`01-contract.md`、`19-m4-cross-render.md`、`30-conventions.md`。
+> **范围修正（2026-08-17 用户实测反馈）**：不做独立托盘图标——右键菜单挂在现有
+> 语言栏「中/英」按钮上（TSF 官方 `ITfLangBarItemButton::InitMenu` + `ITfMenu` 机制）。
+> 原 M5 方案（Shell_NotifyIcon 托盘 + iuv-ui 自绘菜单窗口）**已废弃**：自绘菜单窗口
+> 与托盘代码删除，iuv-ui `render_menu` 保留（候选窗右键菜单 M2 槽位未来可用）。
 
 ## 1. 目标（验收一句话）
 
-系统通知区出现 iuv 托盘图标，右键弹出**自绘菜单**（新建菜单窗口，iuv-ui 渲染：
-圆角/阴影/悬停高亮，与候选窗同风格），菜单项含「设置」（占位，M6 接）、「帮助/关于」、
-「退出」（退出托盘宿主进程）。全系统**有且只有一个**托盘图标。
+右键语言栏「中/英」按钮弹出菜单，含「设置」「关于」两项（**无退出**——输入法无退出
+语义，daemon 生命周期由卸载脚本管理）。「设置」→ 管道 `OpenSettings` 通知守护进程
+弹 egui 设置页；「关于」→ MessageBox 显示版本。
 
 ## 2. 背景与决策记录
 
-- 现状：中英状态图标在 TSF **语言栏**（langbar.rs），不是通知区托盘；语言栏与托盘是两条线。
-- 托盘图标属于进程级资源：TSF DLL 每进程加载，若每进程都 `Shell_NotifyIcon` → **N 个图标**。
-  必须单实例协调：托盘由**唯一宿主**持有（详见 §3 方案）。
-- 右键菜单用系统 `TrackPopupMenu`（Win32 原生菜单）也完全可行，但用户要求**新渲染层下**的
-  右键菜单 → 自绘菜单窗口：与候选窗共享 iuv-ui 主题/圆角/阴影，且为 M6 守护进程菜单打底
-  （守护进程内同样用 iuv-ui 自绘，不需要 Win32 菜单句柄管理）。
-- 菜单内容随 M6 扩展（设置页打开、词库管理入口等）；本轮只做骨架 + 占位项。
+- 原 M5 = Shell_NotifyIcon 托盘 + 自绘菜单（方案 A 单实例托管）——**2026-08-17 废弃**：
+  - 用户实测托盘/自绘菜单均不可见（根因见 19-m4 §5：DCompositionCreateDevice 未关联 D2D，
+    BeginDraw E_INVALIDARG），且用户明确「不要独立托盘图标，右键菜单应出现在现有中/英图标上」。
+- TSF 官方机制：语言栏按钮右键时，语言栏调用 `ITfLangBarItemButton::InitMenu(ITfMenu)`，
+  我们经 `ITfMenu::AddMenuItem` 添加自定义项，`OnMenuSelect(wid)` 分发选择。这是系统绘制
+  菜单（放弃自绘样式，换取系统集成与零渲染依赖）。
+- 语言栏「中/英」按钮每个激活的应用会话进程都有（TSF 语言栏），任意进程右键均可触发；
+  动作（设置）经命名管道发到唯一 daemon，天然单点。
+- 兜底：若实测 Win10/11 语言栏不调用 InitMenu（风险标注），退回
+  `OnClick(TF_LBI_CLK_RIGHT)` + 系统 `TrackPopupMenu`。
 
 ## 3. 架构
 
 ```
-crates/iuv-ui（复用 M4）
-└── menu.rs（新增）  自绘菜单组件：Menu 数据模型（条目/分隔线/子菜单预留）
-                      render(snapshot, theme, scale) -> Surface
-                      hit_test / 悬停高亮 / 点击回调节点；窗口管理不归 iuv-ui
-
-platforms/windows/iuv-tsf/src/tray.rs（新增，Windows 专有）
-├── 托盘图标：Shell_NotifyIcon(NIM_ADD) + 回调消息（WM_USER+n，挂现有 TSF 线程消息循环）
-├── 单实例协调：命名互斥 + 窗口枚举去重（详见 §3.1）
-└── 菜单窗口：MenuWindow（类候选窗的 HWND：置顶/NOACTIVATE/圆角外点击穿透）
-              右键弹出 → 显示 → 悬停高亮 → 点击回调 → 隐藏
+iuv-tsf/src/langbar.rs（ITfLangBarItemButton）
+├── InitMenu(ITfMenu)：AddMenuItem × 2——「设置」wid=1、「关于」wid=2
+└── OnMenuSelect(wid)：1 → DaemonClient.send_request(Request::OpenSettings)
+                       2 → MessageBoxW 关于
+iuv-data/src/ipc.rs：Request 新增 OpenSettings / Quit（编码 tag 0x06/0x07）
+iuv-daemon：主线程轮询 open_settings → eframe 设置窗；Quit → 干净退出
 ```
-
-### 3.1 托盘单实例方案（需拍板）
-
-| 方案 | 做法 | 权衡 |
-|---|---|---|
-| **A. 首个会话进程托管**（推荐） | 各会话进程创建互斥（命名互斥，如 `Global\iuv-tray-<user>`）；持有者才 `Shell_NotifyIcon`，其余进程检测到已存在即放弃；持有者退出/崩溃 → 互斥释放，后续进程接替 | 无新增进程；切换时机延迟可接受；实现 ~100 行 |
-| B. 轻量托盘宿主进程 | M5 先引入一个纯托盘 exe（只画图标+菜单，不持词库） | 提前触碰进程分离（M6 才做）；引入启动/退出管理复杂度 |
-| C. 挂在语言栏进程 | ctfmon 固定进程 | ctfmon 非 iuv 可控，跨版本行为不稳定，不取 |
-
-推荐 A：M5 不引入任何新进程，托盘图标由首个激活的会话进程托管，M6 守护进程接管后
-（守护进程成为唯一宿主）A 的机制自然退役。
-
-### 3.2 菜单项（本轮）
-
-- 「设置…」→ 占位（M6 打开设置页；本轮点击仅记日志/提示未实现）
-- 「帮助 / 关于」→ 弹自绘小窗或 MessageBox（简单文本）
-- 「退出 iuv」→ 退出托盘宿主（后续会话进程接替；输入法本身不卸载，按键照常）
 
 ## 4. 任务清单
 
-| # | 任务 | 产出/要点 |
+| # | 任务 | 状态 |
 |---|---|---|
-| 1 | iuv-ui menu.rs | 菜单数据模型 + render + hit_test + 像素级单测（圆角外 alpha=0、悬停高亮行正确） |
-| 2 | iuv-tsf tray.rs | Shell_NotifyIcon + 消息回调接线（现有 TSF 线程消息循环）；互斥单实例；销毁清理（NIM_DELETE） |
-| 3 | MenuWindow | 自绘菜单窗口（复用 candwin 窗口模式：置顶/NOACTIVATE/HTTRANSPARENT）；弹出定位（光标旁）、Esc/点击外部关闭 |
-| 4 | 装配 | text_service 激活时尝试接任托盘宿主（互斥判定）；配置项 `tray_icon: bool`（默认 true） |
-| 5 | demo/手测 | 托盘图标出现唯一性（开多进程验证）；菜单悬停/点击/关闭；退出后他进程接替 |
-| 6 | 文档同步 | 00-overview、01-contract（属主矩阵/配置）、AGENTS.md |
+| 1 | langbar InitMenu/OnMenuSelect | ✅ 设置/关于两项；DaemonClient 注入（Activate 时构造顺序调整） |
+| 2 | ipc.rs OpenSettings/Quit | ✅ tag 0x06/0x07 + 编解码 |
+| 3 | 删除托盘 | ✅ iuv-tsf/src/tray.rs、ui/menu_window.rs、config.tray_icon 全删 |
+| 4 | daemon 去托盘 | ✅ daemon tray.rs 删；主线程改命令轮询 + eframe 设置窗（主线程） |
+| 5 | 文档同步 | ✅ 本文 + 22/19/01/AGENTS |
 
 ## 5. 已知风险与取舍
 
-- 自绘菜单 vs 系统菜单：自绘与候选窗同风格但少系统集成（键盘导航/无障碍/系统主题联动）；
-  本轮接受，M6 设置页用 egui 控件后菜单如需系统集成可改 TrackPopupMenu（决策点，暂不换）
-- 单实例协调的竞态：互斥 + 图标存在性双检；持有者崩溃 → 图标残留由系统清理（会话退出自动移除），
-  接替延迟 = 下次会话激活
-- 托盘消息挂哪个消息循环：TSF 回调线程有消息循环（候选窗同前提），成立
+- **语言栏是否调 InitMenu 待手测**：Win10/11 语言栏按钮右键行为若未走 InitMenu，
+  退回 `OnClick(TF_LBI_CLK_RIGHT)` + TrackPopupMenu（系统菜单，同样满足"右键出菜单"）。
+- 系统菜单（非自绘）：放弃 iuv-ui 主题化，换取 TSF 官方集成稳定性（用户已认可）。
+- 语言栏菜单每个进程一份，但动作收敛到 daemon 单点，无一致性问题。
+- 「关于」用 MessageBox（模态简单文本）；后续可换自绘小窗（低优先）。
 
 ## 6. 槽位
 
-- M6 守护进程：托盘接管（唯一宿主）+ 菜单「设置」接 egui 设置页；A 方案机制退役
-- 菜单项扩展：词库管理/屏蔽词批量管理（M2 槽位）入口
-- 中英状态：托盘图标可随 OPENCLOSE compartment 变化（M6 做，本轮固定图标）
+- 菜单项扩展：词库管理/屏蔽词批量管理（M2 槽位）入口 → 同走 `OpenSettings` 或新增命令。
+- 候选窗右键菜单（18-m2 槽位）：iuv-ui `render_menu` 保留待用（系统 ITfMenu 不适用候选窗）。
+- M7 安装器：daemon 首会话自启（`Quit` 命令供卸载脚本干净退出）。
 
-## 7. DoD
+## 7. DoD（已实现部分）
 
 ```
-cargo check --workspace / cargo test --workspace    # 全绿
-cargo build -p iuv-tsf --release                     # x64
-dev-deploy 后手测：多进程托盘唯一、右键菜单自绘（圆角/阴影/悬停）、点击外部关闭、
-Esc 关闭、退出后接替、中英切换不崩
+cargo check --workspace / cargo test --workspace     # ✅ 全绿（242 通过）
+cargo build -p iuv-tsf --release                     # ✅
+待手测：右键中/英按钮出「设置/关于」菜单；设置 → daemon 弹设置页（daemon 运行中）；
+关于 → 对话框；daemon 未运行 → 设置点击静默（记日志）
 ```
