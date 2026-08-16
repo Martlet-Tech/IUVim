@@ -2,7 +2,7 @@
 
 ## 1. 工具链与风格
 
-- Rust stable（MSVC toolchain），edition 2021，`rust-version = 1.85`
+- Rust stable（MSVC toolchain），edition 2021，`rust-version = 1.89`（cosmic-text 0.19 要求 ≥1.89）
 - `cargo fmt` 默认配置；提交前自检
 - 依赖白名单见契约 §2；新增第三方 crate 必须先报主智能体批准（防止并行开发依赖漂移）
 - 注释与文档用中文；标识符用英文；公开 API 写 `///` 文档注释

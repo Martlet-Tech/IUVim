@@ -9,7 +9,7 @@
 //! 实测（2026-08-16）：IMM 应用（WoW）pbshow=true（系统认为 TIP 自绘），但桥
 //! **同时**把候选转给游戏（游戏也画）——所以自绘窗隐藏不能靠 pbshow，靠
 //! ImmDetect（text_service.rs：GetTextExt 退化矩形 w/h<=2 连续 3 次 = IMM 客户端
-//! → GdiCandidateWindow::set_suppressed）。
+//! → CandwinCandidateWindow::set_suppressed）。
 //!
 //! 桥对元素的数据消费（日志实证）：候选变化（Update）时拉 GetCount/GetString
 //! （**全量**，全局索引）/GetPageIndex/GetCurrentPage/GetSelection；翻页时只拉
@@ -31,10 +31,10 @@ use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::UI::TextServices::{
     ITfCandidateListUIElement, ITfCandidateListUIElementBehavior,
     ITfCandidateListUIElementBehavior_Impl, ITfCandidateListUIElement_Impl, ITfDocumentMgr,
-    ITfThreadMgr, ITfUIElement, ITfUIElement_Impl, ITfUIElementMgr, TF_CLUIE_COUNT,
+    ITfThreadMgr, ITfUIElement, ITfUIElementMgr, ITfUIElement_Impl, TF_CLUIE_COUNT,
     TF_CLUIE_CURRENTPAGE, TF_CLUIE_PAGEINDEX, TF_CLUIE_SELECTION, TF_CLUIE_STRING,
 };
-use windows_core::{implement, BSTR, BOOL, ComObject, GUID, Interface, Result};
+use windows_core::{implement, ComObject, Interface, Result, BOOL, BSTR, GUID};
 
 use crate::log::log_line;
 use crate::ui::UiSnapshot;
@@ -113,7 +113,10 @@ impl CandidateElementHost {
                         self.bshow = bshow.as_bool();
                         log_line(&format!(
                             "[uielem] BeginUIElement：id={} pbshow={} 候选{}个（{}…）",
-                            id, self.bshow, snap.candidates.len(), first
+                            id,
+                            self.bshow,
+                            snap.candidates.len(),
+                            first
                         ));
                         if !self.bshow {
                             log_line(
@@ -131,7 +134,9 @@ impl CandidateElementHost {
                 match unsafe { mgr.UpdateUIElement(self.elem_id) } {
                     Ok(()) => log_line(&format!(
                         "[uielem] UpdateUIElement：id={} 候选{}个（{}…）",
-                        self.elem_id, snap.candidates.len(), first
+                        self.elem_id,
+                        snap.candidates.len(),
+                        first
                     )),
                     Err(e) => log_line(&format!("[uielem] UpdateUIElement 失败：{e:?}")),
                 }
@@ -209,11 +214,11 @@ impl CandidateElement {
         // candidate string"）——翻页后游戏校验 dwSelection 是否落在 [dwPageStart,
         // dwPageStart+dwPageSize) 内，页内索引导致页≠0 时候选栏被游戏关闭
         // （2026-08-16 实测：页 0 正常、翻页消失、翻回恢复；QQ 全局索引翻页正常）。
-        self.selected.set((snap.page.page * ps + snap.selected.min(ps - 1)) as u32);
+        self.selected
+            .set((snap.page.page * ps + snap.selected.min(ps - 1)) as u32);
         self.page.set(snap.page.page as u32);
         let total = self.candidates.borrow().len();
-        self.page_count
-            .set((total.div_ceil(ps)).max(1) as u32);
+        self.page_count.set((total.div_ceil(ps)).max(1) as u32);
         self.page_size.set(ps as u32);
     }
 }
@@ -294,7 +299,11 @@ impl ITfCandidateListUIElement_Impl for CandidateElement_Impl {
             .unwrap_or_default();
         log_line(&format!(
             "[uielem] GetString({uindex}) 被调：{}",
-            if text.is_empty() { "<空/越界>" } else { &text }
+            if text.is_empty() {
+                "<空/越界>"
+            } else {
+                &text
+            }
         ));
         if uindex as usize >= self.candidates.borrow().len() {
             return Err(windows_core::Error::from_hresult(E_INVALIDARG));
@@ -325,10 +334,9 @@ impl ITfCandidateListUIElement_Impl for CandidateElement_Impl {
         ));
         // pindex 读取：记录首个值辅助判断桥行为（不改变引擎页状态）。
         if !pindex.is_null() {
-            log_line(&format!(
-                "[uielem] SetPageIndex 首索引={}",
-                unsafe { *pindex }
-            ));
+            log_line(&format!("[uielem] SetPageIndex 首索引={}", unsafe {
+                *pindex
+            }));
         }
         Ok(())
     }

@@ -14,12 +14,13 @@
 ### 2. 门面（候选窗）
 - Fcitx5 自带候选窗（插件只提供候选数据）→ 门面成本最低
 - IBus 候选窗由面板实现（GNOME Shell 扩展）
-- 自绘门面（如 GTK/Qt）仅当需要自定义皮肤时才考虑
+- 自绘门面（如需自定义皮肤）：**M4 起复用 `crates/iuv-ui` 渲染栈**（tiny-skia + cosmic-text + Theme），
+  只写 X11/Wayland 窗口层
 
 ## 与 Windows 的对应关系
 
 | 层 | Windows | Linux |
 |---|---|---|
 | 系统适配 | `iuv-tsf`（TSF） | Fcitx5 / IBus 插件（未建） |
-| 门面 | GDI（现）/ helper D2D（M4） | Fcitx5 自带候选窗（未建） |
+| 门面 | iuv-ui 绘图 + ULW 呈现（M4） | Fcitx5 自带候选窗 / iuv-ui 自绘（未建） |
 | 引擎 | iuv-core（共用） | iuv-core（共用，零改动） |

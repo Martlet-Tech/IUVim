@@ -10,17 +10,49 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+/// 用户库写操作（M6 daemon 管道请求的引擎侧视图，与 UserDict 方法一一对应，
+/// 见 18-m2-user-dict.md §Swap/Set/Remove/Block）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserMutation {
+    /// Shift+←/→ 主动调权：a/b 两词**互写对方合成权重**（绝对值覆盖，双 code 签名，
+    /// 对应 UserDict::apply_swap）。
+    Swap {
+        a_code: String,
+        a_word: String,
+        a_eff: u32,
+        b_code: String,
+        b_word: String,
+        b_eff: u32,
+    },
+    /// 自造词/覆盖写入（upsert，对应 UserDict::set_entry）。
+    Set { code: String, word: String, adj: u32 },
+    /// 移除用户库条目（隐藏自造词/覆盖 = 撤销自造，对应 UserDict::remove_entry）。
+    Remove { code: String, word: String },
+    /// 屏蔽基础库词条（Shift+Delete 隐藏，对应 UserDict::block）。
+    Block { code: String, word: String },
+}
+
+/// 用户库远端写后端（M6 daemon 模式，见 22-m6-daemon.md §3）。
+/// 返回 `true` = 远端已接受（本进程无需写盘）；`false` = 未接受（降级本地写盘兜底）。
+pub trait UserRemote: Send + Sync {
+    fn apply(&self, m: &UserMutation) -> bool;
+}
+
 /// 引擎：进程级单例，跨线程共享。
 pub struct Engine {
     pub(crate) dict: Dict,
-    pub(crate) config: Config,
+    /// 配置（Mutex：M6 设置页热载 engine.set_config 需要 &self 内部可变）。
+    pub(crate) config: Mutex<Config>,
     pub(crate) schema: Box<dyn InputSchema>,
     pub(crate) lm: Box<dyn LmProvider>,
     pub(crate) stages: Vec<Box<dyn RerankStage>>,
     pub(crate) store: Mutex<Box<dyn UserDataStore>>,
     /// 用户权重覆盖表状态（M2 主动调权，18-m2-user-dict.md）：路径 + 上次加载 mtime
-    /// （会话创建时检测跨进程写入的延迟生效）。
+    /// （会话创建时检测跨进程写入的延迟生效；M6 daemon 模式关闭，见 reload_user_dict）。
     user_state: Mutex<UserState>,
+    /// 用户库远端写后端（M6 daemon 客户端）。None = 本地写盘（现状/降级）。
+    /// apply 返回 false（daemon 离线/拒绝）→ 写路径自动降级本地，绝不挂键。
+    user_remote: Mutex<Option<Arc<dyn UserRemote>>>,
 }
 
 /// 用户库装配状态（不可变路径 + 可变 mtime 基线）。
@@ -77,12 +109,13 @@ impl Engine {
     ) -> Arc<Engine> {
         Arc::new(Engine {
             dict,
-            config,
+            config: Mutex::new(config),
             schema,
             lm,
             stages,
             store: Mutex::new(store),
             user_state: Mutex::new(UserState::default()),
+            user_remote: Mutex::new(None),
         })
     }
 
@@ -114,7 +147,18 @@ impl Engine {
 
     /// 用户库 mtime 检测重载（跨进程延迟生效：其他进程写盘后，本进程新会话拿到新库）。
     /// 文件变化 → 重载成功替换；失败（删除窗口/损坏）→ 保持旧库。
+    /// **M6 daemon 模式整体关闭**：共享段轮询（DaemonClient::poll）已接管读路径（版本检测
+    /// 注入），mtime 重载与之双写冲突；daemon 离线时用户库唯一写者（守护进程）不在线，
+    /// 内存态经 install_user 保持自洽，关闭无害。
     fn reload_user_dict(&self) {
+        if self
+            .user_remote
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            return;
+        }
         let state = self.user_state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(path) = state.path.clone() else {
             return;
@@ -174,12 +218,37 @@ impl Engine {
         } else {
             UserDict::empty().apply_swap(a_code, a_word, b_eff, b_code, b_word, a_eff)
         };
-        self.install_user(next);
+        let mutation = UserMutation::Swap {
+            a_code: a_code.to_string(),
+            a_word: a_word.to_string(),
+            a_eff,
+            b_code: b_code.to_string(),
+            b_word: b_word.to_string(),
+            b_eff,
+        };
+        self.install_user(next, Some(&mutation));
     }
 
     /// 替换用户库内存态并持久化（写盘失败不阻断：内存态已生效，下次调整重试）。
     /// mtime 基线同步刷新（防止本进程下次会话对自写文件无谓重载）。
-    fn install_user(&self, next: UserDict) {
+    ///
+    /// M6 remote 分支：携带 `mutation` 时先问远端（daemon 客户端）；远端 `apply` 返回
+    /// `true` → 跳过本地写盘（内存态照常替换——本地即时生效，共享段周期重读会覆盖为
+    /// 一致态）；远端失败/无 remote → 现状本地写盘兜底（降级路径必须保留）。
+    fn install_user(&self, next: UserDict, mutation: Option<&UserMutation>) {
+        if let Some(m) = mutation {
+            if let Some(remote) = self
+                .user_remote
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                if remote.apply(m) {
+                    self.dict.set_user(Arc::new(next));
+                    return;
+                }
+            }
+        }
         let mut state = self.user_state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(path) = &state.path {
             if next.save(path).is_ok() {
@@ -188,6 +257,27 @@ impl Engine {
         }
         drop(state);
         self.dict.set_user(Arc::new(next));
+    }
+
+    /// 装配/更换用户库远端写后端（M6 daemon 客户端；`None` 拆除 = 回归本地写盘）。
+    /// 重复调用幂等（只替换 Arc 引用）；daemon 掉线后 apply 返回 false 即自动降级本地。
+    pub fn set_user_remote(&self, remote: Option<Arc<dyn UserRemote>>) {
+        *self.user_remote.lock().unwrap_or_else(|e| e.into_inner()) = remote;
+    }
+
+    /// 注入用户库内存态（M6：会话进程从共享段重读后调用）。
+    /// 与 attach_user_dict 语义区分：**只 set_user**，不动 mtime 基线、不写盘、
+    /// 不触碰本地文件——共享段是唯一读源。
+    pub fn set_user_dict(&self, user: Arc<UserDict>) {
+        self.dict.set_user(user);
+    }
+
+    /// M6 配置热载（config_epoch 变化 → 设置页保存后触发）：全量替换引擎配置。
+    /// 读取点（page_size/max_candidates/candidate_prefix/candidate_orientation/
+    /// passthrough_apps/theme）随 `config()` 新值即时生效；TSF 侧键位 keymap 映射
+    /// 装配不在此热切（M7 键位热载范畴，见 22-m6-daemon.md；调用方自行记日志）。
+    pub fn set_config(&self, config: Config) {
+        *self.config.lock().unwrap_or_else(|e| e.into_inner()) = config;
     }
 
     /// M2 自造词记录（逐字选择 commit 时调用，18-m2-user-dict.md）：场景 0/a/b 权重判定。
@@ -201,7 +291,12 @@ impl Engine {
         if entries.iter().any(|e| e.word == text) {
             return; // 场景 0
         }
-        let ps = self.config.page_size.max(1);
+        let ps = self
+            .config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .page_size
+            .max(1);
         let n = entries.len();
         let w = if n == 0 {
             PHRASE_DEFAULT_WEIGHT
@@ -214,24 +309,46 @@ impl Engine {
             Some(u) => u.set_entry(code, text, w),
             None => UserDict::empty().set_entry(code, text, w),
         };
-        self.install_user(next);
+        let mutation = UserMutation::Set {
+            code: code.to_string(),
+            word: text.to_string(),
+            adj: w,
+        };
+        self.install_user(next, Some(&mutation));
     }
 
     /// M2 隐藏候选（Shift+Delete）：先删用户库条目（自造词/覆盖），
     /// 否则屏蔽基础库词条。写盘失败不阻断（内存态已生效）。
     pub(crate) fn hide_entry(&self, code: &str, text: &str) {
-        let next = match self.dict.user() {
-            Some(u) if u.adjusted(code).iter().any(|(w, _)| w == text) => {
-                u.remove_entry(code, text)
-            }
-            Some(u) => u.block(code, text),
-            None => UserDict::empty().block(code, text),
+        let (next, mutation) = match self.dict.user() {
+            Some(u) if u.adjusted(code).iter().any(|(w, _)| w == text) => (
+                u.remove_entry(code, text),
+                UserMutation::Remove {
+                    code: code.to_string(),
+                    word: text.to_string(),
+                },
+            ),
+            Some(u) => (
+                u.block(code, text),
+                UserMutation::Block {
+                    code: code.to_string(),
+                    word: text.to_string(),
+                },
+            ),
+            None => (
+                UserDict::empty().block(code, text),
+                UserMutation::Block {
+                    code: code.to_string(),
+                    word: text.to_string(),
+                },
+            ),
         };
-        self.install_user(next);
+        self.install_user(next, Some(&mutation));
     }
 
-    pub fn config(&self) -> &Config {
-        &self.config
+    /// 当前配置快照（克隆：M6 热载后新值立即可见；读侧不用锁穿透引用）。
+    pub fn config(&self) -> Config {
+        self.config.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// 调试/REPL 用精确查询。
@@ -327,7 +444,9 @@ impl Engine {
         // 前缀补全（联想）：默认关闭（微软化，候选仅 exact）；config 开启时追加。
         //    用方案[0] 的 `'` 键做前缀匹配（词库键已分隔化）。
         //    联想词消费全部当前段（seg_len = n），选中即整词上屏。
-        if self.config.candidate_prefix {
+        // 配置快照：单点锁取克隆（RerankCtx 需 &Config；热载 set_config 与读取并发安全）。
+        let cfg = self.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if cfg.candidate_prefix {
             let n = seg.len();
             let squashed = seg.join("'");
             for e in &self.dict.prefix(&squashed, 20) {
@@ -351,7 +470,7 @@ impl Engine {
         cands.retain(|c| seen.insert(c.text.clone()));
 
         // 截断到 max_candidates
-        cands.truncate(self.config.max_candidates);
+        cands.truncate(cfg.max_candidates);
 
         // 依次过 stages 管线
         let now = SystemTime::now();
@@ -360,7 +479,7 @@ impl Engine {
             raw,
             seg,
             store: store.as_ref(),
-            config: &self.config,
+            config: &cfg,
             now,
         };
         for stage in &self.stages {
@@ -563,6 +682,9 @@ impl Engine {
         // 每级词候选上限（"2/3 字词时几个/十几个候选词"的规模；全局另有 max_candidates 截断）。
         const PER_LEVEL_EXACT: usize = 20;
 
+        // 配置快照（viterbi 需 &Config；热载 set_config 与读取并发安全）。
+        let cfg = self.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
         let mut cands: Vec<crate::Candidate> = Vec::new();
         let n = seg.len();
 
@@ -595,7 +717,7 @@ impl Engine {
                             &self.dict,
                             &vseg,
                             &*self.lm,
-                            &self.config,
+                            &cfg,
                         ) {
                             // M2 隐藏（Shift+Delete）：屏蔽组合对整句同样生效——词条级由
                             // Dict::merged 过滤，整句级在此拦截（用户隐藏的 (code, text)
@@ -683,6 +805,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Key;
     use iuv_data::Dict;
 
     fn dict_of(items: Vec<(&str, &str, u32)>) -> Dict {
@@ -815,5 +938,191 @@ mod tests {
         // 屏蔽词条 + 整句拦截：exact 与 viterbi 都不再出现（集成测试已验证候选层）
         let hits = e.dict.exact("shou'xuan");
         assert!(!hits.iter().any(|x| x.word == "手癣"));
+    }
+
+    // ===== M6 远端写后端（UserRemote）：daemon 模式写路径 =====
+
+    /// 测试远端：记录收到的 mutation，按 `accepted` 返回成功/失败。
+    struct FakeRemote {
+        accepted: bool,
+        calls: Mutex<Vec<UserMutation>>,
+    }
+
+    impl UserRemote for FakeRemote {
+        fn apply(&self, m: &UserMutation) -> bool {
+            self.calls.lock().unwrap_or_else(|e| e.into_inner()).push(m.clone());
+            self.accepted
+        }
+    }
+
+    fn swap_dict() -> Dict {
+        dict_of(vec![("de".into(), "的", 100000), ("de".into(), "得", 300)])
+    }
+
+    /// 远端接受 → 跳过本地写盘（内存态照常替换 + mutation 构造正确）。
+    #[test]
+    fn set_user_remote_skips_file_write_when_accepted() {
+        let path = std::env::temp_dir().join(format!("iuv-remote-ok-{}.imedic", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let e = Engine::new(swap_dict(), Config::default());
+        let _ = e.attach_user_dict(path.clone()); // 路径已记录（首次无文件：空库）
+        let remote = Arc::new(FakeRemote {
+            accepted: true,
+            calls: Mutex::new(Vec::new()),
+        });
+        e.set_user_remote(Some(remote.clone()));
+        e.swap_weights("de", "的", "de", "得");
+        // 内存态立即生效（本地即时；共享段周期重读覆盖为一致态）
+        assert!(user_weight(&e, "de", "得").is_some(), "内存态应更新");
+        assert_eq!(
+            user_weight(&e, "de", "的"),
+            Some(300),
+            "互写对方合成权重"
+        );
+        // 远端接受 → 本地不写盘
+        assert!(!path.exists(), "远端接受后不应写盘，实际文件存在");
+        // mutation 构造正确（Swap 双 code + 合成权重）
+        let calls = remote.calls.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0],
+            UserMutation::Swap {
+                a_code: "de".into(),
+                a_word: "的".into(),
+                a_eff: 100000,
+                b_code: "de".into(),
+                b_word: "得".into(),
+                b_eff: 300,
+            }
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 远端拒绝（daemon 离线/报错）→ 降级本地写盘兜底（现状 install_user 语义保留）。
+    #[test]
+    fn set_user_remote_rejected_falls_back_to_local_write() {
+        let path = std::env::temp_dir().join(format!("iuv-remote-no-{}.imedic", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let e = Engine::new(swap_dict(), Config::default());
+        let _ = e.attach_user_dict(path.clone());
+        let remote = Arc::new(FakeRemote {
+            accepted: false,
+            calls: Mutex::new(Vec::new()),
+        });
+        e.set_user_remote(Some(remote));
+        e.swap_weights("de", "的", "de", "得");
+        assert!(path.exists(), "远端拒绝 → 本地写盘兜底，实际无文件");
+        let loaded = iuv_data::UserDict::load(&path).unwrap();
+        assert!(
+            loaded.adjusted("de").iter().any(|(w, a)| w == "得" && *a == 100000),
+            "本地写盘内容应为交换后的合成权重"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 远端接受 → record_phrase/hide_entry 同样跳过本地写盘（Set/Remove/Block 构造正确）。
+    #[test]
+    fn remote_mode_record_and_hide_skip_write() {
+        let path = std::env::temp_dir().join(format!("iuv-remote-ops-{}.imedic", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let e = Engine::new(
+            dict_of(vec![("shou'xuan".into(), "首选", 8000)]),
+            Config::default(),
+        );
+        let _ = e.attach_user_dict(path.clone());
+        let remote = Arc::new(FakeRemote {
+            accepted: true,
+            calls: Mutex::new(Vec::new()),
+        });
+        e.set_user_remote(Some(remote.clone()));
+        // 自造词 → Set
+        e.record_phrase("shou'xuan", "手选");
+        // 隐藏自造词（用户库有条目）→ Remove
+        e.hide_entry("shou'xuan", "手选");
+        // 隐藏基础库词 → Block
+        e.hide_entry("shou'xuan", "首选");
+        assert!(!path.exists(), "远端接受全程不写盘");
+        let calls = remote.calls.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(calls.len(), 3);
+        assert_eq!(
+            calls[0],
+            UserMutation::Set {
+                code: "shou'xuan".into(),
+                word: "手选".into(),
+                adj: 7999,
+            }
+        );
+        assert_eq!(
+            calls[1],
+            UserMutation::Remove {
+                code: "shou'xuan".into(),
+                word: "手选".into(),
+            }
+        );
+        assert_eq!(
+            calls[2],
+            UserMutation::Block {
+                code: "shou'xuan".into(),
+                word: "首选".into(),
+            }
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// set_user_dict：只注入内存态，不写盘不动 mtime 基线（共享段重读路径）。
+    #[test]
+    fn set_user_dict_injects_without_write() {
+        let path = std::env::temp_dir().join(format!("iuv-inject-{}.imedic", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let e = Engine::new(swap_dict(), Config::default());
+        let _ = e.attach_user_dict(path.clone());
+        let user = iuv_data::UserDict::empty().set_entry("de", "的", 5);
+        e.set_user_dict(Arc::new(user));
+        assert_eq!(user_weight(&e, "de", "的"), Some(5), "内存态注入生效");
+        assert!(!path.exists(), "set_user_dict 不写盘");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// set_config：配置热载替换引擎配置（M6 config_epoch 触发路径）。
+    #[test]
+    fn set_config_updates_engine_config() {
+        let e = Engine::new(swap_dict(), Config::default());
+        assert_eq!(e.config().page_size, 5);
+        let cfg = Config {
+            page_size: 7,
+            passthrough_apps: vec!["dota2.exe".into()],
+            ..Config::default()
+        };
+        e.set_config(cfg.clone());
+        assert_eq!(e.config().page_size, 7);
+        assert_eq!(e.config().passthrough_apps, vec!["dota2.exe".to_owned()]);
+        assert_eq!(e.config().keymap, cfg.keymap, "未改字段保持新值");
+    }
+
+    /// mtime 重载在远端模式整体关闭（poll 接管读路径；避免与共享段双写冲突）。
+    #[test]
+    fn reload_user_dict_disabled_in_remote_mode() {
+        let path = std::env::temp_dir().join(format!("iuv-reload-{}.imedic", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let e = Engine::new(swap_dict(), Config::default());
+        let _ = e.attach_user_dict(path.clone());
+        // 远端模式装配
+        e.set_user_remote(Some(Arc::new(FakeRemote {
+            accepted: true,
+            calls: Mutex::new(Vec::new()),
+        })));
+        // 外部进程改写文件（本地路径的 mtime 变化源）
+        let ext = iuv_data::UserDict::empty().apply_swap("de", "的", 100, "de", "地", 999999);
+        ext.save(&path).unwrap();
+        // 新会话触发 reload_user_dict：远端模式应跳过 → 不重载外部内容
+        let mut s = e.start_session();
+        for c in "de".chars() {
+            s.on_key(Key::Char(c));
+        }
+        assert!(
+            !e.dict.exact("de").iter().any(|x| x.word == "地"),
+            "远端模式 mtime 重载应关闭（共享段轮询接管）"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

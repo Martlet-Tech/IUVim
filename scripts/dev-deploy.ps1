@@ -114,6 +114,29 @@ if ($r.Renamed) {
     Trace-Script "dev-deploy: DLL 复制成功 $destDll"
 }
 
+# ---- 3.5 守护进程部署（M7：iuv-daemon.exe；会话进程首激活自动拉起）----
+$daemonSrc  = Join-Path $repoRoot "target\release\iuv-daemon.exe"
+$destDaemon = Join-Path $destDir "iuv-daemon.exe"
+if (Test-Path $daemonSrc) {
+    # 先停运行中的 daemon（复制会锁；下次会话激活自动拉起新版本）。
+    $daemonProc = Get-Process -Name "iuv-daemon" -ErrorAction SilentlyContinue
+    if ($daemonProc) {
+        Trace-Script "dev-deploy: 停止运行中的 iuv-daemon（PID=$($daemonProc.Id -join ',')）"
+        Stop-Process -Name "iuv-daemon" -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 300
+    }
+    try {
+        Copy-Item $daemonSrc $destDaemon -Force -ErrorAction Stop
+        Trace-Script "dev-deploy: 守护进程复制成功 $destDaemon"
+        Write-Host "守护进程已部署（下次切换输入法自动拉起）：$destDaemon"
+    } catch {
+        Trace-Script "dev-deploy: 守护进程复制失败（$destDaemon）：$($_.Exception.Message)"
+        Write-Host "警告：守护进程复制失败（$destDaemon），本次仅部署 DLL。"
+    }
+} else {
+    Trace-Script "dev-deploy: 未找到守护进程产物 $daemonSrc（先 cargo build -p iuv-daemon --release）"
+}
+
 # ---- 4. 注册（未注册、或 CLSID 指向的 DLL 路径不是本安装时重注册）----
 # 曾因只查 key 存在与否而跳过 regsvr32，导致注册表仍指向旧路径的旧 DLL
 # （项目改名前的 C:\Program Files\InputIME），热部署永远不生效。现与 install.ps1

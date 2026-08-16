@@ -10,7 +10,7 @@
 （「输入法/非输入法切换」热键，如 Ctrl+Space；Shift 临时英文方案已废弃，见 13 号任务书）。
 整句用 unigram Viterbi（只用词库自带 weight），候选排序为**纯静态词频序**。
 
-M1 **不做**（已留槽位，见各任务书"槽位"节）：滞回/学习/钉选、Tauri helper 与 WebView 候选窗、IPC、
+M1 **不做**（已留槽位，见各任务书"槽位"节）：滞回/学习/钉选、跨平台渲染/托盘/守护进程（M4~M6）、
 n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构、逐词确认。
 （鼠标点选候选、点击选词、翻页环绕等候选窗交互已在 2026-08-13 补齐，见 `d1dcfb8`/`2cc189b`。）
 
@@ -21,9 +21,11 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 │ crates/（跨平台层）                                               │
 │   iuv-data   词库编译器(dictc) + 二进制格式 + Dict 查询层   │  叶 crate，无 workspace 内依赖
 │   iuv-core   引擎：切分/查词/Viterbi/会话状态机/排序管线    │  依赖 iuv-data
+│   iuv-ui     候选窗/菜单绘图：tiny-skia + cosmic-text       │  依赖 iuv-core（UiSnapshot/Theme 消费）
 │   iuv-repl   CLI 调试前端（不注册输入法即可测引擎）         │  依赖 iuv-core, iuv-data
 │ platforms/（平台层，每平台一套：系统适配 + 门面）                 │
-│   windows/iuv-tsf  cdylib：COM/TSF 管线 + GDI 候选窗（Windows）  │  依赖 iuv-core, iuv-data
+│   windows/iuv-tsf    cdylib：COM/TSF 管线 + 候选窗窗口层   │  依赖 iuv-core, iuv-data, iuv-ui
+│   windows/iuv-daemon 守护进程 exe：持有用户库 + 设置页（M6）│  依赖 iuv-data（共享段）, iuv-ui, egui
 │   macos/          占位（IMK 适配 + 门面规划，README）            │
 │   linux/          占位（Fcitx5/IBus 适配 + 门面规划，README）     │
 └──────────────────────────────────────────────────────────────────┘
@@ -34,7 +36,7 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 ```
 按键 → TSF(OnTestKeyDown/OnKeyDown) → session_bridge 映射为 iuv_core::Key
       → Session::on_key → Effect ─┬→ composition.rs：更新预编辑文本 / 上屏
-                                   └→ ui: CandidateUi.show/update/hide（GDI 候选窗）
+                                   └→ ui: CandidateUi.show/update/hide（iuv-ui 渲染，M4 起）
 ```
 
 ## 3. 执行流程（三波）
@@ -59,10 +61,11 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 - 选词即**续接组句**（M1 后期落地）：候选按"砍尾巴逐级前缀"从长到短排列；
   选中间级词 → 悬空入栈（不上屏，预编辑混合显示"已选汉字+尾巴拼音"）尾巴续接，退格取消已选词；
   全部消费才结束会话（完整版 picked/退格回退已实现，逐词光标编辑归 M3）
-- 候选窗 GDI 自绘、无皮肤（M4 换 WebView 时只动 `CandidateUi` 实现）；候选窗交互已支持
+- 候选窗跨平台自绘（tiny-skia + cosmic-text，M4 起；见 `19-m4-cross-render.md`），
+  主题浅色/深色可配；候选窗交互已支持
   鼠标点击选词、悬停高亮、翻页环绕、布局方向配置（2026-08-13，见 `d1dcfb8`/`2cc189b`）
 - 引擎进程级单例，词库 IMEDIC02 平面格式 mmap 零加工加载——冷加载 ~70ms、物理内存全系统一份
-  （页缓存共享，M1.6 落地，见 `17-imedic02-mmap.md`）；M4 迁入 helper 进程共享
+  （页缓存共享，M1.6 落地，见 `17-imedic02-mmap.md`）；M6 起用户库移守护进程共享（`22-m6-daemon.md`）
 - 仅 x64；需管理员权限注册
 - 词库（白霜拼音，GPL-3.0）由脚本下载，不进仓库；发布时注意 NOTICE 声明
 
@@ -75,6 +78,9 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 | `11-mod-iuv-core.md` | 任务书 B：引擎（切分/候选生成/Viterbi/会话/管线桩） |
 | `12-mod-iuv-repl.md` | 任务书 C：CLI 调试前端 |
 | `13-mod-iuv-tsf-core.md` | 任务书 D：COM/TSF 管线 + 注册 |
-| `14-mod-iuv-tsf-candwin.md` | 任务书 E：GDI 候选窗 + 演示程序 |
+| `14-mod-iuv-tsf-candwin.md` | 任务书 E：GDI 候选窗 + 演示程序（M4 起被 `19` 替代，历史保留） |
+| `19-m4-cross-render.md` | **M4 已实现**：跨平台渲染候选窗（tiny-skia + D2D/DComp 呈现 + 主题） |
+| `21-m5-tray-menu.md` | **M5 已实现**：语言栏右键菜单（2026-08-17 重定义，去托盘） |
+| `22-m6-daemon.md` | **M6 已实现**：守护进程（持有用户库 + 设置页） |
 | `20-assembly.md` | W2 集成组装手册（主智能体用） |
 | `30-conventions.md` | 全局约定：代码风格、错误处理、日志、测试纪律 |

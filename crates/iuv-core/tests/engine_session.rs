@@ -1641,7 +1641,7 @@ fn phrase_recording_scenario_a_no_hit() {
         ("wei".into(), "藳".into(), 50),
     ]);
     let engine = Engine::new(dict, Config::default());
-    let mut s = select_by_chars(&engine, "zhangweiwei", &["张", "藳", "藳"]);
+    let s = select_by_chars(&engine, "zhangweiwei", &["张", "藳", "藳"]);
     assert_eq!(s.effect().end, Some(SessionEnd::Commit("张藳藳".into())));
     // 用户库出现自造词：再打整串直接出词
     let mut s2 = engine.start_session();
@@ -1672,7 +1672,7 @@ fn phrase_recording_scenario_b1_weight() {
         ("xuan".into(), "癖".into(), 200),
     ]);
     let engine = Engine::new(dict, Config::default());
-    let mut s = select_by_chars(&engine, "shouxuan", &["手", "选"]);
+    let s = select_by_chars(&engine, "shouxuan", &["手", "选"]);
     assert_eq!(s.effect().end, Some(SessionEnd::Commit("手选".into())));
     // 再打整串：手选出现在候选（viterbi 整句或词位）
     let mut s2 = engine.start_session();
@@ -1709,7 +1709,7 @@ fn phrase_recording_scenario_b2_weight() {
     ]);
     let engine = Engine::new(dict, Config::default());
     // 「中信」不在词库 → b2：权重 = avg(中芯3000, 众心1000) = 2000 → 词位 index 4
-    let mut s = select_by_chars(&engine, "zhongxin", &["中", "信"]);
+    let s = select_by_chars(&engine, "zhongxin", &["中", "信"]);
     assert_eq!(s.effect().end, Some(SessionEnd::Commit("中信".into())));
     let mut s2 = engine.start_session();
     for c in "zhongxin".chars() {
@@ -1738,7 +1738,7 @@ fn phrase_recording_scenario_0_skips_existing() {
         ("zhang'wei'wei".into(), "张威威".into(), 6000),
     ]);
     let engine = Engine::new(dict, Config::default());
-    let mut s = select_by_chars(&engine, "zhangweiwei", &["张", "威", "威"]);
+    let s = select_by_chars(&engine, "zhangweiwei", &["张", "威", "威"]);
     assert_eq!(s.effect().end, Some(SessionEnd::Commit("张威威".into())));
     let mut s2 = engine.start_session();
     for c in "zhangweiwei".chars() {
@@ -1791,7 +1791,7 @@ fn hide_candidate_removes_override_then_blocks_base() {
     ]);
     let engine = Engine::new(dict, Config::default());
     // 先自造"手选"（b1）→ 用户库有条目
-    let mut s = select_by_chars(&engine, "shouxuan", &["手", "选"]);
+    let s = select_by_chars(&engine, "shouxuan", &["手", "选"]);
     assert!(s.effect().end.is_some());
     // 导航到"手选"并隐藏 → 从用户库删除
     let mut s2 = engine.start_session();

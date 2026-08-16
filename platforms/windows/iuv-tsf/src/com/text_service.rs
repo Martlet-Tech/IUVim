@@ -28,11 +28,11 @@ use windows::Win32::UI::TextServices::{
 use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, BOOL};
 
 use crate::composition::Composition;
+use crate::daemon_client::DaemonClient;
 use crate::langbar::{self, LangBarItemButton};
 use crate::log::{self, log_line};
 use crate::session_bridge::{apply_effect, caps_passthrough, is_passthrough_app, map_key};
-use crate::ui::CaretRect;
-use crate::ui::{CandidateUi, GdiCandidateWindow, NullCandidateUi};
+use crate::ui::{CandidateUi, CandwinCandidateWindow, CaretRect};
 use crate::ui_element::CandidateElementHost;
 
 /// 进程级引擎单例（契约 §7：`OnceLock<Arc<Engine>>`）。
@@ -176,8 +176,9 @@ pub(crate) struct TextService {
     session: Rc<RefCell<Option<Session>>>,
     /// composition 封装（随会话创建/销毁）。Rc 共享：候选窗回调 dispatch 用。
     composition: Rc<RefCell<Option<Composition>>>,
-    /// 候选窗：GdiCandidateWindow（Agent E 已交付，W2 起生效）。Rc 共享：同上。
-    ui: Rc<RefCell<Box<dyn CandidateUi>>>,
+    /// 候选窗：CandwinCandidateWindow（M4：ULW 呈现，iuv-ui 绘图）。Rc 共享：同上。
+    /// 具体类型（非 `Box<dyn>`）：M6 配置热载需直调 `set_theme`；交互/效果应用同槽。
+    ui: Rc<RefCell<CandwinCandidateWindow>>,
     /// 上一次光标矩形（GetTextExt 失败时复用；首次用屏幕中央）。Rc 共享：同上。
     caret: Rc<Cell<CaretRect>>,
     /// Shift 临时英文模式（会话非 active 时 Shift 切换）。
@@ -190,6 +191,11 @@ pub(crate) struct TextService {
     /// IMM 应用检测（GetTextExt 退化矩形）：命中 → 抑制自绘候选窗（游戏自绘候选栏）。
     /// Rc 共享：dispatch 路径同线程访问（候选窗点击回调共用）。
     imm_detect: Rc<RefCell<ImmDetect>>,
+    /// M6 daemon 客户端（共享段读取 + 管道写；Arc 与引擎 UserRemote 共享）。
+    /// Deactivate 不撤——随进程/实例生命周期（TextService Drop 释放）。
+    daemon: RefCell<Option<Arc<DaemonClient>>>,
+    /// 远端写后端是否已注册到引擎（Activate 时引擎可能仍在后台加载，首键补注册）。
+    remote_registered: Cell<bool>,
 }
 
 impl TextService {
@@ -200,11 +206,18 @@ impl TextService {
         let caret = Rc::new(Cell::new(CaretRect::default()));
         let cand_elem = Rc::new(RefCell::new(CandidateElementHost::new()));
         let imm_detect = Rc::new(RefCell::new(ImmDetect::default()));
-        let ui_rc = Rc::new(RefCell::new(
-            Box::new(NullCandidateUi) as Box<dyn CandidateUi>
-        ));
         // 候选窗交互接线（同线程回调；点击=页内行号→Digit 键，悬停=同步 selected）。
-        let mut candwin = GdiCandidateWindow::new();
+        // M4 主题：直接读 config.json（引擎可能仍在后台加载，engine() 不可依赖）：
+        // `theme` 字段（默认 light）→ theme_light()/theme_dark()。M6 起可经 set_theme 热载。
+        let theme = match iuv_core::Config::load().theme {
+            iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
+            iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
+        };
+        let ui_rc = Rc::new(RefCell::new(CandwinCandidateWindow::new(theme)));
+        log_line(&format!(
+            "候选窗主题：{}（config theme；M6 起可热载）",
+            theme.name
+        ));
         {
             let s = session.clone();
             let c = composition.clone();
@@ -212,7 +225,7 @@ impl TextService {
             let ca = caret.clone();
             let ce = cand_elem.clone();
             let id = imm_detect.clone();
-            candwin.set_on_click(Some(Box::new(move |row: usize| {
+            ui_rc.borrow_mut().set_on_click(Some(Box::new(move |row: usize| {
                 // Digit 键位上限 1-9（row 0-8）；超限忽略（page_size 配置极端时防御）。
                 if row >= 9 {
                     return;
@@ -226,13 +239,12 @@ impl TextService {
                 }
             })));
             let s = session.clone();
-            candwin.set_on_hover(Some(Box::new(move |row: usize| {
+            ui_rc.borrow_mut().set_on_hover(Some(Box::new(move |row: usize| {
                 if let Some(sess) = s.borrow_mut().as_mut() {
                     sess.set_selected(row);
                 }
             })));
         }
-        *ui_rc.borrow_mut() = Box::new(candwin);
         TextService {
             thread_mgr: RefCell::new(None),
             client_id: Cell::new(0),
@@ -246,6 +258,8 @@ impl TextService {
             imm_detect,
             english_mode: Arc::new(AtomicBool::new(false)),
             lang_bar: RefCell::new(None),
+            daemon: RefCell::new(None),
+            remote_registered: Cell::new(false),
         }
     }
 
@@ -333,6 +347,15 @@ impl TextService {
     /// OnKeyDown 完整处理：映射 → 会话推进 → 应用 Effect。
     fn handle_key_down(&self, pic: &ITfContext, wparam: WPARAM, _lparam: LPARAM) -> bool {
         let Some(engine) = engine() else { return false };
+        // M6：daemon 共享段轮询（低成本：读 u32 版本；用户库版本/配置纪元变化 → 即时生效）。
+        // 远端写后端在 Activate 注册；引擎后台加载未完成则此处补注册（幂等，无副作用）。
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            if !self.remote_registered.get() {
+                engine.set_user_remote(Some(client.clone()));
+                self.remote_registered.set(true);
+            }
+            client.poll(&engine, |engine| self.apply_config_hot_reload(engine));
+        }
         let config = engine.config();
 
         let vk = wparam.0 as u16;
@@ -406,6 +429,31 @@ impl TextService {
             effect,
         )
     }
+
+    /// M6 配置热载（config_epoch 变化触发，DaemonClient::poll 回调）：
+    /// 重载 config.json → 引擎配置（page_size/passthrough_apps/主题等读取点随新值生效）
+    /// + 候选窗主题即时切换（set_theme，下帧 paint 生效）。
+    /// 键位（keymap）热载为 M7 范畴（TSF 键映射装配不热切），keymap 变化仅记日志。
+    fn apply_config_hot_reload(&self, engine: &Arc<Engine>) {
+        let cfg = iuv_core::Config::load();
+        let keymap_changed = cfg.keymap != engine.config().keymap;
+        engine.set_config(cfg.clone());
+        let theme = match cfg.theme {
+            iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
+            iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
+        };
+        self.ui.borrow_mut().set_theme(theme);
+        log_line(&format!(
+            "[daemon] 配置热载：theme={:?} passthrough_apps={} keymap{}",
+            cfg.theme,
+            cfg.passthrough_apps.len(),
+            if keymap_changed {
+                "变化（键位热载 M7）"
+            } else {
+                "不变"
+            }
+        ));
+    }
 }
 
 /// dispatch 的自由函数版：候选窗点击回调（同线程）与 TextService 共用同一路径。
@@ -413,7 +461,7 @@ impl TextService {
 fn dispatch_effect(
     session: &Rc<RefCell<Option<Session>>>,
     composition: &Rc<RefCell<Option<Composition>>>,
-    ui: &Rc<RefCell<Box<dyn CandidateUi>>>,
+    ui: &Rc<RefCell<CandwinCandidateWindow>>,
     caret: &Rc<Cell<CaretRect>>,
     cand_elem: &Rc<RefCell<CandidateElementHost>>,
     imm_detect: &Rc<RefCell<ImmDetect>>,
@@ -442,7 +490,7 @@ fn dispatch_effect(
                     true
                 } else {
                     let mut ui_guard = ui.borrow_mut();
-                    apply_effect(comp, ui_guard.as_mut(), &mut caret_pos, effect, orientation)
+                    apply_effect(comp, &mut *ui_guard, &mut caret_pos, effect, orientation)
                 }
             }
             // composition 缺失（异常路径）：仅更新候选窗并继续。
@@ -468,7 +516,8 @@ fn dispatch_effect(
     if effect.end.is_none() {
         imm_detect.borrow_mut().observe(caret_pos);
     }
-    ui.borrow_mut().set_suppressed(imm_detect.borrow().is_suppressed());
+    ui.borrow_mut()
+        .set_suppressed(imm_detect.borrow().is_suppressed());
     if ended {
         ui.borrow_mut().hide();
         cand_elem.borrow_mut().end();
@@ -561,14 +610,35 @@ impl TextService_Impl {
         // 首次按键不再同步加载卡顿；加载完成前按键透明放行。
         start_engine_load();
 
+        // M6 daemon 客户端装配：user_path = 现有 iuv.user.imedic 路径逻辑。共享段只读
+        // 引用 + 管道写；daemon 不在线 → 引擎写路径自动降级本地写盘（绝不挂键）。
+        // 引擎可能在后台加载未完成（engine()=None），远端写后端延迟到首键补注册
+        // （handle_key_down 的 remote_registered 兜底，set_user_remote 幂等）。
+        let user_path = user_dict_path();
+        let daemon = Arc::new(DaemonClient::new(user_path.clone()));
+        if let Some(engine) = engine() {
+            engine.set_user_remote(Some(daemon.clone()));
+            self.remote_registered.set(true);
+        } else {
+            log_line("[daemon] 引擎尚未加载完成：远端写后端延迟到首键注册");
+        }
+        *self.daemon.borrow_mut() = Some(daemon.clone());
+
         // 挂载语言栏"中/英"切换图标（失败仅记日志，不影响输入法主体）。
-        // 点击归一为写 OPENCLOSE compartment（OnChange 统一响应）。
+        // 点击归一为写 OPENCLOSE compartment（OnChange 统一响应）；右键弹自定义菜单
+        // （设置/关于，经 daemon 客户端发管道命令，2026-08-17 决策：无独立托盘图标）。
+        let menu_theme = match iuv_core::Config::load().theme {
+            iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
+            iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
+        };
         let lang_bar_com = ComObject::new(LangBarItemButton::new(
             self.english_mode.clone(),
             self.compartment
                 .borrow()
                 .as_ref()
                 .map(|(c, _)| (c.clone(), tid)),
+            daemon,
+            menu_theme,
         ));
         match langbar::add_to_lang_bar(ptim, &lang_bar_com) {
             Ok(()) => {
@@ -579,6 +649,13 @@ impl TextService_Impl {
         }
 
         log_line(&format!("Activate：tid={tid}"));
+
+        // M7 daemon 自启（IME 惰性拉起，搜狗同款）：离线且冷却期满 → CreateProcess
+        // 拉起 DLL 同目录 iuv-daemon.exe（后台无控制台，异步不等待；失败静默降级）。
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            client.ensure_daemon();
+        }
+
         Ok(())
     }
 
@@ -856,7 +933,9 @@ impl ImmDetect {
             self.degrade += 1;
             if self.degrade >= DEGRADE_COUNT && !self.suppressed {
                 self.suppressed = true;
-                log_line("[immdetect] GetTextExt 连续退化（IMM 客户端，游戏自绘候选栏）→ 抑制自绘候选窗");
+                log_line(
+                    "[immdetect] GetTextExt 连续退化（IMM 客户端，游戏自绘候选栏）→ 抑制自绘候选窗",
+                );
                 return true;
             }
         } else if self.degrade > 0 || self.suppressed {

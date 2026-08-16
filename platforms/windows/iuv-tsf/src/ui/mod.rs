@@ -1,52 +1,17 @@
 //! 候选窗抽象与 Effect → UiSnapshot 映射。W0 完整实现，冻结。
-//! MVP 实现 = GdiCandidateWindow（Agent E）；M4 增加 RemoteCandidateWindow。
+//! MVP 实现 = GdiCandidateWindow（Agent E）；M4 起 = CandwinCandidateWindow
+//! （ULW 呈现 + iuv-ui 绘图，见 19-m4-cross-render.md），类型与快照自 iuv-ui 迁出。
 
-use iuv_core::{Effect, PageInfo};
-
-/// 【Agent E】GDI 候选窗实现（属主矩阵 01-contract.md §6 已列）。
-/// 注：W0 骨架遗漏本声明与 re-export，属契约缺陷，由 Agent E 补接线（待主智能体追认）。
-pub mod gdi;
-pub use gdi::GdiCandidateWindow;
+pub mod candwin;
+pub mod menu_window;
+pub mod ulw;
+pub use candwin::CandwinCandidateWindow;
+pub use menu_window::MenuWindow;
 pub use iuv_core::Orientation;
+pub use iuv_ui::{effect_to_snapshot, CaretRect, UiSnapshot};
 
-/// 光标矩形（屏幕坐标）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CaretRect {
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
-}
-
-/// 候选窗 UI 快照。
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct UiSnapshot {
-    /// "ni'hao"
-    pub reading: String,
-    /// 页内候选文本
-    pub candidates: Vec<String>,
-    /// 全量候选文本（所有页，按页内序）。TSF 候选 UI 元素数据源（游戏内候选栏
-    /// 翻页切片用）；自绘窗只消费当前页 candidates。
-    pub all_candidates: Vec<String>,
-    pub selected: usize,
-    pub page: PageInfo,
-    /// 布局方向（竖排/横排）；effect_to_snapshot 默认竖排，TSF 侧从 config 填
-    pub orientation: Orientation,
-}
-
-/// Effect → UiSnapshot：取 effect.reading / 页内候选 text / selected / page。
-pub fn effect_to_snapshot(e: &Effect) -> UiSnapshot {
-    UiSnapshot {
-        reading: e.reading.clone(),
-        candidates: e.candidates.iter().map(|c| c.text.clone()).collect(),
-        all_candidates: e.all_candidates.iter().map(|c| c.text.clone()).collect(),
-        selected: e.selected,
-        page: e.page.clone(),
-        orientation: Orientation::default(),
-    }
-}
-
-/// 候选窗抽象。M4 增加 RemoteCandidateWindow（IPC 转发 Tauri helper），COM 层零改动。
+/// 候选窗抽象。M4 起实现 = CandwinCandidateWindow（iuv-ui 渲染 + ULW 呈现），
+/// 见 `19-m4-cross-render.md`。COM 层零改动。
 pub trait CandidateUi {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect);
     fn update(&mut self, snap: &UiSnapshot);
@@ -75,7 +40,7 @@ impl CandidateUi for NullCandidateUi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iuv_core::{Candidate, CandidateKind};
+    use iuv_core::{Candidate, CandidateKind, Effect, PageInfo};
 
     #[test]
     fn effect_to_snapshot_maps_fields() {

@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 iuv-data = { workspace = true }
 iuv-core = { workspace = true }
+iuv-ui = { workspace = true }
 windows = { workspace = true }
 windows-core = { workspace = true }
 windows-registry = { workspace = true }

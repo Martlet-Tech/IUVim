@@ -1,16 +1,18 @@
-//! 候选窗演示程序（契约 14-mod-iuv-tsf-candwin.md §3）。
+//! 候选窗演示程序（契约 14-mod-iuv-tsf-candwin.md §3；M4 起走 iuv-ui + ULW 呈现）。
 //! 运行：`cargo run -p iuv-tsf --example candwin_demo`
 //!
 //! 人眼验收要点：
 //! - 不抢焦点：打开记事本让光标闪烁，候选窗不应夺取键盘焦点；
-//! - 无闪烁：翻页/移动过程平滑，无白闪；
+//! - 无闪烁：翻页/移动过程平滑，无白闪（UpdateLayeredWindow，DWM per-pixel 透明）；
+//! - 真透明圆角 + 阴影：圆角外透出下层窗口内容；
 //! - 高亮正确：每页高亮行随翻页轮换；
-//! - 尺寸自适应：翻页时窗口随内容自动缩放。
+//! - 尺寸自适应：翻页时窗口随内容自动缩放；
+//! - 深色主题：两窗并排（浅色 + 深色）对比，0.5 秒轮换。
 
 use std::time::Duration;
 
 use iuv_core::PageInfo;
-use iuv_tsf::ui::{CandidateUi, CaretRect, GdiCandidateWindow, UiSnapshot};
+use iuv_tsf::ui::{CandidateUi, CandwinCandidateWindow, CaretRect, UiSnapshot};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
@@ -25,7 +27,11 @@ const PAGES: [&[&str]; 4] = [
 ];
 
 fn make_snapshot(page: usize) -> UiSnapshot {
-    let all: Vec<String> = PAGES.iter().flat_map(|p| p.iter()).map(|s| s.to_string()).collect();
+    let all: Vec<String> = PAGES
+        .iter()
+        .flat_map(|p| p.iter())
+        .map(|s| s.to_string())
+        .collect();
     UiSnapshot {
         reading: "ni'hao".to_string(),
         candidates: PAGES[page].iter().map(|s| s.to_string()).collect(),
@@ -64,8 +70,10 @@ fn pump_messages() -> bool {
 }
 
 fn main() {
-    println!("IUV 输入法 候选窗演示 —— 按 Esc 退出（建议同时打开记事本观察不抢焦点）");
-    let mut win = GdiCandidateWindow::new();
+    println!("IUV 输入法 候选窗演示（iuv-ui + ULW）—— 按 Esc 退出（建议同时打开记事本观察不抢焦点）");
+    // 浅色 + 深色两窗并排演示：验证主题差异。
+    let mut light = CandwinCandidateWindow::new(iuv_ui::theme_light());
+    let mut dark = CandwinCandidateWindow::new(iuv_ui::theme_dark());
     let mut tick: u32 = 0;
     while tick < 30 {
         if pump_messages() || esc_pressed() {
@@ -80,11 +88,20 @@ fn main() {
             w: 2,
             h: 20,
         };
+        let caret_dark = CaretRect {
+            x: caret.x + 260,
+            y: caret.y,
+            w: 2,
+            h: 20,
+        };
         if tick == 0 {
-            win.show(&snap, caret);
+            light.show(&snap, caret);
+            dark.show(&snap, caret_dark);
         } else {
-            win.update(&snap);
-            win.move_to(caret);
+            light.update(&snap);
+            light.move_to(caret);
+            dark.update(&snap);
+            dark.move_to(caret_dark);
         }
         println!(
             "第 {} 页，候选 1 = {}，位置 ({}, {})",
@@ -96,6 +113,7 @@ fn main() {
         tick += 1;
         std::thread::sleep(Duration::from_millis(1500));
     }
-    win.hide();
+    light.hide();
+    dark.hide();
     println!("演示结束");
 }

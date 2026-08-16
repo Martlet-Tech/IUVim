@@ -13,12 +13,13 @@
 
 ### 2. 门面（候选窗）
 - IMK 自带候选条（`IMKCandidates`）或自绘 `NSWindow` 两个方向，开发时择一
-- 复用 `UiSnapshot` 数据契约（跨平台中立），渲染端各平台自管
+- **M4 起复用 `crates/iuv-ui` 渲染栈**（tiny-skia + cosmic-text + Theme），
+  只写窗口层 + 呈现层（NSWindow/CALayer）；`UiSnapshot` 数据契约跨平台中立
 
 ## 与 Windows 的对应关系
 
 | 层 | Windows | macOS |
 |---|---|---|
 | 系统适配 | `iuv-tsf`（TSF） | IMK 插件（未建） |
-| 门面 | GDI（现）/ helper D2D（M4） | IMK 候选条 / NSWindow（未建） |
+| 门面 | iuv-ui 绘图 + ULW 呈现（M4） | iuv-ui 绘图 + NSWindow/CALayer（未建） |
 | 引擎 | iuv-core（共用） | iuv-core（共用，零改动） |
