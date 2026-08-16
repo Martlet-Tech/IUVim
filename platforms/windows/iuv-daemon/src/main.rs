@@ -211,6 +211,10 @@ fn handle_request(state: &Arc<DaemonState>, req: &Request) -> Response {
     {
         let mut dict = state.dict.lock().unwrap_or_else(|p| p.into_inner());
         let d = match req {
+            // M2 调权互写语义（18-m2-user-dict.md）：a/b 互写对方合成权重。
+            // 请求携带 swap 前的旧权重（a_adj/b_adj），必须交叉传入（a←b_adj, b←a_adj），
+            // 与引擎本地 apply_swap(a, b_eff, b, a_eff) 一致——原实现各写各的导致
+            // "的"恒被写回旧权重（2026-08-17 实测修复，见 daemon 日志 a_adj 恒 5）。
             Request::Swap {
                 a_code,
                 a_word,
@@ -218,7 +222,7 @@ fn handle_request(state: &Arc<DaemonState>, req: &Request) -> Response {
                 b_code,
                 b_word,
                 b_adj,
-            } => dict.apply_swap(a_code, a_word, *a_adj, b_code, b_word, *b_adj),
+            } => dict.apply_swap(a_code, a_word, *b_adj, b_code, b_word, *a_adj),
             Request::Set { code, word, adj } => dict.set_entry(code, word, *adj),
             Request::Remove { code, word } => dict.remove_entry(code, word),
             Request::Block { code, word } => dict.block(code, word),

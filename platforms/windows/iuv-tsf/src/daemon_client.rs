@@ -73,8 +73,10 @@ impl DaemonClient {
     /// Activate 时调用（用户切到本输入法的时机）。返回 true = daemon 已在线/已拉起；
     /// false = 离线且未拉起（冷却中/路径缺失/失败——静默降级，绝不 panic）。
     pub fn ensure_daemon(&self) -> bool {
-        // 1. 在线检测：共享段存在即在线（daemon 建段）。
-        if ShmReader::open().is_ok() {
+        // 1. 在线检测：管道 Ping（daemon 存活的准确信号）。**不能**用共享段存在判定——
+        //    段会被各会话进程 ShmReader 引用残留，daemon 被杀后依然 open 成功，
+        //    导致 ensure_daemon 误判在线不拉起（2026-08-17 实测假死）。
+        if self.pipe_online() {
             return true;
         }
         // 2. 冷却节流（进程级）：60s 内仅尝试一次。
@@ -272,6 +274,26 @@ impl DaemonClient {
                     "[daemon] daemon 离线：写路径降级本地写盘（{}）",
                     self.user_path.display()
                 ));
+            }
+        }
+    }
+
+    /// daemon 存活检测（管道 Ping）：连接缓存复用；连接失败（daemon 未建管道）/Ping
+    /// 失败（连接断开）→ 清缓存返回 false。静默（不记"写请求失败"噪声日志）。
+    fn pipe_online(&self) -> bool {
+        let mut pipe = self.pipe.lock().unwrap_or_else(|e| e.into_inner());
+        if pipe.is_none() {
+            match PipeClient::connect() {
+                Ok(c) => *pipe = Some(c),
+                Err(_) => return false, // daemon 未运行（无管道）
+            }
+        }
+        match pipe.as_ref().expect("已连接（上方刚置位）").request(&Request::Ping) {
+            Ok(_) => true,
+            Err(e) => {
+                log_line(&format!("[daemon] Ping 失败（连接断开，清缓存）：{e}"));
+                *pipe = None;
+                false
             }
         }
     }
