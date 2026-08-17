@@ -34,6 +34,7 @@ use windows::Win32::Foundation::{
     GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect,
     RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW,
@@ -43,6 +44,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSEXW,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
+// WM_MOUSELEAVE 在 windows-rs 0.62 中位于 Controls 模块（值 0x02A3 = 675），
+// 语义属鼠标消息，本地定义避免跨模块依赖。
+const WM_MOUSELEAVE: u32 = 675;
 
 const CLASS_NAME: PCWSTR = w!("IuvCandidateWindow");
 
@@ -61,8 +65,10 @@ pub struct CandwinCandidateWindow {
     rows: Vec<Rect>,
     /// 点击候选回调（行号 0 起；None = 未接线）。
     click: Option<Box<dyn Fn(usize)>>,
-    /// 悬停候选回调（行号 0 起，行变化才触发；None = 未接线）。
-    hover: Option<Box<dyn Fn(usize)>>,
+    /// 鼠标悬停行（纯视觉：只画悬停虚线框，不驱动会话/真高亮）。
+    /// 由 WM_MOUSEMOVE 更新、WM_MOUSELEAVE/命中落空/隐藏清除；
+    /// 键盘事件不清除——鼠标仍悬停候选上就持续有悬停框。
+    hover_row: Option<usize>,
     /// 抑制显示：IMM 应用（游戏自绘候选栏）时静默（show/update 空操作）。
     suppressed: bool,
     /// 主题（装配时从 config 注入；M6 起可经 `set_theme` 热载——设置页保存后
@@ -84,7 +90,7 @@ impl CandwinCandidateWindow {
             last_caret: None,
             rows: Vec::new(),
             click: None,
-            hover: None,
+            hover_row: None,
             suppressed: false,
             theme,
             text: None,
@@ -95,11 +101,6 @@ impl CandwinCandidateWindow {
     /// 接线点击回调（text_service 构造时注入；同线程调用）。
     pub fn set_on_click(&mut self, cb: Option<Box<dyn Fn(usize)>>) {
         self.click = cb;
-    }
-
-    /// 接线悬停回调（text_service 构造时注入；同线程调用）。
-    pub fn set_on_hover(&mut self, cb: Option<Box<dyn Fn(usize)>>) {
-        self.hover = cb;
     }
 
     /// M6 热载主题（config_epoch 变化 → 设置页保存后触发）：存字段 + 原位重绘
@@ -211,7 +212,7 @@ impl CandwinCandidateWindow {
         let scale = self.get_dpi() as f32 / 96.0;
         let surf = {
             let text = self.text.as_mut()?;
-            render_candidate(&self.snap, &self.theme, scale, text)
+            render_candidate(&self.snap, &self.theme, scale, text, self.hover_row)
         };
         if surf.w == 0 || surf.h == 0 {
             return None;
@@ -476,6 +477,7 @@ impl CandidateUi for CandwinCandidateWindow {
 
     fn hide(&mut self) {
         self.visible = false;
+        self.hover_row = None; // 窗口隐藏，悬停高亮一并清
         if !self.hwnd.is_invalid() {
             // SAFETY: 隐藏候选窗
             let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
@@ -581,9 +583,11 @@ fn get_self_mut(hwnd: HWND) -> Option<&'static mut CandwinCandidateWindow> {
 /// WM_NCHITTEST 按圆角几何判定（圆角外 HTTRANSPARENT 点击穿透）；
 /// 鼠标交互：WM_MOUSEACTIVATE 显式 MA_NOACTIVATE（点击候选窗绝不改变激活——
 /// 无 owner popup 的激活转移会让宿主（WinUI3 记事本实测）失活崩 TSF，2026-08-13）；
-/// WM_MOUSEMOVE 悬停命中 → 本地高亮 + 回调同步会话 + ULW 原位重绘；
-/// WM_LBUTTONDOWN 命中 → 点击回调选词上屏；其余鼠标消息一律吞掉
-/// （不回 DefWindowProc，杜绝默认行为）。
+/// WM_MOUSEMOVE 悬停命中 → 记录悬停行 + ULW 原位重绘（**纯视觉**：不改真高亮/会话，
+/// 键盘真高亮独立；悬停行画虚线框，与真高亮蓝底**叠加**显示——同位置 = 蓝底 + 框）；
+/// WM_MOUSELEAVE/命中落空 → 清除悬停行。键盘事件不清除——鼠标仍悬停候选上
+/// 就持续有悬停高亮。WM_LBUTTONDOWN 命中 → 点击回调选词上屏；其余鼠标消息
+/// 一律吞掉（不回 DefWindowProc，杜绝默认行为）。
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -625,15 +629,32 @@ unsafe extern "system" fn wnd_proc(
         WM_MOUSEMOVE => {
             let (x, y) = client_pos(lparam);
             if let Some(wnd) = get_self_mut(hwnd) {
-                if let Some(row) = hit_test(&wnd.rows, x, y) {
-                    if row < wnd.snap.candidates.len() && row != wnd.snap.selected {
-                        wnd.snap.selected = row;
-                        if let Some(cb) = wnd.hover.as_ref() {
-                            cb(row);
-                        }
-                        // SAFETY: 悬停行变化 → ULW 原位重绘高亮（无 WM_PAINT 依赖）
-                        wnd.repaint();
-                    }
+                // TrackMouseEvent 重挂 WM_MOUSELEAVE（离开窗口清除悬停高亮）。
+                // SAFETY: hwnd 由消息循环保证有效；单次调用无副作用。
+                let mut tme = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    ..Default::default()
+                };
+                let _ = unsafe { TrackMouseEvent(&mut tme) };
+                let row =
+                    hit_test(&wnd.rows, x, y).filter(|r| *r < wnd.snap.candidates.len());
+                if row != wnd.hover_row {
+                    // 悬停行变化（含落空/离开候选区）→ 更新 + 原位重绘悬停高亮
+                    wnd.hover_row = row;
+                    // SAFETY: 悬停行变化 → ULW 原位重绘（无 WM_PAINT 依赖）
+                    wnd.repaint();
+                }
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            // 鼠标离开窗口：清除悬停高亮（命中落空同路径）。
+            if let Some(wnd) = get_self_mut(hwnd) {
+                if wnd.hover_row.take().is_some() {
+                    // SAFETY: 悬停清除 → ULW 原位重绘
+                    wnd.repaint();
                 }
             }
             LRESULT(0)

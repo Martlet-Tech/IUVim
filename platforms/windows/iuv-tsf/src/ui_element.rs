@@ -351,7 +351,7 @@ impl ITfCandidateListUIElement_Impl for CandidateElement_Impl {
 // ITfCandidateListUIElementBehavior：候选列表的"控制侧"接口（TSF 3.0）。
 // 当前仅观察位：WoW/notepad 实测桥从未调用（选词由 TSF 按键路径驱动、游戏内框
 // 只是显示，游戏不实现 TSF 3.0 控制接口）——保留保险（若未来桥/应用使用，
-// 可联动引擎：SetSelection→session.set_selected、Finalize→commit、Abort→cancel）。
+// 可联动引擎：SetSelection→会话 selected、Finalize→commit、Abort→cancel）。
 impl ITfCandidateListUIElementBehavior_Impl for CandidateElement_Impl {
     fn SetSelection(&self, nindex: u32) -> Result<()> {
         log_line(&format!(

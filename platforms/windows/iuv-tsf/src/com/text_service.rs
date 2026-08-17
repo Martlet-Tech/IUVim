@@ -206,7 +206,8 @@ impl TextService {
         let caret = Rc::new(Cell::new(CaretRect::default()));
         let cand_elem = Rc::new(RefCell::new(CandidateElementHost::new()));
         let imm_detect = Rc::new(RefCell::new(ImmDetect::default()));
-        // 候选窗交互接线（同线程回调；点击=页内行号→Digit 键，悬停=同步 selected）。
+        // 候选窗交互接线（同线程回调；点击=页内行号→Digit 键上屏；悬停=纯视觉，
+        // 窗口内部处理，不驱动会话）。
         // M4 主题：直接读 config.json（引擎可能仍在后台加载，engine() 不可依赖）：
         // `theme` 字段（默认 light）→ theme_light()/theme_dark()。M6 起可经 set_theme 热载。
         let theme = match iuv_core::Config::load().theme {
@@ -236,12 +237,6 @@ impl TextService {
                     .map(|sess: &mut Session| sess.on_key(Key::Digit((row + 1) as u8)));
                 if let Some(e) = effect {
                     dispatch_effect(&s, &c, &u, &ca, &ce, &id, &e);
-                }
-            })));
-            let s = session.clone();
-            ui_rc.borrow_mut().set_on_hover(Some(Box::new(move |row: usize| {
-                if let Some(sess) = s.borrow_mut().as_mut() {
-                    sess.set_selected(row);
                 }
             })));
         }

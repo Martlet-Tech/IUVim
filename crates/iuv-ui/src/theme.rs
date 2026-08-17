@@ -15,6 +15,8 @@ pub struct Theme {
     pub hl_bg: [u8; 4],
     /// 高亮字
     pub hl_fg: [u8; 4],
+    /// 悬停高亮框（纯视觉，不驱动会话——鼠标悬停候选时的虚线框；与真高亮**叠加**显示）
+    pub hover_border: [u8; 4],
     /// 页码
     pub page_fg: [u8; 4],
     /// 边框
@@ -35,6 +37,7 @@ pub fn theme_light() -> Theme {
         fg: [0x1F, 0x1F, 0x1F, 0xFF],      // 正文近黑
         hl_bg: [0x00, 0x78, 0xD7, 0xFF],   // 高亮底 #0078D7
         hl_fg: [0xFF, 0xFF, 0xFF, 0xFF],   // 高亮字白
+        hover_border: [0x40, 0x40, 0x40, 0xFF], // 悬停虚线框：深灰——白底与高亮蓝底上都可见
         page_fg: [0x99, 0x99, 0x99, 0xFF], // 页码灰
         border: [0xC0, 0xC0, 0xC0, 0xFF],  // 1px 外框浅灰（白底区分边界）
         shadow: [0x00, 0x00, 0x00, 0x50],  // 淡阴影
@@ -52,6 +55,7 @@ pub fn theme_dark() -> Theme {
         fg: [0xE6, 0xE6, 0xE6, 0xFF],
         hl_bg: [0x00, 0x78, 0xD7, 0xFF],
         hl_fg: [0xFF, 0xFF, 0xFF, 0xFF],
+        hover_border: [0xC8, 0xC8, 0xC8, 0xFF], // 悬停虚线框：亮灰——深底与高亮蓝底上都可见
         page_fg: [0x8A, 0x8A, 0x8A, 0xFF],
         border: [0x3C, 0x3C, 0x3C, 0xFF],
         shadow: [0x00, 0x00, 0x00, 0x8C], // 更浓
@@ -79,5 +83,12 @@ mod tests {
         // 高亮蓝 #0078D7 两套一致（微软系高亮语义统一）
         assert_eq!(light.hl_bg, dark.hl_bg);
         assert_eq!(light.hl_fg, dark.hl_fg);
+        // 悬停虚线框 ≠ 窗口边框（可辨识）
+        assert_ne!(light.hover_border, light.border, "悬停框色与窗口边框不同");
+        assert_ne!(light.hover_border, light.bg, "悬停框色与窗口底不同");
+        assert_ne!(dark.hover_border, dark.border, "悬停框色与窗口边框不同");
+        assert_ne!(dark.hover_border, dark.bg, "悬停框色与窗口底不同");
+        // 浅深两套悬停框色不同（深色需更亮）
+        assert_ne!(light.hover_border, dark.hover_border);
     }
 }

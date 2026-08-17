@@ -353,7 +353,7 @@ fn trailing_apostrophe_space_commits_first_candidate() {
     assert_eq!(e.end, Some(SessionEnd::Commit("系".into())));
 }
 
-/// 左右键页内移动 selected（边界环绕翻页）；set_selected 悬停同步（夹紧行尾）。
+/// 左右键页内移动 selected（边界环绕翻页）。
 #[test]
 fn arrow_keys_move_selected_in_page() {
     let dict = Dict::from_entries(vec![
@@ -375,10 +375,6 @@ fn arrow_keys_move_selected_in_page() {
     assert_eq!(s.on_key(Key::Left).selected, 0);
     // 页首回退：首页夹紧 0（无上一页）
     assert_eq!(s.on_key(Key::Left).selected, 0);
-    // set_selected 夹紧到页内行尾
-    s.set_selected(99);
-    let e = s.effect();
-    assert_eq!(e.selected, e.candidates.len() - 1);
 }
 
 /// 页内导航边界环绕：页尾继续 → 下一页（selected=0）；页首回退 → 上一页（selected=页尾）。

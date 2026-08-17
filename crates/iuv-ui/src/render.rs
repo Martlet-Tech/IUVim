@@ -48,12 +48,17 @@ const HL_RADIUS: f32 = 2.0;
 /// - `scale`：DPI 缩放（dpi/96）；字号 = `FONT_PX_96 * scale`，页码小字 = 一半；
 /// - Surface 尺寸 = 布局宽高 + `2 × shadow_size × scale`（阴影外缘），内容区偏移
 ///   阴影宽度——与 19-m4-cross-render.md §3 的呈现层接缝一致；
-/// - 行高 = cosmic-text 实际 line height（≈ 20px @96dpi 基准，与 GDI 观感一致）。
+/// - 行高 = cosmic-text 实际 line height（≈ 20px @96dpi 基准，与 GDI 观感一致）；
+/// - `hover`：鼠标悬停行（纯视觉，不驱动会话）。悬停行画**虚线框**（`hover_border`），
+///   与真高亮**叠加**显示：真高亮蓝底照常，悬停只在其上加框，不覆盖任何东西；
+///   悬停行无填充底、文字保持正文色。超出候选数（候选变更后悬停索引未刷新）
+///   自然不画任何框。
 pub fn render_candidate(
     snap: &UiSnapshot,
     theme: &Theme,
     scale: f32,
     text: &mut TextRenderer,
+    hover: Option<usize>,
 ) -> Surface {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
@@ -93,7 +98,8 @@ pub fn render_candidate(
         cw.max(0) as u32,
         ch.max(0) as u32,
         |pixmap, sx| {
-            // 候选行：高亮底 + 文本（原文兜底候选不编号，规则与 layout 一致）
+            // 候选行：真高亮填充底 + 悬停虚线框（叠加，互不覆盖）+ 文本
+            // （原文兜底候选不编号，规则与 layout 一致）
             for (i, cand) in snap.candidates.iter().enumerate() {
                 let Some(r) = rects.get(i) else {
                     break; // 防御：布局行数与候选数不一致也不越界
@@ -108,6 +114,18 @@ pub fn render_candidate(
                         r.h as f32,
                         (HL_RADIUS * scale).min(r.h as f32 / 2.0),
                         theme.hl_bg,
+                    );
+                }
+                if hover == Some(i) {
+                    stroke_rounded_dashed(
+                        pixmap,
+                        sx + r.x as f32,
+                        sx + r.y as f32,
+                        r.w as f32,
+                        r.h as f32,
+                        (HL_RADIUS * scale).min(r.h as f32 / 2.0),
+                        1.0_f32.max(scale),
+                        theme.hover_border,
                     );
                 }
                 let label = candidate_label(snap, i, cand);
@@ -337,6 +355,37 @@ fn fill_rounded(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, col
     }
 }
 
+/// 虚线圆角矩形框（悬停高亮用）：内缩 1px 防跨行压邻行/文本；
+/// dash 规格 [4,3]（4px 线 + 3px 空，物理像素）。
+fn stroke_rounded_dashed(
+    pixmap: &mut Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    r: f32,
+    width: f32,
+    color: [u8; 4],
+) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let Some(path) = rounded_rect_path(x + 1.0, y + 1.0, w - 2.0, h - 2.0, r) else {
+        return;
+    };
+    let Some(dash) = tiny_skia::StrokeDash::new(vec![4.0, 3.0], 0.0) else {
+        return;
+    };
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
+    let stroke = Stroke {
+        width,
+        dash: Some(dash),
+        ..Stroke::default()
+    };
+    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+}
+
 fn fill_path(pixmap: &mut Pixmap, path: &Path, color: [u8; 4]) {
     let mut paint = Paint::default();
     paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
@@ -416,7 +465,7 @@ mod tests {
     fn render_candidate_corner_transparent() {
         let mut t = renderer();
         let s = snap("ni'hao", &["你好", "泥嚎"], 0, 1);
-        let surf = render_candidate(&s, &theme_light(), 1.0, &mut t);
+        let surf = render_candidate(&s, &theme_light(), 1.0, &mut t, None);
         assert!(surf.w > 0 && surf.h > 0);
         // 圆角外四角 alpha = 0（阴影分层同样不触角：角心恒在圆弧外）
         assert_eq!(px(&surf, 0, 0).3, 0, "左上角透明");
@@ -429,7 +478,7 @@ mod tests {
     fn render_candidate_bg_opaque_at_center() {
         let mut t = renderer();
         let s = snap("ni'hao", &["你好", "泥嚎"], 0, 1);
-        let surf = render_candidate(&s, &theme_light(), 1.0, &mut t);
+        let surf = render_candidate(&s, &theme_light(), 1.0, &mut t, None);
         let (r, g, b, a) = px(&surf, surf.w / 2, surf.h / 2);
         assert_eq!(a, 255, "背景中心完全不透明");
         assert_eq!((r, g, b), (0xFF, 0xFF, 0xFF), "浅色主题背景白");
@@ -444,7 +493,7 @@ mod tests {
             selected: 1,
             ..s.clone()
         };
-        let surf = render_candidate(&snap_sel, &theme_light(), 1.0, &mut t);
+        let surf = render_candidate(&snap_sel, &theme_light(), 1.0, &mut t, None);
         // 与 render 相同的测量参数重算布局（相同 renderer 状态 → 矩形完全一致）
         let size_px = FONT_PX_96;
         let mut sizes: Vec<(String, (i32, i32))> = Vec::new();
@@ -489,11 +538,117 @@ mod tests {
         assert_eq!((r2, g2, b2), (0xFF, 0xFF, 0xFF), "非高亮行背景白");
     }
 
+    /// 两个 Surface 的差异像素数（虚线框存在性校验：边框像素改变了表面）。
+    fn diff_count(a: &Surface, b: &Surface) -> usize {
+        if a.w != b.w || a.h != b.h {
+            return usize::MAX;
+        }
+        a.pixels
+            .iter()
+            .zip(b.pixels.iter())
+            .filter(|(x, y)| x != y)
+            .count()
+    }
+
+    /// 悬停行行内采样坐标（尾随空格区，远离文字墨迹）。
+    fn row_sample(rects: &[LayoutRect], idx: usize, shadow: u32) -> (u32, u32) {
+        let r = rects[idx];
+        (shadow + (r.x + r.w - 3) as u32, shadow + (r.y + r.h / 2) as u32)
+    }
+
+    fn layout_rects(snap: &UiSnapshot, t: &mut TextRenderer) -> (u32, Vec<LayoutRect>) {
+        let size_px = FONT_PX_96;
+        let mut sizes: Vec<(String, (i32, i32))> = Vec::new();
+        for (i, c) in snap.candidates.iter().enumerate() {
+            let label = candidate_label(snap, i, c);
+            sizes.push((label.clone(), t.measure(&label, size_px)));
+        }
+        let (_, _, rects) = layout(
+            snap,
+            |s| {
+                sizes
+                    .iter()
+                    .find(|(t, _)| t == s)
+                    .map(|(_, sz)| *sz)
+                    .unwrap_or((0, 0))
+            },
+            |_s| (0, 0),
+            Orientation::Vertical,
+        );
+        (shadow_size_for(snap), rects)
+    }
+
+    fn shadow_size_for(_snap: &UiSnapshot) -> u32 {
+        theme_light().shadow_size as u32
+    }
+
+    #[test]
+    fn render_candidate_hover_row_shows_dashed_border() {
+        let mut t = renderer();
+        // 悬停第 1 行（真高亮第 0 行不动）：悬停行无填充底（内部=背景白），
+        // 且表面与无悬停渲染不同（虚线框被画上）。
+        let s = snap("ni'hao", &["你好", "泥 "], 0, 1);
+        let snap_sel = UiSnapshot {
+            selected: 0,
+            ..s.clone()
+        };
+        let base = render_candidate(&snap_sel, &theme_light(), 1.0, &mut t, None);
+        let hovered = render_candidate(&snap_sel, &theme_light(), 1.0, &mut t, Some(1));
+        assert!(
+            diff_count(&base, &hovered) > 0,
+            "悬停渲染必须与无悬停不同（虚线框像素）"
+        );
+        // 悬停行内部（尾随空格区）= 背景白（无填充底）
+        let (shadow, rects) = layout_rects(&snap_sel, &mut t);
+        let (x, y) = row_sample(&rects, 1, shadow);
+        let (r, g, b, a) = px(&hovered, x, y);
+        assert!(a > 250, "悬停行内部不透明");
+        assert_eq!((r, g, b), (0xFF, 0xFF, 0xFF), "悬停行内部背景白（无填充底）");
+        // 对照：真高亮第 0 行内部 = hl_bg
+        let (x0, y0) = row_sample(&rects, 0, shadow);
+        let (r2, g2, b2, _) = px(&hovered, x0, y0);
+        let [hlr, hlg, hlb, _] = theme_light().hl_bg;
+        assert!(
+            (r2 as i16 - hlr as i16).abs() <= 2
+                && (g2 as i16 - hlg as i16).abs() <= 2
+                && (b2 as i16 - hlb as i16).abs() <= 2,
+            "真高亮行底色 ≈ hl_bg"
+        );
+    }
+
+    #[test]
+    fn render_candidate_hover_stacks_on_selection() {
+        let mut t = renderer();
+        // 悬停与真高亮同位置（第 1 行）：真高亮蓝底**不被覆盖**（内部仍 hl_bg），
+        // 虚线框叠加其上（表面与仅真高亮渲染不同）。
+        let s = snap("ni'hao", &["你好", "泥 "], 0, 1);
+        let snap_sel = UiSnapshot {
+            selected: 1,
+            ..s.clone()
+        };
+        let sel_only = render_candidate(&snap_sel, &theme_light(), 1.0, &mut t, None);
+        let hovered = render_candidate(&snap_sel, &theme_light(), 1.0, &mut t, Some(1));
+        assert!(
+            diff_count(&sel_only, &hovered) > 0,
+            "悬停叠加必须改变表面（虚线框像素）"
+        );
+        let (shadow, rects) = layout_rects(&snap_sel, &mut t);
+        let (x, y) = row_sample(&rects, 1, shadow);
+        let (r, g, b, _) = px(&hovered, x, y);
+        let [hlr, hlg, hlb, _] = theme_light().hl_bg;
+        assert!(
+            (r as i16 - hlr as i16).abs() <= 2
+                && (g as i16 - hlg as i16).abs() <= 2
+                && (b as i16 - hlb as i16).abs() <= 2,
+            "同位置真高亮蓝底仍在（叠加而非覆盖）"
+        );
+    }
+
     #[test]
     fn render_candidate_shadow_soft() {
         let mut t = renderer();
         let s = snap("ni'hao", &["你好", "泥嚎", "你好吗"], 0, 1);
-        let surf = render_candidate(&s, &theme_light(), 1.0, &mut t);
+        let surf = render_candidate(&s, &theme_light(), 1.0, &mut t, None);
         let shadow = theme_light().shadow_size as u32;
         assert!(surf.w > shadow * 2 && surf.h > shadow * 2);
         // 阴影区（内容矩形外、surface 边缘内）：alpha 0 < a < 255
@@ -507,7 +662,7 @@ mod tests {
     fn render_candidate_dark_theme_dark_bg() {
         let mut t = renderer();
         let s = snap("ni'hao", &["你好", "泥嚎"], 0, 1);
-        let surf = render_candidate(&s, &theme_dark(), 1.0, &mut t);
+        let surf = render_candidate(&s, &theme_dark(), 1.0, &mut t, None);
         let (r, g, b, a) = px(&surf, surf.w / 2, surf.h / 2);
         assert_eq!(a, 255);
         assert!(
@@ -520,8 +675,8 @@ mod tests {
     fn render_candidate_hdpi_doubles_size() {
         let mut t = renderer();
         let s = snap("ni'hao", &["你好", "泥嚎", "你好吗"], 0, 1);
-        let s1 = render_candidate(&s, &theme_light(), 1.0, &mut t);
-        let s2 = render_candidate(&s, &theme_light(), 2.0, &mut t);
+        let s1 = render_candidate(&s, &theme_light(), 1.0, &mut t, None);
+        let s2 = render_candidate(&s, &theme_light(), 2.0, &mut t, None);
         // 内容区（去掉阴影边距）应约 2 倍：padding 为常量不随 scale 缩放，
         // 字号翻倍后 ceil 舍入每行 ≤1px，总偏差很小。
         let m = theme_light().shadow_size as i64;
@@ -551,7 +706,7 @@ mod tests {
     #[test]
     fn render_candidate_empty_snapshot_no_panic() {
         let mut t = renderer();
-        let surf = render_candidate(&UiSnapshot::default(), &theme_light(), 1.0, &mut t);
+        let surf = render_candidate(&UiSnapshot::default(), &theme_light(), 1.0, &mut t, None);
         // 空快照：极小窗口但恒有像素缓冲（候选窗内容恒非空由引擎保证，这里只验证不 panic）
         assert!(surf.pixels.len() % 4 == 0);
     }
