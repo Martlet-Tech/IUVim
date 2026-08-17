@@ -31,8 +31,11 @@ const LAUNCH_COOLDOWN_SECS: u64 = 60;
 /// M6 daemon 客户端。单实例经 `Arc` 与引擎 `user_remote` 共享（text_service 持一份、
 /// 引擎持一份），全部方法 `&self`（内部 Mutex）。
 pub struct DaemonClient {
-    /// 命名管道连接缓存（惰性：首次 `daemon_online`/`send_request` 时 connect；
-    /// 发送失败/断开 → 清缓存，下次重连）。
+    /// 命名管道连接（惰性：首次 `daemon_online`/`send_request` 时 connect）。
+    /// **每笔请求后用即弃**——服务端一连接只服务一请求（accept → serve → DisconnectNamedPipe，
+    /// 刻意的一请求一连接以公平服务多进程客户端），缓存复用会把下笔请求打到已断开的句柄
+    /// （实测 0x800700E9 ERROR_PIPE_BROKEN，靠重连自愈但多一次失败往返）。
+    /// 失败/断开 → 清缓存，下次新建。
     pipe: Mutex<Option<PipeClient>>,
     /// 共享段只读映射（惰性打开：daemon 未建段 → None = 离线信号）。
     shm: Mutex<Option<ShmReader>>,
@@ -229,6 +232,7 @@ impl DaemonClient {
     }
 
     /// 通用请求（超时/失败 → None）。连接缺失时先尝试连接；发送失败 → 清缓存重连一次。
+    /// 成功/失败重试后一律丢连接（对齐服务端一连接一请求），下次请求新建。
     pub fn send_request(&self, req: &Request) -> Option<Response> {
         let mut pipe = self.pipe.lock().unwrap_or_else(|e| e.into_inner());
         if pipe.is_none() {
@@ -242,7 +246,11 @@ impl DaemonClient {
         }
         let client = pipe.as_ref().expect("已连接（上方刚置位）");
         match client.request(req) {
-            Ok(resp) => Some(resp),
+            Ok(resp) => {
+                // 服务端已断开本连接（一请求一连接）→ 丢缓存，下次请求新建。
+                *pipe = None;
+                Some(resp)
+            }
             Err(e) => {
                 // 连接断开：清缓存 + 重连一次（daemon 可能刚重启）。
                 *pipe = None;
@@ -250,7 +258,8 @@ impl DaemonClient {
                 match PipeClient::connect() {
                     Ok(c) => {
                         let resp = c.request(req);
-                        *pipe = Some(c);
+                        // 无论成败：连接用后即弃，下次新建。
+                        *pipe = None;
                         resp.ok()
                     }
                     Err(e2) => {
@@ -278,8 +287,9 @@ impl DaemonClient {
         }
     }
 
-    /// daemon 存活检测（管道 Ping）：连接缓存复用；连接失败（daemon 未建管道）/Ping
+    /// daemon 存活检测（管道 Ping）：连接复用；连接失败（daemon 未建管道）/Ping
     /// 失败（连接断开）→ 清缓存返回 false。静默（不记"写请求失败"噪声日志）。
+    /// Ping 成功后丢连接（一连接一请求，对齐 send_request）。
     fn pipe_online(&self) -> bool {
         let mut pipe = self.pipe.lock().unwrap_or_else(|e| e.into_inner());
         if pipe.is_none() {
@@ -289,7 +299,11 @@ impl DaemonClient {
             }
         }
         match pipe.as_ref().expect("已连接（上方刚置位）").request(&Request::Ping) {
-            Ok(_) => true,
+            Ok(_) => {
+                // 服务端已断开本连接 → 丢缓存，下次请求新建。
+                *pipe = None;
+                true
+            }
             Err(e) => {
                 log_line(&format!("[daemon] Ping 失败（连接断开，清缓存）：{e}"));
                 *pipe = None;
