@@ -109,6 +109,9 @@ fn run() -> i32 {
             log::log_line("[main] 设置窗口已关闭，继续后台常驻");
             continue;
         }
+        // 兜底 flush：任何非管道路径置 dirty（如设置页清除）都尽快落盘，
+        // 防注销硬杀时磁盘残留旧库（2026-08-18 实测复活 bug）。dirty 已清时零成本。
+        state.flush_if_dirty();
         std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
     }
 

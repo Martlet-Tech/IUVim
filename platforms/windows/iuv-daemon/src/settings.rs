@@ -214,15 +214,19 @@ impl SettingsApp {
         (dict.cover_count(), dict.block_count(), lines)
     }
 
-    /// 「清除全部」：空库 + 发布 + 写盘。
+    /// 「清除全部」：空库 + 发布 + 立即写盘。
+    /// 必须立即落盘：设置页不走管道（管道路径 publish 后紧接 flush_now），若只置
+    /// dirty，注销时 daemon 被硬杀不触发退出强写盘 → 磁盘旧库残留、下次登录复活
+    /// （2026-08-18 实测：清除两次注销两次均复活）。用户点确认即持久化。
     fn clear_all(&mut self) {
         {
             let mut dict = self.state.dict.lock().unwrap_or_else(|p| p.into_inner());
             *dict = UserDict::empty();
         }
         self.state.publish();
+        self.state.flush_now();
         self.confirm_clear = false;
-        self.status = "已清除全部用户库（发布 + 待写盘）".into();
+        self.status = "已清除全部用户库（已落盘）".into();
     }
 
     /// 保存：解析名单 → 写 config.json → bump config_epoch → 更新内存配置。

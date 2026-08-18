@@ -2,7 +2,9 @@
 //!
 //! 所有写用户库的入口（管道线程、设置页「清除全部」）统一走 `publish()`：
 //! 锁 dict → 序列化 → 写共享段（ShmWriter::write 内部按"数据区 → data_len → version"
-//! 顺序原子发布）→ 置 dirty。`flush_if_dirty()` 由主线程 2s 定时器调用，聚合写盘。
+//! 顺序原子发布）→ 置 dirty。落盘：管道路径 publish 后紧接 `flush_now()`（立即）；
+//! 设置页清除路径同样立即 `flush_now()`；主循环另有 `flush_if_dirty()` 兜底
+//! （覆盖任何非管道 dirty 路径，防注销硬杀丢写）。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -130,5 +132,46 @@ impl DaemonState {
             std::thread::sleep(std::time::Duration::from_millis(50));
             self.flush_if_dirty();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iuv_data::UserDict;
+
+    use super::DaemonState;
+    use crate::config::DaemonConfig;
+
+    /// publish → flush_if_dirty 落盘：设置页清除路径的持久化语义。
+    /// 清除后脏标记必须被消费写盘，否则注销硬杀时磁盘残留旧库（复活 bug）。
+    #[test]
+    fn publish_then_flush_persists_current_dict() {
+        let path = std::env::temp_dir().join("iuv-state-flush-test.imedic");
+        let _ = std::fs::remove_file(&path);
+
+        // 1. 带条目的库 → publish + flush → 落盘。
+        let state = DaemonState::new(
+            UserDict::empty().set_entry("de", "的", 7),
+            None, // 无共享段：发布仅置 dirty（等同建段失败的降级路径）
+            DaemonConfig::default(),
+            path.clone(),
+        );
+        state.publish();
+        assert!(state.dirty.load(std::sync::atomic::Ordering::Acquire), "publish 应置 dirty");
+        state.flush_if_dirty();
+        let loaded = UserDict::load(&path).expect("flush 后文件应存在");
+        assert_eq!(loaded.cover_count(), 1, "flush 应写当前 dict（含 de/的）");
+
+        // 2. 清空（模拟设置页「清除全部」）→ publish + flush → 磁盘同步为空。
+        {
+            let mut dict = state.dict.lock().unwrap_or_else(|p| p.into_inner());
+            *dict = UserDict::empty();
+        }
+        state.publish();
+        state.flush_if_dirty();
+        let cleared = UserDict::load(&path).expect("再次 flush 后文件应存在");
+        assert_eq!(cleared.cover_count(), 0, "清除后 flush 应同步为空库");
+
+        let _ = std::fs::remove_file(&path);
     }
 }
