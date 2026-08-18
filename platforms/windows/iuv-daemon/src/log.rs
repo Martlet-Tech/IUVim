@@ -23,12 +23,46 @@ pub fn log_line(msg: &str) {
     }
 }
 
+/// 清空 `%TEMP%` 下 4 个 iuv 相关日志文件（truncate 而非删除：文件保留，持有方继续追加）。
+/// 返回 (成功数, 失败数)。失败多为日志文件此刻被活跃进程占用（TSF/脚本瞬时持有），
+/// 只计数不报错——设置页开发者标签据此显示"被占用"反馈。
+#[cfg(any(debug_assertions, feature = "dev"))]
+pub fn clear_logs() -> (usize, usize) {
+    const FILES: &[&str] = &[
+        "input-iuv-daemon.log", // 本守护进程
+        "iuv-tsf.log",          // TSF 会话进程
+        "iuv-script.log",       // install/dev-deploy 脚本
+        "iuv-cleanup.log",      // 延迟清理计划任务
+    ];
+    let Some(dir) = temp_dir() else {
+        return (0, FILES.len());
+    };
+    let mut ok = 0usize;
+    let mut fail = 0usize;
+    for name in FILES {
+        let path = dir.join(name);
+        match OpenOptions::new().write(true).truncate(true).open(&path) {
+            Ok(_) => ok += 1,
+            Err(e) => {
+                fail += 1;
+                log_line(&format!("[log] 清除 {name} 失败（占用？）: {e}"));
+            }
+        }
+    }
+    log_line(&format!("[log] 清除日志完成：成功 {ok}、失败 {fail}"));
+    (ok, fail)
+}
+
 /// %TEMP%\input-iuv-daemon.log（TEMP 缺失时回退 TMP）。
 fn log_path() -> Option<PathBuf> {
+    temp_dir().map(|dir| dir.join("input-iuv-daemon.log"))
+}
+
+fn temp_dir() -> Option<PathBuf> {
     std::env::var("TEMP")
         .or_else(|_| std::env::var("TMP"))
         .ok()
-        .map(|dir| PathBuf::from(dir).join("input-iuv-daemon.log"))
+        .map(PathBuf::from)
 }
 
 fn process_id() -> u32 {

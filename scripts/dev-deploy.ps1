@@ -41,6 +41,9 @@ if (-not $SkipBuild) {
     try {
         cargo build -p iuv-tsf --release
         if ($LASTEXITCODE -ne 0) { throw "cargo build 失败（exit=$LASTEXITCODE）" }
+        # 守护进程（dev 构建标记：设置页带「开发者」标签/清除日志；发布安装不带）。
+        cargo build -p iuv-daemon --release --features dev
+        if ($LASTEXITCODE -ne 0) { throw "cargo build iuv-daemon 失败（exit=$LASTEXITCODE）" }
     } finally { Pop-Location }
     Trace-Script "dev-deploy: 构建完成"
 } else {
@@ -134,7 +137,7 @@ if (Test-Path $daemonSrc) {
         Write-Host "警告：守护进程复制失败（$destDaemon），本次仅部署 DLL。"
     }
 } else {
-    Trace-Script "dev-deploy: 未找到守护进程产物 $daemonSrc（先 cargo build -p iuv-daemon --release）"
+    Trace-Script "dev-deploy: 未找到守护进程产物 $daemonSrc（第 1 步已自动构建 cargo build -p iuv-daemon --release --features dev）"
 }
 
 # ---- 4. 注册（未注册、或 CLSID 指向的 DLL 路径不是本安装时重注册）----
