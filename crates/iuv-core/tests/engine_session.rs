@@ -23,6 +23,8 @@ pub fn fixture_dict() -> Dict {
         ("shi'jie".into(), "世界".into(), 6000),
         ("shi".into(), "世".into(), 3000),
         ("jie".into(), "界".into(), 2500),
+        ("gong'lve".into(), "攻略".into(), 9279),
+        ("lu".into(), "路".into(), 3000),
     ])
 }
 
@@ -64,6 +66,57 @@ fn exact_words_order_by_weight() {
             < texts.iter().position(|t| *t == "地").unwrap()
     );
     assert_eq!(s.effect().candidates[0].text, "的");
+}
+
+// ===== 24-ue-input-alias.md：üe 去点输入形 lue/nue → v 形 =====
+
+/// gonglue/gonglve 同出「攻略」，seg_len=2 整词上屏（u/v 两种输入形归一）。
+#[test]
+fn ue_alias_gonglue_gonglve() {
+    let engine = default_engine();
+    for raw in ["gonglue", "gonglve"] {
+        let mut s = engine.start_session();
+        for c in raw.chars() {
+            s.on_key(Key::Char(c));
+        }
+        let e = s.effect();
+        let texts: Vec<&str> = e.candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(
+            texts.contains(&"攻略"),
+            "{raw} 应出「攻略」，实际：{texts:?}"
+        );
+        let hit = e.candidates.iter().find(|c| c.text == "攻略").unwrap();
+        assert_eq!(hit.seg_len, 2, "{raw} 攻略应整词上屏");
+    }
+}
+
+/// lu 仍真实对立音节（路/芦…，非律 lv）；jv 非音节非前缀 → 无候选（原文兜底）。
+#[test]
+fn ue_alias_lu_jv_unaffected() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for c in "lu".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert!(
+        e.candidates.iter().any(|c| c.text == "路"),
+        "lu 应出「路」（lu≠lv），实际：{:?}",
+        e.candidates.iter().map(|c| c.text.as_str()).collect::<Vec<_>>()
+    );
+    assert!(!e.candidates.iter().any(|c| c.text == "律"));
+
+    let mut s2 = engine.start_session();
+    for c in "jv".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    let e2 = s2.effect();
+    assert!(
+        e2.candidates.iter().any(|c| c.text == "jv"),
+        "jv 应只有原文兜底（ve 形非法），实际：{:?}",
+        e2.candidates.iter().map(|c| c.text.as_str()).collect::<Vec<_>>()
+    );
+    assert!(!e2.candidates.iter().any(|c| c.text == "略"));
 }
 
 /// 前缀联想开关：默认关闭（候选仅 exact，微软化）；开启时追加以当前码为前缀的长词。

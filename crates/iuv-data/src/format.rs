@@ -67,6 +67,10 @@ pub fn write(records: &[Entry], writer: impl io::Write) -> io::Result<()> {
             }
         }
     }
+    // üe 韵母的去点输入形（l/n 侧别名；j/q/x/y 侧 jue/que/xue/yue 已在表中）。
+    // 非标准音节，只作输入识别；运行时 Quanpin 靠它切出 lüe/nüe 路径并归一为 v 形。
+    syllable_set.insert("lue".to_string());
+    syllable_set.insert("nue".to_string());
     syllables.extend(syllable_set);
 
     // ---- 首字母桶（单遍收集副本 + 桶内排序截断；只收单字：word 单字且 code 无 `'`）----

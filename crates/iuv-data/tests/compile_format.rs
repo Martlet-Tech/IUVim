@@ -128,6 +128,9 @@ fn syllables_collected() {
     assert!(d.syllables().contains("ni"));
     assert!(d.syllables().contains("hao"));
     assert!(d.syllables().contains("de"));
+    // 24-ue-input-alias.md：üe 去点输入形注入（不依赖词条、仅输入识别用）。
+    assert!(d.syllables().contains("lue"));
+    assert!(d.syllables().contains("nue"));
 }
 
 #[test]

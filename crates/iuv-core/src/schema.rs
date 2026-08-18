@@ -56,7 +56,16 @@ impl Quanpin {
         for len in (1..=rem.min(self.max_len)).rev() {
             if self.syllables.contains(&s[pos..pos + len]) {
                 matched = true;
-                cur.push(s[pos..pos + len].to_string());
+                let syl = &s[pos..pos + len];
+                // üe 去点输入形 → 词库规范形（v=ü，GB《通用键盘表示规范》）。
+                // lue→lve、nue→nve：唯一归一单点，seg/plans/viterbi 键/dict 查询
+                // 全部消费规范形（24-ue-input-alias.md）。
+                let canon = match syl {
+                    "lue" => "lve",
+                    "nue" => "nve",
+                    _ => syl,
+                };
+                cur.push(canon.to_string());
                 self.backtrack(s, pos + len, cur, out);
                 cur.pop();
             }
@@ -126,6 +135,9 @@ mod tests {
             ("an".into(), "安".into(), 100),
             ("shi".into(), "是".into(), 90000),
             ("zhong".into(), "中".into(), 50000),
+            ("gong".into(), "攻".into(), 500),
+            ("lve".into(), "略".into(), 400),
+            ("nve".into(), "虐".into(), 300),
         ]);
         Quanpin::new(d.syllables().clone())
     }
@@ -193,5 +205,35 @@ mod tests {
         let q = quanpin();
         assert_eq!(q.display(&["ni".into(), "hao".into()]), "ni'hao");
         assert_eq!(q.display(&[]), "");
+    }
+
+    // 24-ue-input-alias.md：üe 去点输入形 lue/nue → 词库规范形 lve/nve（唯一归一单点）。
+    #[test]
+    fn seg_ue_alias_canonical() {
+        let q = quanpin();
+        assert_eq!(q.segment("lue"), vec![vec!["lve"]]);
+        assert_eq!(q.segment("nue"), vec![vec!["nve"]]);
+        assert_eq!(q.segment("gonglue"), vec![vec!["gong", "lve"]]);
+    }
+
+    #[test]
+    fn seg_ue_regression() {
+        let q = quanpin();
+        // 规范形直通（不二次改写）。
+        assert_eq!(q.segment("gonglve"), vec![vec!["gong", "lve"]]);
+        assert_eq!(q.segment("lve"), vec![vec!["lve"]]);
+        assert_eq!(q.segment("nve"), vec![vec!["nve"]]);
+        // j/q/x/y 侧 jue/que/xue/yue 是正字法音节，保持原样（ve 形非法，不映射）。
+        let d = Dict::from_entries(vec![
+            ("jue".into(), "决".into(), 1000),
+            ("que".into(), "却".into(), 1000),
+            ("xue".into(), "学".into(), 1000),
+            ("yue".into(), "月".into(), 1000),
+        ]);
+        let q2 = Quanpin::new(d.syllables().clone());
+        assert_eq!(q2.segment("jue"), vec![vec!["jue"]]);
+        assert_eq!(q2.segment("que"), vec![vec!["que"]]);
+        assert_eq!(q2.segment("xue"), vec![vec!["xue"]]);
+        assert_eq!(q2.segment("yue"), vec![vec!["yue"]]);
     }
 }
