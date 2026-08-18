@@ -57,9 +57,11 @@ fn run() -> i32 {
 
     // ---- 2. 配置 ----
     let daemon_config = config::load_config();
+    // 日志模块禁用集装配（26-log-modules.md）：设置页开发者标签修改后 apply 也会重装配。
+    log::set_log_modules_disabled(&daemon_config.disabled_log_modules);
     log::log_line(&format!(
-        "[main] 配置：theme={} passthrough={:?}",
-        daemon_config.theme, daemon_config.passthrough_apps
+        "[main] 配置：theme={} passthrough={:?} disabled_log={:?}",
+        daemon_config.theme, daemon_config.passthrough_apps, daemon_config.disabled_log_modules
     ));
 
     // ---- 3. 用户库 ----

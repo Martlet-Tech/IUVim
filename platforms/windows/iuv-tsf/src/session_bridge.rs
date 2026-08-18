@@ -142,8 +142,8 @@ pub fn apply_effect(
     match &effect.end {
         Some(SessionEnd::Commit(text)) => {
             match composition.commit(text) {
-                Ok(()) => log_line(&format!("commit：{text}")),
-                Err(e) => log_line(&format!("commit 失败：{e}")),
+                Ok(()) => log_line(&format!("[commit] commit：{text}")),
+                Err(e) => log_line(&format!("[commit] commit 失败：{e}")),
             }
             ui.hide();
             true

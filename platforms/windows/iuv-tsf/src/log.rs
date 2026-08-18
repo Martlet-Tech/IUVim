@@ -4,15 +4,49 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::Threading::GetCurrentProcessId;
 
+/// 禁用日志模块集（denylist，见 26-log-modules.md）。空 = 全记录（默认）。
+/// 由配置加载/热载调 `set_log_modules_disabled` 替换。
+static DISABLED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+
+fn disabled() -> &'static Mutex<std::collections::HashSet<String>> {
+    DISABLED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 替换禁用日志模块集（配置加载/热载调用；空 = 全记录）。
+pub fn set_log_modules_disabled(modules: &[String]) {
+    let mut set = disabled().lock().unwrap_or_else(|p| p.into_inner());
+    set.clear();
+    set.extend(modules.iter().cloned());
+}
+
+/// 按消息前缀 `[tag]` 判断是否被禁用；无 tag 恒放行。禁用集为空走快路径。
+fn module_disabled(msg: &str) -> bool {
+    let set = disabled().lock().unwrap_or_else(|p| p.into_inner());
+    if set.is_empty() {
+        return false;
+    }
+    if let Some(rest) = msg.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            return set.contains(&rest[..end]);
+        }
+    }
+    false
+}
+
 /// 追加一行日志，带时间戳与进程名。全 crate 错误路径必记。
 ///
 /// 日志写失败静默忽略（日志本身不允许影响输入法行为）。
+/// 模块被禁用（config `disabled_log_modules`）时整行丢弃（不构建、不写文件）。
 pub fn log_line(msg: &str) {
+    if module_disabled(msg) {
+        return;
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -25,6 +59,41 @@ pub fn log_line(msg: &str) {
             .append(true)
             .open(path)
             .and_then(|mut f| f.write_all(line.as_bytes()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clear() {
+        disabled().lock().unwrap().clear();
+    }
+
+    #[test]
+    fn empty_set_logs_everything() {
+        clear();
+        assert!(!module_disabled("[uielem] GetString(0) 被调"));
+        assert!(!module_disabled("无 tag 的消息"));
+    }
+
+    #[test]
+    fn disabled_module_suppressed() {
+        clear();
+        set_log_modules_disabled(&["uielem".to_owned()]);
+        assert!(module_disabled("[uielem] GetString(0) 被调"));
+        assert!(!module_disabled("[caret] GetTextExt"));
+        assert!(!module_disabled("无 tag 的消息"));
+    }
+
+    #[test]
+    fn tag_parse_edge_cases() {
+        clear();
+        set_log_modules_disabled(&["key".to_owned()]);
+        assert!(!module_disabled("["), "孤立左括号不是有效 tag");
+        assert!(!module_disabled("[]"), "空 tag");
+        assert!(!module_disabled("[] x"), "空 tag");
+        assert!(module_disabled("[key] 按键：g（会话内）"));
     }
 }
 

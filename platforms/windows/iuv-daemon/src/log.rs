@@ -4,12 +4,45 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::Win32::System::Threading::GetCurrentProcessId;
 
-/// 追加一行日志（时间戳 + pid）。
+/// 禁用日志模块集（denylist，见 26-log-modules.md）。空 = 全记录（默认）。
+/// 由启动配置加载/设置页 apply 调 `set_log_modules_disabled` 替换。
+static DISABLED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+
+fn disabled() -> &'static Mutex<std::collections::HashSet<String>> {
+    DISABLED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 替换禁用日志模块集（空 = 全记录）。
+pub fn set_log_modules_disabled(modules: &[String]) {
+    let mut set = disabled().lock().unwrap_or_else(|p| p.into_inner());
+    set.clear();
+    set.extend(modules.iter().cloned());
+}
+
+/// 按消息前缀 `[tag]` 判断是否被禁用；无 tag 恒放行。禁用集为空走快路径。
+fn module_disabled(msg: &str) -> bool {
+    let set = disabled().lock().unwrap_or_else(|p| p.into_inner());
+    if set.is_empty() {
+        return false;
+    }
+    if let Some(rest) = msg.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            return set.contains(&rest[..end]);
+        }
+    }
+    false
+}
+
+/// 追加一行日志（时间戳 + pid）。模块被禁用时整行丢弃。
 pub fn log_line(msg: &str) {
+    if module_disabled(msg) {
+        return;
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();

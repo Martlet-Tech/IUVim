@@ -70,6 +70,10 @@ pub struct Config {
     /// 候选窗主题（light/dark，默认 light；M4 起生效，见 19-m4-cross-render.md）。
     /// 深色切换需重载输入法生效（热切换 M6 设置页做）。
     pub theme: ThemeChoice,
+    /// 禁用日志模块列表（denylist；默认空 = 全记录，见 26-log-modules.md）。
+    /// Windows 平台 TSF/daemon 消费：log_line 按消息前缀 `[tag]` 匹配，命中即静音。
+    /// 引擎本身不记日志；字段仅为共享 config.json 语义（设置页写、两侧读）。
+    pub disabled_log_modules: Vec<String>,
 }
 
 impl Default for Config {
@@ -83,6 +87,7 @@ impl Default for Config {
             candidate_orientation: Orientation::Vertical,
             passthrough_apps: Vec::new(),
             theme: ThemeChoice::Light,
+            disabled_log_modules: Vec::new(),
         }
     }
 }
@@ -206,6 +211,8 @@ mod tests {
         assert!(c.passthrough_apps.is_empty());
         // 主题默认浅色
         assert_eq!(c.theme, ThemeChoice::Light);
+        // 日志禁用模块默认空（全记录）
+        assert!(c.disabled_log_modules.is_empty());
     }
 
     #[test]
@@ -278,6 +285,17 @@ mod tests {
             c.passthrough_apps,
             vec!["cyberpunk2077.exe".to_owned(), "dota2.exe".to_owned()]
         );
+    }
+
+    #[test]
+    fn disabled_log_modules_parse() {
+        // 缺省字段 → 空（全记录）
+        let c: Config = serde_json::from_str(r#"{ "page_size": 5 }"#).unwrap();
+        assert!(c.disabled_log_modules.is_empty());
+        // 显式列表解析
+        let c2: Config =
+            serde_json::from_str(r#"{ "disabled_log_modules": ["uielem", "key"] }"#).unwrap();
+        assert_eq!(c2.disabled_log_modules, vec!["uielem".to_owned(), "key".to_owned()]);
     }
 
     #[test]

@@ -14,6 +14,9 @@ pub struct DaemonConfig {
     pub theme: String,
     /// 按键直通进程名列表（exe 名，大小写不敏感精确匹配，TSF 层消费）。
     pub passthrough_apps: Vec<String>,
+    /// 禁用日志模块列表（denylist；默认空 = 全记录，见 26-log-modules.md）。
+    /// 设置页开发者标签勾选、TSF/daemon 两侧 log_line 按消息 `[tag]` 过滤。
+    pub disabled_log_modules: Vec<String>,
 }
 
 impl Default for DaemonConfig {
@@ -21,6 +24,7 @@ impl Default for DaemonConfig {
         DaemonConfig {
             theme: "light".into(),
             passthrough_apps: Vec::new(),
+            disabled_log_modules: Vec::new(),
         }
     }
 }
@@ -60,11 +64,21 @@ pub fn load_config() -> DaemonConfig {
             .filter_map(|x| x.as_str().map(String::from))
             .collect();
     }
+    if let Some(arr) = v.get("disabled_log_modules").and_then(|x| x.as_array()) {
+        cfg.disabled_log_modules = arr
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect();
+    }
     cfg
 }
 
-/// 保存设置：读现有 JSON → 补丁 theme/passthrough_apps（保留未知字段）→ 原子写回。
-pub fn save_config(theme: &str, passthrough_apps: &[String]) -> io::Result<()> {
+/// 保存设置：读现有 JSON → 补丁 theme/passthrough_apps/disabled_log_modules（保留未知字段）→ 原子写回。
+pub fn save_config(
+    theme: &str,
+    passthrough_apps: &[String],
+    disabled_log_modules: &[String],
+) -> io::Result<()> {
     let Some(path) = config_path() else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -91,9 +105,22 @@ pub fn save_config(theme: &str, passthrough_apps: &[String]) -> io::Result<()> {
                     .collect(),
             ),
         );
+        obj.insert(
+            "disabled_log_modules".into(),
+            serde_json::Value::Array(
+                disabled_log_modules
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect(),
+            ),
+        );
     } else {
         // 现有文件顶层非对象（异常）→ 重建。
-        root = serde_json::json!({ "theme": theme, "passthrough_apps": passthrough_apps });
+        root = serde_json::json!({
+            "theme": theme,
+            "passthrough_apps": passthrough_apps,
+            "disabled_log_modules": disabled_log_modules,
+        });
     }
     let text = serde_json::to_string_pretty(&root)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -179,7 +206,7 @@ mod tests {
         .unwrap();
         // 用环境变量临时替换 LOCALAPPDATA 指向测试目录
         std::env::set_var("LOCALAPPDATA", &dir);
-        save_config("dark", &["notepad.exe".to_string()]).unwrap();
+        save_config("dark", &["notepad.exe".to_string()], &["uielem".to_string()]).unwrap();
         // 未知字段保留
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["page_size"], 7);
@@ -187,10 +214,12 @@ mod tests {
         // 已知字段更新
         assert_eq!(v["theme"], "dark");
         assert_eq!(v["passthrough_apps"][0], "notepad.exe");
+        assert_eq!(v["disabled_log_modules"][0], "uielem");
         // 重新加载
         let cfg = load_config();
         assert_eq!(cfg.theme, "dark");
         assert_eq!(cfg.passthrough_apps, vec!["notepad.exe".to_string()]);
+        assert_eq!(cfg.disabled_log_modules, vec!["uielem".to_string()]);
         let _ = std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -204,6 +233,7 @@ mod tests {
         let cfg = load_config();
         assert_eq!(cfg.theme, "light");
         assert!(cfg.passthrough_apps.is_empty());
+        assert!(cfg.disabled_log_modules.is_empty(), "缺省字段默认全记录");
         let _ = std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }

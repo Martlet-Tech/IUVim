@@ -140,6 +140,25 @@ fn tabs() -> Vec<Tab> {
     }
 }
 
+/// 日志模块目录（tag, 说明）——开发者标签开关（26-log-modules.md）。
+/// TSF 侧：uielem/key/commit/caret/candwin/menuwin/immdetect/daemon；
+/// daemon 侧：main/pipe/settings/state。tag 须与 log_line 消息前缀 `[tag]` 一致。
+#[cfg(any(debug_assertions, feature = "dev"))]
+const LOG_MODULES: &[(&str, &str)] = &[
+    ("uielem", "TSF 候选 UIElement 桥（最高频）"),
+    ("key", "TSF 按键记录（每键一行）"),
+    ("commit", "上屏记录"),
+    ("caret", "光标量取"),
+    ("candwin", "候选窗窗口层"),
+    ("menuwin", "语言栏右键菜单"),
+    ("immdetect", "IMM 探测"),
+    ("daemon", "TSF 侧 daemon_client"),
+    ("main", "守护进程主循环"),
+    ("pipe", "守护进程管道"),
+    ("settings", "守护进程设置页"),
+    ("state", "守护进程状态"),
+];
+
 /// 设置页 UI 状态。
 struct SettingsApp {
     state: Arc<DaemonState>,
@@ -149,6 +168,8 @@ struct SettingsApp {
     theme: String,
     /// 直通名单文本编辑（每行一个 exe 名）。
     passthrough: String,
+    /// 禁用日志模块集（denylist，勾掉某模块即加入；默认空 = 全记录）。
+    disabled_log: Vec<String>,
     /// 「清除全部」二次确认。
     confirm_clear: bool,
     /// 清除暂挂：确定/应用才真正清空用户库（取消放弃）。
@@ -168,6 +189,7 @@ impl SettingsApp {
             tab: Tab::Common,
             theme: cfg.theme,
             passthrough: cfg.passthrough_apps.join("\n"),
+            disabled_log: cfg.disabled_log_modules.clone(),
             confirm_clear: false,
             pending_clear: false,
             #[cfg(any(debug_assertions, feature = "dev"))]
@@ -322,7 +344,7 @@ impl SettingsApp {
         ui.small("命中进程 TSF 层全部按键放行（不建会话、无候选窗/预编辑）。");
     }
 
-    /// 开发者：清除日志（仅 dev 构建）。
+    /// 开发者：清除日志 + 日志模块开关（仅 dev 构建）。
     #[cfg(any(debug_assertions, feature = "dev"))]
     fn dev_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("开发者");
@@ -346,6 +368,26 @@ impl SettingsApp {
                 );
             }
         }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label("日志模块（勾选 = 记录该模块；改动点「确定/应用」生效并热载）");
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .max_height(300.0)
+            .show(ui, |ui| {
+                for (tag, desc) in LOG_MODULES {
+                    let mut enabled = !self.disabled_log.iter().any(|m| m == tag);
+                    if ui.checkbox(&mut enabled, format!("{tag} — {desc}")).changed() {
+                        if enabled {
+                            self.disabled_log.retain(|m| m != tag);
+                        } else if !self.disabled_log.iter().any(|m| m == tag) {
+                            self.disabled_log.push((*tag).to_string());
+                        }
+                    }
+                }
+            });
     }
 
     /// 用户库列表 + 清除全部。
@@ -375,12 +417,15 @@ impl SettingsApp {
             .filter(|l| !l.is_empty())
             .map(String::from)
             .collect();
-        match config::save_config(&theme, &apps) {
+        // 日志模块禁用集：先本进程生效（daemon 自身 log_line），再随 config_epoch 热载到 TSF。
+        log::set_log_modules_disabled(&self.disabled_log);
+        match config::save_config(&theme, &apps, &self.disabled_log) {
             Ok(()) => {
                 {
                     let mut c = self.state.config.lock().unwrap_or_else(|p| p.into_inner());
                     c.theme = theme.to_string();
                     c.passthrough_apps = apps;
+                    c.disabled_log_modules = self.disabled_log.clone();
                 }
                 self.state.bump_config_epoch();
                 msgs.push("配置已保存并广播 config_epoch（会话进程检测后重载）".into());
