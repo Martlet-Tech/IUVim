@@ -19,8 +19,12 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
     End→Start 窗口不存在 → bug 不复现；Esc 语义改为有已选词时上屏已选词；`OnCompositionTerminated` 兜底
     清槽+置终止标志，TSF 侧检测后丢弃会话降级重建。改动：session.rs/key.rs（Effect 删 part_commit）、
     session_bridge.rs、composition.rs（sink 共享槽）、text_service.rs（降级）、测试/契约/文档同步。
-- [x] M1.5 候选策略对齐微软（2026-08-12 落地）：**三路路由**——单段档（`c`/`sh`/`shi` 纯单字，
-  首字母桶 `initial_top`）；多段全完整档（现状全拼 k-loop 不动）；多段纯简拼档（`nh`/`nhm`/`nhmsx`
+- [x] M1.5 候选策略对齐微软（2026-08-12 落地；**2026-08-18 全拼两通道重写**）：**三路路由**——单段档
+  （`c`/`sh`/`shi` 纯单字，首字母桶 `initial_top`）；多段全完整档（`nihao`/`xi'an`）**及末音节可补全**
+  （`shigechengy`）→ **全拼两通道**：整句通道（`sentence_candidates`，词库负责"词"、Viterbi 只负责
+  "唯一最佳句子"——2a 整串一次 / 2b 末段补全逐补齐一次取最高，至多一条 Sentence，**不再遍历每级/每
+  切分方案组句**）+ 词条通道（k=n..1 砍末音节 exact，两路砍完第一刀后前缀对齐）；多段纯简拼档
+  （`nh`/`nhm`/`nhmsx`
   构建期简拼键逐级砍尾巴，纯词、任意长度、部分消费尾巴续接复用悬空机制）；多段混拼档（`nhao`
   简拼段运行时展开音节笛卡尔配对，单级 ≤2000 查询剪枝）。数据层：dictc 对 ≥2 音节词生成简拼键
   （同表混存，路由隔离，IMEDIC01 格式零改动、新旧词库双向兼容）+ `Dict::initial_top` 首字母桶

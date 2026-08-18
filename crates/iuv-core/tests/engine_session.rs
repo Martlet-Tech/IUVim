@@ -1909,9 +1909,10 @@ fn dier_second_available_first() {
 }
 
 #[test]
-fn keneng_possible_first_keneng_second() {
-    // keneng 贪心 [ken,eng]（啃嗯）；修复：整句遍历所有方案（[ke,neng] 组出可能，
-    // 词条直接命中分高 → 第一；[ken,eng] 啃嗯 = 单字组合 → 第二，保留可达）。
+fn keneng_only_one_sentence_combos_removed() {
+    // 2026-08-18 新规则：词库负责"词"、Viterbi 只负责"唯一最佳句子"。
+    // keneng 只出唯一整句「可能」；[ken,eng] 的单字临时拼句「啃嗯」
+    // （啃+嗯，非词库词条）不再作为候选（旧实现遍历所有方案各出整句）。
     let dict = Dict::from_entries(vec![
         ("ke'neng".into(), "可能".into(), 8000),
         ("ken".into(), "啃".into(), 500),
@@ -1935,11 +1936,17 @@ fn keneng_possible_first_keneng_second() {
     assert_eq!(
         pos("可能"),
         Some(0),
-        "可能应第一（整句词条命中），实际：{texts:?}"
+        "可能应第一（唯一整句词条命中），实际：{texts:?}"
     );
+    let sentences: Vec<&Candidate> = e
+        .candidates
+        .iter()
+        .filter(|c| c.kind == CandidateKind::Sentence)
+        .collect();
+    assert_eq!(sentences.len(), 1, "至多一条 Sentence：{texts:?}");
     assert!(
-        pos("啃嗯").is_some() && pos("啃嗯").unwrap() > pos("可能").unwrap(),
-        "啃嗯应可达且在可能之后：{texts:?}"
+        !texts.iter().any(|t| t == "啃嗯"),
+        "单字临时拼句不得作为候选：{texts:?}"
     );
 }
 
@@ -1969,8 +1976,9 @@ fn rank_plans_prefers_weightiest_plan() {
 
 #[test]
 fn sentence_only_for_full_syllable_plans() {
-    // 含兜底段的方案不组句（2026-08-14 修复）：keneng 的 [ke,nen,g]/[ke,ne,ng]
-    // 劣质整句（可嫩g/啃嗯g/可呢ng）不得进候选——只留 [ke,neng]（可能）/[ken,eng]（啃嗯）。
+    // 2026-08-18 新规则：只跑唯一一次 Viterbi（词频最优方案），至多一条 Sentence。
+    // keneng 唯一整句「可能」；单字临时拼句「啃嗯」（啃+嗯）与含兜底段的组合
+    // （可嫩g/啃嗯g/可呢ng）全部不再出现。
     let dict = Dict::from_entries(vec![
         ("ke'neng".into(), "可能".into(), 8000),
         ("ken".into(), "啃".into(), 500),
@@ -1985,24 +1993,22 @@ fn sentence_only_for_full_syllable_plans() {
     for c in "keneng".chars() {
         s.on_key(Key::Char(c));
     }
-    let texts: Vec<String> = s
-        .effect()
+    let e = s.effect();
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    let sentences: Vec<&Candidate> = e
         .candidates
         .iter()
-        .map(|c| c.text.clone())
+        .filter(|c| c.kind == CandidateKind::Sentence)
         .collect();
-    assert!(texts.iter().any(|t| t == "可能"), "可能应保留：{texts:?}");
-    assert!(
-        texts.iter().any(|t| t == "啃嗯"),
-        "啃嗯应保留（全完整方案）：{texts:?}"
-    );
-    for bad in ["可嫩g", "啃嗯g", "可呢ng", "可嫩"] {
+    assert_eq!(sentences.len(), 1, "至多一条 Sentence：{texts:?}");
+    assert_eq!(sentences[0].text, "可能", "唯一整句应为可能：{texts:?}");
+    for bad in ["啃嗯", "可嫩g", "啃嗯g", "可呢ng", "可嫩"] {
         assert!(
             !texts.iter().any(|t| t == bad),
-            "劣质整句不应出现（{bad}）：{texts:?}"
+            "单字拼句/劣质整句不应出现（{bad}）：{texts:?}"
         );
     }
-    // dier 的"跌r"（[die,r] 含兜底 r）同样消失
+    // dier 的"跌r"（[die,r] 含兜底 r）同样消失，唯一整句「第二」
     let dict2 = Dict::from_entries(vec![
         ("di'er".into(), "第二".into(), 34485),
         ("di".into(), "地".into(), 50000),
@@ -2013,16 +2019,128 @@ fn sentence_only_for_full_syllable_plans() {
     for c in "dier".chars() {
         s2.on_key(Key::Char(c));
     }
-    let texts2: Vec<String> = s2
-        .effect()
+    let e2 = s2.effect();
+    let texts2: Vec<String> = e2.candidates.iter().map(|c| c.text.clone()).collect();
+    let sentences2: Vec<&Candidate> = e2
         .candidates
         .iter()
-        .map(|c| c.text.clone())
+        .filter(|c| c.kind == CandidateKind::Sentence)
         .collect();
-    assert!(texts2.iter().any(|t| t == "第二"), "第二应保留：{texts2:?}");
+    assert_eq!(sentences2.len(), 1, "至多一条 Sentence：{texts2:?}");
+    assert_eq!(sentences2[0].text, "第二", "唯一整句应为第二：{texts2:?}");
     assert!(
         !texts2.iter().any(|t| t == "跌r"),
         "跌r 是含兜底段的劣质整句：{texts2:?}"
+    );
+}
+
+#[test]
+fn tail_completion_2b_produces_extended_sentence() {
+    // 2026-08-18 新规则 2b：末段为音节前缀时补全为所有合法音节，每个补齐跑一次 Viterbi，
+    // 取路径分最高的一条作为唯一 Sentence。句子文本可超出已敲字母（预编辑仍按输入切分）。
+    let dict = Dict::from_entries(vec![
+        ("shi'ge'cheng'yu".into(), "是一个成语".into(), 10000),
+        ("shi'ge'cheng'yi".into(), "是一个意外".into(), 500),
+        ("cheng'yu".into(), "成语".into(), 5000),
+        ("shi".into(), "是".into(), 50000),
+        ("ge".into(), "个".into(), 100000),
+        ("cheng".into(), "程".into(), 1000),
+        ("yu".into(), "鱼".into(), 800),
+        ("yi".into(), "一".into(), 9000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "shigechengy".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert_eq!(
+        e.reading, "shi'ge'cheng'y",
+        "预编辑仍按输入切分不扩展，实际：{}",
+        e.reading
+    );
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    let sentences: Vec<&Candidate> = e
+        .candidates
+        .iter()
+        .filter(|c| c.kind == CandidateKind::Sentence)
+        .collect();
+    assert_eq!(sentences.len(), 1, "至多一条 Sentence：{texts:?}");
+    assert_eq!(
+        sentences[0].text, "是一个成语",
+        "2b 补全取分最高的唯一句子，实际：{texts:?}"
+    );
+    // 词条通道按输入砍（砍 y 而非补 yu）：不存在 shi'ge'cheng 词条 → 词通道无产出
+    for t in &texts {
+        assert!(
+            t != "成语" && t != "是一个意外",
+            "词条通道不得从补全后的键出词：{texts:?}"
+        );
+    }
+    // 单字仍可达（k=1）
+    assert!(texts.iter().any(|t| t == "是"), "单字应可达：{texts:?}");
+}
+
+#[test]
+fn word_channel_only_real_entries() {
+    // 2026-08-18 新规则：词条通道只出词库真实词条（exact），不再有按切分方案临时组词；
+    // 唯一 Sentence 由 Viterbi 给出（可为单字组合，如 安建）。
+    let dict = Dict::from_entries(vec![
+        ("an'jian".into(), "案件".into(), 10000),
+        ("an'jian".into(), "按肩".into(), 500),
+        ("an'jian".into(), "暗箭".into(), 300),
+        ("an".into(), "安".into(), 80000),
+        ("jian".into(), "建".into(), 60000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "anjian".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    let sentences: Vec<&Candidate> = e
+        .candidates
+        .iter()
+        .filter(|c| c.kind == CandidateKind::Sentence)
+        .collect();
+    assert_eq!(sentences.len(), 1, "至多一条 Sentence：{texts:?}");
+    // 词条通道三词全部可达（an'jian，seg_len=2）
+    for w in ["案件", "按肩", "暗箭"] {
+        assert!(texts.iter().any(|t| t == w), "{w} 应可达：{texts:?}");
+    }
+    // 非词库拼法（按键/案肩 等方案级临时词）不得出现
+    for bad in ["按键", "案肩", "安j"] {
+        assert!(!texts.iter().any(|t| t == bad), "不应出现（{bad}）：{texts:?}");
+    }
+}
+
+#[test]
+fn long_input_single_sentence() {
+    // 2026-08-18 新规则：Viterbi 与长度无关，超长输入同样只出一条 Sentence。
+    let dict = Dict::from_entries(vec![
+        ("xi'huan'zhong'guo".into(), "喜欢中国".into(), 40000),
+        ("xi".into(), "喜".into(), 20000),
+        ("huan".into(), "欢".into(), 30000),
+        ("zhong".into(), "中".into(), 100000),
+        ("guo".into(), "国".into(), 90000),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "xihuanzhongguo".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    let sentences: Vec<&Candidate> = e
+        .candidates
+        .iter()
+        .filter(|c| c.kind == CandidateKind::Sentence)
+        .collect();
+    assert_eq!(sentences.len(), 1, "至多一条 Sentence：{texts:?}");
+    assert_eq!(
+        sentences[0].text, "喜欢中国",
+        "唯一整句应为喜欢中国：{texts:?}"
     );
 }
 

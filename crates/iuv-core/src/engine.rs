@@ -71,13 +71,14 @@ pub(crate) enum Route {
     PrefixChars,
     /// 完整单音节无歧义（`shi`/`de`/`ba`）→ 纯单字（exact 全量）
     CompleteChars,
-    /// 完整单音节有歧义（`xian`→[xi,an]）→ 全拼 k-loop（替代切分词混排）
+    /// 完整单音节有歧义（`xian`→[xi,an]）→ 全拼整句/词条两通道（替代切分词混排）
     AmbiguousSyllable,
-    /// 多段全完整（`nihao`/`xi'an`）→ 全拼 k-loop
+    /// 多段全完整（`nihao`/`xi'an`）**或末音节可补全**（`shigechengy`→`y` 补 `yu/yi/…`）
+    /// → 全拼两通道：整句通道唯一一次 Viterbi（2a 直接 / 2b 补全） + 词条通道砍尾巴 exact
     FullPinyin,
     /// 多段全不完整（`nh`/`nhm`）→ 简拼键逐级砍尾巴
     Abbrev,
-    /// 多段混合（`nhao`）→ 简拼段展开配对
+    /// 多段混合且**中段不完整**（`nhao`）→ 简拼段展开配对（无整句通道）
     Mixed,
     /// 单段非前缀（`i`/`u`/`v`）或空输入 → 无候选（生成末尾有原文兜底，见 generate_candidates）
     Empty,
@@ -363,8 +364,9 @@ impl Engine {
     /// - 单段完整音节：无替代切分 → 单字档；有替代切分（xian）→ 全拼（混排西安）
     /// - 单段非前缀（i/u/v）→ 空
     /// - 多段：**存在任一全完整方案 → 全拼**（dier 贪心 [die,r] 是 Mixed，但 [di,er]
-    ///   全完整应走全拼枚举——否则「第二」不可达，实测 2026-08-14）；否则按段完整性
-    ///   分派（全不完整 → 简拼；混合 → 混拼）
+    ///   全完整应走全拼枚举——否则「第二」不可达，实测 2026-08-14）；**末音节可补全
+    ///   （除末段外全完整 + 末段为音节前缀）→ 也归全拼 2b**（shigechengy → 补 y）；
+    ///   否则按段完整性分派（全不完整 → 简拼；混合 → 混拼，仅中段不完整如 nhao）
     fn classify(&self, plain: &str, seg: &[String], plans: &[Vec<String>]) -> Route {
         if !plain.is_empty() && self.is_syllable_prefix(plain) && !self.is_syllable(plain) {
             return Route::PrefixChars;
@@ -382,7 +384,19 @@ impl Engine {
         let any_full = plans
             .iter()
             .any(|p| p.iter().all(|s| !s.is_empty() && self.is_syllable(s)));
-        if any_full {
+        // 末音节可补全（2026-08-18）：除末段外全为完整音节 + 末段为音节前缀
+        // （`shigechengy` → 末段 `y`，可补 yu/yi/yang/…）→ 归入全拼档走 2b 整句通道，
+        // 词条通道按输入砍（砍 `y` 而非补 `yu`），与 2a 路径砍完第一刀后前缀对齐。
+        // 否则 `shigechengy` 会被误判 Mixed（扩展笛卡尔）——2b 场景丢失。
+        let tail_completable = seg.len() >= 2
+            && seg[..seg.len() - 1]
+                .iter()
+                .all(|s| !s.is_empty() && self.is_syllable(s))
+            && {
+                let last = seg.last().unwrap();
+                !last.is_empty() && !self.is_syllable(last) && self.is_syllable_prefix(last)
+            };
+        if any_full || tail_completable {
             Route::FullPinyin
         } else if seg.iter().all(|s| !s.is_empty() && !self.is_syllable(s)) {
             Route::Abbrev
@@ -416,11 +430,12 @@ impl Engine {
     ///
     /// 路由（M1.5，微软实测对齐，见 docs/research/msime-probe-checklist.txt）：
     /// - 整串为音节前缀（`c`/`sh`/`zho`）→ 纯单字（单字桶，词频序）
-    /// - 完整单音节：无歧义（`shi`）→ 纯单字（exact 全量）；歧义（`xian`→[xi,an]）→ 全拼 k-loop
+    /// - 完整单音节：无歧义（`shi`）→ 纯单字（exact 全量）；歧义（`xian`→[xi,an]）→ 全拼两通道
     /// - 单段非前缀（`i`/`u`/`v`）→ 无候选（末尾兜底：原文候选，见 generate_candidates）
-    /// - 多段全完整（`nihao`/`xi'an`）→ 全拼 k-loop（viterbi 组句 + 逐级枚举）
+    /// - 多段全完整（`nihao`/`xi'an`）**或末音节可补全**（`shigechengy`）→ 全拼两通道
+    ///   （整句通道唯一一次 Viterbi 2a/2b + 词条通道砍尾巴 exact）
     /// - 多段全不完整（`nh`/`nhm`/`nhmsx`）→ 简拼键逐级砍尾巴（构建期键，O(1) exact）
-    /// - 多段混合（`nhao`）→ 不完整段展开音节配对查询（上限内，超限降级）
+    /// - 多段混合（`nhao`，中段不完整）→ 不完整段展开音节配对查询（上限内，超限降级）
     ///
     /// 部分消费：候选 seg_len=k，选中间级词经 session 悬空续接把尾巴重建为组合。
     pub(crate) fn generate_candidates(
@@ -669,10 +684,63 @@ impl Engine {
         cands
     }
 
-    /// 现有全拼路径（含歧义单音节）：砍尾巴逐级匹配。
-    /// for k = n..1，对前缀 `seg[0..k]` 跑 viterbi（每级 0 或 1 句）
-    /// 加前缀枚举切分查 exact（词/单字）；候选按前缀长度从长到短排列，
-    /// 同 k 内 Sentence 在前、词按权重降序。viterbi.rs 算法零改动。
+    /// 整句通道（2026-08-18，词库负责"词"、Viterbi 只负责"唯一最佳句子"）。
+    /// 对未选中部分至多产出**一条** Sentence：
+    /// - **2a**：末段为完整音节（`…chengyu`）→ 整串跑一次 Viterbi；
+    /// - **2b**：末段为音节前缀（`…chengy` 的 `y`）→ 把末段补全为所有合法音节
+    ///   （`y` → yu/yi/yang/ying/…），**每个补齐方案各跑一次** Viterbi；
+    /// - 全部句子按 viterbi 路径分取最高一条（M2 屏蔽组合拦截）。
+    /// 前置守卫：除末段外其余段必须全为完整音节（Mixed 中段不完整如 `nhao` 不组句）。
+    /// 2b 句子文本可能超出已敲字母（`shigechengy` → 「是一个成语」），预编辑显示仍按
+    /// 输入切分不扩展（session 预览规则，见 session.rs candidate_preview 第 3 条）。
+    fn sentence_candidates(&self, vseg: &[String], cfg: &Config) -> Option<crate::Candidate> {
+        if vseg.len() < 2 {
+            return None;
+        }
+        let (last, rest) = vseg.split_last()?;
+        if !rest.iter().all(|s| self.is_syllable(s)) {
+            return None;
+        }
+        let sentences: Vec<(crate::Candidate, f64)> = if self.is_syllable(last) {
+            // 2a：结尾完整音节 → 唯一一次 Viterbi
+            crate::viterbi::best_sentence_scored(&self.dict, vseg, &*self.lm, cfg)
+                .into_iter()
+                .collect()
+        } else {
+            // 2b：末段补全为所有合法音节，逐个补齐跑 Viterbi
+            self.dict
+                .syllables()
+                .iter()
+                .filter(|s| s.starts_with(last.as_str()))
+                .filter_map(|comp| {
+                    let mut s = rest.to_vec();
+                    s.push(comp.clone());
+                    crate::viterbi::best_sentence_scored(&self.dict, &s, &*self.lm, cfg)
+                })
+                .collect()
+        };
+        let best = sentences
+            .into_iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
+        let blocked = self
+            .dict
+            .user()
+            .map(|u| u.is_blocked(&best.0.code, &best.0.text))
+            .unwrap_or(false);
+        if blocked {
+            None
+        } else {
+            Some(best.0)
+        }
+    }
+
+    /// 现有全拼路径（含歧义单音节与末音节可补全 2b 场景）：两通道。
+    /// **整句通道**（唯一）：`sentence_candidates` 一次 Viterbi（2a）/逐补齐一次（2b），
+    /// 至多一条 Sentence，排最前。
+    /// **词条通道**：k=n..1 砍末音节——合法砍完整音节（`…chengyu` 砍 `yu`）、不合法砍
+    /// 不完整段（`…chengy` 砍 `y`，两路砍完第一刀后前缀对齐）——对剩余前缀枚举切分查
+    /// exact（词/单字），命中才录；k=1 追加单字全量。排序 = 整句 → exact 匹配长度从长到短
+    /// → 同 k 按权重降序。viterbi.rs 算法零改动。
     fn full_pinyin_candidates(
         &self,
         raw: &str,
@@ -688,63 +756,20 @@ impl Engine {
         let mut cands: Vec<crate::Candidate> = Vec::new();
         let n = seg.len();
 
+        // 1. 整句通道：唯一一次 Viterbi（至多一条 Sentence），置候选最前。
+        //    2a 结尾合法 → 整串一次；2b 结尾不合法 → 末段逐补齐一次，取分最高。
+        //    不因切分方案、不因 k 消费长度产生多条整句（2026-08-18 重写）。
+        let vseg: Vec<String> = seg.iter().filter(|s| !s.is_empty()).cloned().collect();
+        if let Some(sentence) = self.sentence_candidates(&vseg, &cfg) {
+            cands.push(sentence);
+        }
+
+        // 2. 词条通道：砍尾巴逐级 exact（k=n..1，命中才录）。raw 含撇号（强制输入
+        //    xi'an/fen'ge）保持 join 键不枚举，强制语义不破。
         for k in (1..=n).rev() {
             let prefix = &seg[..k];
 
-            // 1. 每级整句——**遍历该前缀的所有切分方案**（消费端遍历所有方案，
-            //    2026-08-14：keneng 的 [ke,neng]（可能）与 [ken,eng]（啃嗯）都组句，
-            //    按 viterbi 分排序——词条直接命中分高者第一；不再只看贪心方案[0]）。
-            //    raw 含撇号（强制输入 xi'an/fen'ge）保持仅 prefix 方案组句（撇号语义不破）。
-            if k >= 2 {
-                let consumed_chars: usize = prefix.iter().map(|s| s.len()).sum();
-                let mut sentences: Vec<(crate::Candidate, f64)> = Vec::new();
-                let plan_segs: Vec<Vec<String>> = if raw.contains('\'') {
-                    vec![prefix.to_vec()]
-                } else {
-                    self.schema
-                        .segment(&plain[..consumed_chars.min(plain.len())])
-                };
-                for plan in plan_segs {
-                    let vseg: Vec<String> =
-                        plan.iter().filter(|s| !s.is_empty()).cloned().collect();
-                    // 只对**全完整方案**组句（2026-08-14 修复）：含兜底段的方案
-                    // （[ke,nen,g] 的 g、[ke,ne,ng] 的 ng 非法音节）不组句——否则
-                    // "可嫩g/啃嗯g/可呢ng/跌r" 等劣质整句进候选（且 commit 时
-                    // seg_len > 当前段数导致数组越界 panic，实测 2026-08-14）。
-                    // 兜底段是切分"保证有解"的产物，不是真实音节，组句无意义。
-                    if vseg.len() >= 2 && vseg.iter().all(|s| self.is_syllable(s)) {
-                        if let Some((sentence, score)) = crate::viterbi::best_sentence_scored(
-                            &self.dict,
-                            &vseg,
-                            &*self.lm,
-                            &cfg,
-                        ) {
-                            // M2 隐藏（Shift+Delete）：屏蔽组合对整句同样生效——词条级由
-                            // Dict::merged 过滤，整句级在此拦截（用户隐藏的 (code, text)
-                            // 组合不再被 viterbi 组出；否则隐藏"手癣"后整句「手癣」
-                            // （手+癣单字）仍会出现，隐藏失效）。
-                            let blocked = self
-                                .dict
-                                .user()
-                                .map(|u| u.is_blocked(&sentence.code, &sentence.text))
-                                .unwrap_or(false);
-                            if !blocked {
-                                sentences.push((sentence, score));
-                            }
-                        }
-                    }
-                }
-                sentences
-                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                let mut seen = std::collections::HashSet::new();
-                for (sentence, _) in sentences {
-                    if seen.insert(sentence.text.clone()) {
-                        cands.push(sentence);
-                    }
-                }
-            }
-
-            // 2. 前缀枚举切分 → exact 词/单字（join 键）。枚举源必须是无撇号的 plain 前缀：
+            // 前缀枚举切分 → exact 词/单字（join 键）。枚举源必须是无撇号的 plain 前缀：
             //    多段方案 join(') 后段内枚举会被 `'` 强制切分扼杀（fenge 只出 feng'e、
             //    keneng 只出 ken'eng，fen'ge/ke'neng 不可及）；raw 含撇号（强制输入如
             //    xi'an/fen'ge）保持 join 键不枚举，强制语义不破。
