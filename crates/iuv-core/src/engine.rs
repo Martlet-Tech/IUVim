@@ -561,8 +561,9 @@ impl Engine {
     /// 简拼键档：多段全不完整（`nh`/`nhm`/`nhmsx`）→ 构建期简拼键逐级砍尾巴。
     /// 每级 k：exact(前 k 段首字母串)；尾巴段由 session 悬空续接重建为组合。
     /// 微软实测：简拼只出词（纯 exact 匹配，无单字、无更长词前缀）。
+    /// **每级全量不截断**（2026-08-19）：简拼键是首字母严格匹配（`jj` 只出 j-j 词、
+    /// 吉安在 `ja` 桶），无字母歧义可枚举——微软语义翻页可达低频词；全局 max_candidates 兜底。
     fn abbrev_candidates(&self, seg: &[String]) -> Vec<crate::Candidate> {
-        const PER_LEVEL_EXACT: usize = 20;
         let n = seg.len();
         let mut cands = Vec::new();
         for k in (1..=n).rev() {
@@ -574,7 +575,6 @@ impl Engine {
             if key.is_empty() {
                 continue;
             }
-            let mut pushed = 0usize;
             for e in &self.dict.exact(&key) {
                 let kind = if e.word.chars().count() >= 2 {
                     crate::CandidateKind::Word
@@ -588,10 +588,6 @@ impl Engine {
                     e.weight,
                     k,
                 ));
-                pushed += 1;
-                if pushed >= PER_LEVEL_EXACT {
-                    break;
-                }
             }
         }
         cands
@@ -599,8 +595,9 @@ impl Engine {
 
     /// 混拼档：多段混合（`nhao` → n 简拼 + hao 完整）→ 不完整段展开为音节列表，
     /// 逐级笛卡尔积 exact 查询（词频合并）；组合数超限该级降级为空。
+    /// **每级全量不截断**（2026-08-19）：组合量已被 MAX_EXPAND_QUERIES 剪枝，语义同微软
+    /// 「默认不设限」（15-input-matching.md §6）；全局 max_candidates 兜底。
     fn mixed_candidates(&self, seg: &[String]) -> Vec<crate::Candidate> {
-        const PER_LEVEL_EXACT: usize = 20;
         const MAX_EXPAND_QUERIES: usize = 2000;
         let n = seg.len();
         let mut cands = Vec::new();
@@ -658,7 +655,6 @@ impl Engine {
             }
             entries.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
             let mut seen = std::collections::HashSet::new();
-            let mut pushed = 0usize;
             for e in entries {
                 if !seen.insert(e.word.clone()) {
                     continue;
@@ -675,10 +671,6 @@ impl Engine {
                     e.weight,
                     k,
                 ));
-                pushed += 1;
-                if pushed >= PER_LEVEL_EXACT {
-                    break;
-                }
             }
         }
         cands
@@ -747,9 +739,9 @@ impl Engine {
         plain: &str,
         seg: &[String],
     ) -> Vec<crate::Candidate> {
-        // 每级词候选上限（"2/3 字词时几个/十几个候选词"的规模；全局另有 max_candidates 截断）。
-        const PER_LEVEL_EXACT: usize = 20;
-
+        // 词条通道每级全量不截断（2026-08-19）：截断会饿死低权重替代切分词（jian 的 20
+        // 位权重 492 把吉安 160/集安 31 挤出——西安 6091 靠运气挤进前 20）；单字全量由
+        // k=1 追加兜底，词全量翻页可达即微软语义。全局 max_candidates 截断。
         // 配置快照（viterbi 需 &Config；热载 set_config 与读取并发安全）。
         let cfg = self.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -795,7 +787,6 @@ impl Engine {
             }
             entries.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
             let mut seen = std::collections::HashSet::new();
-            let mut pushed = 0usize;
             for e in entries {
                 if !seen.insert(e.word.clone()) {
                     continue;
@@ -806,15 +797,10 @@ impl Engine {
                     crate::CandidateKind::Char
                 };
                 cands.push(crate::Candidate::new(e.word, kind, e.code, e.weight, k));
-                pushed += 1;
-                if pushed >= PER_LEVEL_EXACT {
-                    break;
-                }
             }
 
             // 3. 最后一级（k=1，第一段单字）**追加单字全量**（微软对齐：多段输入翻页
-            //    可达低频同音字，如 zhangweiwei→选张→weiwei 续接翻页取「葳」；原
-            //    PER_LEVEL_EXACT=20 把低频字卡在边界，实测 2026-08-14）。追加而非
+            //    可达低频同音字，如 zhangweiwei→选张→weiwei 续接翻页取「葳」。追加而非
             //    替换：歧义单音节（xian→[xi,an]）的枚举替代切分词（西安）必须保留，
             //    重复单字由 generate_candidates 末尾全局 text 去重兜底（保序先见先留）。
             //    单段档语义：完整音节 → exact_single 全量；严格前缀 → 首字母桶。

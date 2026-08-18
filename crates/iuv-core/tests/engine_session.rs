@@ -318,6 +318,48 @@ fn tail_cutting_xian_merge_by_weight() {
     assert!(xian < xi_an && xian2 < xi_an, "实际：{texts:?}");
 }
 
+/// 无撇号 jian：替代切分 ji'an 的低权重词不被同音字挤出（2026-08-19 删 20 截断回归）。
+/// 旧实现 PER_LEVEL_EXACT=20 按权重合并只推前 20，吉安(33)/集安(47) 翻页不可达。
+#[test]
+fn tail_cutting_jian_ji_an_reachable_beyond_top20() {
+    let mut items: Vec<(String, String, u32)> = vec![
+        ("jian".into(), "件".into(), 99999),
+        ("ji'an".into(), "吉安".into(), 160),
+        ("ji'an".into(), "集安".into(), 31),
+    ];
+    // 30 个高权重 jian 单字压住词频前 20——旧截断必把吉安/集安挤出
+    for i in 0..30u32 {
+        items.push((
+            "jian".into(),
+            char::from_u32(0x4e00 + i).unwrap().to_string(),
+            50000 - i,
+        ));
+    }
+    let cfg = Config {
+        page_size: 100,
+        ..Config::default()
+    };
+    let engine = Engine::new(Dict::from_entries(items), cfg);
+    let mut s = engine.start_session();
+    for c in "jian".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert!(
+        texts.contains(&"吉安".to_string()),
+        "吉安应可达（权重 160 < 前 20 单字），实际：{texts:?}"
+    );
+    assert!(
+        texts.contains(&"集安".to_string()),
+        "集安应可达（权重 31），实际：{texts:?}"
+    );
+}
+
 /// fenge：无撇号多段歧义——枚举源必须是 plain 前缀而非 join(') 键，
 /// 否则段内枚举被 `'` 强制切分扼杀（只出 feng'e），fen'ge（分割）不可及。
 #[test]
@@ -900,6 +942,33 @@ fn abbrev_tail_levels_longest_first() {
         assert!(at >= pos, "{want} 应排在更长层级之后，实际：{texts:?}");
         pos = at;
     }
+}
+
+/// 简拼每级全量不截断：键命中 >20 条时低频词翻页可达（2026-08-19 删 20 截断回归；
+/// 简拼键是首字母严格匹配，jj 只出 j-j 词，无替代切分可枚举）。
+#[test]
+fn abbrev_over_20_low_freq_reachable() {
+    let mut items: Vec<(String, String, u32)> = Vec::new();
+    for i in 0..30u32 {
+        items.push(("jj".into(), format!("词{i}"), 1000 - i * 10));
+    }
+    let cfg = Config {
+        page_size: 100,
+        ..Config::default()
+    };
+    let engine = Engine::new(Dict::from_entries(items), cfg);
+    let mut s = engine.start_session();
+    for c in "jj".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let texts: Vec<String> = s
+        .effect()
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert_eq!(texts.len(), 30, "简拼每级全量不截断，实际：{texts:?}");
+    assert_eq!(texts[29], "词29", "低频词翻页可达，实际：{texts:?}");
 }
 
 /// 简拼部分消费：选中"你还没说"（k=4）→ 词上屏 + 尾巴 x 续接（悬空续接复用）。
