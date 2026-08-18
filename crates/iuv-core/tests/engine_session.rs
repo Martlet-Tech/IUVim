@@ -529,6 +529,53 @@ fn continue_then_commit_all() {
     assert!(!s.is_active());
 }
 
+/// 续接尾巴首段歧义音节可枚举替代切分（2026-08-18 修复）：
+/// 手选 老师(k=2) 在(k=1) 后尾巴 xian 的撇号是引擎注入的（非用户强制），
+/// 此前被 `raw.contains('\'')` 门控锁死 → 「西安」（xi'an）进不了候选；
+/// 现 k=1 对砍尾结果重新分音节逐 variant exact（与独立输入 xian 同通道）。
+#[test]
+fn resumed_tail_ambiguous_syllable_reachable() {
+    let dict = Dict::from_entries(vec![
+        ("lao'shi".into(), "老师".into(), 9000),
+        ("zai".into(), "在".into(), 5000),
+        ("zai".into(), "再".into(), 1000),
+        ("xi'an".into(), "西安".into(), 8000),
+        ("xian".into(), "先".into(), 7000),
+        ("xian".into(), "现".into(), 1000),
+        ("lao".into(), "老".into(), 3000),
+        ("shi".into(), "师".into(), 4000),
+        ("zai".into(), "载".into(), 500),
+    ]);
+    let engine = Engine::new(dict, Config::default());
+    let mut s = engine.start_session();
+    for c in "laoshizaixian".chars() {
+        s.on_key(Key::Char(c));
+    }
+    // 选 老师（k=2）→ 尾巴 zai'xian
+    let e = s.effect();
+    let idx = e.candidates.iter().position(|c| c.text == "老师").unwrap();
+    s.on_key(Key::Digit((idx + 1) as u8));
+    // 选 在（k=1）→ 尾巴 xian
+    let e = s.effect();
+    let idx = e.candidates.iter().position(|c| c.text == "在").unwrap();
+    s.on_key(Key::Digit((idx + 1) as u8));
+    let e = s.effect();
+    assert_eq!(
+        e.reading, "老师在xi'an",
+        "预编辑跟随居首候选切分（西安 xi'an），实际：{}",
+        e.reading
+    );
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    assert!(
+        texts.contains(&"西安".to_string()),
+        "续接尾巴首段歧义应重新分音节出 xi'an：{texts:?}"
+    );
+    assert!(
+        texts.contains(&"先".to_string()),
+        "xian 单字应保留：{texts:?}"
+    );
+}
+
 /// 退格回退已选词：pop 栈顶，raw 恢复原输入。
 #[test]
 fn backspace_pops_picked() {

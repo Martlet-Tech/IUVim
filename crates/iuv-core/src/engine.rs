@@ -773,9 +773,15 @@ impl Engine {
             //    多段方案 join(') 后段内枚举会被 `'` 强制切分扼杀（fenge 只出 feng'e、
             //    keneng 只出 ken'eng，fen'ge/ke'neng 不可及）；raw 含撇号（强制输入如
             //    xi'an/fen'ge）保持 join 键不枚举，强制语义不破。
+            // **k=1 例外（2026-08-18 续接修复）**：续接尾巴的撇号是引擎注入的
+            //    （session::commit_index `seg[consumed..].join("'")`），非用户强制——首段
+            //    歧义音节（xian→[xi,an]）被撇号锁死 → 「西安」不可达（实测：手选 德国
+            //    老师 在 后尾巴 xian'chi'… 西安进不了候选）。k=1 即「对砍尾结果重新
+            //    分音节逐 variant exact」（与独立输入 xian 的 AmbiguousSyllable 通道同
+            //    路径），只枚举首段替代切分，不破坏 k≥2 强制语义。
             let consumed_chars: usize = prefix.iter().map(|s| s.len()).sum();
             let mut keys = vec![prefix.join("'")];
-            if !raw.contains('\'') {
+            if !raw.contains('\'') || k == 1 {
                 for plan in self
                     .schema
                     .segment(&plain[..consumed_chars.min(plain.len())])
