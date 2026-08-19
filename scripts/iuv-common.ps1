@@ -68,25 +68,28 @@ function Restart-Ctfmon {
     return $false
 }
 
-# ---- DLL 热替换（dev-deploy 用，零杀进程）----
-# Windows 加载 DLL 时授予 FILE_SHARE_DELETE：已加载的 DLL 可以改名但不能覆盖。
-# 策略：直接复制（未锁）→ 改名 .old + 原位复制（已锁）→ 改名也失败则报告持锁进程（不强杀）。
+# ---- 文件热替换（dev-deploy/install 用，零杀进程）----
+# DLL 与词库通用：已加载 DLL 授予 FILE_SHARE_DELETE 可改名；词库 mmap 同样声明 FILE_SHARE_DELETE
+# （mmap.rs）可改名但截断写被拒（ERROR_USER_MAPPED_FILE）。改名替换让被锁文件让出原名，
+# 老进程持旧映射（.old）、新进程加载新文件——两个场景同一策略。
+# 流程：直接复制（未锁）→ 改名 .old + 原位复制（已锁）→ 改名也失败则报告持锁进程（不强杀）。
 # .old 的延迟清理复用双保险（Add-PendingOp 重启删 + Register-DelayedOps 注销删）。
-function Replace-InUseDll {
+function Replace-InUseFile {
     param(
         [Parameter(Mandatory)][string]$Src,
         [Parameter(Mandatory)][string]$Dest,
-        [string]$OldSuffix = ".old"
+        [string]$OldSuffix = ".old",
+        [switch]$WarnOnly   # 失败只警告返回 Ok=$false（词库等非关键产物），不报错退出
     )
     # 1) 快速路径：未锁直接覆盖
     try {
         Copy-Item $Src $Dest -Force -ErrorAction Stop
-        Trace-Script "Replace-InUseDll: 直接复制成功 $Dest"
+        Trace-Script "Replace-InUseFile: 直接复制成功 $Dest"
         return @{ Ok = $true; Renamed = $false }
     } catch {
-        Trace-Script "Replace-InUseDll: 直接复制失败（被占用），尝试改名替换"
+        Trace-Script "Replace-InUseFile: 直接复制失败（被占用），尝试改名替换"
     }
-    # 2) rename-then-copy：改名旧 DLL 让出原名，再原位写入新 DLL
+    # 2) rename-then-copy：改名旧文件让出原名，再原位写入新文件
     # 旧 .old 若已存在（上一轮热部署遗留，尚未到注销/重启清理），追加时间戳后缀避免冲突。
     $oldPath = "$Dest$OldSuffix"
     if (Test-Path -LiteralPath $oldPath) {
@@ -95,7 +98,7 @@ function Replace-InUseDll {
     try {
         Move-Item -LiteralPath $Dest -Destination $oldPath -Force -ErrorAction Stop
         Copy-Item $Src $Dest -Force -ErrorAction Stop
-        Trace-Script "Replace-InUseDll: 改名替换成功 $oldPath <- $Dest"
+        Trace-Script "Replace-InUseFile: 改名替换成功 $oldPath <- $Dest"
         # 双保险安排 .old 延迟清理（老进程仍持旧映射，注销/重启后删除）
         $p1 = Add-PendingOp -Source $oldPath
         $p2 = Register-DelayedOps -Deletes @($oldPath)
@@ -104,12 +107,18 @@ function Replace-InUseDll {
         }
         return @{ Ok = $true; Renamed = $true; OldPath = $oldPath }
     } catch {
-        Trace-Script ("Replace-InUseDll: 改名替换失败 " + $_)
+        Trace-Script ("Replace-InUseFile: 改名替换失败 " + $_)
         # 3) 兜底：报告持锁进程，绝不强杀
         $holders = Get-FileHolders -Path $Dest
-        Write-Host "错误：DLL 无法替换，被以下进程占用："
-        $holders | ForEach-Object { Write-Host "  $_" }
-        Write-Host "请关闭这些进程后重跑，或改用 scripts\install.ps1（延迟替换，注销/重启后生效）。"
+        if ($WarnOnly) {
+            Write-Host "警告：$Dest 无法替换，本次跳过（被以下进程占用）："
+            $holders | ForEach-Object { Write-Host "  $_" }
+            Write-Host "请关闭这些进程后重跑，或注销/重启后生效。"
+        } else {
+            Write-Host "错误：$Dest 无法替换，被以下进程占用："
+            $holders | ForEach-Object { Write-Host "  $_" }
+            Write-Host "请关闭这些进程后重跑，或改用 scripts\install.ps1（延迟替换，注销/重启后生效）。"
+        }
         return @{ Ok = $false }
     }
 }

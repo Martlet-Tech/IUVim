@@ -109,26 +109,30 @@ if (-not (Test-Path $configPath)) {
 }
 
 # ---- 3. 复制（DLL 用热替换：未锁直接复制，锁了改名 .old 原位替换，零杀进程）----
-# 词库目标可能被引擎进程 mmap（映射声明 FILE_SHARE_DELETE，删除可行、截断写被拒
-# ERROR_USER_MAPPED_FILE）→ 先删后拷；失败只警告不退出——词库与 DLL 是两个独立产物，
-# 词库暂锁不应阻断 DLL 热替换（否则一次词库失败全部停摆）。
-try {
-    if (Test-Path $dictDest) { Remove-Item $dictDest -Force }
-    Copy-Item $imedicSrc $dictDest -Force -ErrorAction Stop
-    Trace-Script "dev-deploy: 词库复制成功 $dictDest"
-} catch {
-    Trace-Script "dev-deploy: 词库复制失败（$dictDest）：$($_.Exception.Message)"
-    Write-Host "警告：词库复制失败（$dictDest），本次仅部署 DLL。"
+# 词库同样走 Replace-InUseFile：mmap 声明 FILE_SHARE_DELETE 可改名但不可截断写
+# （ERROR_USER_MAPPED_FILE）→ 直接覆盖失败时自动改名 .old + 原位拷新，老进程持旧映射、
+# 新进程取新词库；失败只警告不阻断 DLL 热替换（词库与 DLL 是两个独立产物）。
+$r = Replace-InUseFile -Src $imedicSrc -Dest $dictDest -WarnOnly
+if ($r.Ok) {
+    if ($r.Renamed) {
+        Write-Host "词库已替换（旧版被占用，已改名 $($r.OldPath)）：新进程加载新词库，老进程持旧映射。"
+        Write-Host "  若测试仍无新词库效果，请在新开窗口/重启应用后进行。"
+    } else {
+        Trace-Script "dev-deploy: 词库替换成功（直接覆盖）$dictDest"
+    }
+} else {
+    Trace-Script "dev-deploy: 词库替换失败（$dictDest），本次仅部署 DLL"
+    Write-Host "警告：词库替换失败（$dictDest），本次仅部署 DLL。"
     Write-Host "  原因多为引擎进程/搜索索引器占用；注销重启后重跑本脚本即可更新词库。"
 }
-$r = Replace-InUseDll -Src $dllSrc -Dest $destDll
+$r = Replace-InUseFile -Src $dllSrc -Dest $destDll
 if (-not $r.Ok) { exit 1 }
 if ($r.Renamed) {
     Write-Host "DLL 被占用，已用改名替换：老进程仍用旧 DLL，新进程将加载新 DLL（.old 将在注销/重启后自动清理）。"
 } else {
     Trace-Script "dev-deploy: DLL 复制成功 $destDll"
 }
-$r32 = Replace-InUseDll -Src $dllSrc32 -Dest $destDll32
+$r32 = Replace-InUseFile -Src $dllSrc32 -Dest $destDll32
 if (-not $r32.Ok) { exit 1 }
 if ($r32.Renamed) {
     Write-Host "x86 DLL 被占用，已用改名替换：32 位进程需重启后加载新 DLL（.old 将在注销/重启后自动清理）。"

@@ -103,18 +103,19 @@ $queuedReplace = $false
 if (Install-DllFile -Src $dllSrc -Dest $destDll) { $queuedReplace = $true }
 if (Install-DllFile -Src $dllSrc32 -Dest $destDll32) { $queuedReplace = $true }
 
-# ---- 4. 安装词库（用户级数据，不锁定；目标可能被引擎进程 mmap——先删后拷：
-#       映射声明 FILE_SHARE_DELETE 故删除可行、截断写被拒 ERROR_USER_MAPPED_FILE）----
+# ---- 4. 安装词库（用户级数据；目标可能被引擎进程 mmap——mmap 声明 FILE_SHARE_DELETE
+#        可改名但截断写被拒 ERROR_USER_MAPPED_FILE → 走 Replace-InUseFile 改名替换）----
 New-Item -ItemType Directory -Force -Path $dictDir | Out-Null
-try {
-    if (Test-Path $dictDest) { Remove-Item $dictDest -Force }
-    Copy-Item $imedicSrc $dictDest -Force
-} catch {
-    Trace-Script "install: 词库复制失败（$dictDest）：$($_.Exception.Message)"
-    Write-Host "错误：词库复制失败：$dictDest（多为引擎进程/搜索索引器占用，注销重启后重跑）"
+$r = Replace-InUseFile -Src $imedicSrc -Dest $dictDest
+if (-not $r.Ok) {
+    Trace-Script "install: 词库替换失败（$dictDest）"
+    Write-Host "错误：词库替换失败：$dictDest（多为引擎进程/搜索索引器占用，注销重启后重跑）"
     exit 1
 }
-Trace-Script "install: 词库复制 $dictDest"
+if ($r.Renamed) {
+    Write-Host "词库已替换（旧版被占用，已改名 $($r.OldPath)）：注销/重启后新进程加载新词库。"
+}
+Trace-Script "install: 词库替换 $dictDest"
 Write-Host "已安装词库：$dictDest"
 
 # ---- 4.5 生成默认配置（缺失时；带 // 注释，引擎解析兼容 JSONC）----
