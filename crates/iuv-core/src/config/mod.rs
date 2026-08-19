@@ -44,6 +44,98 @@ impl Default for ThemeChoice {
     }
 }
 
+/// 新 TSF 实例初始模式（中/英）。`initial_state.mode` 驱动 Activate 时 OPENCLOSE 初值
+/// （见 `docs/plan/28-initial-state-settings.md`）。中文默认 = 激活即打开（MS IME 同款语义）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InitialMode {
+    /// 中文（默认）：激活后输入法为中文模式
+    Chinese,
+    /// 英文：每个新 TSF 实例从英文模式起（Ctrl+Space 可切回中文）
+    English,
+}
+
+impl Default for InitialMode {
+    fn default() -> Self {
+        InitialMode::Chinese
+    }
+}
+
+/// 新 TSF 实例初始宽度（半角/全角）。半角默认；全角行为后置（仅存默认值）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WidthMode {
+    /// 半角（默认）
+    Half,
+    /// 全角（仅存默认值，行为后置）
+    Full,
+}
+
+impl Default for WidthMode {
+    fn default() -> Self {
+        WidthMode::Half
+    }
+}
+
+/// 新 TSF 实例初始字形（简体/繁体）。简体默认；繁体行为后置（仅存默认值）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptMode {
+    /// 简体（默认）
+    Simplified,
+    /// 繁体（仅存默认值，行为后置）
+    Traditional,
+}
+
+impl Default for ScriptMode {
+    fn default() -> Self {
+        ScriptMode::Simplified
+    }
+}
+
+/// 中文状态标点风格（中文标点/英文标点）。替代旧顶层 `english_punctuation: bool`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PunctMode {
+    /// 中文标点（默认，全角：`，`/`。`；主流输入法默认）
+    Chinese,
+    /// 英文标点（中文状态按标点键直通英文形：`，`→`,`）
+    English,
+}
+
+impl Default for PunctMode {
+    fn default() -> Self {
+        PunctMode::Chinese
+    }
+}
+
+/// 新 TSF 实例初始状态（`initial_state` 配置节点，见 `docs/plan/28-initial-state-settings.md`）。
+/// 中/英激活强制设默认；半角/全角、简体/繁体仅存默认值（行为后置）。
+/// 默认 = 主流：中文/半角/简体/中文标点（与旧版零行为变化）。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct InitialState {
+    /// 模式：中文（默认）/ 英文
+    pub mode: InitialMode,
+    /// 宽度：半角（默认）/ 全角
+    pub width: WidthMode,
+    /// 字形：简体（默认）/ 繁体
+    pub script: ScriptMode,
+    /// 标点：中文标点（默认）/ 英文标点
+    pub punct: PunctMode,
+}
+
+impl Default for InitialState {
+    fn default() -> Self {
+        InitialState {
+            mode: InitialMode::Chinese,
+            width: WidthMode::Half,
+            script: ScriptMode::Simplified,
+            punct: PunctMode::Chinese,
+        }
+    }
+}
+
 /// 引擎配置。
 ///
 /// 默认值：page_size=5, max_candidates=1024, max_word_syllables=7,
@@ -64,6 +156,9 @@ pub struct Config {
     pub candidate_prefix: bool,
     /// 候选窗布局方向（竖排/横排）
     pub candidate_orientation: Orientation,
+    /// 新 TSF 实例初始状态（中/英、半/全角、简/繁、标点风格）。默认主流值；
+    /// 旧版顶层 `english_punctuation: bool` 经 from_file 迁移 shim 并入 `initial_state.punct`。
+    pub initial_state: InitialState,
     /// 按键直通进程名单：命中进程（exe 名，大小写不敏感精确匹配）TSF 层全部按键放行，
     /// 不建会话/无候选窗（输入法在该进程完全透明，游戏场景）。默认空 = 不启用。
     pub passthrough_apps: Vec<String>,
@@ -85,6 +180,7 @@ impl Default for Config {
             keymap: Keymap::default(),
             candidate_prefix: false,
             candidate_orientation: Orientation::Vertical,
+            initial_state: InitialState::default(),
             passthrough_apps: Vec::new(),
             theme: ThemeChoice::Light,
             disabled_log_modules: Vec::new(),
@@ -117,7 +213,17 @@ impl Config {
         };
         let text = text.trim_start_matches('\u{FEFF}'); // UTF-8 BOM
         let text = strip_jsonc_comments(text); // 兼容带 // 注释的配置（安装器产出的默认文件）
-        match serde_json::from_str::<Config>(&text) {
+        let v = match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) => migrate_initial_state(v),
+            Err(e) => {
+                log_config(&format!(
+                    "配置解析失败（{e}）：{}，使用默认配置",
+                    path.display()
+                ));
+                return Config::default();
+            }
+        };
+        match serde_json::from_value::<Config>(v) {
             Ok(cfg) => {
                 log_config(&format!("配置已加载：{}", path.display()));
                 cfg
@@ -136,6 +242,25 @@ impl Config {
     pub fn is_page_key(&self, key: Key) -> Option<Key> {
         self.keymap.page(key)
     }
+}
+
+/// 旧配置迁移 shim（2026-08-19，见 `docs/plan/28-initial-state-settings.md`）：
+/// 旧顶层 `english_punctuation: bool` → 新 `initial_state.punct` 枚举（bool→"english"/"chinese"）。
+/// 新配置已含 `initial_state` 节点时不动（新节点优先）；缺旧键则纯默认（serde 补）。
+fn migrate_initial_state(mut v: serde_json::Value) -> serde_json::Value {
+    if v.get("initial_state").is_some() {
+        return v;
+    }
+    let Some(obj) = v.as_object_mut() else { return v };
+    let Some(punct) = obj
+        .get("english_punctuation")
+        .and_then(|x| x.as_bool())
+        .map(|b| if b { "english" } else { "chinese" })
+    else {
+        return v;
+    };
+    obj.insert("initial_state".into(), serde_json::json!({ "punct": punct }));
+    v
 }
 
 /// 默认配置路径：%LOCALAPPDATA%\iuv\config.json（与词库同目录）。
@@ -381,5 +506,51 @@ mod tests {
         assert!(json.contains("\"theme\":\"dark\""));
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back.theme, ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn initial_state_defaults() {
+        // 初始状态默认 = 主流（中文/半角/简体/中文标点），与旧版零行为变化。
+        let c = Config::default();
+        assert_eq!(c.initial_state.mode, InitialMode::Chinese, "默认中文");
+        assert_eq!(c.initial_state.width, WidthMode::Half, "默认半角");
+        assert_eq!(c.initial_state.script, ScriptMode::Simplified, "默认简体");
+        assert_eq!(c.initial_state.punct, PunctMode::Chinese, "默认中文标点");
+        // 缺 initial_state 节点（旧配置）→ serde 补全默认
+        let c2: Config = serde_json::from_str(r#"{ "page_size": 5 }"#).unwrap();
+        assert_eq!(c2.initial_state, InitialState::default());
+        // 显式配置可序列化/反序列化
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("\"initial_state\":"));
+        let c3: Config = serde_json::from_str(
+            r#"{ "initial_state": { "mode": "english", "punct": "english" } }"#,
+        )
+        .unwrap();
+        assert_eq!(c3.initial_state.mode, InitialMode::English);
+        assert_eq!(c3.initial_state.punct, PunctMode::English);
+        assert_eq!(c3.initial_state.width, WidthMode::Half, "未写字段补默认");
+    }
+
+    #[test]
+    fn migrate_legacy_english_punctuation() {
+        // 旧顶层 english_punctuation: bool → initial_state.punct 枚举（升级不丢设置）。
+        let p = tmp_file("legacy_ep_true.json");
+        std::fs::write(&p, r#"{ "english_punctuation": true }"#).unwrap();
+        let c = Config::from_file(&p);
+        assert_eq!(c.initial_state.punct, PunctMode::English, "true → 英文标点");
+        assert_eq!(c.initial_state.mode, InitialMode::Chinese, "其余字段默认");
+        let p2 = tmp_file("legacy_ep_false.json");
+        std::fs::write(&p2, r#"{ "english_punctuation": false }"#).unwrap();
+        let c2 = Config::from_file(&p2);
+        assert_eq!(c2.initial_state.punct, PunctMode::Chinese);
+        // 新节点优先：残留旧键时不再迁移
+        let p3 = tmp_file("legacy_ep_both.json");
+        std::fs::write(
+            &p3,
+            r#"{ "english_punctuation": true, "initial_state": { "punct": "chinese" } }"#,
+        )
+        .unwrap();
+        let c3 = Config::from_file(&p3);
+        assert_eq!(c3.initial_state.punct, PunctMode::Chinese, "新节点优先");
     }
 }

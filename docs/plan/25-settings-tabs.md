@@ -50,13 +50,13 @@ enum Tab { Common, Keymap, Appearance, Dict, Advanced, Dev }
 | 取消 | 丢弃未保存改动 + 关窗（`state.config` 不动、不 bump epoch） |
 | 应用 | apply + 保持开窗 |
 
-`apply()` = 写 config.json（theme + passthrough）+ bump config_epoch +（若 pending_clear）清空用户库并落盘。
+`apply()` = 写 config.json（theme + passthrough + initial_state + page_size）+ bump config_epoch +（若 pending_clear）清空用户库并落盘。
 
 ### 4. 标签内容（移动现有项 + 开发者）
 
 | 标签 | 内容 | 来源 |
 |---|---|---|
-| 常用 | 空占位 | 新（框架预留） |
+| 常用 | 新 TSF 实例初始状态（模式 radio + 标点 checkbox + 宽度 radio + 字形 radio）+ 每页候选数下拉 [5,6,7,8,9] | 新（28-initial-state-settings.md） |
 | 按键 | 键位自定义（灰置 M7 占位） | 现 UI 移入 |
 | 外观 | 候选窗主题（浅色/深色单选） | 现 UI 移入 |
 | 词库 | 用户库列表 + 清除全部（确认框保留） | 现 UI 移入 |

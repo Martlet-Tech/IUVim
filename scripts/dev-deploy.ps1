@@ -100,7 +100,16 @@ if (-not (Test-Path $configPath)) {
     "candidate_next": ["Right"]
   },
   // 前缀联想（高级）：false = 候选仅精确匹配（默认）/ true = 追加前缀长词
-  "candidate_prefix": false
+  "candidate_prefix": false,
+  // 新 TSF 实例初始状态（2026-08-19 起，替换旧顶层 english_punctuation）：
+  // mode = 中文/英文、width = 半角/全角（仅存默认值）、script = 简体/繁体（仅存默认值）、
+  // punct = 中文标点/英文标点（中文状态按标点键直通英文形）
+  "initial_state": {
+    "mode": "chinese",
+    "width": "half",
+    "script": "simplified",
+    "punct": "chinese"
+  }
 }
 '@
     [IO.File]::WriteAllText($configPath, $template, [Text.UTF8Encoding]::new($false))

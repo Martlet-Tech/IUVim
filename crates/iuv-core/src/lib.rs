@@ -6,6 +6,7 @@ pub mod config;
 pub mod engine;
 pub mod key;
 pub mod lm;
+pub mod punct;
 pub mod rerank;
 pub mod schema;
 pub mod session;
@@ -14,10 +15,14 @@ pub mod viterbi;
 
 pub use candidate::{Candidate, CandidateKind};
 pub use config::keymap::{apply_keymap, is_session_start_key};
-pub use config::{Config, Keymap, Orientation, ThemeChoice};
+pub use config::{
+    Config, InitialMode, InitialState, Keymap, Orientation, PunctMode, ScriptMode, ThemeChoice,
+    WidthMode,
+};
 pub use engine::{Engine, UserMutation, UserRemote};
 pub use key::{Effect, Key, PageInfo, SessionEnd};
 pub use lm::{LmProvider, UnigramLm};
+pub use punct::{chinese_punct, shifted_punct};
 pub use rerank::{RerankCtx, RerankStage, StaticOrder};
 pub use schema::{InputSchema, Quanpin};
 pub use session::Session;

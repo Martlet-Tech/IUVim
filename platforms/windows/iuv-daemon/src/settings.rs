@@ -8,9 +8,10 @@
 //! 界面（25-settings-tabs.md）：固定 1024×800 不可缩放、标题栏无最大化；
 //! 多标签页（常用/按键/外观/词库/高级/开发者）+ 底部「确定/取消/应用」。
 //! 设置项（确定/应用 → 写 config.json → bump config_epoch 广播给会话进程）：
-//! 外观=主题（浅色/深色）+ 候选窗布局（竖排/横排）、高级=按键直通名单（passthrough_apps）、
-//! 词库=用户库管理（列表 + 清除全部，暂挂到确定/应用）、按键=键位自定义（灰置占位，M7）、
-//! 开发者（仅 dev 构建）=清除日志。绝不 panic：run_settings 包 `catch_unwind`。
+//! 常用=新 TSF 实例初始状态（模式/标点/宽度/字形）+ 每页候选数下拉、外观=主题（浅色/深色）+ 候选窗布局（竖排/横排）、
+//! 高级=按键直通名单（passthrough_apps）、词库=用户库管理（列表 + 清除全部，暂挂到确定/应用）、
+//! 按键=键位自定义（灰置占位，M7）、开发者（仅 dev 构建）=清除日志。绝不 panic：
+//! run_settings 包 `catch_unwind`。
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use eframe::egui;
 use iuv_data::UserDict;
 
-use crate::config;
+use crate::config::{self, DaemonConfig};
 use crate::log;
 use crate::state::DaemonState;
 
@@ -152,6 +153,7 @@ const LOG_MODULES: &[(&str, &str)] = &[
     ("candwin", "候选窗窗口层"),
     ("menuwin", "语言栏右键菜单"),
     ("immdetect", "IMM 探测"),
+    ("punct", "中文标点直接上屏"),
     ("daemon", "TSF 侧 daemon_client"),
     ("main", "守护进程主循环"),
     ("pipe", "守护进程管道"),
@@ -168,6 +170,10 @@ struct SettingsApp {
     theme: String,
     /// 候选窗布局单选值（"vertical"/"horizontal"）。
     orientation: String,
+    /// 每页候选数（常用页下拉，[5,6,7,8,9]）。
+    page_size: usize,
+    /// 新 TSF 实例初始状态（中/英、半/全角、简/繁、标点风格；复用 iuv-core 类型）。
+    initial: iuv_core::InitialState,
     /// 直通名单文本编辑（每行一个 exe 名）。
     passthrough: String,
     /// 禁用日志模块集（denylist，勾掉某模块即加入；默认空 = 全记录）。
@@ -191,6 +197,8 @@ impl SettingsApp {
             tab: Tab::Common,
             theme: cfg.theme,
             orientation: cfg.candidate_orientation,
+            page_size: cfg.page_size,
+            initial: cfg.initial_state,
             passthrough: cfg.passthrough_apps.join("\n"),
             disabled_log: cfg.disabled_log_modules.clone(),
             confirm_clear: false,
@@ -257,7 +265,53 @@ impl SettingsApp {
             Tab::Common => {
                 ui.heading("常用");
                 ui.add_space(4.0);
-                ui.small("（暂无设置项）");
+                ui.label("新 TSF 实例初始状态");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label("模式");
+                    ui.radio_value(&mut self.initial.mode, iuv_core::InitialMode::Chinese, "中文");
+                    ui.radio_value(&mut self.initial.mode, iuv_core::InitialMode::English, "英文");
+                });
+                let mut punct_en = self.initial.punct == iuv_core::PunctMode::English;
+                if ui.checkbox(&mut punct_en, "中文状态使用英文标点").changed() {
+                    self.initial.punct = if punct_en {
+                        iuv_core::PunctMode::English
+                    } else {
+                        iuv_core::PunctMode::Chinese
+                    };
+                }
+                ui.horizontal(|ui| {
+                    ui.label("宽度");
+                    ui.radio_value(&mut self.initial.width, iuv_core::WidthMode::Half, "半角");
+                    ui.radio_value(&mut self.initial.width, iuv_core::WidthMode::Full, "全角");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("字形");
+                    ui.radio_value(
+                        &mut self.initial.script,
+                        iuv_core::ScriptMode::Simplified,
+                        "简体",
+                    );
+                    ui.radio_value(
+                        &mut self.initial.script,
+                        iuv_core::ScriptMode::Traditional,
+                        "繁体",
+                    );
+                });
+                ui.small("「初始状态」定义切换/新开软件时输入法的默认态：模式（中/英）与标点立即生效；");
+                ui.small("半角/全角、简体/繁体当前仅记录默认值（功能开发中）。");
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label("每页候选数量");
+                egui::ComboBox::from_id_salt("page_size")
+                    .selected_text(self.page_size.to_string())
+                    .show_ui(ui, |ui| {
+                        for n in [5usize, 6, 7, 8, 9] {
+                            ui.selectable_value(&mut self.page_size, n, n.to_string());
+                        }
+                    });
+                ui.small("建议 ≤9 保证数字键可全选当前页。");
             }
             Tab::Keymap => self.keymap_tab(ui),
             Tab::Appearance => self.appearance_tab(ui),
@@ -433,12 +487,21 @@ impl SettingsApp {
             .collect();
         // 日志模块禁用集：先本进程生效（daemon 自身 log_line），再随 config_epoch 热载到 TSF。
         log::set_log_modules_disabled(&self.disabled_log);
-        match config::save_config(&theme, &orientation, &apps, &self.disabled_log) {
+        match config::save_config(&DaemonConfig {
+            theme: theme.to_string(),
+            candidate_orientation: orientation.to_string(),
+            page_size: self.page_size,
+            initial_state: self.initial.clone(),
+            passthrough_apps: apps.clone(),
+            disabled_log_modules: self.disabled_log.clone(),
+        }) {
             Ok(()) => {
                 {
                     let mut c = self.state.config.lock().unwrap_or_else(|p| p.into_inner());
                     c.theme = theme.to_string();
                     c.candidate_orientation = orientation.to_string();
+                    c.page_size = self.page_size;
+                    c.initial_state = self.initial.clone();
                     c.passthrough_apps = apps;
                     c.disabled_log_modules = self.disabled_log.clone();
                 }

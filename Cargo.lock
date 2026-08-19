@@ -1615,6 +1615,7 @@ name = "iuv-daemon"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "iuv-core",
  "iuv-data",
  "iuv-ui",
  "serde",

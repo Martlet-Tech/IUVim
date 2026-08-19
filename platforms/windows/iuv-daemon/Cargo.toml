@@ -12,6 +12,7 @@ name = "iuv-daemon"
 path = "src/main.rs"
 
 [dependencies]
+iuv-core = { workspace = true }
 iuv-data = { workspace = true }
 iuv-ui = { workspace = true }
 windows = { workspace = true }

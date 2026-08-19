@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use iuv_core::{apply_keymap, is_session_start_key, Config, Engine, Key, Session};
+use iuv_core::{apply_keymap, chinese_punct, is_session_start_key, shifted_punct, Config, Engine, Key, Session};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VK_CAPITAL, VK_SHIFT,
@@ -199,6 +199,8 @@ pub(crate) struct TextService {
     daemon: RefCell<Option<Arc<DaemonClient>>>,
     /// 远端写后端是否已注册到引擎（Activate 时引擎可能仍在后台加载，首键补注册）。
     remote_registered: Cell<bool>,
+    /// 引号配对状态（`'`/`"` 交替开/关形）。会话开始/模式切换复位为开。
+    punct_quote_open: Cell<bool>,
 }
 
 impl TextService {
@@ -258,6 +260,7 @@ impl TextService {
             lang_bar: RefCell::new(None),
             daemon: RefCell::new(None),
             remote_registered: Cell::new(false),
+            punct_quote_open: Cell::new(false),
         }
     }
 
@@ -268,6 +271,12 @@ impl TextService {
     fn test_key_down(&self, wparam: WPARAM, _lparam: LPARAM) -> bool {
         // 透明模式：全部放行。
         let Some(engine) = engine() else { return false };
+        // M6：daemon 共享段轮询（与 handle_key_down 对称）。Test 阶段即消费 config_epoch，
+        // 否则「取消英文标点」后首个标点键按旧配置放行（放行→OnKeyDown 不触发→不轮询）
+        // → 配置长期陈旧（2026-08-19 实测：取消后仍英文，打字母才触发重载变中文）。
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            client.poll(&engine, |engine| self.apply_config_hot_reload(engine));
+        }
         // 英文模式：全部放行。
         if self.english_mode.load(Ordering::SeqCst) {
             return false;
@@ -280,6 +289,16 @@ impl TextService {
             return false;
         }
         let vk = wparam.0 as u16;
+        // 中文标点（会话外直接上屏）：Test 阶段与 handle_key_down 同判定，防应用双处理。
+        if let Some(_) = self.chinese_punct_pending(
+            char_code(vk),
+            shift_pressed(),
+            ctrl_pressed(),
+            alt_pressed(),
+            self.session.borrow().is_some(),
+        ) {
+            return true;
+        }
         let caps = capslock_on();
         let key = map_key(
             vk,
@@ -311,6 +330,7 @@ impl TextService {
             return;
         }
         self.english_mode.store(next, Ordering::SeqCst);
+        self.punct_quote_open.set(false); // 模式切换复位引号配对（下个引号从开形起）
         log_line(&format!(
             "OPENCLOSE 变化：open={open} → {}模式",
             if next { "英文" } else { "中文" }
@@ -353,6 +373,49 @@ impl TextService {
         *self.composition.borrow_mut() = None;
     }
 
+    /// 会话外中文标点判定（handle_key_down 与 test_key_down **共用**，保证对称：
+    /// Test 吃而 OnKeyDown 放会静默吞键，见 Caps 直通 2026-08-19 教训）。
+    /// 命中 → Some(上屏文本)：中文模式 + 无会话 + `initial_state.punct` 非英文标点 +
+    /// 非 Ctrl/Alt 组合 + 按键字符（含 Shift 推导）命中中文标点映射。
+    /// 内部处理引号配对状态翻转（`'`/`"` 交替开/关）。
+    fn chinese_punct_pending(
+        &self,
+        char_code: u32,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        session_active: bool,
+    ) -> Option<String> {
+        if self.english_mode.load(Ordering::SeqCst) || session_active || ctrl || alt {
+            return None;
+        }
+        let engine = engine()?;
+        if engine.config().initial_state.punct == iuv_core::PunctMode::English {
+            return None;
+        }
+        let base = char::from_u32(char_code)?;
+        let ascii = shifted_punct(base, shift);
+        let quote_open = self.punct_quote_open.get();
+        let punct = chinese_punct(ascii, quote_open)?;
+        if matches!(ascii, '\'' | '"') {
+            self.punct_quote_open.set(!quote_open);
+        }
+        Some(punct.to_string())
+    }
+
+    /// 会话外中文标点直接上屏：临时 composition 一次 set_text+commit（两次 edit session，
+    /// 复用既有 Composition 方法；与 flush_session 原文上屏同款路径）。
+    fn commit_punct(&self, pic: &ITfContext, text: &str) {
+        let comp = Composition::new(pic.clone(), self.client_id.get());
+        match comp.set_text(text) {
+            Ok(_) => match comp.commit(text) {
+                Ok(()) => log_line(&format!("[punct] 中文标点直接上屏 {text}")),
+                Err(e) => log_line(&format!("[punct] commit 失败：{e}")),
+            },
+            Err(e) => log_line(&format!("[punct] set_text 失败：{e}")),
+        }
+    }
+
     /// OnKeyDown 完整处理：映射 → 会话推进 → 应用 Effect。
     fn handle_key_down(&self, pic: &ITfContext, wparam: WPARAM, _lparam: LPARAM) -> bool {
         let Some(engine) = engine() else { return false };
@@ -377,6 +440,18 @@ impl TextService {
             && is_passthrough_app(&log::module_name(), &config.passthrough_apps)
         {
             return false;
+        }
+
+        // 中文标点（会话外直接上屏全角）：判定与 test_key_down 对称。
+        if let Some(punct) = self.chinese_punct_pending(
+            char_code(vk),
+            shift_pressed(),
+            ctrl_pressed(),
+            alt_pressed(),
+            self.session.borrow().is_some(),
+        ) {
+            self.commit_punct(pic, &punct);
+            return true;
         }
 
         let caps = capslock_on();
@@ -406,6 +481,7 @@ impl TextService {
                 return false;
             }
             let mut session = engine.start_session();
+            self.punct_quote_open.set(false); // 拼音输入开始：引号配对复位为开形
             let effect = session.on_key(key);
             *self.session.borrow_mut() = Some(session);
             *self.composition.borrow_mut() =
@@ -588,22 +664,30 @@ impl TextService_Impl {
                     } {
                         Ok(cookie) => {
                             *self.compartment.borrow_mut() = Some((comp.clone(), cookie));
-                            // 激活即打开（MS IME 同款语义）：初始未设置（VT_EMPTY）或
-                            // 关闭（0）时置为打开，保证切入输入法即中文模式；同时保持
+                            // 新 TSF 实例初始中英模式（2026-08-19，见 28-initial-state-settings.md）：
+                            // 中文默认 = 激活即打开（MS IME 同款语义，与旧版零行为变化）；
+                            // 英文默认 = 激活即关闭（Ctrl+Space 可切回）。初始未设置（VT_EMPTY）
+                            // 或与默认不符时强制写默认值，保证切入输入法即配置态；同时保持
                             // 系统状态与我们一致（后续 SetValue 会同步重入 OnChange，防抖无害）。
-                            if langbar::read_openclose(&comp) != Some(true) {
-                                if let Err(e) = langbar::write_openclose(&comp, tid, true) {
-                                    log_line(&format!("OPENCLOSE 激活写 open=1 失败：{e:?}"));
+                            let default_open = iuv_core::Config::load().initial_state.mode
+                                == iuv_core::InitialMode::Chinese;
+                            if langbar::read_openclose(&comp) != Some(default_open) {
+                                if let Err(e) =
+                                    langbar::write_openclose(&comp, tid, default_open)
+                                {
+                                    log_line(&format!(
+                                        "OPENCLOSE 激活写 open={default_open} 失败：{e:?}"
+                                    ));
                                 }
                             }
                             log_line(&format!(
-                                "OPENCLOSE compartment 监听注册 OK（当前 open={}）",
+                                "OPENCLOSE compartment 监听注册 OK（当前 open={}，默认={default_open}）",
                                 match langbar::read_openclose(&comp) {
                                     Some(v) => i32::from(v).to_string(),
                                     None => "未设置".to_owned(),
                                 }
                             ));
-                            self.apply_openclose(true);
+                            self.apply_openclose(default_open);
                         }
                         Err(e) => log_line(&format!(
                             "OPENCLOSE compartment AdviseSink 失败：{e:?}（不影响输入法）"

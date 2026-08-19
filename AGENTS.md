@@ -96,8 +96,20 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
     daemon 纯后台（无图标），设置页入口 = 语言栏菜单 → 管道 OpenSettings
   - **M4~M6 待手测项**（2026-08-16 完成后未验收）：M4 真透明圆角/阴影/深色主题/不抢焦点/多显示器 DPI（2026-08-17
     已修 BeginDraw 关联 bug，候选窗此前不可见）；M5 语言栏右键菜单两项；M6 双进程即时一致/守护杀死降级/设置页热载
+- [x] **设置-常用 = 新 TSF 实例初始状态（28-initial-state-settings.md，2026-08-19 落地，待手测）**：
+  「常用」页四组开关（中/英、半角/全角、简/繁、标点）+ 每页候选数下拉 [5,6,7,8,9]，存
+  `config.json` 新父节点 `initial_state`（全部 lowercase 枚举：`mode`/`width`/`script`/`punct`，
+  复用 iuv-core 类型，daemon 已加 iuv-core 依赖）。中/英默认每次 Activate 强制写 OPENCLOSE
+  compartment（中文默认 = 旧「激活即打开」零变化；英文默认 = 新实例从英文起）；半角/全角、
+  简体/繁体仅存默认值（行为后置）；标点判定读 `initial_state.punct`。**旧顶层
+  `english_punctuation: bool` 迁移**：iuv-core from_file 与 daemon load 双向 shim（bool→枚举），
+  save 时清理旧键。默认 = 主流（中文/半角/简体/中文标点）。改动：iuv-core config（+4 枚举/结构体/
+  迁移 shim/导出）、iuv-tsf（Activate 默认模式 + 标点判定）、iuv-daemon（config.rs 签名重构
+  `save_config(&DaemonConfig)` + settings 常用页重排 + page_size 钳制 5..=9）、脚本模板、契约/文档同步。
+  测试：iuv-core 迁移/默认 5 + daemon load/save/迁移/钳制 6 全绿。
 - **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
-  OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；激活即打开）。前置条件：用户在
+  OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；**激活初值 = config `initial_state.mode`**，
+  中文默认 = 激活即打开）。前置条件：用户在
   高级键设置把"输入法/非输入法切换"设为 Ctrl+Space（"切换输入语言"热键让位，Win+Space 仍可用）。
   已知遗留（已修 2026-08-14）：有活动候选时按热键关闭，未确认输入按原文上屏（原 bug：
   只清内存态不终止 composition → 带撇号分节预览残留；Alt+Tab 同根因一并修复）。
