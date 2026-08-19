@@ -1,6 +1,6 @@
 //! 会话状态机。契约 01-contract.md §4 session.rs / §4.1 按键行为。
 
-use crate::{Candidate, Effect, Engine, Key, PageInfo, SessionEnd};
+use crate::{fullwidth_text, Candidate, Effect, Engine, Key, PageInfo, SessionEnd};
 use std::sync::Arc;
 
 /// 一次输入会话。TSF/REPL 创建后逐键喂入。
@@ -205,7 +205,9 @@ impl Session {
                 codes.push(code_key.as_str());
                 self.engine.record_phrase(&codes.join("'"), &text);
             }
-            self.end = Some(SessionEnd::Commit(text));
+            // 提交文本套宽度转换（原文兜底候选如 "window" 全角下 → "ｗｉｎｄｏｗ"）；
+            // 自造词记录用上面的原文 text（不录全角），仅上屏时转换。
+            self.end = Some(SessionEnd::Commit(self.to_output(text)));
         } else {
             // 部分消费：悬空——只入栈 + 尾巴续接，不产生任何 commit 信号；
             // 已选词视觉反馈由预编辑混合显示提供（effect().composition）。
@@ -224,10 +226,19 @@ impl Session {
     }
 
     /// 当前全部待上屏文本：picked 拼接 + 未消费拼音 raw。
+    /// 输出前套宽度转换（全角模式原文上屏转全角，`nihao` → `ｎｉｈａｏ`）——
+    /// Enter/无候选空格/flush（pending_text）均走此路径，一处覆盖。
     fn all_text(&self) -> String {
         let mut text = self.picked_text();
         text.push_str(&self.raw);
-        text
+        self.to_output(text)
+    }
+
+    /// 提交文本宽度转换：`width == Full` 时逐字符套 `fullwidth`（汉字不受影响）。
+    /// 会话外直接上屏的数字/符号已在 TSF 侧转全角（fullwidth_pending），此处只处理
+    /// 会话内原文上屏（预编辑 raw）。显示路径（picked_text 用于 composition）不转换。
+    fn to_output(&self, text: String) -> String {
+        fullwidth_text(&text, self.engine.config().initial_state.width)
     }
 
     /// 待上屏**原文**（picked + raw，无切分撇号——raw 是用户敲的字母串，撇号只存在于

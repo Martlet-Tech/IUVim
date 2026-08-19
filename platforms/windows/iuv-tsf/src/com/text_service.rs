@@ -31,7 +31,7 @@ use crate::composition::Composition;
 use crate::daemon_client::DaemonClient;
 use crate::langbar::{self, LangBarItemButton};
 use crate::log::{self, log_line};
-use crate::session_bridge::{apply_effect, caps_passthrough, is_passthrough_app, map_key};
+use crate::session_bridge::{apply_effect, caps_passthrough, fullwidth_pending, is_passthrough_app, map_key};
 use crate::ui::{CandidateUi, CandwinCandidateWindow, CaretRect};
 use crate::ui_element::CandidateElementHost;
 
@@ -277,26 +277,39 @@ impl TextService {
         if let Some(client) = self.daemon.borrow().as_ref() {
             client.poll(&engine, |engine| self.apply_config_hot_reload(engine));
         }
-        // 英文模式：全部放行。
-        if self.english_mode.load(Ordering::SeqCst) {
-            return false;
-        }
-        // 按键直通白名单：命中进程全部按键放行（与 handle_key_down 判定一致），名单为空零开销。
         let config = engine.config();
+        let vk = wparam.0 as u16;
+        let shift = shift_pressed();
+        let ctrl = ctrl_pressed();
+        let alt = alt_pressed();
+        let session_active = self.session.borrow().is_some();
+        // 按键直通白名单：命中进程全部按键放行（与 handle_key_down 判定一致），名单为空零开销。
         if !config.passthrough_apps.is_empty()
             && is_passthrough_app(&log::module_name(), &config.passthrough_apps)
         {
             return false;
         }
-        let vk = wparam.0 as u16;
+        // 英文模式：全角命中则吃掉（与 handle_key_down 对称），否则全部放行。
+        if self.english_mode.load(Ordering::SeqCst) {
+            return self
+                .fullwidth_pending_compute(vk, shift, ctrl, alt, session_active)
+                .is_some();
+        }
         // 中文标点（会话外直接上屏）：Test 阶段与 handle_key_down 同判定，防应用双处理。
         if let Some(_) = self.chinese_punct_pending(
             char_code(vk),
-            shift_pressed(),
-            ctrl_pressed(),
-            alt_pressed(),
-            self.session.borrow().is_some(),
+            shift,
+            ctrl,
+            alt,
+            session_active,
         ) {
+            return true;
+        }
+        // 全角（会话外数字/符号/空格直接上屏全角）：与 handle_key_down 同判定。
+        if self
+            .fullwidth_pending_compute(vk, shift, ctrl, alt, session_active)
+            .is_some()
+        {
             return true;
         }
         let caps = capslock_on();
@@ -403,6 +416,33 @@ impl TextService {
         Some(punct.to_string())
     }
 
+    /// 全角直接上屏判定（会话外；中/英模式统一入口，handle_key_down 与 test_key_down **共用**，
+    /// 对称保证 Test 吃 OnKeyDown 也吃，防静默吞键——同 2026-08-19 Caps 直通教训）。
+    /// 命中 → Some(全角文本)：`width == Full` + 非 Ctrl/Alt 组合 + 可全角化 ASCII（见
+    /// `session_bridge::fullwidth_pending`：英文模式全转，中文模式数字/符号/空格、字母除外）。
+    fn fullwidth_pending_compute(
+        &self,
+        vk: u16,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        session_active: bool,
+    ) -> Option<String> {
+        if ctrl || alt || session_active {
+            return None;
+        }
+        let engine = engine()?;
+        let base = char::from_u32(char_code(vk))?;
+        fullwidth_pending(
+            self.english_mode.load(Ordering::SeqCst),
+            engine.config().initial_state.width,
+            engine.config().initial_state.punct,
+            base,
+            shift,
+            capslock_on(),
+        )
+    }
+
     /// 会话外中文标点直接上屏：临时 composition 一次 set_text+commit（两次 edit session，
     /// 复用既有 Composition 方法；与 flush_session 原文上屏同款路径）。
     fn commit_punct(&self, pic: &ITfContext, text: &str) {
@@ -431,26 +471,39 @@ impl TextService {
         let config = engine.config();
 
         let vk = wparam.0 as u16;
-        if self.english_mode.load(Ordering::SeqCst) {
-            return false;
-        }
+        let shift = shift_pressed();
+        let ctrl = ctrl_pressed();
+        let alt = alt_pressed();
+        let session_active = self.session.borrow().is_some();
 
-        // 按键直通白名单：命中进程全部按键放行（不建会话/无候选窗），名单为空零开销。
+        // 按键直通白名单：命中进程全部按键放行（不建会话/无候选窗/不转全角，
+        // 输入法在该进程完全透明），名单为空零开销。
         if !config.passthrough_apps.is_empty()
             && is_passthrough_app(&log::module_name(), &config.passthrough_apps)
         {
             return false;
         }
 
+        if self.english_mode.load(Ordering::SeqCst) {
+            // 英文模式 + 全角：ASCII 直接上屏全角（ｍｉｃｒｏｓｏｆｔ１２３），否则放行。
+            if let Some(text) = self.fullwidth_pending_compute(vk, shift, ctrl, alt, session_active)
+            {
+                self.commit_punct(pic, &text);
+                return true;
+            }
+            return false;
+        }
+
         // 中文标点（会话外直接上屏全角）：判定与 test_key_down 对称。
-        if let Some(punct) = self.chinese_punct_pending(
-            char_code(vk),
-            shift_pressed(),
-            ctrl_pressed(),
-            alt_pressed(),
-            self.session.borrow().is_some(),
-        ) {
+        if let Some(punct) = self.chinese_punct_pending(char_code(vk), shift, ctrl, alt, session_active)
+        {
             self.commit_punct(pic, &punct);
+            return true;
+        }
+
+        // 全角（会话外数字/符号/空格直接上屏全角；字母不在此列，照常进拼音会话）。
+        if let Some(text) = self.fullwidth_pending_compute(vk, shift, ctrl, alt, session_active) {
+            self.commit_punct(pic, &text);
             return true;
         }
 
@@ -458,10 +511,10 @@ impl TextService {
         let key = map_key(
             vk,
             char_code(vk),
-            shift_pressed(),
+            shift,
             caps,
-            ctrl_pressed(),
-            alt_pressed(),
+            ctrl,
+            alt,
         );
         let Some(key) = key else { return false };
         log_line(&format!(

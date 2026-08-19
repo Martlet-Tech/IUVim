@@ -287,7 +287,7 @@ pub struct Config {
 
 // 新 TSF 实例初始状态（28-initial-state-settings.md）：JSON `initial_state` 节点，全部 lowercase 枚举。
 pub enum InitialMode { Chinese, English }        // 默认 Chinese；English = 每个新 TSF 实例从英文起
-pub enum WidthMode { Half, Full }                // 默认 Half；Full 仅存默认值（行为后置）
+pub enum WidthMode { Half, Full }                // 默认 Half；Full = 会话外全角转换（28 §8，2026-08-19 生效）
 pub enum ScriptMode { Simplified, Traditional }  // 默认 Simplified；Traditional 仅存默认值（行为后置）
 pub enum PunctMode { Chinese, English }          // 默认 Chinese（全角中文标点）；English = 中文状态用英文标点
 pub struct InitialState { mode: InitialMode, width: WidthMode, script: ScriptMode, punct: PunctMode }

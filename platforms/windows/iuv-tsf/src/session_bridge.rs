@@ -1,7 +1,7 @@
 //! vk/char → Key 映射 + Effect 应用。契约 01-contract.md §7 与 13 任务书 §3.4。
 //! 【Agent D】W1 实现。
 
-use iuv_core::{Effect, Key, SessionEnd};
+use iuv_core::{chinese_punct, fullwidth, shifted_punct, Effect, Key, PunctMode, SessionEnd, WidthMode};
 
 use crate::composition::Composition;
 use crate::log::log_line;
@@ -106,6 +106,49 @@ pub fn caps_passthrough(key: &Key, capslock: bool) -> bool {
 /// 名单为空时直接 false（零开销，不查进程名）。
 pub fn is_passthrough_app(exe: &str, list: &[String]) -> bool {
     list.iter().any(|app| app.eq_ignore_ascii_case(exe))
+}
+
+/// 全角直接上屏判定（28-initial-state-settings.md 全角行为；纯函数，与 `chinese_punct_pending`
+/// 对称但自含——标点表归属检查内置，调用方先跑中文标点再跑全角也可、只跑全角也可）。
+///
+/// 命中 → Some(全角上屏文本)：`width == Full` 且按键是**可全角化的 ASCII**，按模式分派：
+/// - 英文模式：字母（大小写 = Shift 与 Caps 的 XOR）/数字/符号/空格全转全角（`ｍｉｃｒｏｓｏｆｔ１２３`）；
+/// - 中文模式：数字/符号/空格转全角；**字母不转**（照常进拼音会话）；中文标点表内符号
+///   归标点开关（`punct == Chinese` 时 `，`→`，` 由标点处理，全角不接管）；
+/// - `width == Half`、非 ASCII、控制字符 → None（直通给应用）。
+pub fn fullwidth_pending(
+    english_mode: bool,
+    width: WidthMode,
+    punct: PunctMode,
+    base: char,
+    shift: bool,
+    caps: bool,
+) -> Option<String> {
+    if width != WidthMode::Full || !base.is_ascii() {
+        return None;
+    }
+    if english_mode {
+        // 英文模式：字母大小写 = Shift⊕Caps（系统惯例）；符号经 Shift 推导。
+        let ch = if base.is_ascii_alphabetic() {
+            if shift ^ caps {
+                base.to_ascii_uppercase()
+            } else {
+                base.to_ascii_lowercase()
+            }
+        } else {
+            shifted_punct(base, shift)
+        };
+        return fullwidth(ch).map(|c| c.to_string());
+    }
+    // 中文模式：字母不转（进拼音会话）；数字/符号/空格转全角。
+    if base.is_ascii_alphabetic() {
+        return None;
+    }
+    let ch = shifted_punct(base, shift);
+    if punct == PunctMode::Chinese && chinese_punct(ch, true).is_some() {
+        return None; // 标点表归属 → 由 chinese_punct_pending 处理，全角不接管
+    }
+    fullwidth(ch).map(|c| c.to_string())
 }
 
 /// 应用键映射（快捷键 → 引擎键）。命中翻页表则重映射为 PageUp/PageDown，否则原样。
@@ -496,6 +539,129 @@ mod tests {
         assert_eq!(
             map_key(0x31, 0x31, false, false, false, false),
             Some(Key::Digit(1))
+        );
+    }
+
+    #[test]
+    fn fullwidth_half_mode_release() {
+        // 半角：中文/英文模式全放行
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Half, PunctMode::Chinese, '1', false, false),
+            None
+        );
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Half, PunctMode::Chinese, 'a', false, false),
+            None
+        );
+        // 非 ASCII / 控制字符不转
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Full, PunctMode::Chinese, '中', false, false),
+            None
+        );
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Full, PunctMode::Chinese, '\t', false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn fullwidth_chinese_mode_digits_symbols() {
+        let f = PunctMode::Chinese;
+        // 数字 → 全角
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, f, '1', false, false),
+            Some("１".into())
+        );
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, f, '0', false, false),
+            Some("０".into())
+        );
+        // 非标点表符号 → 全角（含 Shift 推导：-+Shift=_ → ＿）
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, f, '/', false, false),
+            Some("／".into())
+        );
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, f, '-', true, false),
+            Some("＿".into())
+        );
+        // 空格 → U+3000
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, f, ' ', false, false),
+            Some("\u{3000}".into())
+        );
+    }
+
+    #[test]
+    fn fullwidth_chinese_mode_punct_owned_or_release() {
+        // 中文标点表内符号：punct=Chinese 时归标点开关，全角不接管
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, PunctMode::Chinese, ',', false, false),
+            None
+        );
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, PunctMode::Chinese, '.', false, false),
+            None
+        );
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, PunctMode::Chinese, '[', true, false),
+            None,
+            "花括号在标点表（『）内，不转全角 ｛"
+        );
+        // punct=English：标点表不接管 → 全角接管（，→ U+FF0C）
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, PunctMode::English, ',', false, false),
+            Some("，".into())
+        );
+        // 字母不转（照常进拼音会话）
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, PunctMode::Chinese, 'a', false, false),
+            None
+        );
+        assert_eq!(
+            fullwidth_pending(false, WidthMode::Full, PunctMode::Chinese, 'a', true, false),
+            None
+        );
+    }
+
+    #[test]
+    fn fullwidth_english_mode_letters_digits_symbols() {
+        let f = PunctMode::Chinese;
+        // 字母：大小写 = Shift⊕Caps
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Full, f, 'a', false, false),
+            Some("ａ".into())
+        );
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Full, f, 'a', true, false),
+            Some("Ａ".into())
+        );
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Full, f, 'a', false, true),
+            Some("Ａ".into())
+        );
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Full, f, 'a', true, true),
+            Some("ａ".into()),
+            "Caps+Shift 反转小写"
+        );
+        // 数字/符号/空格
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Full, f, '3', false, false),
+            Some("３".into())
+        );
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Full, f, '.', false, false),
+            Some("．".into())
+        );
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Full, f, ' ', false, false),
+            Some("\u{3000}".into())
+        );
+        // 英文模式不受标点开关影响（. 不归标点表，全角直转）
+        assert_eq!(
+            fullwidth_pending(true, WidthMode::Full, PunctMode::English, '.', false, false),
+            Some("．".into())
         );
     }
 }

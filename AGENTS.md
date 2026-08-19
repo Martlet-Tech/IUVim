@@ -100,13 +100,25 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   「常用」页四组开关（中/英、半角/全角、简/繁、标点）+ 每页候选数下拉 [5,6,7,8,9]，存
   `config.json` 新父节点 `initial_state`（全部 lowercase 枚举：`mode`/`width`/`script`/`punct`，
   复用 iuv-core 类型，daemon 已加 iuv-core 依赖）。中/英默认每次 Activate 强制写 OPENCLOSE
-  compartment（中文默认 = 旧「激活即打开」零变化；英文默认 = 新实例从英文起）；半角/全角、
-  简体/繁体仅存默认值（行为后置）；标点判定读 `initial_state.punct`。**旧顶层
-  `english_punctuation: bool` 迁移**：iuv-core from_file 与 daemon load 双向 shim（bool→枚举），
-  save 时清理旧键。默认 = 主流（中文/半角/简体/中文标点）。改动：iuv-core config（+4 枚举/结构体/
-  迁移 shim/导出）、iuv-tsf（Activate 默认模式 + 标点判定）、iuv-daemon（config.rs 签名重构
-  `save_config(&DaemonConfig)` + settings 常用页重排 + page_size 钳制 5..=9）、脚本模板、契约/文档同步。
+   compartment（中文默认 = 旧「激活即打开」零变化；英文默认 = 新实例从英文起）；**半角/全角已生效**
+   （2026-08-19：会话外全角转换，见下条）、简体/繁体仅存默认值（行为后置）；标点判定读 `initial_state.punct`。**旧顶层
+   `english_punctuation: bool` 迁移**：iuv-core from_file 与 daemon load 双向 shim（bool→枚举），
+   save 时清理旧键。默认 = 主流（中文/半角/简体/中文标点）。改动：iuv-core config（+4 枚举/结构体/
+   迁移 shim/导出）、iuv-tsf（Activate 默认模式 + 标点判定）、iuv-daemon（config.rs 签名重构
+   `save_config(&DaemonConfig)` + settings 常用页重排 + page_size 钳制 5..=9）、脚本模板、契约/文档同步。
   测试：iuv-core 迁移/默认 5 + daemon load/save/迁移/钳制 6 全绿。
+- [x] **全角行为（2026-08-19 落地，待手测）**：`initial_state.width == Full` 时**会话外直通路径**套
+  `fullwidth` 转换——**中文模式**数字 `0-9`→`０-９`、标点表未收符号（`/` `_`）→全角形、空格→`U+3000`，
+  标点表内符号仍归标点开关、字母照常进拼音会话；**英文模式**字母（大小写=Shift⊕Caps）/数字/符号/空格
+  全转（`ｍｉｃｒｏｓｏｆｔ１２３`，微软实测对齐）；拼音会话内不转换、白名单进程优先、Ctrl/Alt 放行。
+  改动：iuv-core（punct.rs `fullwidth`，`0x21..=0x7E` 一律 +0xFEE0 无例外）、iuv-tsf
+  （session_bridge.rs `fullwidth_pending` 纯函数 + text_service handle/test_key_down 对称接线，白名单
+  提到最前防覆盖透明性）、iuv-daemon settings 提示文案、契约/28/AGENTS 同步。测试：iuv-core 映射 5 +
+  iuv-tsf 决策 4 全绿。运行时 Shift+Space 切换热键**不做**（2026-08-19 用户决策）。
+  **补充（同日）：预编辑原文上屏转全角**——Enter/无候选空格/flush/原文兜底候选提交的拼音原文
+  全角下输出全角（`nihao`→`ｎｉｈａｏ`），候选（汉字）不受影响、自造词录原文不录全角；
+  实现：session `to_output` 套 `punct::fullwidth_text`，`all_text()`/`commit_index` 一处覆盖 TSF 零改动。
+  测试：iuv-core 映射 1 + 集成 3（全角 Enter/兜底、半角回归）全绿。
 - **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
   OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；**激活初值 = config `initial_state.mode`**，
   中文默认 = 激活即打开）。前置条件：用户在

@@ -2,8 +2,8 @@
 //! 用 Dict::from_entries 造小词典，不依赖真实词库文件。
 
 use iuv_core::{
-    Candidate, CandidateKind, Config, Engine, Key, Quanpin, RerankCtx, RerankStage, Session,
-    SessionEnd, UserDataStore,
+    Candidate, CandidateKind, Config, Engine, InitialState, Key, Quanpin, RerankCtx, RerankStage,
+    Session, SessionEnd, UserDataStore, WidthMode,
 };
 use iuv_data::Dict;
 use std::sync::{Arc, Mutex};
@@ -2497,4 +2497,72 @@ fn preview_editorial_rules_aligned_with_mainstream() {
         "用户'保留参与分节，实际：{}",
         s4.effect().reading
     );
+}
+
+/// 全角模式：Enter 提交预编辑原文 → 全角（微软对齐，28-initial-state-settings.md §8 影响点 1）。
+#[test]
+fn full_width_enter_commits_fullwidth_raw() {
+    let cfg = Config {
+        initial_state: InitialState {
+            width: WidthMode::Full,
+            ..InitialState::default()
+        },
+        ..Config::default()
+    };
+    let engine = Engine::new(fixture_dict(), cfg);
+    let mut s = engine.start_session();
+    for c in "nihao".chars() {
+        s.on_key(Key::Char(c));
+    }
+    assert!(s.effect().candidates.iter().any(|c| c.text == "你好"), "有候选才验证 Enter 原文上屏");
+    // pending_text（flush 路径）活动期即全角
+    assert_eq!(s.pending_text(), "ｎｉｈａｏ", "flush 原文上屏应全角");
+    let e = s.on_key(Key::Enter);
+    assert_eq!(
+        e.end,
+        Some(SessionEnd::Commit("ｎｉｈａｏ".into())),
+        "全角下 Enter 应提交全角原文，实际：{:?}",
+        e.end
+    );
+    assert!(!s.is_active());
+}
+
+/// 全角模式：Space 选候选 → 汉字不受宽度影响；无候选原文兜底 → 全角。
+#[test]
+fn full_width_space_candidate_vs_fallback() {
+    let cfg = Config {
+        initial_state: InitialState {
+            width: WidthMode::Full,
+            ..InitialState::default()
+        },
+        ..Config::default()
+    };
+    let engine = Engine::new(fixture_dict(), cfg);
+    // 有候选：Space 提交候选 你好（汉字 no-op）
+    let mut s1 = engine.start_session();
+    for c in "nihao".chars() {
+        s1.on_key(Key::Char(c));
+    }
+    let e1 = s1.on_key(Key::Space);
+    assert_eq!(e1.end, Some(SessionEnd::Commit("你好".into())));
+    // 无候选：原文兜底（window 不匹配词库）→ 全角
+    let mut s2 = engine.start_session();
+    for c in "window".chars() {
+        s2.on_key(Key::Char(c));
+    }
+    assert!(s2.effect().candidates.iter().all(|c| c.text != "你好"), "window 应无候选");
+    let e2 = s2.on_key(Key::Space);
+    assert_eq!(e2.end, Some(SessionEnd::Commit("ｗｉｎｄｏｗ".into())));
+}
+
+/// 半角回归：原文上屏保持半角（行为不变）。
+#[test]
+fn half_width_raw_commit_unchanged() {
+    let engine = Engine::new(fixture_dict(), Config::default());
+    let mut s = engine.start_session();
+    for c in "nihao".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.on_key(Key::Enter);
+    assert_eq!(e.end, Some(SessionEnd::Commit("nihao".into())));
 }

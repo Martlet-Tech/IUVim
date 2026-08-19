@@ -22,7 +22,7 @@ pub use config::{
 pub use engine::{Engine, UserMutation, UserRemote};
 pub use key::{Effect, Key, PageInfo, SessionEnd};
 pub use lm::{LmProvider, UnigramLm};
-pub use punct::{chinese_punct, shifted_punct};
+pub use punct::{chinese_punct, fullwidth, fullwidth_text, shifted_punct};
 pub use rerank::{RerankCtx, RerankStage, StaticOrder};
 pub use schema::{InputSchema, Quanpin};
 pub use session::Session;
