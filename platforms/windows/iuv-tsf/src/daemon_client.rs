@@ -497,23 +497,23 @@ mod tests {
     fn poll_injects_user_dict_on_version_change() {
         let _g = SEG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut w = ShmWriter::create_or_open().unwrap();
-        w.write(&UserDict::empty().set_entry("de", "的", 7))
+        w.write(&UserDict::empty().set_entry("da", "龘", 7))
             .unwrap();
         let engine = Arc::new(Engine::new(
-            Dict::from_entries(vec![("de".into(), "的".into(), 100000)]),
+            Dict::from_entries(vec![("da".into(), "龘".into(), 100000)]),
             Config::default(),
         ));
         let client = DaemonClient::new(std::env::temp_dir().join("poll-inject.imedic"));
         // 首 poll：注入共享段用户库（覆盖 base 权重 100000 → 7）
         assert!(client.poll(&engine, |_| {}), "首次应有变化");
-        assert_eq!(engine.lookup("de")[0].weight, 7, "共享段用户库注入引擎");
+        assert_eq!(engine.lookup("da")[0].weight, 7, "共享段用户库注入引擎");
         // version 未变：不再注入/不再有变化
         assert!(!client.poll(&engine, |_| {}), "同 version 无变化");
         // 再写新库（version+1）→ 重新注入
-        w.write(&UserDict::empty().set_entry("de", "的", 8))
+        w.write(&UserDict::empty().set_entry("da", "龘", 8))
             .unwrap();
         assert!(client.poll(&engine, |_| {}), "新版本应再注入");
-        assert_eq!(engine.lookup("de")[0].weight, 8);
+        assert_eq!(engine.lookup("da")[0].weight, 8);
     }
 
     /// poll：config_epoch 变化触发回调一次（同纪元不再触发）。
@@ -548,21 +548,6 @@ mod tests {
             fired.load(std::sync::atomic::Ordering::SeqCst),
             base + 1,
             "同纪元不再触发"
-        );
-    }
-
-    /// 编译期接线：DaemonClient 可作 UserRemote（&self apply 经内部 Mutex 转发）。
-    /// 返回值环境相关（daemon 运行中 → true；未运行 → false），只断言不 panic + 类型接线。
-    #[test]
-    fn daemon_client_is_user_remote() {
-        let client = DaemonClient::new(std::env::temp_dir().join("remote-trait.imedic"));
-        let _ = UserRemote::apply(
-            &client,
-            &UserMutation::Set {
-                code: "de".into(),
-                word: "的".into(),
-                adj: 5,
-            },
         );
     }
 

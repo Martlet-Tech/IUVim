@@ -436,17 +436,17 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         // 写者 + 读者对同一段：写入后读者解析出的用户库与写前一致。
         let dict = UserDict::empty()
-            .set_entry("zhang'wei'wei", "张葳葳", 8000)
-            .block("shou'xuan", "手癣");
+            .set_entry("da", "龘", 8000)
+            .block("shan", "羴");
         let mut w = ShmWriter::create_or_open().unwrap();
         w.write(&dict).unwrap();
         let r = ShmReader::open().unwrap();
         let read = r.read().unwrap().expect("段已写入，应可解析");
         assert!(read
-            .adjusted("zhang'wei'wei")
+            .adjusted("da")
             .iter()
-            .any(|(w_, a)| w_ == "张葳葳" && *a == 8000));
-        assert!(read.is_blocked("shou'xuan", "手癣"));
+            .any(|(w_, a)| w_ == "龘" && *a == 8000));
+        assert!(read.is_blocked("shan", "羴"));
     }
 
     #[test]
@@ -455,10 +455,10 @@ mod tests {
         let mut w = ShmWriter::create_or_open().unwrap();
         let r = ShmReader::open().unwrap();
         let v0 = r.version();
-        w.write(&UserDict::empty().set_entry("a", "啊", 1))
+        w.write(&UserDict::empty().set_entry("da", "龘", 1))
             .unwrap();
         assert_eq!(r.version(), v0.wrapping_add(1), "每次写入 version +1");
-        w.write(&UserDict::empty().set_entry("b", "波", 2))
+        w.write(&UserDict::empty().set_entry("ben", "犇", 2))
             .unwrap();
         assert_eq!(r.version(), v0.wrapping_add(2));
     }

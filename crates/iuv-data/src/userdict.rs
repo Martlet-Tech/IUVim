@@ -101,15 +101,16 @@ impl UserDict {
             }
             let code_len = data[pos] as usize;
             let code_end = pos + 1 + code_len;
-            if code_end + 2 + 4 > data.len() {
+            // 覆盖记录尾随 u32 adj，屏蔽记录无——边界检查必须按 cover 区分（否则末条
+            // 屏蔽记录恰在缓冲区末尾时被误判越界，整库视为损坏丢弃）。
+            let tail_len = if cover { 4 } else { 0 };
+            if code_end + 2 + tail_len > data.len() {
                 return Err("记录截断（code 越界）".into());
             }
             let code = std::str::from_utf8(&data[pos + 1..code_end])
                 .map_err(|_| "code 非 UTF-8".to_string())?;
             let wl = u16::from_le_bytes([data[code_end], data[code_end + 1]]) as usize;
             let word_end = code_end + 2 + wl;
-            // 覆盖记录尾随 u32 adj，屏蔽记录无——按 cover 检查边界
-            let tail_len = if cover { 4 } else { 0 };
             if word_end + tail_len > data.len() {
                 return Err("记录截断（word 越界）".into());
             }
@@ -347,6 +348,22 @@ mod tests {
         assert!(!back.is_blocked("shou'xuan", "手选"));
         assert!(!back.is_blocked("zhang'wei'wei", "张葳葳"));
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn v2_block_record_ending_at_buffer_boundary() {
+        // 回归（2026-08-19）：屏蔽段末条记录恰在缓冲区末尾（紧凑短码/生僻字）时，
+        // read_record 边界检查硬编码 +4（按覆盖记录多读 adj）导致整库被误判损坏。
+        let u = UserDict::empty()
+            .set_entry("da", "龘", 8000)
+            .block("shan", "羴");
+        let bytes = u.to_bytes();
+        let back = UserDict::from_bytes(&bytes).expect("紧凑数据（块记录贴边）应可解析");
+        assert!(back
+            .adjusted("da")
+            .iter()
+            .any(|(w, a)| w == "龘" && *a == 8000));
+        assert!(back.is_blocked("shan", "羴"));
     }
 
     #[test]
