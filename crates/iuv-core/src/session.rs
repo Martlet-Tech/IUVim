@@ -1,6 +1,6 @@
 //! 会话状态机。契约 01-contract.md §4 session.rs / §4.1 按键行为。
 
-use crate::{fullwidth_text, Candidate, Effect, Engine, Key, PageInfo, SessionEnd};
+use crate::{fullwidth_text, Candidate, Effect, Engine, Key, PageInfo, ScriptMode, SessionEnd};
 use std::sync::Arc;
 
 /// 一次输入会话。TSF/REPL 创建后逐键喂入。
@@ -234,11 +234,37 @@ impl Session {
         self.to_output(text)
     }
 
-    /// 提交文本宽度转换：`width == Full` 时逐字符套 `fullwidth`（汉字不受影响）。
+    /// 提交文本宽度 + 字形转换：先 `fullwidth_text`（ASCII→全角），再简→繁
+    /// （仅 `script == Traditional` 且转换器已装配；汉字/拼音/符号直通，幂等）。
     /// 会话外直接上屏的数字/符号已在 TSF 侧转全角（fullwidth_pending），此处只处理
     /// 会话内原文上屏（预编辑 raw）。显示路径（picked_text 用于 composition）不转换。
     fn to_output(&self, text: String) -> String {
-        fullwidth_text(&text, self.engine.config().initial_state.width)
+        let w = fullwidth_text(&text, self.engine.config().initial_state.width);
+        self.convert_script(&w)
+    }
+
+    /// 简→繁转换（31-script-traditional.md）：`script == Traditional` 且有转换器 → 转换；
+    /// 否则原文返回。内部候选/自造词恒简体，仅在输出边界转换。
+    fn convert_script(&self, text: &str) -> String {
+        if self.engine.config().initial_state.script != ScriptMode::Traditional {
+            return text.to_string();
+        }
+        match self.engine.script_converter() {
+            Some(c) => c.convert(text),
+            None => text.to_string(),
+        }
+    }
+
+    /// 候选文本简→繁（显示边界：候选窗/预编辑显示繁体，commit 内部仍用简体原文）。
+    fn convert_candidate(&self, c: &Candidate) -> Candidate {
+        let text = self.convert_script(&c.text);
+        Candidate {
+            text,
+            kind: c.kind,
+            code: c.code.clone(),
+            weight: c.weight,
+            seg_len: c.seg_len,
+        }
     }
 
     /// 待上屏**原文**（picked + raw，无切分撇号——raw 是用户敲的字母串，撇号只存在于
@@ -343,11 +369,16 @@ impl Session {
         } else {
             self.selected
         };
+        // 显示边界简→繁（31-script-traditional.md）：composition/reading（预编辑，含
+        // picked 汉字 + 拼音尾巴）与候选文本统一转换；内部 self.all/picked 恒简体
+        // （commit/自造词/调权/屏蔽键不变）。原文兜底候选（纯拼音 window 等）转换
+        // 恒等，与 gdi.rs「text == 预编辑原文去撇号」判定不冲突。
+        let preview_disp = self.convert_script(&preview);
         Effect {
-            composition: preview.clone(),
-            reading: preview,
-            candidates: page_cands,
-            all_candidates: self.all.clone(),
+            composition: preview_disp.clone(),
+            reading: preview_disp,
+            candidates: page_cands.iter().map(|c| self.convert_candidate(c)).collect(),
+            all_candidates: self.all.iter().map(|c| self.convert_candidate(c)).collect(),
             selected,
             page: PageInfo {
                 page: self.page,

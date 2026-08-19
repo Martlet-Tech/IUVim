@@ -105,6 +105,27 @@ fn load_engine() -> Option<Arc<Engine>> {
             } else {
                 log_line(&format!("用户词库装配成功：{}", user_path.display()));
             }
+            // M2.5 简→繁转换器装配（31-script-traditional.md）：iuv.opencc 缺失/损坏 →
+            // None 降级简体输出（不阻断）。数据与词库独立装配。
+            let occ_path = script_path();
+            match iuv_data::OpenccTable::load(&occ_path) {
+                Ok(t) => {
+                    let conv = iuv_core::ScriptConverter::new(t);
+                    engine.attach_script_converter(Some(std::sync::Arc::new(conv)));
+                    log_line(&format!(
+                        "简繁转换器装配成功：{}（{} 词条）",
+                        occ_path.display(),
+                        engine.script_converter().map(|c| c.entry_count()).unwrap_or(0)
+                    ));
+                }
+                Err(e) => {
+                    engine.attach_script_converter(None);
+                    log_line(&format!(
+                        "简繁转换器装配失败（繁体模式降级简体输出）：{}",
+                        e
+                    ));
+                }
+            }
             Some(engine)
         }
         Err(e) => {
@@ -138,6 +159,13 @@ fn dict_path() -> PathBuf {
 fn user_dict_path() -> PathBuf {
     let mut p = dict_path();
     p.set_file_name("iuv.user.imedic");
+    p
+}
+
+/// %LOCALAPPDATA%\iuv\iuv.opencc（31-script-traditional.md 简繁转换表，与基本库同目录）。
+fn script_path() -> PathBuf {
+    let mut p = dict_path();
+    p.set_file_name("iuv.opencc");
     p
 }
 

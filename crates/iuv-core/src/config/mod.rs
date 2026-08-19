@@ -77,13 +77,14 @@ impl Default for WidthMode {
     }
 }
 
-/// 新 TSF 实例初始字形（简体/繁体）。简体默认；繁体行为后置（仅存默认值）。
+/// 新 TSF 实例初始字形（简体/繁体）。简体默认；繁体生效 = 简体词库 + 运行时简→繁转换
+/// （s2t 通用繁体，见 `docs/plan/31-script-traditional.md`；数据文件 `iuv.opencc` 缺失时降级简体输出）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ScriptMode {
     /// 简体（默认）
     Simplified,
-    /// 繁体（仅存默认值，行为后置）
+    /// 繁体（简体词库 + 运行时简→繁转换）
     Traditional,
 }
 
@@ -110,7 +111,7 @@ impl Default for PunctMode {
 }
 
 /// 新 TSF 实例初始状态（`initial_state` 配置节点，见 `docs/plan/28-initial-state-settings.md`）。
-/// 中/英激活强制设默认；半角/全角、简体/繁体仅存默认值（行为后置）。
+/// 中/英激活强制设默认；半角/全角、简体/繁体已生效（31-script-traditional.md：繁体 = 运行时转换）。
 /// 默认 = 主流：中文/半角/简体/中文标点（与旧版零行为变化）。
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]

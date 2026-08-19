@@ -1,8 +1,8 @@
 //! 引擎：候选生成。契约 01-contract.md §4 engine.rs / §4.2 算法。
 
 use crate::{
-    rerank::RerankCtx, schema::Quanpin, session::Session, store::NullStore, Config, InputSchema,
-    LmProvider, RerankStage, UnigramLm, UserDataStore,
+    rerank::RerankCtx, schema::Quanpin, session::Session, script::ScriptConverter, store::NullStore,
+    Config, InputSchema, LmProvider, RerankStage, UnigramLm, UserDataStore,
 };
 use iuv_data::{Dict, Entry, UserDict};
 use std::fs;
@@ -53,6 +53,8 @@ pub struct Engine {
     /// 用户库远端写后端（M6 daemon 客户端）。None = 本地写盘（现状/降级）。
     /// apply 返回 false（daemon 离线/拒绝）→ 写路径自动降级本地，绝不挂键。
     user_remote: Mutex<Option<Arc<dyn UserRemote>>>,
+    /// 简→繁转换器（31-script-traditional.md）。None = 未装配/数据缺失 → 降级简体输出。
+    script: Mutex<Option<Arc<ScriptConverter>>>,
 }
 
 /// 用户库装配状态（不可变路径 + 可变 mtime 基线）。
@@ -117,6 +119,7 @@ impl Engine {
             store: Mutex::new(store),
             user_state: Mutex::new(UserState::default()),
             user_remote: Mutex::new(None),
+            script: Mutex::new(None),
         })
     }
 
@@ -176,6 +179,21 @@ impl Engine {
             path: Some(path),
             mtime,
         };
+    }
+
+    /// 装配简→繁转换器（31-script-traditional.md）。`None` = 数据缺失/不启用 → 繁体模式
+    /// 降级简体输出（转换层直接跳过，不 panic、不影响会话）。TSF 侧在 load_engine 装配，
+    /// 数据文件独立于词库（互不影响加载路径）。
+    pub fn attach_script_converter(&self, conv: Option<Arc<ScriptConverter>>) {
+        *self.script.lock().unwrap_or_else(|e| e.into_inner()) = conv;
+    }
+
+    /// 当前简→繁转换器（None = 未装配/降级）。
+    pub fn script_converter(&self) -> Option<Arc<ScriptConverter>> {
+        self.script
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// M2 主动调权：a/b 两词**交换有效权重**（绝对值覆盖，互写对方合成权重）。
@@ -271,6 +289,11 @@ impl Engine {
     /// 不触碰本地文件——共享段是唯一读源。
     pub fn set_user_dict(&self, user: Arc<UserDict>) {
         self.dict.set_user(user);
+    }
+
+    /// 当前用户库（M2/M6 只读视图；None = 未装配）。
+    pub fn user_dict(&self) -> Option<Arc<UserDict>> {
+        self.dict.user()
     }
 
     /// M6 配置热载（config_epoch 变化 → 设置页保存后触发）：全量替换引擎配置。

@@ -38,6 +38,8 @@
 
 - 白霜拼音 rime-frost = **GPL-3.0**：数据由 `scripts/download-dict.ps1` 下载到 `data/`（gitignore），
   不进仓库、不编进二进制；发布包若含编译产物需在 NOTICE 声明
+- OpenCC 简繁转换表 = **Apache-2.0**（BYVoid/OpenCC）：`scripts/download-opencc.ps1` 下载到 `data/opencc/`
+  （gitignore，不进仓库），dictc 编译产物 `iuv.opencc` 随发布包分发时需附 Apache-2.0 NOTICE
 - M3 万象语言模型（CC-BY-4.0）需署名；届时再议
 
 ## 7. 构建/测试/注册速查

@@ -27,11 +27,14 @@ $repoRoot  = Split-Path -Parent $PSScriptRoot
 $dllSrc    = Join-Path $repoRoot "target\release\iuv_tsf.dll"
 $dllSrc32  = Join-Path $repoRoot "target\i686-pc-windows-msvc\release\iuv_tsf.dll"
 $imedicSrc = Join-Path $repoRoot "data\iuv.imedic"
+$openccSrc = Join-Path $repoRoot "data\iuv.opencc"
+$openccDir = Join-Path $repoRoot "data\opencc"
 $destDir   = Join-Path $env:ProgramFiles "iuv"
 $destDll   = Join-Path $destDir "iuv_tsf.dll"
 $destDll32 = Join-Path $destDir "iuv_tsf_x86.dll"
 $dictDir   = Join-Path $env:LOCALAPPDATA "iuv"
 $dictDest  = Join-Path $dictDir "iuv.imedic"
+$openccDest = Join-Path $dictDir "iuv.opencc"
 $clsidKey  = 'Registry::HKEY_CLASSES_ROOT\CLSID\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
 $tipKey    = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
 # x86 注册走 WoW64 视图（32 位 regsvr32 自动落此，64 位进程按架构解析 DLL）。
@@ -117,6 +120,30 @@ if (-not (Test-Path $configPath)) {
     Write-Host "已生成默认配置（可编辑注释后改设置）：$configPath"
 }
 
+# ---- 2.5 简繁转换表链（31-script-traditional.md）：iuv.opencc 缺失时自动下载 + 编译 ----
+if (-not (Test-Path $openccSrc)) {
+    Trace-Script "dev-deploy: iuv.opencc 缺失，进入下载/编译流程"
+    if (-not (Test-Path $openccDir) -or ((Get-ChildItem $openccDir -Filter *.txt).Count -eq 0)) {
+        Write-Host "OpenCC 转换表源缺失，正在下载（scripts\download-opencc.ps1）..."
+        Push-Location $repoRoot
+        try { & (Join-Path $PSScriptRoot "download-opencc.ps1") }
+        finally { Pop-Location }
+    }
+    $phrases = Join-Path $openccDir "STPhrases.txt"
+    $chars   = Join-Path $openccDir "STCharacters.txt"
+    if (-not (Test-Path $phrases) -or -not (Test-Path $chars)) {
+        throw "OpenCC 转换表源缺失：$openccDir"
+    }
+    Write-Host "正在编译简繁转换表（dictc opencc）..."
+    Push-Location $repoRoot
+    try {
+        cargo run -p iuv-data --bin dictc -- opencc $openccSrc $phrases $chars
+        if ($LASTEXITCODE -ne 0) { throw "dictc opencc 编译失败（exit=$LASTEXITCODE）" }
+    } finally { Pop-Location }
+    if (-not (Test-Path $openccSrc)) { throw "编译完成但未找到 $openccSrc" }
+}
+Trace-Script "dev-deploy: iuv.opencc OK"
+
 # ---- 3. 复制（DLL 用热替换：未锁直接复制，锁了改名 .old 原位替换，零杀进程）----
 # 词库同样走 Replace-InUseFile：mmap 声明 FILE_SHARE_DELETE 可改名但不可截断写
 # （ERROR_USER_MAPPED_FILE）→ 直接覆盖失败时自动改名 .old + 原位拷新，老进程持旧映射、
@@ -133,6 +160,17 @@ if ($r.Ok) {
     Trace-Script "dev-deploy: 词库替换失败（$dictDest），本次仅部署 DLL"
     Write-Host "警告：词库替换失败（$dictDest），本次仅部署 DLL。"
     Write-Host "  原因多为引擎进程/搜索索引器占用；注销重启后重跑本脚本即可更新词库。"
+}
+$r = Replace-InUseFile -Src $openccSrc -Dest $openccDest -WarnOnly
+if ($r.Ok) {
+    if ($r.Renamed) {
+        Write-Host "简繁转换表已替换（旧版被占用，已改名 $($r.OldPath)）：新进程加载新表，老进程持旧映射。"
+    } else {
+        Trace-Script "dev-deploy: 简繁转换表替换成功（直接覆盖）$openccDest"
+    }
+} else {
+    Trace-Script "dev-deploy: 简繁转换表替换失败（$openccDest），本次仅部署 DLL"
+    Write-Host "警告：简繁转换表替换失败（$openccDest），繁体模式将降级简体输出。"
 }
 $r = Replace-InUseFile -Src $dllSrc -Dest $destDll
 if (-not $r.Ok) { exit 1 }

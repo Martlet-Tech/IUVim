@@ -252,6 +252,29 @@ impl Dict {
     pub fn user(&self) -> Option<std::sync::Arc<UserDict>>;
     pub fn effective_weight(&self, code: &str, word: &str) -> Option<u32>; // 覆盖（含自造）优先，否则 base；均无 → None
 }
+
+// ===== opencc.rs（31 新增）=====
+pub struct OpenccTable;   // phrases: HashMap<String,String> + chars: HashMap<char,String>（简→繁，UTF-8）
+
+impl OpenccTable {
+    pub fn from_bytes(bytes: &[u8]) -> std::io::Result<OpenccTable>;  // 解析 IUVOCC01（魔法/段定位/边界校验）
+    pub fn to_bytes(&self) -> Vec<u8>;                               // 序列化 IUVOCC01
+    pub fn convert(&self, text: &str) -> String;                     // 正向最长匹配：短语优先、单字兜底、未命中直通
+    pub fn load(path: &std::path::Path) -> std::io::Result<OpenccTable>; // 读文件 → from_bytes；缺失/损坏 → Err
+    pub fn entry_count(&self) -> usize;
+}
+pub fn from_text(phrases: &str, chars: &str) -> std::io::Result<OpenccTable>; // 解析 OpenCC 文本（BOM/CRLF/注释/多值取首）
+pub fn compile_files(phrases: &std::path::Path, chars: &std::path::Path,
+                     out: &std::path::Path) -> std::io::Result<usize>;  // 文本 → IUVOCC01，返回词条数
+
+// ===== script.rs（31 新增）=====
+pub struct ScriptConverter;  // 简→繁转换器（Arc 包装 OpenccTable 的薄壳）
+
+impl ScriptConverter {
+    pub fn new(table: OpenccTable) -> ScriptConverter;
+    pub fn convert(&self, text: &str) -> String;  // 委托 OpenccTable::convert
+    pub fn entry_count(&self) -> usize;
+}
 ```
 
 ## 4. iuv-core 公共 API
@@ -288,7 +311,7 @@ pub struct Config {
 // 新 TSF 实例初始状态（28-initial-state-settings.md）：JSON `initial_state` 节点，全部 lowercase 枚举。
 pub enum InitialMode { Chinese, English }        // 默认 Chinese；English = 每个新 TSF 实例从英文起
 pub enum WidthMode { Half, Full }                // 默认 Half；Full = 会话外全角转换（28 §8，2026-08-19 生效）
-pub enum ScriptMode { Simplified, Traditional }  // 默认 Simplified；Traditional 仅存默认值（行为后置）
+pub enum ScriptMode { Simplified, Traditional }  // 默认 Simplified；Traditional = 繁体输出（31，2026-08-19 生效：s2t 通用繁体，数据 iuv.opencc 缺失降级简体）
 pub enum PunctMode { Chinese, English }          // 默认 Chinese（全角中文标点）；English = 中文状态用英文标点
 pub struct InitialState { mode: InitialMode, width: WidthMode, script: ScriptMode, punct: PunctMode }
 
@@ -403,6 +426,11 @@ impl Engine {
     pub fn config(&self) -> &Config;
     /// 调试/REPL 用精确查询。
     pub fn lookup(&self, squashed_code: &str) -> &[iuv_data::Entry];
+    /// 简→繁转换器装配（31 新增）：None/不装配 = 简体模式；数据缺失降级简体。线程安全（Mutex<Option<Arc>>）。
+    pub fn attach_script_converter(&self, converter: Option<std::sync::Arc<ScriptConverter>>);
+    pub fn script_converter(&self) -> Option<std::sync::Arc<ScriptConverter>>;
+    /// 当前用户库只读视图（M2 集成测试/调试用）。
+    pub fn user_dict(&self) -> Option<std::sync::Arc<UserDict>>;
 }
 
 // ===== session.rs（Agent B）=====

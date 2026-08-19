@@ -2566,3 +2566,195 @@ fn half_width_raw_commit_unchanged() {
     let e = s.on_key(Key::Enter);
     assert_eq!(e.end, Some(SessionEnd::Commit("nihao".into())));
 }
+
+// ===== 31-script-traditional.md：简→繁转换 =====
+
+/// 构造繁体引擎：ScriptMode::Traditional + 装配转换器（OpenCC 小表）。
+fn traditional_engine() -> Arc<Engine> {
+    let cfg = Config {
+        initial_state: InitialState {
+            script: iuv_core::ScriptMode::Traditional,
+            ..InitialState::default()
+        },
+        ..Config::default()
+    };
+    let engine = Engine::new(fixture_dict(), cfg);
+    let table = iuv_data::opencc::from_text("你好\t你好\n以后\t以後\n", "网\t網\n").unwrap();
+    engine.attach_script_converter(Some(std::sync::Arc::new(
+        iuv_core::ScriptConverter::new(table),
+    )));
+    engine
+}
+
+/// 繁体模式：候选文本显示繁体（词条「网」显示为「網」，单字表兜底）。
+#[test]
+fn traditional_candidates_converted() {
+    let dict = Dict::from_entries(vec![
+        ("wang".into(), "网".into(), 500),
+        ("wang".into(), "旺".into(), 300),
+    ]);
+    let cfg = Config {
+        initial_state: InitialState {
+            script: iuv_core::ScriptMode::Traditional,
+            ..InitialState::default()
+        },
+        ..Config::default()
+    };
+    let engine = Engine::new(dict, cfg);
+    let table = iuv_data::opencc::from_text("", "网\t網\n").unwrap();
+    engine.attach_script_converter(Some(std::sync::Arc::new(
+        iuv_core::ScriptConverter::new(table),
+    )));
+    let mut s = engine.start_session();
+    for c in "wang".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert!(e.candidates.iter().any(|c| c.text == "網"), "网应显示为網");
+    // 未入表的字（旺）原样
+    assert!(e.candidates.iter().any(|c| c.text == "旺"));
+}
+
+/// 繁体模式：候选「网」单字被转换为「網」（单字表兜底）。
+#[test]
+fn traditional_single_char_converted() {
+    let engine = traditional_engine();
+    // 需要词典里有一个网字词条；fixture_dict 无网 → 用 from_entries 注入
+    let dict = Dict::from_entries(vec![("wang".into(), "网".into(), 500)]);
+    let cfg = Config {
+        initial_state: InitialState {
+            script: iuv_core::ScriptMode::Traditional,
+            ..InitialState::default()
+        },
+        ..Config::default()
+    };
+    let engine = Engine::new(dict, cfg);
+    let table = iuv_data::opencc::from_text("", "网\t網\n").unwrap();
+    engine.attach_script_converter(Some(std::sync::Arc::new(
+        iuv_core::ScriptConverter::new(table),
+    )));
+    let mut s = engine.start_session();
+    for c in "wang".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    assert!(e.candidates.iter().any(|c| c.text == "網"), "候选应显示網");
+}
+
+/// 繁体模式：整词上屏转换为繁体（以后 → 以後）。
+#[test]
+fn traditional_commit_converted() {
+    let engine = traditional_engine();
+    // fixture_dict 无「以后」，注入
+    let dict = Dict::from_entries(vec![("yi'hou".into(), "以后".into(), 8000)]);
+    let cfg = Config {
+        initial_state: InitialState {
+            script: iuv_core::ScriptMode::Traditional,
+            ..InitialState::default()
+        },
+        ..Config::default()
+    };
+    let engine = Engine::new(dict, cfg);
+    let table = iuv_data::opencc::from_text("以后\t以後\n", "").unwrap();
+    engine.attach_script_converter(Some(std::sync::Arc::new(
+        iuv_core::ScriptConverter::new(table),
+    )));
+    let mut s = engine.start_session();
+    for c in "yihou".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.on_key(Key::Space);
+    assert_eq!(e.end, Some(SessionEnd::Commit("以後".into())));
+}
+
+/// 繁体模式：自造词记录简体原文（commit 前不转换；录音 = 简体，与全角「录原文不录全角」同构）。
+#[test]
+fn traditional_selfmade_records_simplified() {
+    // 逐字选择自造：网+络 → 记录"网络"（简体），commit 上屏"網絡"（繁体）
+    let dict = Dict::from_entries(vec![
+        ("wang".into(), "网".into(), 500),
+        ("luo".into(), "络".into(), 400),
+    ]);
+    let cfg = Config {
+        initial_state: InitialState {
+            script: iuv_core::ScriptMode::Traditional,
+            ..InitialState::default()
+        },
+        ..Config::default()
+    };
+    let engine = Engine::new(dict, cfg);
+    let table = iuv_data::opencc::from_text("网络\t網絡\n", "网\t網\n络\t絡\n").unwrap();
+    engine.attach_script_converter(Some(std::sync::Arc::new(
+        iuv_core::ScriptConverter::new(table),
+    )));
+    let mut s = engine.start_session();
+    for c in "wangluo".chars() {
+        s.on_key(Key::Char(c));
+    }
+    // 逐字选：網 → 絡（悬空续接 → 全消费 commit；候选显示繁体）
+    let mut guard = 0;
+    let pos = loop {
+        let e = s.effect();
+        if let Some(p) = e.candidates.iter().position(|c| c.text == "網") {
+            break p;
+        }
+        guard += 1;
+        assert!(guard < 200, "「網」不在候选");
+        s.on_key(Key::PageDown);
+    };
+    s.on_key(Key::Digit((pos + 1) as u8));
+    let mut guard = 0;
+    let pos = loop {
+        let e = s.effect();
+        if let Some(p) = e.candidates.iter().position(|c| c.text == "絡") {
+            break p;
+        }
+        guard += 1;
+        assert!(guard < 200, "「絡」不在候选");
+        s.on_key(Key::PageDown);
+    };
+    s.on_key(Key::Digit((pos + 1) as u8));
+    assert_eq!(s.effect().end, Some(SessionEnd::Commit("網絡".into())));
+    // 用户库应记录简体（内部键不变）
+    let user = engine.user_dict().expect("自造词后用户库应已装配");
+    assert!(user
+        .adjusted("wang'luo")
+        .iter()
+        .any(|(word, _)| word == "网络"));
+}
+
+/// 简体回归：默认模式转换器装配也不生效（零行为变化）。
+#[test]
+fn simplified_mode_converter_inert() {
+    let dict = Dict::from_entries(vec![("yi'hou".into(), "以后".into(), 8000)]);
+    let engine = Engine::new(dict, Config::default());
+    let table = iuv_data::opencc::from_text("以后\t以後\n", "").unwrap();
+    engine.attach_script_converter(Some(std::sync::Arc::new(
+        iuv_core::ScriptConverter::new(table),
+    )));
+    let mut s = engine.start_session();
+    for c in "yihou".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.on_key(Key::Space);
+    assert_eq!(e.end, Some(SessionEnd::Commit("以后".into())));
+}
+
+/// 繁体模式数据缺失：降级简体输出（不 panic）。
+#[test]
+fn traditional_no_converter_degraded() {
+    let cfg = Config {
+        initial_state: InitialState {
+            script: iuv_core::ScriptMode::Traditional,
+            ..InitialState::default()
+        },
+        ..Config::default()
+    };
+    let engine = Engine::new(fixture_dict(), cfg); // 未装配转换器
+    let mut s = engine.start_session();
+    for c in "nihao".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.on_key(Key::Space);
+    assert_eq!(e.end, Some(SessionEnd::Commit("你好".into())));
+}

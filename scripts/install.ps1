@@ -20,11 +20,14 @@ $dllSrc     = Join-Path $repoRoot "target\release\iuv_tsf.dll"
 $dllSrc32   = Join-Path $repoRoot "target\i686-pc-windows-msvc\release\iuv_tsf.dll"
 $imedicSrc  = Join-Path $repoRoot "data\iuv.imedic"
 $dictsDir   = Join-Path $repoRoot "data\rime-frost\cn_dicts"
+$openccSrc  = Join-Path $repoRoot "data\iuv.opencc"
+$openccDir  = Join-Path $repoRoot "data\opencc"
 $destDir    = Join-Path $env:ProgramFiles "iuv"              # DLL：程序文件位置
 $destDll    = Join-Path $destDir "iuv_tsf.dll"               # x64
 $destDll32  = Join-Path $destDir "iuv_tsf_x86.dll"           # x86（M7 双架构）
 $dictDir    = Join-Path $env:LOCALAPPDATA "iuv"              # 词库：用户级数据
 $dictDest   = Join-Path $dictDir "iuv.imedic"
+$openccDest = Join-Path $dictDir "iuv.opencc"
 $clsidKey   = 'Registry::HKEY_CLASSES_ROOT\CLSID\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
 $tipKey     = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
 # x86 注册走 WoW64 视图（32 位 regsvr32 自动落此，64 位进程按架构解析 DLL）：
@@ -93,6 +96,31 @@ if (-not (Test-Path $imedicSrc)) {
 Trace-Script "install: 词库 OK"
 Write-Host "词库 OK：$imedicSrc"
 
+# ---- 2.5 简繁转换表链：iuv.opencc 缺失时自动下载 + 编译（31-script-traditional.md）----
+if (-not (Test-Path $openccSrc)) {
+    Trace-Script "install: iuv.opencc 缺失，进入下载/编译流程"
+    if (-not (Test-Path $openccDir) -or ((Get-ChildItem $openccDir -Filter *.txt).Count -eq 0)) {
+        Write-Host "OpenCC 转换表源缺失，正在下载（scripts\download-opencc.ps1）..."
+        Push-Location $repoRoot
+        try { & (Join-Path $PSScriptRoot "download-opencc.ps1") }
+        finally { Pop-Location }
+    }
+    $phrases = Join-Path $openccDir "STPhrases.txt"
+    $chars   = Join-Path $openccDir "STCharacters.txt"
+    if (-not (Test-Path $phrases) -or -not (Test-Path $chars)) {
+        throw "OpenCC 转换表源缺失：$openccDir"
+    }
+    Write-Host "正在编译简繁转换表（dictc opencc）..."
+    Push-Location $repoRoot
+    try {
+        cargo run -p iuv-data --bin dictc -- opencc $openccSrc $phrases $chars
+        if ($LASTEXITCODE -ne 0) { throw "dictc opencc 编译失败（exit=$LASTEXITCODE）" }
+    } finally { Pop-Location }
+    if (-not (Test-Path $openccSrc)) { throw "编译完成但未找到 $openccSrc" }
+}
+Trace-Script "install: iuv.opencc OK"
+Write-Host "简繁转换表 OK：$openccSrc"
+
 # ---- 3. 安装 DLL（x64 + x86 双架构，各自被占用时登记延迟替换）----
 # 先清除指向安装目录的陈旧 pending op（旧版无去重卸载可能留下"重启删目录"条目，
 # 不清理的话下次重启会删掉刚装的目录）。
@@ -117,6 +145,19 @@ if ($r.Renamed) {
 }
 Trace-Script "install: 词库替换 $dictDest"
 Write-Host "已安装词库：$dictDest"
+
+# ---- 4.25 安装简繁转换表（iuv.opencc，同样走 Replace-InUseFile：引擎 mmap 锁处理）----
+$r2 = Replace-InUseFile -Src $openccSrc -Dest $openccDest
+if (-not $r2.Ok) {
+    Trace-Script "install: iuv.opencc 替换失败（$openccDest）"
+    Write-Host "警告：简繁转换表替换失败（$openccDest），繁体模式将降级简体输出。注销重启后重跑。"
+} else {
+    if ($r2.Renamed) {
+        Write-Host "简繁转换表已替换（旧版被占用，已改名）：注销/重启后新进程加载新表。"
+    }
+    Trace-Script "install: iuv.opencc 替换 $openccDest"
+    Write-Host "已安装简繁转换表：$openccDest"
+}
 
 # ---- 4.5 生成默认配置（缺失时；带 // 注释，引擎解析兼容 JSONC）----
 $configPath = Join-Path $dictDir "config.json"

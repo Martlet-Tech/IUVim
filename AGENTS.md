@@ -103,12 +103,12 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   `config.json` 新父节点 `initial_state`（全部 lowercase 枚举：`mode`/`width`/`script`/`punct`，
   复用 iuv-core 类型，daemon 已加 iuv-core 依赖）。中/英默认每次 Activate 强制写 OPENCLOSE
    compartment（中文默认 = 旧「激活即打开」零变化；英文默认 = 新实例从英文起）；**半角/全角已生效**
-   （2026-08-19：会话外全角转换，见下条）、简体/繁体仅存默认值（行为后置）；标点判定读 `initial_state.punct`。**旧顶层
+（2026-08-19：会话外全角转换，见下条）、简体/繁体已生效（见下条）；标点判定读 `initial_state.punct`。**旧顶层
    `english_punctuation: bool` 迁移**：iuv-core from_file 与 daemon load 双向 shim（bool→枚举），
    save 时清理旧键。默认 = 主流（中文/半角/简体/中文标点）。改动：iuv-core config（+4 枚举/结构体/
    迁移 shim/导出）、iuv-tsf（Activate 默认模式 + 标点判定）、iuv-daemon（config.rs 签名重构
    `save_config(&DaemonConfig)` + settings 常用页重排 + page_size 钳制 5..=9）、脚本模板、契约/文档同步。
-  测试：iuv-core 迁移/默认 5 + daemon load/save/迁移/钳制 6 全绿。
+   测试：iuv-core 迁移/默认 5 + daemon load/save/迁移/钳制 6 全绿。
 - [x] **全角行为（2026-08-19 落地，待手测）**：`initial_state.width == Full` 时**会话外直通路径**套
   `fullwidth` 转换——**中文模式**数字 `0-9`→`０-９`、标点表未收符号（`/` `_`）→全角形、空格→`U+3000`，
   标点表内符号仍归标点开关、字母照常进拼音会话；**英文模式**字母（大小写=Shift⊕Caps）/数字/符号/空格
@@ -121,6 +121,20 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   全角下输出全角（`nihao`→`ｎｉｈａｏ`），候选（汉字）不受影响、自造词录原文不录全角；
   实现：session `to_output` 套 `punct::fullwidth_text`，`all_text()`/`commit_index` 一处覆盖 TSF 零改动。
   测试：iuv-core 映射 1 + 集成 3（全角 Enter/兜底、半角回归）全绿。
+- [x] **简体/繁体切换（31-script-traditional.md，2026-08-19 已结案：手测通过、并入 main）**：
+  `initial_state.script == "traditional"` → **繁体模式 = 简体词库 + 运行时简→繁转换**（s2t 通用繁体）：
+  候选/预编辑/上屏显示繁体、内部词库/自造词/调权/屏蔽恒简体（同全角「录原文不录全角」）。
+  数据 = **形态3 数据文件 `iuv.opencc`**（2026-08-19 用户拍板：不做编进 DLL、不做 daemon IPC——转换在
+  热路径、daemon 是 Windows-only，与 iuv.imedic 词库管线同构跨平台）：`scripts/download-opencc.ps1`
+  拉取 OpenCC 数据（BYVoid，**Apache-2.0**，入 `data/opencc/` gitignore）→ dictc 新子命令
+  `dictc opencc` 编译成 **IUVOCC01** 二进制 → install/dev-deploy 复制到 `%LOCALAPPDATA%\iuv\iuv.opencc`
+  （Replace-InUseFile 同款 mmap 锁）。转换 = 正向最长匹配（短语表优先、单字兜底、未命中直通幂等）；
+  已知差距：单字一简多繁取首值无上下文模型（`后→后`、`发→发`）。挂点与全角同构：`to_output`
+  fullwidth 后 + `convert_script`；`effect()` 显示边界转 composition/reading/candidates/all_candidates。
+  装配：Engine `attach_script_converter`；数据缺失/损坏 → None 降级简体不崩。改动：iuv-data
+  （opencc.rs + dictc opencc + 导出）、iuv-core（script.rs ScriptConverter + engine 字段 + session 挂点）、
+  iuv-tsf（load_engine 装配 + script_path）、iuv-daemon（settings 文案已生效）、scripts、契约/02/AGENTS 同步。
+  测试：iuv-data 9 + script 2 + 会话集成 6（繁体候选/单字/整词上屏/自造词录简体/简体回归/降级）全绿。
 - **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
   OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；**激活初值 = config `initial_state.mode`**，
   中文默认 = 激活即打开）。前置条件：用户在
