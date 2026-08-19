@@ -17,24 +17,59 @@ Write-Host "正在安装 IUV 输入法（管理员窗口）..."
 $repoRoot   = Split-Path -Parent $PSScriptRoot
 $profileDesc = 'IUV 输入法'   # 显示名（与 registration.rs PROFILE_DESCRIPTION 一致）
 $dllSrc     = Join-Path $repoRoot "target\release\iuv_tsf.dll"
+$dllSrc32   = Join-Path $repoRoot "target\i686-pc-windows-msvc\release\iuv_tsf.dll"
 $imedicSrc  = Join-Path $repoRoot "data\iuv.imedic"
 $dictsDir   = Join-Path $repoRoot "data\rime-frost\cn_dicts"
 $destDir    = Join-Path $env:ProgramFiles "iuv"              # DLL：程序文件位置
-$destDll    = Join-Path $destDir "iuv_tsf.dll"
+$destDll    = Join-Path $destDir "iuv_tsf.dll"               # x64
+$destDll32  = Join-Path $destDir "iuv_tsf_x86.dll"           # x86（M7 双架构）
 $dictDir    = Join-Path $env:LOCALAPPDATA "iuv"              # 词库：用户级数据
 $dictDest   = Join-Path $dictDir "iuv.imedic"
 $clsidKey   = 'Registry::HKEY_CLASSES_ROOT\CLSID\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
 $tipKey     = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
+# x86 注册走 WoW64 视图（32 位 regsvr32 自动落此，64 位进程按架构解析 DLL）：
+# HKLM\SOFTWARE\Classes\WOW6432Node\CLSID = HKCR\WOW6432Node\CLSID（同一物理键）。
+$clsidKey32 = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\CLSID\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
+$tipKey32   = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\CTF\TIP\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
+$regsvr32Path = Join-Path $env:windir "SysWOW64\regsvr32.exe"   # 32 位注册器（注册 x86 DLL）
 
-# ---- 1. 构建检查 ----
-if (-not (Test-Path $dllSrc)) {
-    Trace-Script "install: 错误，构建产物缺失 $dllSrc"
-    Write-Host "错误：未找到 $dllSrc"
-    Write-Host "请先执行：cargo build -p iuv-tsf --release"
+# ---- 0.5 DLL 安装辅助：未锁直接复制；被占用 → 临时名 + 延迟替换（注销/重启后生效）----
+function Install-DllFile {
+    param(
+        [Parameter(Mandatory)][string]$Src,
+        [Parameter(Mandatory)][string]$Dest
+    )
+    try {
+        Copy-Item $Src $Dest -Force -ErrorAction Stop
+        Trace-Script "install: DLL 复制成功 $Dest"
+        Write-Host "已安装 DLL：$Dest"
+        return $false
+    } catch {
+        $base = (Split-Path $Dest -Leaf) -replace '\.dll$', ''
+        $tmp = Join-Path (Split-Path $Dest) "$base.new.dll"
+        Copy-Item $Src $tmp -Force
+        Trace-Script "install: DLL 被占用，延迟替换 $tmp -> $Dest"
+        Add-PendingOp -Source $tmp -Dest $Dest
+        if (Register-DelayedOps -Copies @($tmp, $Dest) -Deletes @($tmp)) {
+            Write-Host "DLL 正被占用（无需关闭应用），已安排延迟替换，注销或重启后生效：$Dest"
+            return $true
+        }
+        throw "DLL 被占用且延迟替换任务注册失败，请重启后重新运行本脚本"
+    }
+}
+
+# ---- 1. 构建检查（x64 + x86 双产物）----
+$missing = @()
+if (-not (Test-Path $dllSrc)) { $missing += "x64：$dllSrc（cargo build -p iuv-tsf --release）" }
+if (-not (Test-Path $dllSrc32)) { $missing += "x86：$dllSrc32（cargo build -p iuv-tsf --release --target i686-pc-windows-msvc）" }
+if ($missing.Count -gt 0) {
+    foreach ($m in $missing) { Trace-Script "install: 错误，构建产物缺失 $m" }
+    Write-Host "错误：以下构建产物缺失："
+    $missing | ForEach-Object { Write-Host "  $_" }
     exit 1
 }
-Trace-Script "install: 构建产物 OK"
-Write-Host "构建产物 OK：$dllSrc"
+Trace-Script "install: 构建产物 OK（x64+x86）"
+Write-Host "构建产物 OK（x64 + x86）：$dllSrc"
 
 # ---- 2. 词库链：imedic 缺失时自动下载 + 编译 ----
 if (-not (Test-Path $imedicSrc)) {
@@ -58,30 +93,15 @@ if (-not (Test-Path $imedicSrc)) {
 Trace-Script "install: 词库 OK"
 Write-Host "词库 OK：$imedicSrc"
 
-# ---- 3. 安装 DLL（被占用时登记延迟替换）----
+# ---- 3. 安装 DLL（x64 + x86 双架构，各自被占用时登记延迟替换）----
 # 先清除指向安装目录的陈旧 pending op（旧版无去重卸载可能留下"重启删目录"条目，
 # 不清理的话下次重启会删掉刚装的目录）。
 $cleared = Clear-PendingOp -Source $destDir
 Trace-Script ("install: 陈旧 pending op 清理=" + $cleared)
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
 $queuedReplace = $false
-try {
-    Copy-Item $dllSrc $destDll -Force -ErrorAction Stop
-    Trace-Script "install: DLL 复制成功 $destDll"
-    Write-Host "已安装 DLL：$destDll"
-} catch {
-    # 目标被占用：复制到临时名，双保险登记延迟替换（注销/重启后自动生效）。
-    $tmp = Join-Path $destDir "iuv_tsf.new.dll"
-    Copy-Item $dllSrc $tmp -Force
-    Trace-Script "install: DLL 被占用，延迟替换 $tmp -> $destDll"
-    Add-PendingOp -Source $tmp -Dest $destDll
-    if (Register-DelayedOps -Copies @($tmp, $destDll) -Deletes @($tmp)) {
-        $queuedReplace = $true
-        Write-Host "DLL 正被占用（无需关闭应用），已安排延迟替换，注销或重启后生效：$destDll"
-    } else {
-        throw "DLL 被占用且延迟替换任务注册失败，请重启后重新运行本脚本"
-    }
-}
+if (Install-DllFile -Src $dllSrc -Dest $destDll) { $queuedReplace = $true }
+if (Install-DllFile -Src $dllSrc32 -Dest $destDll32) { $queuedReplace = $true }
 
 # ---- 4. 安装词库（用户级数据，不锁定；目标可能被引擎进程 mmap——先删后拷：
 #       映射声明 FILE_SHARE_DELETE 故删除可行、截断写被拒 ERROR_USER_MAPPED_FILE）----
@@ -127,28 +147,39 @@ if (-not (Test-Path $configPath)) {
     Write-Host "已生成默认配置（可编辑注释后改设置）：$configPath"
 }
 
-# ---- 5. 注册（未注册、DLL 路径或显示名变化时重注册；否则跳过）----
-$registeredPath = $null
-$registeredDesc = $null
-if (Test-Path "$clsidKey\InprocServer32") {
-    $registeredPath = (Get-ItemProperty -Path "$clsidKey\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
-    $registeredDesc = (Get-ItemProperty -Path $clsidKey -ErrorAction SilentlyContinue).'(default)'
+# ---- 5. 注册（x64 native 视图 + x86 WOW6432Node 视图；各自未注册/路径不符才重注册）----
+# 两个架构各自判断：系统按进程架构自动加载对应 DLL，注册要独立校验。
+function Test-ArchRegistered {
+    param([string]$ClsidKey, [string]$TipKey, [string]$DllPath)
+    $p = $null
+    if (Test-Path "$ClsidKey\InprocServer32") {
+        $p = (Get-ItemProperty -Path "$ClsidKey\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
+    }
+    # 显示名比较必须区分大小写（-cne；-ne 大小写不敏感会把 iuv/IUV 判为相等）。
+    $d = (Get-ItemProperty -Path $ClsidKey -ErrorAction SilentlyContinue).'(default)'
+    return ((Test-Path $ClsidKey) -and (Test-Path $TipKey) -and $p -eq $DllPath -and $d -cne $null -and $d -ceq $profileDesc)
 }
-# 显示名比较必须区分大小写（-cne；-ne 大小写不敏感会把 iuv/IUV 判为相等）。
-if (-not (Test-Path $clsidKey) -or -not (Test-Path $tipKey) -or $registeredPath -ne $destDll -or $registeredDesc -cne $profileDesc) {
-    Trace-Script "install: 开始 regsvr32 $destDll"
-    Write-Host "正在注册 COM/TSF 服务..."
-    & "$env:windir\System32\regsvr32.exe" /s $destDll
+
+$archRegs = @(
+    @{ Reg32 = $false; Dll = $destDll;  Regsvr = "$env:windir\System32\regsvr32.exe"; Clsid = $clsidKey;   Tip = $tipKey },
+    @{ Reg32 = $true;  Dll = $destDll32; Regsvr = $regsvr32Path;                       Clsid = $clsidKey32; Tip = $tipKey32 }
+)
+foreach ($ar in $archRegs) {
+    if (Test-ArchRegistered -ClsidKey $ar.Clsid -TipKey $ar.Tip -DllPath $ar.Dll) {
+        Trace-Script "install: 已注册，跳过 regsvr32（$($ar.Dll)）"
+        Write-Host "已注册（跳过 regsvr32）：$($ar.Dll)"
+        continue
+    }
+    Trace-Script "install: 开始 regsvr32 $($ar.Dll)（32位=$($ar.Reg32)）"
+    Write-Host "正在注册 COM/TSF 服务（$($ar.Dll)）..."
+    & $ar.Regsvr /s $ar.Dll
     Start-Sleep -Seconds 1
-    Trace-Script ("install: regsvr32 返回，CLSID=" + (Test-Path $clsidKey) + " TIP=" + (Test-Path $tipKey))
+    Trace-Script ("install: regsvr32 返回，CLSID=" + (Test-Path $ar.Clsid) + " TIP=" + (Test-Path $ar.Tip))
     # 不依赖 regsvr32 退出码（$LASTEXITCODE 可能为 $null）；以注册表是否写入为准。
-    if (-not (Test-Path $clsidKey) -or -not (Test-Path $tipKey)) {
-        Write-Host "错误：注册失败（CLSID=$(Test-Path $clsidKey) TIP=$(Test-Path $tipKey)）。日志见 %TEMP%\iuv-tsf.log"
+    if (-not (Test-ArchRegistered -ClsidKey $ar.Clsid -TipKey $ar.Tip -DllPath $ar.Dll)) {
+        Write-Host "错误：注册失败（CLSID=$(Test-Path $ar.Clsid) TIP=$(Test-Path $ar.Tip)）。日志见 %TEMP%\iuv-tsf.log"
         exit 1
     }
-} else {
-    Trace-Script "install: 已注册，跳过 regsvr32"
-    Write-Host "已注册（跳过 regsvr32）。"
 }
 
 # ---- 6. 重启 ctfmon（受限用户上下文）----

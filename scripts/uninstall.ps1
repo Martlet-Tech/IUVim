@@ -19,13 +19,17 @@ $destDir = Join-Path $env:ProgramFiles "iuv"
 $clsid = '{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
 
 # 本输入法注册的键（对应 crates/iuv-tsf/src/registration.rs）：
-# 1) HKCR\CLSID\{GUID}             COM 类注册（DllRegisterServer 写）
-# 2) HKLM\...\CTF\TIP\{GUID}       TSF 文本服务注册（ITfInputProcessorProfiles 写）
+# 1) HKCR\CLSID\{GUID}             COM 类注册（DllRegisterServer 写，x64 native 视图）
+# 2) HKLM\...\CTF\TIP\{GUID}       TSF 文本服务注册（ITfInputProcessorProfiles 写，x64 native 视图）
 # 3) HKCU\...\CTF\TIP\{GUID}       无管理员权限时 TSF 注册可能落到用户级
+# 4) HKLM\...\Classes\WOW6432Node\CLSID\{GUID}    x86 DLL 注册（32 位 regsvr32 落 WoW64 视图）
+# 5) HKLM\...\WOW6432Node\...\CTF\TIP\{GUID}      x86 TSF 注册（32 位 TSF 管理器落 WoW64 视图）
 $keys = @(
     "Registry::HKEY_CLASSES_ROOT\CLSID\$clsid",
     "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\$clsid",
-    "Registry::HKEY_CURRENT_USER\SOFTWARE\Microsoft\CTF\TIP\$clsid"
+    "Registry::HKEY_CURRENT_USER\SOFTWARE\Microsoft\CTF\TIP\$clsid",
+    "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\CLSID\$clsid",
+    "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\CTF\TIP\$clsid"
 )
 
 # ---- 1. 删除注册表键 ----

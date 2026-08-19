@@ -25,13 +25,19 @@ Write-Host "正在热部署 IUV 输入法（管理员窗口）..."
 
 $repoRoot  = Split-Path -Parent $PSScriptRoot
 $dllSrc    = Join-Path $repoRoot "target\release\iuv_tsf.dll"
+$dllSrc32  = Join-Path $repoRoot "target\i686-pc-windows-msvc\release\iuv_tsf.dll"
 $imedicSrc = Join-Path $repoRoot "data\iuv.imedic"
 $destDir   = Join-Path $env:ProgramFiles "iuv"
 $destDll   = Join-Path $destDir "iuv_tsf.dll"
+$destDll32 = Join-Path $destDir "iuv_tsf_x86.dll"
 $dictDir   = Join-Path $env:LOCALAPPDATA "iuv"
 $dictDest  = Join-Path $dictDir "iuv.imedic"
 $clsidKey  = 'Registry::HKEY_CLASSES_ROOT\CLSID\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
 $tipKey    = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
+# x86 注册走 WoW64 视图（32 位 regsvr32 自动落此，64 位进程按架构解析 DLL）。
+$clsidKey32 = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\CLSID\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
+$tipKey32   = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\CTF\TIP\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
+$regsvr32Path = Join-Path $env:windir "SysWOW64\regsvr32.exe"
 
 # ---- 1. 构建（默认执行，增量很快；-SkipBuild 跳过）----
 if (-not $SkipBuild) {
@@ -41,6 +47,8 @@ if (-not $SkipBuild) {
     try {
         cargo build -p iuv-tsf --release
         if ($LASTEXITCODE -ne 0) { throw "cargo build 失败（exit=$LASTEXITCODE）" }
+        cargo build -p iuv-tsf --release --target i686-pc-windows-msvc
+        if ($LASTEXITCODE -ne 0) { throw "cargo build x86 失败（exit=$LASTEXITCODE）" }
         # 守护进程（dev 构建标记：设置页带「开发者」标签/清除日志；发布安装不带）。
         cargo build -p iuv-daemon --release --features dev
         if ($LASTEXITCODE -ne 0) { throw "cargo build iuv-daemon 失败（exit=$LASTEXITCODE）" }
@@ -51,10 +59,14 @@ if (-not $SkipBuild) {
 }
 
 # ---- 2. 产物检查 ----
-if (-not (Test-Path $dllSrc)) {
-    Trace-Script "dev-deploy: 错误，DLL 缺失 $dllSrc"
-    Write-Host "错误：未找到 $dllSrc"
-    Write-Host "请先执行：cargo build -p iuv-tsf --release（或去掉 -SkipBuild）"
+$missing = @()
+if (-not (Test-Path $dllSrc)) { $missing += "x64：$dllSrc（cargo build -p iuv-tsf --release）" }
+if (-not (Test-Path $dllSrc32)) { $missing += "x86：$dllSrc32（cargo build -p iuv-tsf --release --target i686-pc-windows-msvc）" }
+if ($missing.Count -gt 0) {
+    foreach ($m in $missing) { Trace-Script "dev-deploy: 错误，构建产物缺失 $m" }
+    Write-Host "错误：以下构建产物缺失："
+    $missing | ForEach-Object { Write-Host "  $_" }
+    Write-Host "请先构建（或去掉 -SkipBuild）"
     exit 1
 }
 if (-not (Test-Path $imedicSrc)) {
@@ -116,6 +128,13 @@ if ($r.Renamed) {
 } else {
     Trace-Script "dev-deploy: DLL 复制成功 $destDll"
 }
+$r32 = Replace-InUseDll -Src $dllSrc32 -Dest $destDll32
+if (-not $r32.Ok) { exit 1 }
+if ($r32.Renamed) {
+    Write-Host "x86 DLL 被占用，已用改名替换：32 位进程需重启后加载新 DLL（.old 将在注销/重启后自动清理）。"
+} else {
+    Trace-Script "dev-deploy: x86 DLL 复制成功 $destDll32"
+}
 
 # ---- 3.5 守护进程部署（M7：iuv-daemon.exe；会话进程首激活自动拉起）----
 $daemonSrc  = Join-Path $repoRoot "target\release\iuv-daemon.exe"
@@ -140,28 +159,43 @@ if (Test-Path $daemonSrc) {
     Trace-Script "dev-deploy: 未找到守护进程产物 $daemonSrc（第 1 步已自动构建 cargo build -p iuv-daemon --release --features dev）"
 }
 
-# ---- 4. 注册（未注册、或 CLSID 指向的 DLL 路径不是本安装时重注册）----
+# ---- 4. 注册（x64 native + x86 WOW6432Node；各自未注册或 CLSID 指向路径不符时重注册）----
 # 曾因只查 key 存在与否而跳过 regsvr32，导致注册表仍指向旧路径的旧 DLL
 # （项目改名前的 C:\Program Files\InputIME），热部署永远不生效。现与 install.ps1
-# 同款校验：InprocServer32 默认值必须等于本安装的 destDll。
-$registeredPath = $null
-if (Test-Path "$clsidKey\InprocServer32") {
-    $registeredPath = (Get-ItemProperty -Path "$clsidKey\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
+# 同款校验：InprocServer32 默认值必须等于本安装的 destDll（每架构独立判定）。
+function Test-ArchRegistered {
+    param([string]$ClsidKey, [string]$TipKey, [string]$DllPath)
+    $p = $null
+    if (Test-Path "$ClsidKey\InprocServer32") {
+        $p = (Get-ItemProperty -Path "$ClsidKey\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
+    }
+    return ((Test-Path $ClsidKey) -and (Test-Path $TipKey) -and $p -eq $DllPath)
 }
-if (-not (Test-Path $clsidKey) -or -not (Test-Path $tipKey) -or $registeredPath -ne $destDll) {
-    Trace-Script "dev-deploy: 开始 regsvr32 $destDll（注册路径=$registeredPath）"
-    Write-Host "正在注册 COM/TSF 服务..."
-    & "$env:windir\System32\regsvr32.exe" /s $destDll
+
+$archRegs = @(
+    @{ Dll = $destDll;  Regsvr = "$env:windir\System32\regsvr32.exe"; Clsid = $clsidKey;   Tip = $tipKey },
+    @{ Dll = $destDll32; Regsvr = $regsvr32Path;                       Clsid = $clsidKey32; Tip = $tipKey32 }
+)
+foreach ($ar in $archRegs) {
+    $registeredPath = $null
+    if (Test-Path "$($ar.Clsid)\InprocServer32") {
+        $registeredPath = (Get-ItemProperty -Path "$($ar.Clsid)\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
+    }
+    if (Test-ArchRegistered -ClsidKey $ar.Clsid -TipKey $ar.Tip -DllPath $ar.Dll) {
+        Trace-Script "dev-deploy: 已注册且路径匹配，跳过 regsvr32（$($ar.Dll)）"
+        continue
+    }
+    Trace-Script "dev-deploy: 开始 regsvr32 $($ar.Dll)（注册路径=$registeredPath）"
+    Write-Host "正在注册 COM/TSF 服务（$($ar.Dll)）..."
+    & $ar.Regsvr /s $ar.Dll
     Start-Sleep -Seconds 1
-    $afterPath = (Get-ItemProperty -Path "$clsidKey\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
-    if (-not (Test-Path $clsidKey) -or -not (Test-Path $tipKey) -or $afterPath -ne $destDll) {
-        Trace-Script "dev-deploy: 注册失败（CLSID=$(Test-Path $clsidKey) TIP=$(Test-Path $tipKey) path=$afterPath）"
-        Write-Host "错误：注册失败。日志见 %TEMP%\iuv-script.log"
+    $afterPath = (Get-ItemProperty -Path "$($ar.Clsid)\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
+    if (-not (Test-ArchRegistered -ClsidKey $ar.Clsid -TipKey $ar.Tip -DllPath $ar.Dll)) {
+        Trace-Script "dev-deploy: 注册失败（CLSID=$(Test-Path $ar.Clsid) TIP=$(Test-Path $ar.Tip) path=$afterPath）"
+        Write-Host "错误：注册失败（$($ar.Dll)）。日志见 %TEMP%\iuv-script.log"
         exit 1
     }
     Trace-Script "dev-deploy: regsvr32 完成，CLSID=True TIP=True path=$afterPath"
-} else {
-    Trace-Script "dev-deploy: 已注册且路径匹配，跳过 regsvr32"
 }
 
 # ---- 5. 重启 ctfmon（受限用户上下文，加载新 DLL）----
