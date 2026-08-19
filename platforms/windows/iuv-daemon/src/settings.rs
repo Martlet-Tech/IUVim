@@ -8,7 +8,7 @@
 //! 界面（25-settings-tabs.md）：固定 1024×800 不可缩放、标题栏无最大化；
 //! 多标签页（常用/按键/外观/词库/高级/开发者）+ 底部「确定/取消/应用」。
 //! 设置项（确定/应用 → 写 config.json → bump config_epoch 广播给会话进程）：
-//! 外观=主题（浅色/深色）、高级=按键直通名单（passthrough_apps）、
+//! 外观=主题（浅色/深色）+ 候选窗布局（竖排/横排）、高级=按键直通名单（passthrough_apps）、
 //! 词库=用户库管理（列表 + 清除全部，暂挂到确定/应用）、按键=键位自定义（灰置占位，M7）、
 //! 开发者（仅 dev 构建）=清除日志。绝不 panic：run_settings 包 `catch_unwind`。
 
@@ -166,6 +166,8 @@ struct SettingsApp {
     tab: Tab,
     /// 主题单选值（"light"/"dark"）。
     theme: String,
+    /// 候选窗布局单选值（"vertical"/"horizontal"）。
+    orientation: String,
     /// 直通名单文本编辑（每行一个 exe 名）。
     passthrough: String,
     /// 禁用日志模块集（denylist，勾掉某模块即加入；默认空 = 全记录）。
@@ -188,6 +190,7 @@ impl SettingsApp {
             state,
             tab: Tab::Common,
             theme: cfg.theme,
+            orientation: cfg.candidate_orientation,
             passthrough: cfg.passthrough_apps.join("\n"),
             disabled_log: cfg.disabled_log_modules.clone(),
             confirm_clear: false,
@@ -277,7 +280,7 @@ impl SettingsApp {
         });
     }
 
-    /// 外观：候选窗主题。
+    /// 外观：候选窗主题 + 布局方向。
     fn appearance_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("外观");
         ui.add_space(4.0);
@@ -285,6 +288,12 @@ impl SettingsApp {
         ui.horizontal(|ui| {
             ui.radio_value(&mut self.theme, "light".to_string(), "浅色");
             ui.radio_value(&mut self.theme, "dark".to_string(), "深色");
+        });
+        ui.add_space(8.0);
+        ui.label("候选窗布局");
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.orientation, "vertical".to_string(), "竖排（一列）");
+            ui.radio_value(&mut self.orientation, "horizontal".to_string(), "横排（单行）");
         });
         ui.small("更改在点击「确定」或「应用」后生效。");
     }
@@ -410,6 +419,11 @@ impl SettingsApp {
         let mut msgs: Vec<String> = Vec::new();
 
         let theme = if self.theme == "dark" { "dark" } else { "light" };
+        let orientation = if self.orientation == "horizontal" {
+            "horizontal"
+        } else {
+            "vertical"
+        };
         let apps: Vec<String> = self
             .passthrough
             .lines()
@@ -419,11 +433,12 @@ impl SettingsApp {
             .collect();
         // 日志模块禁用集：先本进程生效（daemon 自身 log_line），再随 config_epoch 热载到 TSF。
         log::set_log_modules_disabled(&self.disabled_log);
-        match config::save_config(&theme, &apps, &self.disabled_log) {
+        match config::save_config(&theme, &orientation, &apps, &self.disabled_log) {
             Ok(()) => {
                 {
                     let mut c = self.state.config.lock().unwrap_or_else(|p| p.into_inner());
                     c.theme = theme.to_string();
+                    c.candidate_orientation = orientation.to_string();
                     c.passthrough_apps = apps;
                     c.disabled_log_modules = self.disabled_log.clone();
                 }

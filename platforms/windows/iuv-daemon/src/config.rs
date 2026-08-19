@@ -12,6 +12,8 @@ use std::path::PathBuf;
 pub struct DaemonConfig {
     /// 候选窗/菜单主题："light" | "dark"。
     pub theme: String,
+    /// 候选窗布局方向："vertical" | "horizontal"（竖排/横排，iuv-core `candidate_orientation`）。
+    pub candidate_orientation: String,
     /// 按键直通进程名列表（exe 名，大小写不敏感精确匹配，TSF 层消费）。
     pub passthrough_apps: Vec<String>,
     /// 禁用日志模块列表（denylist；默认空 = 全记录，见 26-log-modules.md）。
@@ -23,6 +25,7 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         DaemonConfig {
             theme: "light".into(),
+            candidate_orientation: "vertical".into(),
             passthrough_apps: Vec::new(),
             disabled_log_modules: Vec::new(),
         }
@@ -58,6 +61,11 @@ pub fn load_config() -> DaemonConfig {
             cfg.theme = t.to_string();
         }
     }
+    if let Some(o) = v.get("candidate_orientation").and_then(|x| x.as_str()) {
+        if o == "vertical" || o == "horizontal" {
+            cfg.candidate_orientation = o.to_string();
+        }
+    }
     if let Some(arr) = v.get("passthrough_apps").and_then(|x| x.as_array()) {
         cfg.passthrough_apps = arr
             .iter()
@@ -73,9 +81,11 @@ pub fn load_config() -> DaemonConfig {
     cfg
 }
 
-/// 保存设置：读现有 JSON → 补丁 theme/passthrough_apps/disabled_log_modules（保留未知字段）→ 原子写回。
+/// 保存设置：读现有 JSON → 补丁 theme/candidate_orientation/passthrough_apps/disabled_log_modules
+/// （保留未知字段）→ 原子写回。
 pub fn save_config(
     theme: &str,
+    candidate_orientation: &str,
     passthrough_apps: &[String],
     disabled_log_modules: &[String],
 ) -> io::Result<()> {
@@ -96,6 +106,10 @@ pub fn save_config(
         .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
     if let Some(obj) = root.as_object_mut() {
         obj.insert("theme".into(), serde_json::Value::String(theme.into()));
+        obj.insert(
+            "candidate_orientation".into(),
+            serde_json::Value::String(candidate_orientation.into()),
+        );
         obj.insert(
             "passthrough_apps".into(),
             serde_json::Value::Array(
@@ -118,6 +132,7 @@ pub fn save_config(
         // 现有文件顶层非对象（异常）→ 重建。
         root = serde_json::json!({
             "theme": theme,
+            "candidate_orientation": candidate_orientation,
             "passthrough_apps": passthrough_apps,
             "disabled_log_modules": disabled_log_modules,
         });
@@ -206,18 +221,26 @@ mod tests {
         .unwrap();
         // 用环境变量临时替换 LOCALAPPDATA 指向测试目录
         std::env::set_var("LOCALAPPDATA", &dir);
-        save_config("dark", &["notepad.exe".to_string()], &["uielem".to_string()]).unwrap();
+        save_config(
+            "dark",
+            "horizontal",
+            &["notepad.exe".to_string()],
+            &["uielem".to_string()],
+        )
+        .unwrap();
         // 未知字段保留
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["page_size"], 7);
         assert_eq!(v["keymap"]["page_prev"][0], "[");
         // 已知字段更新
         assert_eq!(v["theme"], "dark");
+        assert_eq!(v["candidate_orientation"], "horizontal");
         assert_eq!(v["passthrough_apps"][0], "notepad.exe");
         assert_eq!(v["disabled_log_modules"][0], "uielem");
         // 重新加载
         let cfg = load_config();
         assert_eq!(cfg.theme, "dark");
+        assert_eq!(cfg.candidate_orientation, "horizontal");
         assert_eq!(cfg.passthrough_apps, vec!["notepad.exe".to_string()]);
         assert_eq!(cfg.disabled_log_modules, vec!["uielem".to_string()]);
         let _ = std::env::remove_var("LOCALAPPDATA");
@@ -232,6 +255,7 @@ mod tests {
         std::env::set_var("LOCALAPPDATA", &dir);
         let cfg = load_config();
         assert_eq!(cfg.theme, "light");
+        assert_eq!(cfg.candidate_orientation, "vertical", "缺省布局竖排");
         assert!(cfg.passthrough_apps.is_empty());
         assert!(cfg.disabled_log_modules.is_empty(), "缺省字段默认全记录");
         let _ = std::env::remove_var("LOCALAPPDATA");
