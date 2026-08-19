@@ -262,21 +262,30 @@ impl TextService {
     }
 
     /// OnTestKeyDown 判定（无副作用）：本键是否由本输入法消费。
+    /// 与 handle_key_down 保持**一致**（放行判定必须同时落在 Test 阶段）：
+    /// 应用在 OnTestKeyDown 返回 eaten 时即跳过自己的按键处理，若 Test 吃而
+    /// OnKeyDown 放，字母会被静默吞掉（实测 2026-08-19：Caps 直通失效）。
     fn test_key_down(&self, wparam: WPARAM, _lparam: LPARAM) -> bool {
         // 透明模式：全部放行。
-        if engine().is_none() {
-            return false;
-        }
+        let Some(engine) = engine() else { return false };
         // 英文模式：全部放行。
         if self.english_mode.load(Ordering::SeqCst) {
             return false;
         }
+        // 按键直通白名单：命中进程全部按键放行（与 handle_key_down 判定一致），名单为空零开销。
+        let config = engine.config();
+        if !config.passthrough_apps.is_empty()
+            && is_passthrough_app(&log::module_name(), &config.passthrough_apps)
+        {
+            return false;
+        }
         let vk = wparam.0 as u16;
+        let caps = capslock_on();
         let key = map_key(
             vk,
             char_code(vk),
             shift_pressed(),
-            capslock_on(),
+            caps,
             ctrl_pressed(),
             alt_pressed(),
         );
@@ -285,7 +294,9 @@ impl TextService {
             // 会话 active：映射键一律吃掉（含经 keymap 重映射的翻页键）。
             Some(_) => true,
             // 非 active：仅字母键（含 '）吃掉并开启会话；标点/数字等放行给应用。
-            None => is_session_start_key(key),
+            // CapsLock 例外：Caps 生效时字母放行直通（Caps = 英文模式，不建会话）——
+            // 与 handle_key_down 的 caps_passthrough 对称，Test 阶段即放行。
+            None => is_session_start_key(key) && !caps_passthrough(&key, caps),
         }
     }
 
