@@ -3,7 +3,7 @@
 //! 写 = 读现有 JSON → **补丁式更新已知字段**（保留未知字段：keymap/max_candidates 等）→ 原子写回
 //! （tmp + 先删后 rename）。与 iuv-core 的容忍读兼容：剥 JSONC `//` 注释 + UTF-8 BOM。
 //! 字段格式与 iuv-core 对齐：`"theme": "light"|"dark"`、`"initial_state": {...}`、
-//! `"passthrough_apps": ["a.exe", ...]`。
+//! `"passthrough_apps": ["a.exe", ...]`、`"candidate_owner_apps": ["wow.exe", ...]`。
 
 use std::io;
 use std::path::PathBuf;
@@ -22,6 +22,9 @@ pub struct DaemonConfig {
     pub initial_state: iuv_core::InitialState,
     /// 按键直通进程名列表（exe 名，大小写不敏感精确匹配，TSF 层消费）。
     pub passthrough_apps: Vec<String>,
+    /// 候选渲染自持进程名列表（exe 名，大小写不敏感精确匹配；命中进程 iuv 抑制自绘候选窗，
+    /// 由应用自己绘制候选栏，如 WoW 游戏内候选框）。默认空 = 恒自绘。
+    pub candidate_owner_apps: Vec<String>,
     /// 禁用日志模块列表（denylist；默认空 = 全记录，见 26-log-modules.md）。
     /// 设置页开发者标签勾选、TSF/daemon 两侧 log_line 按消息 `[tag]` 过滤。
     pub disabled_log_modules: Vec<String>,
@@ -35,6 +38,7 @@ impl Default for DaemonConfig {
             page_size: 5,
             initial_state: iuv_core::InitialState::default(),
             passthrough_apps: Vec::new(),
+            candidate_owner_apps: Vec::new(),
             disabled_log_modules: Vec::new(),
         }
     }
@@ -93,6 +97,12 @@ pub fn load_config() -> DaemonConfig {
             .filter_map(|x| x.as_str().map(String::from))
             .collect();
     }
+    if let Some(arr) = v.get("candidate_owner_apps").and_then(|x| x.as_array()) {
+        cfg.candidate_owner_apps = arr
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect();
+    }
     if let Some(arr) = v.get("disabled_log_modules").and_then(|x| x.as_array()) {
         cfg.disabled_log_modules = arr
             .iter()
@@ -147,6 +157,15 @@ pub fn save_config(cfg: &DaemonConfig) -> io::Result<()> {
             ),
         );
         obj.insert(
+            "candidate_owner_apps".into(),
+            serde_json::Value::Array(
+                cfg.candidate_owner_apps
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect(),
+            ),
+        );
+        obj.insert(
             "disabled_log_modules".into(),
             serde_json::Value::Array(
                 cfg.disabled_log_modules
@@ -165,6 +184,7 @@ pub fn save_config(cfg: &DaemonConfig) -> io::Result<()> {
             "page_size": cfg.page_size.clamp(5, 9),
             "initial_state": cfg.initial_state,
             "passthrough_apps": cfg.passthrough_apps,
+            "candidate_owner_apps": cfg.candidate_owner_apps,
             "disabled_log_modules": cfg.disabled_log_modules,
         });
     }
@@ -263,6 +283,7 @@ mod tests {
                 punct: iuv_core::PunctMode::English,
             },
             passthrough_apps: vec!["notepad.exe".to_string()],
+            candidate_owner_apps: vec!["wow.exe".to_string()],
             disabled_log_modules: vec!["uielem".to_string()],
         })
         .unwrap();
@@ -278,6 +299,7 @@ mod tests {
         assert_eq!(v["initial_state"]["script"], "simplified");
         assert_eq!(v["initial_state"]["punct"], "english");
         assert_eq!(v["passthrough_apps"][0], "notepad.exe");
+        assert_eq!(v["candidate_owner_apps"][0], "wow.exe");
         assert_eq!(v["disabled_log_modules"][0], "uielem");
         // 旧顶层 english_punctuation 键清理（无残留）
         assert!(v.get("english_punctuation").is_none());
@@ -292,6 +314,7 @@ mod tests {
             "英文标点往返"
         );
         assert_eq!(cfg.passthrough_apps, vec!["notepad.exe".to_string()]);
+        assert_eq!(cfg.candidate_owner_apps, vec!["wow.exe".to_string()]);
         assert_eq!(cfg.disabled_log_modules, vec!["uielem".to_string()]);
         let _ = std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
@@ -356,6 +379,7 @@ mod tests {
             "缺省初始状态 = 中文/半角/简体/中文标点"
         );
         assert!(cfg.passthrough_apps.is_empty());
+        assert!(cfg.candidate_owner_apps.is_empty(), "缺省候选自绘名单为空（恒自绘）");
         assert!(cfg.disabled_log_modules.is_empty(), "缺省字段默认全记录");
         let _ = std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);

@@ -116,7 +116,10 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   WoW 走 TSF→IMM 桥），候选整个消失。**修复**：删 `ImmDetect` 矩形启发式，改 `config.json` 新字段
   `candidate_owner_apps`（exe 名单，同 `passthrough_apps` 匹配语义）驱动 `set_suppressed`——命中进程
   （如 WoW 自绘游戏内候选栏）才抑制，**默认空 = 恒自绘（微信自动修复）**；候选 UI 元素同步不受抑制
-  影响（游戏桥仍可拉候选）。改动：iuv-core config（字段+测试）、iuv-tsf（text_service.rs 删 ImmDetect/
+  影响（游戏桥仍可拉候选）。**安装脚本默认预置 `wow.exe`**（install/dev-deploy 模板，2026-08-20 追加；
+  代码层 `Config::default()` 仍为 `[]` 兜底恒自绘），其他 exe 用户自行追加（**设置页-高级-候选自绘应用
+  输入框可改**，daemon `DaemonConfig` 已收编该字段）。改动：iuv-core config（字段+测试）、
+  iuv-tsf（text_service.rs 删 ImmDetect/
   dispatch_effect 名单判定 + candwin 翻转日志/注释）、daemon（settings.rs LOG_MODULES 删 immdetect）、
   契约/26/install 模板/AGENTS 同步。测试：iuv-core 1 + iuv-tsf 1 新增全绿。
 - [x] **全角行为（2026-08-19 落地，待手测）**：`initial_state.width == Full` 时**会话外直通路径**套

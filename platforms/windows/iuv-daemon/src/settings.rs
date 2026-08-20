@@ -9,7 +9,7 @@
 //! 多标签页（常用/按键/外观/词库/高级/开发者）+ 底部「确定/取消/应用」。
 //! 设置项（确定/应用 → 写 config.json → bump config_epoch 广播给会话进程）：
 //! 常用=新 TSF 实例初始状态（模式/标点/宽度/字形）+ 每页候选数下拉、外观=主题（浅色/深色）+ 候选窗布局（竖排/横排）、
-//! 高级=按键直通名单（passthrough_apps）、词库=用户库管理（列表 + 清除全部，暂挂到确定/应用）、
+//! 高级=按键直通名单（passthrough_apps）+ 候选自绘应用（candidate_owner_apps）、词库=用户库管理（列表 + 清除全部，暂挂到确定/应用）、
 //! 按键=键位自定义（灰置占位，M7）、开发者（仅 dev 构建）=清除日志。绝不 panic：
 //! run_settings 包 `catch_unwind`。
 
@@ -179,6 +179,8 @@ struct SettingsApp {
     initial: iuv_core::InitialState,
     /// 直通名单文本编辑（每行一个 exe 名）。
     passthrough: String,
+    /// 候选自绘名单文本编辑（每行一个 exe 名）。
+    candidate_owner: String,
     /// 禁用日志模块集（denylist，勾掉某模块即加入；默认空 = 全记录）。
     disabled_log: Vec<String>,
     /// 「清除全部」二次确认。
@@ -203,6 +205,7 @@ impl SettingsApp {
             page_size: cfg.page_size,
             initial: cfg.initial_state,
             passthrough: cfg.passthrough_apps.join("\n"),
+            candidate_owner: cfg.candidate_owner_apps.join("\n"),
             disabled_log: cfg.disabled_log_modules.clone(),
             confirm_clear: false,
             pending_clear: false,
@@ -396,7 +399,7 @@ impl SettingsApp {
         }
     }
 
-    /// 高级：按键直通名单。
+    /// 高级：按键直通名单 + 候选自绘应用。
     fn advanced_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("高级");
         ui.add_space(4.0);
@@ -408,6 +411,15 @@ impl SettingsApp {
                 .hint_text("例如 notepad.exe"),
         );
         ui.small("命中进程 TSF 层全部按键放行（不建会话、无候选窗/预编辑）。");
+        ui.add_space(10.0);
+        ui.label("候选自绘应用（每行一个 exe 名，命中则 iuv 不绘制候选窗，由应用自绘）：");
+        ui.add(
+            egui::TextEdit::multiline(&mut self.candidate_owner)
+                .desired_rows(8)
+                .desired_width(500.0)
+                .hint_text("例如 wow.exe"),
+        );
+        ui.small("命中进程 iuv 抑制自绘候选窗（游戏内自绘候选栏场景）；默认预置 wow.exe，其他应用自行添加。");
     }
 
     /// 开发者：清除日志 + 日志模块开关（仅 dev 构建）。
@@ -488,6 +500,13 @@ impl SettingsApp {
             .filter(|l| !l.is_empty())
             .map(String::from)
             .collect();
+        let cand_owners: Vec<String> = self
+            .candidate_owner
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect();
         // 日志模块禁用集：先本进程生效（daemon 自身 log_line），再随 config_epoch 热载到 TSF。
         log::set_log_modules_disabled(&self.disabled_log);
         match config::save_config(&DaemonConfig {
@@ -496,6 +515,7 @@ impl SettingsApp {
             page_size: self.page_size,
             initial_state: self.initial.clone(),
             passthrough_apps: apps.clone(),
+            candidate_owner_apps: cand_owners.clone(),
             disabled_log_modules: self.disabled_log.clone(),
         }) {
             Ok(()) => {
@@ -506,6 +526,7 @@ impl SettingsApp {
                     c.page_size = self.page_size;
                     c.initial_state = self.initial.clone();
                     c.passthrough_apps = apps;
+                    c.candidate_owner_apps = cand_owners;
                     c.disabled_log_modules = self.disabled_log.clone();
                 }
                 self.state.bump_config_epoch();

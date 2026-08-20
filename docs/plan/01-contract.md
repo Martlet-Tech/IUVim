@@ -663,7 +663,9 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
   应用（游戏）自绘候选栏；TSF 应用（notepad）pbshow=true 自绘窗照常。
 - **自绘窗抑制（`candidate_owner_apps` 名单驱动，2026-08-20 弃矩形启发式）**：配置
   `candidate_owner_apps`（exe 名列表，大小写不敏感精确匹配，同 `passthrough_apps`）命中进程 →
-  `CandwinCandidateWindow::set_suppressed(true)`（show/update 空操作）；**默认空 = 恒自绘**。
+  `CandwinCandidateWindow::set_suppressed(true)`（show/update 空操作）；**默认空 = 恒自绘**，
+  **install/dev-deploy 模板默认预置 `wow.exe`**（代码层 `Config::default()` 仍 `[]` 兜底恒自绘），
+  其他 exe 用户自行追加。
   语义 = 这些 app 自己绘制候选栏（TSF→IMM 桥消费候选 UI 元素，如 WoW 游戏内框），iuv 不再
   绘制自绘候选窗（避免双候选栏）。**历史教训**：旧按 GetTextExt 退化矩形（w/h≤2）连续 3 次
   自动判 IMM 客户端会误伤真实 TSF 应用——微信编辑器对折叠 range 返回 2×1 薄光标（位置逐键
