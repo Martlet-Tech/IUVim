@@ -45,11 +45,11 @@ use crate::UserDict;
 /// 段 magic。
 const MAGIC: &[u8; 8] = b"IUVSHM01";
 /// 头长度：magic(8) + data_len(4) + version(4) + config_epoch(4)。
-pub const SHM_HEADER_LEN: usize = 20;
+const SHM_HEADER_LEN: usize = 20;
 /// 段总容量（字节）。数据区 = 容量 − 头。用户库小（几千~几万条），4MB 充裕。
-pub const SHM_CAPACITY: usize = 4 * 1024 * 1024;
+const SHM_CAPACITY: usize = 4 * 1024 * 1024;
 /// 命名空间内共享对象名（`Local\` = 会话内隔离，单用户桌面足够；跨会话需 `Global\` 提权）。
-pub const SHM_NAME: &str = "Local\\iuv-userdict-shm";
+const SHM_NAME: &str = "Local\\iuv-userdict-shm";
 
 /// 数据区最大长度。
 const DATA_CAPACITY: usize = SHM_CAPACITY - SHM_HEADER_LEN;

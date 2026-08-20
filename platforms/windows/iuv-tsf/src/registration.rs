@@ -19,8 +19,7 @@ use windows_core::{GUID, HRESULT, Result};
 use windows_registry::CLASSES_ROOT;
 
 pub const CLSID_TEXT_SERVICE: &str = "{C69735F1-BAB1-458B-89FC-099ABA877ECB}";
-pub const PROFILE_GUID: &str = "{799E00DD-64C2-4280-AC48-D379A9ABC5BE}";
-pub const DISPLAY_ATTR_GUID: &str = "{4953F50B-CD5E-4AAF-BA0D-9F137CC7BC11}"; // M2+ 备用
+const PROFILE_GUID: &str = "{799E00DD-64C2-4280-AC48-D379A9ABC5BE}";
 pub const LANGID_ZH_CN: u16 = 0x0804;
 pub const PROFILE_DESCRIPTION: &str = "IUV 输入法";
 pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\

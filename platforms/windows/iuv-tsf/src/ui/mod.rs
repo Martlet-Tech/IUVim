@@ -6,7 +6,6 @@ pub mod candwin;
 pub mod menu_window;
 pub use candwin::CandwinCandidateWindow;
 pub use menu_window::MenuWindow;
-pub use iuv_core::Orientation;
 pub use iuv_ui::{effect_to_snapshot, CaretRect, UiSnapshot};
 
 /// 候选窗抽象。M4 起实现 = CandwinCandidateWindow（iuv-ui 渲染 + ULW 呈现），
@@ -14,26 +13,11 @@ pub use iuv_ui::{effect_to_snapshot, CaretRect, UiSnapshot};
 pub trait CandidateUi {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect);
     fn update(&mut self, snap: &UiSnapshot);
-    fn move_to(&mut self, caret: CaretRect);
     fn hide(&mut self);
     fn is_visible(&self) -> bool;
     /// 抑制显示：`candidate_owner_apps` 命中（app 自绘候选栏）时静默——show/update 空操作，
     /// 开启瞬间隐藏已显示窗口；false 恢复。引擎/元素/交互逻辑不受影响。
     fn set_suppressed(&mut self, suppressed: bool);
-}
-
-/// 空实现桩：Agent D 在 Agent E 完成前用它联调管线。
-pub struct NullCandidateUi;
-
-impl CandidateUi for NullCandidateUi {
-    fn show(&mut self, _snap: &UiSnapshot, _caret: CaretRect) {}
-    fn update(&mut self, _snap: &UiSnapshot) {}
-    fn move_to(&mut self, _caret: CaretRect) {}
-    fn hide(&mut self) {}
-    fn is_visible(&self) -> bool {
-        false
-    }
-    fn set_suppressed(&mut self, _suppressed: bool) {}
 }
 
 #[cfg(test)]

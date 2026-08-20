@@ -139,7 +139,7 @@ fn build_info() -> TF_LANGBARITEMINFO {
 }
 
 /// 构造 VT_I4 VARIANT（OPENCLOSE compartment 读写用；纯函数，单测覆盖）。
-pub(crate) fn variant_i4(v: i32) -> VARIANT {
+fn variant_i4(v: i32) -> VARIANT {
     // SAFETY: VARIANT 为联合体；初值 zeroed 后只写 VT_I4 活跃成员。
     let mut var = VARIANT::default();
     unsafe {

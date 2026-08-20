@@ -23,7 +23,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 /// 文件头 magic。
-pub const MAGIC: &[u8; 8] = b"IUVOCC01";
+const MAGIC: &[u8; 8] = b"IUVOCC01";
 
 /// 简→繁转换表（编译产物解析结果，只读共享）。
 #[derive(Clone, Debug, Default)]

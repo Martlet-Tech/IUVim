@@ -44,17 +44,6 @@ impl Keymap {
             None
         }
     }
-
-    /// 兼容旧接口：仅翻页表命中判定。
-    pub fn page(&self, key: Key) -> Option<Key> {
-        if self.page_prev.contains(&key) {
-            Some(Key::PageUp)
-        } else if self.page_next.contains(&key) {
-            Some(Key::PageDown)
-        } else {
-            None
-        }
-    }
 }
 
 /// 应用快捷键映射：命中四组表则归一化（翻页/候选移动），否则原样返回。
@@ -88,15 +77,15 @@ mod tests {
     #[test]
     fn page_mapping() {
         let k = Keymap::default();
-        assert_eq!(k.page(Key::Char(',')), Some(Key::PageUp));
-        assert_eq!(k.page(Key::Up), Some(Key::PageUp));
-        assert_eq!(k.page(Key::PageUp), Some(Key::PageUp));
-        assert_eq!(k.page(Key::Char('.')), Some(Key::PageDown));
-        assert_eq!(k.page(Key::Down), Some(Key::PageDown));
-        assert_eq!(k.page(Key::PageDown), Some(Key::PageDown));
-        assert_eq!(k.page(Key::Char('a')), None);
-        assert_eq!(k.page(Key::Digit(3)), None);
-        assert_eq!(k.page(Key::Space), None);
+        assert_eq!(k.map(Key::Char(',')), Some(Key::PageUp));
+        assert_eq!(k.map(Key::Up), Some(Key::PageUp));
+        assert_eq!(k.map(Key::PageUp), Some(Key::PageUp));
+        assert_eq!(k.map(Key::Char('.')), Some(Key::PageDown));
+        assert_eq!(k.map(Key::Down), Some(Key::PageDown));
+        assert_eq!(k.map(Key::PageDown), Some(Key::PageDown));
+        assert_eq!(k.map(Key::Char('a')), None);
+        assert_eq!(k.map(Key::Digit(3)), None);
+        assert_eq!(k.map(Key::Space), None);
     }
 
     #[test]
@@ -120,9 +109,9 @@ mod tests {
     #[test]
     fn custom_mapping() {
         let k = Keymap { page_prev: vec![Key::Char('[')], page_next: vec![Key::Char(']')], ..Default::default() };
-        assert_eq!(k.page(Key::Char('[')), Some(Key::PageUp));
-        assert_eq!(k.page(Key::Char(']')), Some(Key::PageDown));
-        assert_eq!(k.page(Key::Char(',')), None);
+        assert_eq!(k.map(Key::Char('[')), Some(Key::PageUp));
+        assert_eq!(k.map(Key::Char(']')), Some(Key::PageDown));
+        assert_eq!(k.map(Key::Char(',')), None);
     }
 
     #[test]

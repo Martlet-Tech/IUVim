@@ -2,22 +2,8 @@
 //! 内部 API，不 re-export。
 
 use crate::{Candidate, CandidateKind, Config, LmProvider};
+use crate::lm::OOV_PENALTY;
 use iuv_data::Dict;
-
-const OOV_PENALTY: f64 = crate::lm::OOV_PENALTY;
-
-/// 最优路径候选：None = seg.len() < 2 或无法生成。
-/// 边 (i,j)（j−i ≤ max_word_syllables）= dict.exact(seg[i..j].concat()) 的全部词条，
-/// 边分 = lm.log_prob(prev_word, word, weight)；
-/// 单音节无词条时给兜底边（text = 该音节原样，分 = log_prob(None, s, 0) + OOV_PENALTY），保证路径恒存在。
-pub fn best_sentence(
-    dict: &Dict,
-    seg: &[String],
-    lm: &dyn LmProvider,
-    config: &Config,
-) -> Option<Candidate> {
-    best_sentence_scored(dict, seg, lm, config).map(|(c, _)| c)
-}
 
 /// 带路径分的版本（M2.5 消费端多方案整句排序用，2026-08-14）：
 /// 返回 (候选, 路径总 log_prob)——分高 = 词条直接命中或高词频组合。
@@ -119,13 +105,13 @@ mod tests {
         let lm = UnigramLm::new(d.total_weight(), d.entry_count());
         // "shijie": 世界(6000) vs 世(3000)+界(2500)。世界更高频。
         let s = seg("shijie");
-        let c = best_sentence(&d, &s, &lm, &Config::default()).unwrap();
+        let c = best_sentence_scored(&d, &s, &lm, &Config::default()).unwrap().0;
         assert_eq!(c.text, "世界");
         // "nihao": 你好(8000) vs 你(50000)+好(40000)。单独字频率更高，但整句路径得分：
         // ln(8001)-ln(total) vs ln(50001)-ln(total)+ln(40001)-ln(total)
         // 单字路径=2ln(W)-2ln(T)，整词=ln(8001)-ln(T)。W 很大时单字更优。
         let s2 = seg("nihao");
-        let c2 = best_sentence(&d, &s2, &lm, &Config::default()).unwrap();
+        let c2 = best_sentence_scored(&d, &s2, &lm, &Config::default()).unwrap().0;
         assert_eq!(c2.text, "你好");
     }
 
@@ -134,7 +120,7 @@ mod tests {
         let d = dict();
         let lm = UnigramLm::new(d.total_weight(), d.entry_count());
         let s = seg("wode");
-        let c = best_sentence(&d, &s, &lm, &Config::default()).unwrap();
+        let c = best_sentence_scored(&d, &s, &lm, &Config::default()).unwrap().0;
         // "wo" 无词条 → 兜底原样 "wo"；"de" → "的"
         assert!(c.text.contains("wo"));
         assert!(c.text.contains('的'));
@@ -145,6 +131,6 @@ mod tests {
         let d = dict();
         let lm = UnigramLm::new(d.total_weight(), d.entry_count());
         let s = seg("de");
-        assert!(best_sentence(&d, &s, &lm, &Config::default()).is_none());
+        assert!(best_sentence_scored(&d, &s, &lm, &Config::default()).is_none());
     }
 }

@@ -5,7 +5,7 @@
 //! 语言栏菜单「设置」（管道 `OpenSettings`）置位后主线程 `run_settings` 弹窗
 //! （阻塞至关窗，关窗后继续后台常驻轮询）。管道/共享段在独立线程，不受影响。
 //!
-//! 界面（25-settings-tabs.md）：固定 1024×800 不可缩放、标题栏无最大化；
+//! 界面（25-settings-tabs.md）：固定 640×480 不可缩放、标题栏无最大化；
 //! 多标签页（常用/按键/外观/词库/高级/开发者）+ 底部「确定/取消/应用」。
 //! 设置项（确定/应用 → 写 config.json → bump config_epoch 广播给会话进程）：
 //! 常用=新 TSF 实例初始状态（模式/标点/宽度/字形）+ 每页候选数下拉、外观=主题（浅色/深色）+ 候选窗布局（竖排/横排）、
@@ -33,7 +33,7 @@ pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([WIDTH, HEIGHT])
             .with_min_inner_size([WIDTH, HEIGHT])
-            .with_max_inner_size([WIDTH, HEIGHT]) // 锁死 1024×800
+            .with_max_inner_size([WIDTH, HEIGHT]) // 锁死 640×480
             .with_resizable(false) // 禁最大化/拉伸
             .with_maximize_button(false) // 标题栏只剩 最小化 + 关闭
             .with_title("iuv 设置"),
@@ -555,9 +555,8 @@ impl SettingsApp {
 }
 
 impl eframe::App for SettingsApp {
-    /// 每帧先跑（窗口隐藏时也调用）：注册 ctx 供主线程 Close/唤出；检测退出信号。
+    /// 每帧先跑（窗口隐藏时也调用）：检测退出信号。
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        *self.state.settings_ctx.lock().unwrap_or_else(|p| p.into_inner()) = Some(ctx.clone());
         if self.state.close_settings.swap(false, Ordering::AcqRel) {
             let _ = ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -577,7 +576,6 @@ impl eframe::App for SettingsApp {
     }
 
     fn on_exit(&mut self) {
-        *self.state.settings_ctx.lock().unwrap_or_else(|p| p.into_inner()) = None;
         log::log_line("[settings] 设置窗口已关闭");
     }
 }

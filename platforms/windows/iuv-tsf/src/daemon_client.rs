@@ -19,24 +19,10 @@ use std::sync::{Arc, Mutex};
 use iuv_core::{Engine, UserMutation, UserRemote};
 use iuv_data::{PipeClient, Request, Response, ShmReader, ToolbarState};
 use windows::Win32::System::Threading::{
-    CreateProcessW, GetCurrentProcessId, GetCurrentThreadId, STARTUPINFOW, PROCESS_INFORMATION,
-    CREATE_NO_WINDOW,
+    CreateProcessW, STARTUPINFOW, PROCESS_INFORMATION, CREATE_NO_WINDOW,
 };
 
 use crate::log::log_line;
-
-/// 当前进程 id（32-toolbar 实例标识 pid:tid 的 pid）。
-pub fn process_id() -> u32 {
-    // SAFETY: 纯查询系统 API，无指针参数，无副作用。
-    unsafe { GetCurrentProcessId() }
-}
-
-/// 当前线程 id（32-toolbar 实例标识 pid:tid 的 tid = **OS 线程 id**，非 TSF client id——
-/// 前台看板判定 `GetWindowThreadProcessId` 返回的就是 OS 线程 id，直接匹配）。
-pub fn thread_id() -> u32 {
-    // SAFETY: 纯查询系统 API，无指针参数，无副作用。
-    unsafe { GetCurrentThreadId() }
-}
 
 /// daemon 自启节流（秒）：Activate 检测离线后 60s 内不重复拉起（防多进程/多键风暴；
 /// 并发拉起由 daemon 单实例互斥兜底）。
@@ -361,11 +347,6 @@ impl DaemonClient {
     pub fn unregister(&self, pid: u32, tid: u32) {
         let _ = self.send_request(&Request::Unregister { pid, tid });
     }
-
-    /// 语言栏菜单「显示/隐藏工具栏」（全局偏好切换）。
-    pub fn toggle_toolbar(&self) {
-        let _ = self.send_request(&Request::ToggleToolbar);
-    }
 }
 
 impl UserRemote for DaemonClient {
@@ -561,14 +542,16 @@ mod tests {
         let client = DaemonClient::new(std::env::temp_dir().join("poll-inject.imedic"));
         // 首 poll：注入共享段用户库（覆盖 base 权重 100000 → 7）
         assert!(client.poll(&engine, |_| {}, || {}), "首次应有变化");
-        assert_eq!(engine.lookup("da")[0].weight, 7, "共享段用户库注入引擎");
+        let user = engine.user_dict().expect("poll 注入后用户库应装配");
+        assert_eq!(user.adjusted("da"), vec![("龘".to_string(), 7)]);
         // version 未变：不再注入/不再有变化
         assert!(!client.poll(&engine, |_| {}, || {}), "同 version 无变化");
         // 再写新库（version+1）→ 重新注入
         w.write(&UserDict::empty().set_entry("da", "龘", 8))
             .unwrap();
         assert!(client.poll(&engine, |_| {}, || {}), "新版本应再注入");
-        assert_eq!(engine.lookup("da")[0].weight, 8);
+        let user = engine.user_dict().expect("再次注入后用户库");
+        assert_eq!(user.adjusted("da"), vec![("龘".to_string(), 8)]);
     }
 
     /// poll：config_epoch 变化触发回调一次（同纪元不再触发）。

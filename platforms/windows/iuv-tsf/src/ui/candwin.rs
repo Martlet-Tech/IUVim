@@ -408,12 +408,6 @@ fn rect_to_area(rc: RECT) -> Area {
     }
 }
 
-impl Default for CandwinCandidateWindow {
-    fn default() -> Self {
-        Self::new(iuv_ui::theme_light())
-    }
-}
-
 impl CandidateUi for CandwinCandidateWindow {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect) {
         if self.suppressed {
@@ -449,33 +443,6 @@ impl CandidateUi for CandwinCandidateWindow {
         self.apply_layout_and_pos(None);
     }
 
-    fn move_to(&mut self, caret: CaretRect) {
-        if self.hwnd.is_invalid() || !self.visible {
-            return;
-        }
-        self.last_caret = Some(caret);
-        // SAFETY: GetWindowRect 读当前窗口矩形
-        unsafe {
-            let mut rc = RECT::default();
-            if GetWindowRect(self.hwnd, &mut rc).is_err() {
-                return;
-            }
-            let w = rc.right - rc.left;
-            let h = rc.bottom - rc.top;
-            let (x, y) = position_for(caret, w, h);
-            // SAFETY: 仅移动（SWP_NOSIZE），不激活；layered 窗口内容由 DWM 缓存随动
-            let _ = SetWindowPos(
-                self.hwnd,
-                None,
-                x,
-                y,
-                0,
-                0,
-                SWP_NOACTIVATE | SWP_NOZORDER | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE,
-            );
-        }
-    }
-
     fn hide(&mut self) {
         self.visible = false;
         self.hover_row = None; // 窗口隐藏，悬停高亮一并清
@@ -500,6 +467,37 @@ impl CandidateUi for CandwinCandidateWindow {
         if suppressed {
             // 抑制开启：立即隐藏已显示的窗口（app 自绘候选栏接管）。
             self.hide();
+        }
+    }
+}
+
+impl CandwinCandidateWindow {
+    /// 仅移动窗口到新光标位置（不重建/不上屏；候选窗已显示时用）。
+    /// 候选窗 trait 不含此法（生产路径 show/update 已覆盖）；保留为示例/demo 用。
+    pub fn move_to(&mut self, caret: CaretRect) {
+        if self.hwnd.is_invalid() || !self.visible {
+            return;
+        }
+        self.last_caret = Some(caret);
+        // SAFETY: GetWindowRect 读当前窗口矩形
+        unsafe {
+            let mut rc = RECT::default();
+            if GetWindowRect(self.hwnd, &mut rc).is_err() {
+                return;
+            }
+            let w = rc.right - rc.left;
+            let h = rc.bottom - rc.top;
+            let (x, y) = position_for(caret, w, h);
+            // SAFETY: 仅移动（SWP_NOSIZE），不激活；layered 窗口内容由 DWM 缓存随动
+            let _ = SetWindowPos(
+                self.hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOZORDER | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE,
+            );
         }
     }
 }

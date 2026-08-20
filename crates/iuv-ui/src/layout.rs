@@ -4,7 +4,7 @@
 //! - `layout`：竖排每候选一行（页码右对齐末行）/ 横排单行（页码行尾右侧）；
 //!   原文兜底候选（text == 预编辑原文去 `'`）不编号；
 //! - `hit_test`：坐标落在哪个候选矩形上（横竖统一）；
-//! - `position_for` / `position_in_area` / `update_position`：caret 定位
+//! - `position_in_area` / `update_position`：caret 定位
 //!   下方优先、工作区内收、超屏翻到 caret 上方。
 //!
 //! 工作区矩形用 `Area`（left/top/right/bottom，与原 windows `RECT` 同构）
@@ -14,14 +14,14 @@ use crate::snapshot::{CaretRect, UiSnapshot};
 use iuv_core::Orientation;
 
 // ===== 布局常量 =====
-pub const PAD_X: i32 = 8;
-pub const PAD_Y: i32 = 4;
-pub const ROW_GAP: i32 = 2;
+pub(crate) const PAD_X: i32 = 8;
+pub(crate) const PAD_Y: i32 = 4;
+pub(crate) const ROW_GAP: i32 = 2;
 /// 横排候选块之间的间距
-pub const CAND_GAP: i32 = 12;
+pub(crate) const CAND_GAP: i32 = 12;
 
 /// caret 下方与窗口之间的间隙（px）。
-pub const CARET_GAP: i32 = 2;
+pub(crate) const CARET_GAP: i32 = 2;
 
 /// 行矩形（窗口客户区坐标）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,27 +167,6 @@ pub fn update_position(
             (x, y)
         }
     }
-}
-
-/// 按 caret 定位：默认放在 caret 下方；超出工作区则右/下边界内收，
-/// 下方放不下时翻到 caret 上方。
-///
-/// 注意：本纯函数只做几何计算，不查显示器——显示器归属（caret 所在监视器的
-/// 物理工作区，`MonitorFromPoint` + `GetMonitorInfoW`）由平台层（iuv-tsf）
-/// 查好传入 `Area`，与 GDI 实现行为一致。
-pub fn position_for(caret: CaretRect, w: i32, h: i32) -> (i32, i32) {
-    // 无显示器可用时兜底近乎全屏区域（语义同 GDI 实现：SPI_GETWORKAREA 失败路径）。
-    position_in_area(
-        caret,
-        w,
-        h,
-        Area {
-            left: 0,
-            top: 0,
-            right: 32767,
-            bottom: 32767,
-        },
-    )
 }
 
 /// 纯函数定位：给定工作区 `area` 内计算窗口位置。

@@ -262,9 +262,9 @@ pub fn render_menu(
 // ===== 32-status-toolbar.md §6.4 浮动工具栏 =====
 
 /// 工具栏按钮几何（物理像素 @96dpi 基准；render 乘 scale）。
-pub const TOOLBAR_BTN: f32 = 30.0;
-pub const TOOLBAR_GAP: f32 = 4.0;
-pub const TOOLBAR_PAD: f32 = 6.0;
+pub(crate) const TOOLBAR_BTN: f32 = 30.0;
+pub(crate) const TOOLBAR_GAP: f32 = 4.0;
+pub(crate) const TOOLBAR_PAD: f32 = 6.0;
 
 /// 工具栏按钮索引（布局顺序：logo | 中英 | 全半角 | 标点 | 简繁 | 齿轮）。
 pub const TB_LOGO: usize = 0;
@@ -273,7 +273,7 @@ pub const TB_WIDTH: usize = 2;
 pub const TB_PUNCT: usize = 3;
 pub const TB_SCRIPT: usize = 4;
 pub const TB_GEAR: usize = 5;
-pub const TB_COUNT: usize = 6;
+pub(crate) const TB_COUNT: usize = 6;
 
 /// 工具栏图标集（daemon 从内嵌 PNG 解码，失败降级 None——按钮留空不 panic，
 /// §6.7：源图即最终素材，`Pixmap::decode_png` + `draw_pixmap` 缩放绘制）。
@@ -472,8 +472,8 @@ pub fn render_tooltip(
     };
     let size_px = FONT_PX_96 * scale;
     let (w, h) = text.measure(label, size_px);
-    let pad_x = (8.0 * scale).ceil() as i32;
-    let pad_y = (4.0 * scale).ceil() as i32;
+    let pad_x = (crate::layout::PAD_X as f32 * scale).ceil() as i32;
+    let pad_y = (crate::layout::PAD_Y as f32 * scale).ceil() as i32;
     let cw = w + pad_x * 2;
     let ch = h + pad_y * 2;
     render_to_surface(

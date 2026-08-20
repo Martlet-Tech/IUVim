@@ -108,10 +108,6 @@ impl MenuWindow {
         }
     }
 
-    pub fn is_visible(&self) -> bool {
-        self.visible
-    }
-
     /// 原位重绘（悬停高亮变化）。
     fn repaint(&mut self) {
         if self.hwnd.is_invalid() || !self.visible {

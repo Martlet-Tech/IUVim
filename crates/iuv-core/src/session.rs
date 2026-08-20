@@ -97,7 +97,7 @@ impl Session {
                 if self.all.is_empty() {
                     self.end = Some(SessionEnd::Commit(self.all_text()));
                 } else {
-                    let idx = self.page * self.page_size() + self.selected;
+                    let idx = self.selected_idx();
                     self.commit_index(idx);
                 }
             }
@@ -140,7 +140,7 @@ impl Session {
             // （recompute 重置 page/selected 后定位被调词），会话不结束——松手后可继续导航/上屏。
             Key::SwapLeft | Key::SwapRight => {
                 let ps = self.page_size();
-                let idx = self.page * ps + self.selected;
+                let idx = self.selected_idx();
                 let dir: i32 = if matches!(key, Key::SwapLeft) { -1 } else { 1 };
                 let other = idx as i32 + dir;
                 if idx >= self.all.len() || other < 0 || other as usize >= self.all.len() {
@@ -166,7 +166,7 @@ impl Session {
             // 基础库词条。立即重排（recompute 重置 page/selected），高亮落在原位置附近。
             Key::HideCandidate => {
                 let ps = self.page_size();
-                let idx = self.page * ps + self.selected;
+                let idx = self.selected_idx();
                 if idx < self.all.len() {
                     let target = self.all[idx].clone();
                     self.engine.hide_entry(&target.code, &target.text);
@@ -202,7 +202,6 @@ impl Session {
             crate::CandidateKind::Sentence => self.seg[..consumed.min(n)].join("'"),
             _ => c.code.clone(),
         };
-        self.engine.record_selection(&code_key, &c.text);
         if consumed >= n {
             // 全部消费：上屏 picked + 本次词，会话结束。
             // composition 全程覆盖整个混合预编辑文本，SetText 全量替换，无重复上屏。
@@ -310,7 +309,12 @@ impl Session {
     }
 
     fn page_size(&self) -> usize {
-        self.engine.config().page_size.max(1)
+        self.engine.page_size() as usize
+    }
+
+    /// 当前选中候选中索引（`page * page_size + selected`，P1.6 抽取：3 处样板收敛）。
+    fn selected_idx(&self) -> usize {
+        self.page * self.page_size() + self.selected
     }
 
     /// 页内导航（Up/Left=-1，Down/Right=+1）：边界环绕——页尾继续 → 翻下一页
@@ -422,7 +426,7 @@ impl Session {
         if self.raw.contains('\'') {
             return self.engine.schema.display(&self.seg);
         }
-        let plain: String = self.raw.chars().filter(|c| *c != '\'').collect();
+        let plain = crate::strip_apostrophes(&self.raw);
         if c.text == plain {
             return plain;
         }
@@ -433,7 +437,7 @@ impl Session {
         if !consumed_full {
             return self.engine.schema.display(&self.seg);
         }
-        let code_plain: String = c.code.chars().filter(|c| *c != '\'').collect();
+        let code_plain = crate::strip_apostrophes(&c.code);
         if code_plain == plain {
             let mut s = c.code.clone();
             if consumed < self.seg.len() {

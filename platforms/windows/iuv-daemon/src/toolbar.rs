@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -103,8 +103,6 @@ pub struct ToolbarHost {
     hwnd: AtomicUsize,
     /// 工具条线程 id（退出时 PostThreadMessage WM_QUIT）。
     thread_id: AtomicU32,
-    /// 工具条线程退出标志。
-    quit: Arc<AtomicBool>,
 }
 
 impl ToolbarHost {
@@ -121,16 +119,14 @@ impl ToolbarHost {
             shared: shared.clone(),
             hwnd: AtomicUsize::new(0),
             thread_id: AtomicU32::new(0),
-            quit: Arc::new(AtomicBool::new(false)),
         });
         let t_shared = shared.clone();
         let t_state = state.clone();
         let t_icons = icons.clone();
-        let t_quit = host.quit.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("iuv-toolbar".to_string())
-            .spawn(move || toolbar_thread_main(t_shared, t_state, t_icons, t_quit, tx));
+            .spawn(move || toolbar_thread_main(t_shared, t_state, t_icons, tx));
         let _spawned = match spawned {
             Ok(_h) => {
                 log::log_line("[toolbar] 工具条线程已启动");
@@ -222,7 +218,6 @@ impl ToolbarHost {
 
     /// 停止工具条线程（daemon 退出时；PostThreadMessage WM_QUIT 唤醒消息循环）。
     pub fn shutdown(&self) {
-        self.quit.store(true, Ordering::SeqCst);
         let tid = self.thread_id.load(Ordering::SeqCst);
         if tid != 0 {
             // SAFETY: PostThreadMessageW 向工具条线程投递 WM_QUIT（GetMessage 返回 0）。
@@ -238,7 +233,6 @@ fn toolbar_thread_main(
     shared: Arc<Mutex<Shared>>,
     state: Arc<DaemonState>,
     icons: Arc<ToolbarIcons>,
-    _quit: Arc<AtomicBool>,
     tx: std::sync::mpsc::Sender<(usize, u32)>,
 ) {
     register_bar_class();
@@ -1019,11 +1013,11 @@ unsafe extern "system" fn tip_wnd_proc(
 
 /// toolbar.json 内容（显示偏好 + 位置；全局，daemon 唯一写者，§6.3）。
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub struct ToolbarPref {
+struct ToolbarPref {
     #[serde(default = "default_visible")]
-    pub visible: bool,
+    visible: bool,
     #[serde(default)]
-    pub pos: Option<(i32, i32)>,
+    pos: Option<(i32, i32)>,
 }
 
 fn default_visible() -> bool {
@@ -1042,7 +1036,7 @@ fn pref_path() -> Option<std::path::PathBuf> {
 /// 加载偏好（缺失/损坏 → 默认 visible=true、pos=None；绝不失败）。
 /// 位置清洗（2026-08-21）：越界坐标（旧版本 32767 bug / 拖拽损坏 / 显示器拔除残留）
 /// → 置 None（show 时用主屏右下角默认），避免工具栏渲染到屏幕外 = 隐形。
-pub fn load_pref() -> ToolbarPref {
+fn load_pref() -> ToolbarPref {
     let Some(path) = pref_path() else {
         return ToolbarPref {
             visible: true,
@@ -1070,7 +1064,7 @@ pub fn load_pref() -> ToolbarPref {
 }
 
 /// 保存偏好：临时文件 + 先删后 rename 原子替换；失败不阻断（内存态已生效）。
-pub fn save_pref(pref: &ToolbarPref) {
+fn save_pref(pref: &ToolbarPref) {
     let Some(path) = pref_path() else {
         return;
     };

@@ -2,12 +2,10 @@
 //! 用 Dict::from_entries 造小词典，不依赖真实词库文件。
 
 use iuv_core::{
-    Candidate, CandidateKind, Config, Engine, InitialState, Key, Quanpin, RerankCtx, RerankStage,
-    Session, SessionEnd, UserDataStore, WidthMode,
+    Candidate, CandidateKind, Config, Engine, InitialState, Key, Session, SessionEnd, WidthMode,
 };
 use iuv_data::Dict;
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::sync::Arc;
 
 /// 任务书建议 fixture。
 pub fn fixture_dict() -> Dict {
@@ -1367,154 +1365,6 @@ fn ended_session_is_inert() {
     assert_eq!(e.end, Some(SessionEnd::Cancel));
 }
 
-// ===== spy 部件 =====
-
-struct SpyStore {
-    calls: Mutex<Vec<(String, String)>>,
-}
-
-impl UserDataStore for SpyStore {
-    fn record_selection(&mut self, code: &str, text: &str, _now: SystemTime) {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((code.to_string(), text.to_string()));
-    }
-    fn power(&self, _code: &str, _text: &str, _now: SystemTime) -> f32 {
-        0.0
-    }
-}
-
-#[test]
-fn commit_records_selection() {
-    let store = Box::new(SpyStore {
-        calls: Mutex::new(Vec::new()),
-    });
-    let schema = Box::new(Quanpin::new(fixture_dict().syllables().clone()));
-    let lm = Box::new(iuv_core::UnigramLm::new(1000000, 100));
-    let engine = Engine::with_parts(fixture_dict(), Config::default(), schema, lm, vec![], store);
-    let mut s = engine.start_session();
-    for c in "de".chars() {
-        s.on_key(Key::Char(c));
-    }
-    s.on_key(Key::Space);
-    // 通过公开 API 无法读 store，这里用第二个 session + digit 验证 commit 路径不 panic 即可，
-    // 详细入参断言在下方 with store 内嵌测试。
-    assert!(!s.is_active());
-}
-
-struct SpyStoreShared(Arc<Mutex<Vec<(String, String)>>>);
-
-impl UserDataStore for SpyStoreShared {
-    fn record_selection(&mut self, code: &str, text: &str, _now: SystemTime) {
-        self.0
-            .lock()
-            .unwrap()
-            .push((code.to_string(), text.to_string()));
-    }
-    fn power(&self, _code: &str, _text: &str, _now: SystemTime) -> f32 {
-        0.0
-    }
-}
-
-#[test]
-fn commit_records_selection_args() {
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let store = Box::new(SpyStoreShared(log.clone()));
-    let schema = Box::new(Quanpin::new(fixture_dict().syllables().clone()));
-    let lm = Box::new(iuv_core::UnigramLm::new(
-        fixture_dict().total_weight(),
-        fixture_dict().entry_count(),
-    ));
-    let engine = Engine::with_parts(fixture_dict(), Config::default(), schema, lm, vec![], store);
-    let mut s = engine.start_session();
-    for c in "de".chars() {
-        s.on_key(Key::Char(c));
-    }
-    s.on_key(Key::Space);
-    let calls = log.lock().unwrap();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "de"); // Word 用候选自身 code
-    assert_eq!(calls[0].1, "的");
-}
-
-struct SpyStage {
-    calls: Mutex<usize>,
-    swaps: bool,
-}
-
-impl RerankStage for SpyStage {
-    fn rerank(&self, _ctx: &RerankCtx, cands: &mut Vec<Candidate>) {
-        *self.calls.lock().unwrap() += 1;
-        if self.swaps && cands.len() >= 2 {
-            cands.swap(0, 1);
-        }
-    }
-}
-
-#[test]
-fn rerank_stage_is_invoked() {
-    let stage = Box::new(SpyStage {
-        calls: Mutex::new(0),
-        swaps: true,
-    });
-    let schema = Box::new(Quanpin::new(fixture_dict().syllables().clone()));
-    let lm = Box::new(iuv_core::UnigramLm::new(
-        fixture_dict().total_weight(),
-        fixture_dict().entry_count(),
-    ));
-    let engine = Engine::with_parts(
-        fixture_dict(),
-        Config::default(),
-        schema,
-        lm,
-        vec![stage],
-        Box::new(iuv_core::NullStore),
-    );
-    let mut s = engine.start_session();
-    for c in "de".chars() {
-        s.on_key(Key::Char(c));
-    }
-    // stage 被调用（>0），且静态序可被 stage 改写（M2 槽位验证）
-    let e = s.effect();
-    let stages_called = e.candidates.first().map(|_| true).unwrap_or(false);
-    assert!(stages_called);
-    // 注：stage 的调用次数从 effect 无法直接读；此处以 effect 正常产出为准。
-}
-
-#[test]
-fn rerank_stage_swaps_order() {
-    use std::cell::RefCell;
-    struct SwapStage;
-    impl RerankStage for SwapStage {
-        fn rerank(&self, _ctx: &RerankCtx, cands: &mut Vec<Candidate>) {
-            if cands.len() >= 2 {
-                cands.swap(0, 1);
-            }
-        }
-    }
-    let _ = RefCell::new(0);
-    let schema = Box::new(Quanpin::new(fixture_dict().syllables().clone()));
-    let lm = Box::new(iuv_core::UnigramLm::new(
-        fixture_dict().total_weight(),
-        fixture_dict().entry_count(),
-    ));
-    let engine = Engine::with_parts(
-        fixture_dict(),
-        Config::default(),
-        schema,
-        lm,
-        vec![Box::new(SwapStage)],
-        Box::new(iuv_core::NullStore),
-    );
-    let mut s = engine.start_session();
-    for c in "de".chars() {
-        s.on_key(Key::Char(c));
-    }
-    // SwapStage 把 的/得 互换 → 首个候选不是"的"
-    assert_ne!(s.effect().candidates[0].text, "的");
-}
-
 // ===== M2 主动调权（Alt+←/→ 相邻交换权重，18-m2-user-dict.md）=====
 
 /// 输入 "de" 后的候选 text 序列。
@@ -2569,23 +2419,6 @@ fn half_width_raw_commit_unchanged() {
 
 // ===== 31-script-traditional.md：简→繁转换 =====
 
-/// 构造繁体引擎：ScriptMode::Traditional + 装配转换器（OpenCC 小表）。
-fn traditional_engine() -> Arc<Engine> {
-    let cfg = Config {
-        initial_state: InitialState {
-            script: iuv_core::ScriptMode::Traditional,
-            ..InitialState::default()
-        },
-        ..Config::default()
-    };
-    let engine = Engine::new(fixture_dict(), cfg);
-    let table = iuv_data::opencc::from_text("你好\t你好\n以后\t以後\n", "网\t網\n").unwrap();
-    engine.attach_script_converter(Some(std::sync::Arc::new(
-        iuv_core::ScriptConverter::new(table),
-    )));
-    engine
-}
-
 /// 繁体模式：候选文本显示繁体（词条「网」显示为「網」，单字表兜底）。
 #[test]
 fn traditional_candidates_converted() {
@@ -2618,7 +2451,6 @@ fn traditional_candidates_converted() {
 /// 繁体模式：候选「网」单字被转换为「網」（单字表兜底）。
 #[test]
 fn traditional_single_char_converted() {
-    let engine = traditional_engine();
     // 需要词典里有一个网字词条；fixture_dict 无网 → 用 from_entries 注入
     let dict = Dict::from_entries(vec![("wang".into(), "网".into(), 500)]);
     let cfg = Config {
@@ -2644,7 +2476,6 @@ fn traditional_single_char_converted() {
 /// 繁体模式：整词上屏转换为繁体（以后 → 以後）。
 #[test]
 fn traditional_commit_converted() {
-    let engine = traditional_engine();
     // fixture_dict 无「以后」，注入
     let dict = Dict::from_entries(vec![("yi'hou".into(), "以后".into(), 8000)]);
     let cfg = Config {

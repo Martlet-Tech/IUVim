@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use iuv_core::PageInfo;
+use iuv_core::{Orientation, PageInfo};
 use iuv_tsf::ui::{CandidateUi, CandwinCandidateWindow, CaretRect, UiSnapshot};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -43,7 +43,7 @@ fn make_snapshot(page: usize) -> UiSnapshot {
             page_size: PAGES[page].len(),
             total: PAGES.len() * PAGES[0].len(),
         },
-        orientation: iuv_tsf::ui::Orientation::default(),
+        orientation: Orientation::default(),
     }
 }
 

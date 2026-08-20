@@ -6,8 +6,6 @@
 
 use std::path::PathBuf;
 
-use crate::Key;
-
 pub mod keymap;
 pub use keymap::Keymap;
 
@@ -204,30 +202,6 @@ impl RuntimeState {
     }
 
     /// 管道传输值 → 运行时四态（逆映射；非法 u8 一律按 0 = 主流值兜底）。
-    pub fn from_toolbar(t: iuv_data::ToolbarState) -> Self {
-        RuntimeState {
-            mode: if t.mode == 1 {
-                InitialMode::English
-            } else {
-                InitialMode::Chinese
-            },
-            width: if t.width == 1 {
-                WidthMode::Full
-            } else {
-                WidthMode::Half
-            },
-            script: if t.script == 1 {
-                ScriptMode::Traditional
-            } else {
-                ScriptMode::Simplified
-            },
-            punct: if t.punct == 1 {
-                PunctMode::English
-            } else {
-                PunctMode::Chinese
-            },
-        }
-    }
 
     /// 单字段写入（工具栏 Cmd::SetState：field 0=mode 1=width 2=script 3=punct，value 0/1）。
     /// 返回 true = 字段合法且已修改。mode 字段不经此路径（走 OPENCLOSE compartment）。
@@ -380,11 +354,6 @@ impl Config {
             }
         }
     }
-
-    /// 翻页键是否命中（供 REPL/TSF 统一调用）。
-    pub fn is_page_key(&self, key: Key) -> Option<Key> {
-        self.keymap.page(key)
-    }
 }
 
 /// 旧配置迁移 shim（2026-08-19，见 `docs/plan/28-initial-state-settings.md`）：
@@ -459,6 +428,7 @@ fn strip_jsonc_comments(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Key;
 
     fn tmp_file(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("iuv-config-test-{}", std::process::id()));
@@ -622,14 +592,6 @@ mod tests {
         );
         let src2 = "{\"a\": 1 // 注释\n}";
         assert_eq!(strip_jsonc_comments(src2), "{\"a\": 1 \n}");
-    }
-
-    #[test]
-    fn is_page_key_matches() {
-        let c = Config::default();
-        assert_eq!(c.is_page_key(Key::Char(',')), Some(Key::PageUp));
-        assert_eq!(c.is_page_key(Key::Char('.')), Some(Key::PageDown));
-        assert_eq!(c.is_page_key(Key::Char('a')), None);
     }
 
     #[test]

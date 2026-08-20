@@ -32,9 +32,9 @@ use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, B
 
 use crate::composition::Composition;
 use crate::ctl::{CtlApplier, CtlEndpoint};
-use crate::daemon_client::{process_id, thread_id, DaemonClient};
+use crate::daemon_client::DaemonClient;
 use crate::langbar::{self, LangBarItemButton};
-use crate::log::{self, log_line};
+use crate::log::{self, log_line, process_id, thread_id};
 use crate::session_bridge::{apply_effect, caps_passthrough, fullwidth_pending, is_passthrough_app, map_key};
 use crate::ui::{CandidateUi, CandwinCandidateWindow, CaretRect};
 use crate::ui_element::CandidateElementHost;
@@ -366,7 +366,7 @@ impl TextService {
         // self.ctl 的 RefCell 槽位（地址固定），attach 后 GWLP_USERDATA 指向该固定地址。
         let svc: *const dyn CtlApplier = self as *const TextService as *const dyn CtlApplier;
         let (pid, tid) = self.instance_id();
-        *self.ctl.borrow_mut() = Some(CtlEndpoint::new(hwnd, svc, pid, tid));
+        *self.ctl.borrow_mut() = Some(CtlEndpoint::new(hwnd, svc));
         let mut slot = self.ctl.borrow_mut();
         slot.as_mut()
             .map(|ep| ep.attach(pid, tid))

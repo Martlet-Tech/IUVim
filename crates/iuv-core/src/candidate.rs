@@ -21,6 +21,17 @@ pub struct Candidate {
     pub seg_len: usize,
 }
 
+impl CandidateKind {
+    /// 按词长定种类：≥2 字 → Word，否则 Char（整句/原文兜底候选由调用方显式传）。
+    pub(crate) fn for_word(text: &str) -> CandidateKind {
+        if text.chars().count() >= 2 {
+            CandidateKind::Word
+        } else {
+            CandidateKind::Char
+        }
+    }
+}
+
 impl Candidate {
     /// 构造一个候选。
     pub fn new(
@@ -31,5 +42,17 @@ impl Candidate {
         seg_len: usize,
     ) -> Self {
         Candidate { text: text.into(), kind, code: code.into(), weight, seg_len }
+    }
+
+    /// 由词库词条构造候选（P1.6 抽取：引擎 5 处词条 → 候选样板收敛）。
+    /// `kind` 建议用 `CandidateKind::for_word(&e.word)`；克隆 word/code（词条可能复用）。
+    pub fn for_entry(e: &iuv_data::Entry, kind: CandidateKind, seg_len: usize) -> Self {
+        Candidate {
+            text: e.word.clone(),
+            kind,
+            code: e.code.clone(),
+            weight: e.weight,
+            seg_len,
+        }
     }
 }

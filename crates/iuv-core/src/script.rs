@@ -9,7 +9,7 @@ use iuv_data::OpenccTable;
 use std::sync::Arc;
 
 /// 简→繁转换器（只读共享，跨线程安全）。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ScriptConverter {
     table: Arc<OpenccTable>,
 }
@@ -20,11 +20,6 @@ impl ScriptConverter {
         ScriptConverter {
             table: Arc::new(table),
         }
-    }
-
-    /// 空转换器（未装配/降级；convert 返回原文）。
-    pub fn empty() -> ScriptConverter {
-        ScriptConverter::default()
     }
 
     /// 简→繁转换：委托 `OpenccTable::convert`（正向最长匹配，短语优先 + 单字兜底）。
@@ -50,11 +45,5 @@ mod tests {
         assert_eq!(c.convert("以后"), "以後");
         assert_eq!(c.convert("nihao"), "nihao");
         assert_eq!(c.entry_count(), 1);
-    }
-
-    #[test]
-    fn empty_converter_passthrough() {
-        let c = ScriptConverter::empty();
-        assert_eq!(c.convert("以后"), "以后");
     }
 }

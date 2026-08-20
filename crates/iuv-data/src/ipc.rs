@@ -64,11 +64,11 @@ use windows::Win32::System::Pipes::{
 use windows_core::PCWSTR;
 
 /// 管道名（单用户桌面足够；多用户 SID 隔离在 M7 安装器范畴）。
-pub const PIPE_NAME: &str = r"\\.\pipe\iuv-userdict";
+const PIPE_NAME: &str = r"\\.\pipe\iuv-userdict";
 /// 单帧最大字节数（消息模式 ReadFile 缓冲；用户库条目小，64KB 充裕）。
-pub const PIPE_FRAME_MAX: usize = 64 * 1024;
+const PIPE_FRAME_MAX: usize = 64 * 1024;
 /// 连接超时（WaitNamedPipeW，毫秒；超时视为 daemon 不在线）。
-pub const PIPE_CONNECT_TIMEOUT_MS: u32 = 1500;
+const PIPE_CONNECT_TIMEOUT_MS: u32 = 1500;
 
 /// 会话进程 → 守护进程的写请求（见模块头编码表）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,7 +137,8 @@ pub struct ToolbarState {
 }
 
 impl ToolbarState {
-    pub const fn new(mode: u8, width: u8, script: u8, punct: u8) -> Self {
+    #[cfg(test)]
+    const fn new(mode: u8, width: u8, script: u8, punct: u8) -> Self {
         ToolbarState {
             mode,
             width,
@@ -165,7 +166,7 @@ pub const CTL_FIELD_SCRIPT: u8 = 2;
 pub const CTL_FIELD_PUNCT: u8 = 3;
 
 /// 反向控制通道管道名前缀：`\\.\pipe\iuv-ctl-<pid>-<tid>`。
-pub const CTL_PIPE_PREFIX: &str = r"\\.\pipe\iuv-ctl";
+const CTL_PIPE_PREFIX: &str = r"\\.\pipe\iuv-ctl";
 
 /// 实例控制管道完整名（pid:tid 唯一，32-status-toolbar.md §4.2）。
 pub fn ctl_pipe_name(pid: u32, tid: u32) -> String {
@@ -202,7 +203,7 @@ fn err_unsupported() -> io::Error {
 }
 
 /// 载荷 → 帧（前缀 u32 长度 + 载荷）。
-pub fn to_frame(payload: &[u8]) -> Vec<u8> {
+pub(crate) fn to_frame(payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + payload.len());
     out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     out.extend_from_slice(payload);
@@ -211,7 +212,7 @@ pub fn to_frame(payload: &[u8]) -> Vec<u8> {
 
 /// 校验并剥帧前缀：返回 (载荷, 载荷起点)；帧头不完整/长度越界 → `Err`。
 /// 供读取端在整帧缓冲（已含前缀）上调用。
-pub fn parse_frame(buf: &[u8]) -> io::Result<&[u8]> {
+pub(crate) fn parse_frame(buf: &[u8]) -> io::Result<&[u8]> {
     if buf.len() < 4 {
         return Err(bad("帧头不完整"));
     }
@@ -450,7 +451,7 @@ pub fn decode_response(payload: &[u8]) -> io::Result<Response> {
 /// u8 tag
 ///   0x01 SetState : u8 field, u8 value
 /// ```
-pub fn encode_ctl_cmd(cmd: &CtlCmd) -> Vec<u8> {
+pub(crate) fn encode_ctl_cmd(cmd: &CtlCmd) -> Vec<u8> {
     let mut out = Vec::with_capacity(8);
     match cmd {
         CtlCmd::SetState { field, value } => {
@@ -463,7 +464,7 @@ pub fn encode_ctl_cmd(cmd: &CtlCmd) -> Vec<u8> {
 }
 
 /// 载荷 → CtlCmd。非法 → `Err`。
-pub fn decode_ctl_cmd(payload: &[u8]) -> io::Result<CtlCmd> {
+pub(crate) fn decode_ctl_cmd(payload: &[u8]) -> io::Result<CtlCmd> {
     let mut r = Reader::new(payload);
     let tag = r.u8()?;
     match tag {
@@ -484,7 +485,7 @@ pub fn decode_ctl_cmd(payload: &[u8]) -> io::Result<CtlCmd> {
 ///   0x01 Ok  : 新四态（4 × u8）
 ///   0x02 Err : u32 msg_len|msg
 /// ```
-pub fn encode_ctl_result(res: &CtlResult) -> Vec<u8> {
+pub(crate) fn encode_ctl_result(res: &CtlResult) -> Vec<u8> {
     let mut out = Vec::with_capacity(16);
     match res {
         CtlResult::Ok { state } => {
@@ -500,7 +501,7 @@ pub fn encode_ctl_result(res: &CtlResult) -> Vec<u8> {
 }
 
 /// 载荷 → CtlResult。非法 → `Err`。
-pub fn decode_ctl_result(payload: &[u8]) -> io::Result<CtlResult> {
+pub(crate) fn decode_ctl_result(payload: &[u8]) -> io::Result<CtlResult> {
     let mut r = Reader::new(payload);
     let tag = r.u8()?;
     match tag {
@@ -891,7 +892,7 @@ impl CtlServer {
         }
     }
 
-    /// 阻塞等待 daemon 连接。跨线程关闭句柄（`interrupt`）→ `Err`（取消路径）。
+    /// 阻塞等待 daemon 连接。跨线程 `CloseHandle` 中断 → `Err`（取消路径）。
     pub fn connect(&self) -> io::Result<()> {
         #[cfg(windows)]
         {
@@ -930,26 +931,13 @@ impl CtlServer {
             HANDLE::default()
         }
     }
-
-    /// 中断阻塞中的 `connect`（从其他线程调用；幂等，关闭后句柄无效）。
-    pub fn interrupt(&self) {
-        #[cfg(windows)]
-        {
-            // SAFETY: 关闭句柄中断 ConnectNamedPipe 等待；句柄值的重复关闭由 Drop 忽略错误。
-            let _ = unsafe { CloseHandle(self.handle) };
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = ();
-        }
-    }
 }
 
 impl Drop for CtlServer {
     fn drop(&mut self) {
         #[cfg(windows)]
         {
-            // SAFETY: 断开 + 关闭句柄；重复关闭（interrupt 已关）返回错误，忽略。
+            // SAFETY: 断开 + 关闭句柄；重复关闭返回错误，忽略。
             let _ = unsafe { DisconnectNamedPipe(self.handle) };
             let _ = unsafe { CloseHandle(self.handle) };
         }

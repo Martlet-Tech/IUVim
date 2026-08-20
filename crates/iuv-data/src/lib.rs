@@ -13,11 +13,10 @@ mod userdict;
 pub use compile::{compile_files, CompileStats};
 pub use dict::{Dict, Entry, INITIAL_BUCKET_SIZE};
 pub use format::load;
-pub use opencc::{OpenccTable, MAGIC as OCC_MAGIC};
+pub use opencc::OpenccTable;
 pub use ipc::{
-    ctl_pipe_name, decode_ctl_cmd, decode_ctl_result, encode_ctl_cmd, encode_ctl_result, CtlClient,
-    CtlCmd, CtlResult, CtlServer, PipeClient, PipeServer, Request, Response, ToolbarState,
-    CTL_FIELD_MODE, CTL_FIELD_PUNCT, CTL_FIELD_SCRIPT, CTL_FIELD_WIDTH,
+    ctl_pipe_name, CtlClient, CtlCmd, CtlResult, CtlServer, PipeClient, PipeServer, Request,
+    Response, ToolbarState, CTL_FIELD_MODE, CTL_FIELD_PUNCT, CTL_FIELD_SCRIPT, CTL_FIELD_WIDTH,
 };
-pub use shm::{ShmReader, ShmWriter, SHM_CAPACITY, SHM_HEADER_LEN, SHM_NAME};
+pub use shm::{ShmReader, ShmWriter};
 pub use userdict::UserDict;

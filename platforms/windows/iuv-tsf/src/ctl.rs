@@ -109,12 +109,7 @@ impl CtlEndpoint {
     }
 
     /// 构造端点（不挂窗口、不起线程；调用方把对象放进稳定槽位后调 `attach`）。
-    pub(crate) fn new(
-        hwnd: HWND,
-        svc: *const dyn CtlApplier,
-        _pid: u32,
-        _tid: u32,
-    ) -> CtlEndpoint {
+    pub(crate) fn new(hwnd: HWND, svc: *const dyn CtlApplier) -> CtlEndpoint {
         CtlEndpoint {
             hwnd,
             pending: Arc::new(Mutex::new(None)),

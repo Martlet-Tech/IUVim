@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use eframe::egui;
 use iuv_data::{ShmWriter, UserDict};
 
 use crate::config::DaemonConfig;
@@ -24,8 +23,6 @@ pub struct DaemonState {
     pub shm: Mutex<Option<ShmWriter>>,
     /// 待写盘标记（管道写请求/设置页改动置位；主线程 2s 定时器消费）。
     pub dirty: AtomicBool,
-    /// 设置窗口的 egui Context（窗口线程注册；主线程据此 Close/重绘）。
-    pub settings_ctx: Mutex<Option<egui::Context>>,
     /// 退出信号：主线程置位 → 设置线程收到后关闭窗口。
     pub close_settings: AtomicBool,
     /// 语言栏菜单「设置」命令：主线程轮询发现后 run_settings 弹窗（egui 常驻线程）。
@@ -49,7 +46,6 @@ impl DaemonState {
             dict: Mutex::new(dict),
             shm: Mutex::new(shm),
             dirty: AtomicBool::new(false),
-            settings_ctx: Mutex::new(None),
             close_settings: AtomicBool::new(false),
             open_settings: AtomicBool::new(false),
             quit_flag: AtomicBool::new(false),

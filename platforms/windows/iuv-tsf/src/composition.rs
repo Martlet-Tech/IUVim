@@ -43,11 +43,6 @@ impl Composition {
         }
     }
 
-    /// 是否有进行中的 composition。
-    pub fn is_active(&self) -> bool {
-        self.comp.borrow().is_some()
-    }
-
     /// 是否曾被外部终止（sink 置位）：调用方应丢弃会话降级（丢弃后重建 Composition 对象）。
     pub fn terminated(&self) -> bool {
         self.terminated.get()

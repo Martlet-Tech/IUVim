@@ -1,12 +1,10 @@
 //! 引擎：候选生成。契约 01-contract.md §4 engine.rs / §4.2 算法。
 
-use crate::{
-    rerank::RerankCtx, schema::Quanpin, session::Session, script::ScriptConverter, store::NullStore,
-    Config, InputSchema, LmProvider, RerankStage, UnigramLm, UserDataStore,
-};
-use iuv_data::{Dict, Entry, UserDict};
+use crate::{schema::Quanpin, session::Session, script::ScriptConverter, Config, InputSchema, LmProvider, UnigramLm};
+use iuv_data::{Dict, UserDict};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -45,8 +43,6 @@ pub struct Engine {
     pub(crate) config: Mutex<Config>,
     pub(crate) schema: Box<dyn InputSchema>,
     pub(crate) lm: Box<dyn LmProvider>,
-    pub(crate) stages: Vec<Box<dyn RerankStage>>,
-    pub(crate) store: Mutex<Box<dyn UserDataStore>>,
     /// 用户权重覆盖表状态（M2 主动调权，18-m2-user-dict.md）：路径 + 上次加载 mtime
     /// （会话创建时检测跨进程写入的延迟生效；M6 daemon 模式关闭，见 reload_user_dict）。
     user_state: Mutex<UserState>,
@@ -55,6 +51,8 @@ pub struct Engine {
     user_remote: Mutex<Option<Arc<dyn UserRemote>>>,
     /// 简→繁转换器（31-script-traditional.md）。None = 未装配/数据缺失 → 降级简体输出。
     script: Mutex<Option<Arc<ScriptConverter>>>,
+    /// 缓存 `config.page_size.max(1)`（P1.6：热路径每键多次读 page_size，避免整份克隆）。
+    page_size: AtomicU32,
 }
 
 /// 用户库装配状态（不可变路径 + 可变 mtime 基线）。
@@ -87,7 +85,7 @@ pub(crate) enum Route {
 }
 
 impl Engine {
-    /// 默认装配：Quanpin + UnigramLm + [StaticOrder] + NullStore。
+    /// 默认装配：Quanpin + UnigramLm。
     pub fn new(dict: Dict, config: Config) -> Arc<Engine> {
         let syllables = dict.syllables().clone();
         let lm = UnigramLm::new(dict.total_weight(), dict.entry_count());
@@ -96,8 +94,6 @@ impl Engine {
             config,
             Box::new(Quanpin::new(syllables)),
             Box::new(lm),
-            vec![Box::new(crate::rerank::StaticOrder)],
-            Box::new(NullStore),
         )
     }
 
@@ -107,19 +103,17 @@ impl Engine {
         config: Config,
         schema: Box<dyn InputSchema>,
         lm: Box<dyn LmProvider>,
-        stages: Vec<Box<dyn RerankStage>>,
-        store: Box<dyn UserDataStore>,
     ) -> Arc<Engine> {
+        let page_size = config.page_size.max(1) as u32;
         Arc::new(Engine {
             dict,
             config: Mutex::new(config),
             schema,
             lm,
-            stages,
-            store: Mutex::new(store),
             user_state: Mutex::new(UserState::default()),
             user_remote: Mutex::new(None),
             script: Mutex::new(None),
+            page_size: AtomicU32::new(page_size),
         })
     }
 
@@ -311,6 +305,8 @@ impl Engine {
     /// passthrough_apps/theme）随 `config()` 新值即时生效；TSF 侧键位 keymap 映射
     /// 装配不在此热切（M7 键位热载范畴，见 22-m6-daemon.md；调用方自行记日志）。
     pub fn set_config(&self, config: Config) {
+        self.page_size
+            .store(config.page_size.max(1) as u32, Ordering::Relaxed);
         *self.config.lock().unwrap_or_else(|e| e.into_inner()) = config;
     }
 
@@ -325,12 +321,7 @@ impl Engine {
         if entries.iter().any(|e| e.word == text) {
             return; // 场景 0
         }
-        let ps = self
-            .config
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .page_size
-            .max(1);
+        let ps = self.page_size() as usize;
         let n = entries.len();
         let w = if n == 0 {
             PHRASE_DEFAULT_WEIGHT
@@ -385,9 +376,10 @@ impl Engine {
         self.config.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// 调试/REPL 用精确查询。
-    pub fn lookup(&self, squashed_code: &str) -> Vec<Entry> {
-        self.dict.exact(squashed_code)
+    /// 每页候选数（缓存 `config.page_size.max(1)`：热路径每键多次读取，免整份克隆；
+    /// `set_config` 热载时同步刷新）。
+    pub fn page_size(&self) -> u32 {
+        self.page_size.load(Ordering::Relaxed)
     }
 
     /// 档位判定（唯一判定点）：`plain` 为去 `'` 的整串，`plans` 为全部切分方案
@@ -477,7 +469,7 @@ impl Engine {
         seg: &[String],
         plans: &[Vec<String>],
     ) -> Vec<crate::Candidate> {
-        let plain: String = raw.chars().filter(|c| *c != '\'').collect();
+        let plain = crate::strip_apostrophes(raw);
         let mut cands = match self.classify(&plain, seg, plans) {
             Route::PrefixChars => self.single_segment_candidates(&plain),
             Route::CompleteChars => self.single_segment_candidates(&seg[0]),
@@ -492,24 +484,14 @@ impl Engine {
         // 前缀补全（联想）：默认关闭（微软化，候选仅 exact）；config 开启时追加。
         //    用方案[0] 的 `'` 键做前缀匹配（词库键已分隔化）。
         //    联想词消费全部当前段（seg_len = n），选中即整词上屏。
-        // 配置快照：单点锁取克隆（RerankCtx 需 &Config；热载 set_config 与读取并发安全）。
+        // 配置快照：单点锁取克隆（热载 set_config 与读取并发安全）。
         let cfg = self.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if cfg.candidate_prefix {
             let n = seg.len();
             let squashed = seg.join("'");
             for e in &self.dict.prefix(&squashed, 20) {
-                let kind = if e.word.chars().count() >= 2 {
-                    crate::CandidateKind::Word
-                } else {
-                    crate::CandidateKind::Char
-                };
-                cands.push(crate::Candidate::new(
-                    e.word.clone(),
-                    kind,
-                    e.code.clone(),
-                    e.weight,
-                    n,
-                ));
+                let kind = crate::CandidateKind::for_word(&e.word);
+                cands.push(crate::Candidate::for_entry(e, kind, n));
             }
         }
 
@@ -519,20 +501,6 @@ impl Engine {
 
         // 截断到 max_candidates
         cands.truncate(cfg.max_candidates);
-
-        // 依次过 stages 管线
-        let now = SystemTime::now();
-        let store = self.store.lock().expect("store lock poisoned");
-        let ctx = RerankCtx {
-            raw,
-            seg,
-            store: store.as_ref(),
-            config: &cfg,
-            now,
-        };
-        for stage in &self.stages {
-            stage.rerank(&ctx, &mut cands);
-        }
 
         // 兜底：所有路由均无候选且输入非空 → 原文候选（"不认识"语义：`input`/`window`/`i`
         // 等无法命中任何词库的输入，窗口内容不空、可 1/Space 直接上屏原文）。
@@ -587,7 +555,7 @@ impl Engine {
         };
         entries
             .into_iter()
-            .map(|e| crate::Candidate::new(e.word, crate::CandidateKind::Char, e.code, e.weight, 1))
+            .map(|e| crate::Candidate::for_entry(&e, crate::CandidateKind::Char, 1))
             .collect()
     }
 
@@ -609,18 +577,8 @@ impl Engine {
                 continue;
             }
             for e in &self.dict.exact(&key) {
-                let kind = if e.word.chars().count() >= 2 {
-                    crate::CandidateKind::Word
-                } else {
-                    crate::CandidateKind::Char
-                };
-                cands.push(crate::Candidate::new(
-                    e.word.clone(),
-                    kind,
-                    e.code.clone(),
-                    e.weight,
-                    k,
-                ));
+                let kind = crate::CandidateKind::for_word(&e.word);
+                cands.push(crate::Candidate::for_entry(e, kind, k));
             }
         }
         cands
@@ -689,21 +647,7 @@ impl Engine {
             entries.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
             let mut seen = std::collections::HashSet::new();
             for e in entries {
-                if !seen.insert(e.word.clone()) {
-                    continue;
-                }
-                let kind = if e.word.chars().count() >= 2 {
-                    crate::CandidateKind::Word
-                } else {
-                    crate::CandidateKind::Char
-                };
-                cands.push(crate::Candidate::new(
-                    e.word.clone(),
-                    kind,
-                    e.code.clone(),
-                    e.weight,
-                    k,
-                ));
+                push_unique_entry(&mut cands, &mut seen, &e, k);
             }
         }
         cands
@@ -821,15 +765,7 @@ impl Engine {
             entries.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
             let mut seen = std::collections::HashSet::new();
             for e in entries {
-                if !seen.insert(e.word.clone()) {
-                    continue;
-                }
-                let kind = if e.word.chars().count() >= 2 {
-                    crate::CandidateKind::Word
-                } else {
-                    crate::CandidateKind::Char
-                };
-                cands.push(crate::Candidate::new(e.word, kind, e.code, e.weight, k));
+                push_unique_entry(&mut cands, &mut seen, &e, k);
             }
 
             // 3. 最后一级（k=1，第一段单字）**追加单字全量**（微软对齐：多段输入翻页
@@ -844,12 +780,24 @@ impl Engine {
 
         cands
     }
+}
 
-    /// 用户选择记录（commit 时调用）。
-    pub(crate) fn record_selection(&self, code: &str, text: &str) {
-        let mut store = self.store.lock().expect("store lock poisoned");
-        store.record_selection(code, text, SystemTime::now());
+/// 按 word 去重后把词条转候选推入（P1.6 抽取：混拼/全拼词条通道共用样板；
+/// 保序先见先留，与 `generate_candidates` 末尾全局 text 去重语义一致）。
+fn push_unique_entry(
+    cands: &mut Vec<crate::Candidate>,
+    seen: &mut std::collections::HashSet<String>,
+    e: &iuv_data::Entry,
+    k: usize,
+) {
+    if !seen.insert(e.word.clone()) {
+        return;
     }
+    cands.push(crate::Candidate::for_entry(
+        e,
+        crate::CandidateKind::for_word(&e.word),
+        k,
+    ));
 }
 
 #[cfg(test)]

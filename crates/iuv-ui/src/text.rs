@@ -23,7 +23,7 @@ pub const FONT_PX_96: f32 = 14.0 * 96.0 / 72.0;
 const LINE_HEIGHT_SCALE: f32 = 1.15;
 
 /// 家族回退链（主家族在前）：Windows / macOS / Linux 各有其一命中。
-pub const FALLBACK_FAMILIES: [&str; 4] = [
+pub(crate) const FALLBACK_FAMILIES: [&str; 4] = [
     "Microsoft YaHei UI",
     "Segoe UI",
     "PingFang SC",

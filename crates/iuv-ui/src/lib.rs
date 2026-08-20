@@ -18,15 +18,13 @@ pub mod text;
 pub mod theme;
 
 pub use layout::{
-    hit_test, layout, position_for, position_in_area, update_position, Area, Rect, CAND_GAP,
-    CARET_GAP, PAD_X, PAD_Y, ROW_GAP,
+    hit_test, layout, position_in_area, update_position, Area, Rect,
 };
 pub use menu::{menu_hit_test, MenuEntry};
 pub use render::{
     render_candidate, render_menu, render_toolbar, render_tooltip, Surface, ToolbarIcons,
-    ToolbarSpec, TB_COUNT, TB_GEAR, TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
-    TOOLBAR_BTN, TOOLBAR_GAP, TOOLBAR_PAD,
+    ToolbarSpec, TB_GEAR, TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
 };
 pub use snapshot::{effect_to_snapshot, CaretRect, UiSnapshot};
-pub use text::{TextRenderer, FALLBACK_FAMILIES, FONT_PX_96};
+pub use text::{TextRenderer, FONT_PX_96};
 pub use theme::{theme_dark, theme_light, Theme};
