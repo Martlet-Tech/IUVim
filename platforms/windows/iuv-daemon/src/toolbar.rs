@@ -52,10 +52,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
     PostMessageW, PostThreadMessageW, RegisterClassExW, SetTimer, SetWindowLongPtrW, SetWindowPos,
     ShowWindow, TranslateMessage, WM_APP, WM_QUIT, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HTCLIENT,
-    HTTRANSPARENT, MA_NOACTIVATE, MSG, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOSIZE,
-    SWP_NOZORDER, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
-    WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    HTTRANSPARENT, MA_NOACTIVATE, MSG, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+    SWP_NOSIZE, SWP_NOZORDER, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_TIMER, WNDCLASSEXW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 // WM_MOUSELEAVE 在 windows-rs 0.62 中位于 Controls 模块（值 0x02A3 = 675），本地定义。
 const WM_MOUSELEAVE: u32 = 675;
@@ -353,7 +353,9 @@ impl ToolbarWindow {
             log::log_line(&format!("[toolbar] 主题热刷新：{}", self.theme.name));
         }
         self.poll_foreground();
-        if self.visible {
+        // 拖拽中零重绘：只由 drag_move 的 SetWindowPos 移动，避免 250ms 定时器整帧重渲/重传
+        // 与拖拽争抢 → 闪烁。状态变化（StateSync）在拖拽结束后下一帧自然刷新。
+        if self.visible && self.drag_offset.is_none() {
             self.repaint();
         }
     }
@@ -376,7 +378,13 @@ impl ToolbarWindow {
             (focused, visible)
         };
         if focused.is_some() && visible {
-            self.show();
+            // 已可见：**不重定位**（交由 reconcile 的 repaint 按当前窗口矩形刷新）——
+            // 否则每次 250ms 定时器都把窗口拉回 shared.pos（拖拽前旧位置），拖拽中被
+            // SetWindowPos 移走后 250ms 又弹回原位 → 闪烁（2026-08-21 实测拖拽闪烁）。
+            // 仅在 hidden→shown 转变时 show() 定位一次。
+            if !self.visible {
+                self.show();
+            }
         } else if self.visible {
             self.hide();
         }
@@ -567,11 +575,23 @@ impl ToolbarWindow {
     }
 
     /// 拖拽移动（WM_MOUSEMOVE）：按光标屏幕坐标差值 SetWindowPos 移动窗口。
+    /// **边缘检测**：目标位置先 clamp 到光标所在显示器工作区（x∈[left, right-w]、
+    /// y∈[top, bottom-h]）——窗口整体一像素也不越出屏幕（2026-08-21 用户要求）。
     fn drag_move(&mut self) {
         let Some((ox, oy)) = self.drag_offset else { return };
         let (cx, cy) = cursor_screen();
         let (nx, ny) = (cx - ox, cy - oy);
-        // SAFETY: SWP_NOACTIVATE|NOSIZE|NOZORDER 仅移动；layered 窗口内容随动。
+        // SAFETY: GetWindowRect 读当前窗口矩形（窗口尺寸做 clamp 边界）。
+        let (nx, ny) = {
+            let mut rc = RECT::default();
+            if unsafe { GetWindowRect(self.hwnd, &mut rc) }.is_ok() {
+                clamp_to_work(nx, ny, rc.right - rc.left, rc.bottom - rc.top)
+            } else {
+                (nx, ny)
+            }
+        };
+        // SAFETY: SWP_NOACTIVATE|NOSIZE|NOZORDER|NOCOPYBITS 仅移动（NOCOPYBITS 防移动时
+        // 复制旧客户区位图产生残影）；layered 窗口内容由 DWM 缓存随动。
         let _ = unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -580,7 +600,7 @@ impl ToolbarWindow {
                 ny,
                 0,
                 0,
-                SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER,
+                SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOCOPYBITS,
             )
         };
     }
