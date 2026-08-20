@@ -30,6 +30,9 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
 };
 use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+use windows::Win32::UI::HiDpi::{
+    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
 
 use crate::state::DaemonState;
 use crate::toolbar::ToolbarHost;
@@ -51,6 +54,16 @@ fn main() {
 /// 守护进程主体（返回退出码）。
 fn run() -> i32 {
     log::log_line("======== iuv-daemon 启动 ========");
+
+    // ---- 0. DPI 感知（32-status-toolbar.md §6 工具栏坐标正确性前提）----
+    // 首行声明 per-monitor DPI aware：工具栏窗口在任意 DPI 下拿真实物理坐标/DPI。
+    // 否则进程被系统虚拟化为 96dpi 逻辑坐标，且设置页 eframe/winit 会中途把进程切成
+    // per-monitor aware → 同一窗口坐标含义突变 → 工具栏位置漂移到屏幕外（2026-08-21
+    // 实测 toolbar.json pos=32767,32767）。必须在建任何窗口前调用。
+    // SAFETY: SetProcessDpiAwarenessContext 进程级设置；失败（系统策略/已设置）静默。
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
 
     // ---- 1. 单实例互斥 ----
     let Some(mutex_daemon) = acquire_mutex(MUTEX_DAEMON) else {

@@ -382,21 +382,23 @@ impl ToolbarWindow {
         }
     }
 
-    /// 显示（首显定位：记忆位置或主屏右下角；ULW 上屏 + SW_SHOWNA 不抢焦点）。
+    /// 显示（首显定位：记忆位置（clamp 回工作区）或主屏右下角；ULW 上屏 + SW_SHOWNA 不抢焦点）。
     fn show(&mut self) {
         if self.hwnd.is_invalid() {
             return;
         }
         let Some(surf) = self.frame() else { return };
         let (w, h) = (surf.w as i32, surf.h as i32);
-        let pos = match self
-            .shared
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .pos
-        {
-            Some(p) => p,
-            None => default_pos(w, h),
+        let pos = {
+            let sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+            match sh.pos {
+                Some(p) => {
+                    // 防御：记忆位置越出显示器工作区（拖拽损坏/多屏变化/旧版本 32767 bug）
+                    // → clamp 回工作区，绝不渲染到屏幕外（2026-08-21 实测工具栏隐形）。
+                    clamp_to_work(p.0, p.1, w, h)
+                }
+                None => default_pos(w, h),
+            }
         };
         self.present(&surf, pos.0, pos.1, w, h);
         // SAFETY: SW_SHOWNA 显示但不激活——绝不抢焦点（点击不打断活动 composition）。
@@ -549,22 +551,26 @@ impl ToolbarWindow {
         }
     }
 
-    /// 拖拽开始（空白区 WM_LBUTTONDOWN）：记录光标偏移 + 捕获鼠标。
-    fn start_drag(&mut self, x: i32, y: i32) {
+    /// 拖拽开始（空白区/logo 的 WM_LBUTTONDOWN）：记录光标**屏幕坐标**偏移 + 捕获鼠标。
+    /// 用屏幕坐标而非客户区坐标：客户区原点随窗口移动而漂移，固定 offset 会造成
+    /// 累积滞后/位置漂移（2026-08-21 实测拖到屏幕外 32767 且保存为记忆位置）。
+    fn start_drag(&mut self) {
+        let (cx, cy) = cursor_screen();
         // SAFETY: GetWindowRect 读当前窗口矩形。
         let mut rc = RECT::default();
         if unsafe { GetWindowRect(self.hwnd, &mut rc) }.is_err() {
             return;
         }
-        self.drag_offset = Some((x - rc.left, y - rc.top));
+        self.drag_offset = Some((cx - rc.left, cy - rc.top));
         // SAFETY: SetCapture 捕获鼠标（拖拽期间窗口持续收 WM_MOUSEMOVE）。
         let _ = unsafe { SetCapture(self.hwnd) };
     }
 
-    /// 拖拽移动（WM_MOUSEMOVE + drag_offset）：SetWindowPos 移动窗口（内容由 DWM 缓存）。
-    fn drag_move(&mut self, x: i32, y: i32) {
+    /// 拖拽移动（WM_MOUSEMOVE）：按光标屏幕坐标差值 SetWindowPos 移动窗口。
+    fn drag_move(&mut self) {
         let Some((ox, oy)) = self.drag_offset else { return };
-        let (nx, ny) = (x - ox, y - oy);
+        let (cx, cy) = cursor_screen();
+        let (nx, ny) = (cx - ox, cy - oy);
         // SAFETY: SWP_NOACTIVATE|NOSIZE|NOZORDER 仅移动；layered 窗口内容随动。
         let _ = unsafe {
             SetWindowPos(
@@ -579,7 +585,7 @@ impl ToolbarWindow {
         };
     }
 
-    /// 拖拽结束（WM_LBUTTONUP）：释放捕获 + 持久化位置。
+    /// 拖拽结束（WM_LBUTTONUP）：释放捕获 + 位置 clamp 回工作区 + 持久化。
     fn end_drag(&mut self) {
         self.drag_offset = None;
         // SAFETY: ReleaseCapture 释放 SetCapture 的捕获。
@@ -589,7 +595,14 @@ impl ToolbarWindow {
         if unsafe { GetWindowRect(self.hwnd, &mut rc) }.is_err() {
             return;
         }
-        let pos = (rc.left, rc.top);
+        let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+        let pos = clamp_to_work(rc.left, rc.top, w, h);
+        if pos.0 != rc.left || pos.1 != rc.top {
+            log::log_line(&format!(
+                "[toolbar] 拖拽位置越界，clamp 回工作区：({}, {}) → {pos:?}",
+                rc.left, rc.top
+            ));
+        }
         {
             let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
             sh.pos = Some(pos);
@@ -790,6 +803,17 @@ fn client_pos(lparam: LPARAM) -> (i32, i32) {
     ((v & 0xFFFF) as i32, ((v >> 16) & 0xFFFF) as i32)
 }
 
+/// 光标屏幕坐标（拖拽用；失败返回 (0,0)，拖拽窗口回 0 处——失败极罕见）。
+fn cursor_screen() -> (i32, i32) {
+    // SAFETY: GetCursorPos 纯查询。
+    let mut pt = POINT::default();
+    if unsafe { GetCursorPos(&mut pt) }.is_err() {
+        (0, 0)
+    } else {
+        (pt.x, pt.y)
+    }
+}
+
 /// 圆角几何命中（与 render_toolbar 的圆角一致）：圆角外点击穿透（HTTRANSPARENT）。
 fn in_rounded_rect(x: i32, y: i32, w: i32, h: i32, r: f32) -> bool {
     if w <= 0 || h <= 0 {
@@ -882,9 +906,9 @@ unsafe extern "system" fn bar_wnd_proc(
         WM_MOUSEMOVE => {
             let (x, y) = client_pos(lparam);
             if let Some(w) = get_bar_mut(hwnd) {
-                // 拖拽中：移动窗口；否则：悬停更新。
+                // 拖拽中：按屏幕坐标移动窗口；否则：悬停更新。
                 if w.drag_offset.is_some() {
-                    w.drag_move(x, y);
+                    w.drag_move();
                 } else {
                     // TrackMouseEvent 重挂 WM_MOUSELEAVE（离开窗口清悬停）。
                     let mut tme = TRACKMOUSEEVENT {
@@ -913,7 +937,7 @@ unsafe extern "system" fn bar_wnd_proc(
                 match hit_test(&w.rows, x, y) {
                     // 空白区或 logo（拖动把手）：开始拖拽（§6.6 任意非按钮空白区拖动）。
                     None | Some(TB_LOGO) => {
-                        w.start_drag(x, y);
+                        w.start_drag();
                     }
                     Some(i) => {
                         // 功能按钮按下（点击反馈）+ 鼠标抬起时执行。
@@ -996,6 +1020,8 @@ fn pref_path() -> Option<std::path::PathBuf> {
 }
 
 /// 加载偏好（缺失/损坏 → 默认 visible=true、pos=None；绝不失败）。
+/// 位置清洗（2026-08-21）：越界坐标（旧版本 32767 bug / 拖拽损坏 / 显示器拔除残留）
+/// → 置 None（show 时用主屏右下角默认），避免工具栏渲染到屏幕外 = 隐形。
 pub fn load_pref() -> ToolbarPref {
     let Some(path) = pref_path() else {
         return ToolbarPref {
@@ -1005,9 +1031,17 @@ pub fn load_pref() -> ToolbarPref {
     };
     match std::fs::read_to_string(&path)
         .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
+        .and_then(|t| serde_json::from_str::<ToolbarPref>(&t).ok())
     {
-        Some(p) => p,
+        Some(mut p) => {
+            if let Some((x, y)) = p.pos {
+                // 越界判据：明显超出 Win32 虚拟桌面合理范围（-10000..40000）。
+                if x < -10000 || x > 40000 || y < -10000 || y > 40000 {
+                    p.pos = None;
+                }
+            }
+            p
+        }
         None => ToolbarPref {
             visible: true,
             pos: None,

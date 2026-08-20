@@ -9,8 +9,7 @@
 //! 其他平台自行转格式。
 
 use tiny_skia::{
-    FillRule, NonZeroRect, Paint, Path, PathBuilder, Pixmap, PixmapPaint, FilterQuality, Rect, Stroke,
-    Transform,
+    FillRule, Paint, Path, PathBuilder, Pixmap, PixmapPaint, FilterQuality, Rect, Stroke, Transform,
 };
 
 use crate::layout::{candidate_label, layout, Rect as LayoutRect};
@@ -413,6 +412,9 @@ fn toolbar_icon<'a>(spec: &'a ToolbarSpec, i: usize) -> Option<&'a Pixmap> {
 /// 图标按目标矩形缩放绘制（等比，居中，留 inset 内边距；`sx` 为 surface 阴影偏移）。
 /// 缩放 = 预缩放到目标尺寸的临时 Pixmap + identity 绘制（语义直白，避免 transform
 /// 叠加歧义）；分配失败静默跳过（按钮留空，不 panic）。
+/// 2026-08-21 修：缩放变换用 `from_scale` 而非 `from_bbox`——`from_bbox` 把源坐标
+/// (0..iw) 映射到 (0..iw*scale)，目标画布只有 dw 大小 → 只采样源图左上角 ~1 像素
+/// （图标居中、四角透明 → 整片空白，实测 32-toolbar 图标全空）。
 fn draw_icon_scaled(
     canvas: &mut Pixmap,
     icon: &Pixmap,
@@ -435,16 +437,20 @@ fn draw_icon_scaled(
     let Some(mut dst) = Pixmap::new(dw as u32, dh as u32) else {
         return; // 分配失败：静默跳过
     };
-    let Some(bbox) = NonZeroRect::from_xywh(0.0, 0.0, dw, dh) else {
-        return;
-    };
     let paint = PixmapPaint {
         opacity: 1.0,
         quality: FilterQuality::Bilinear,
         ..Default::default()
     };
-    // from_bbox：把源图标（iw×ih）仿射映射到目标矩形（0,0,dw,dh）。
-    dst.draw_pixmap(0, 0, icon.as_ref(), &paint, Transform::from_bbox(bbox), None);
+    // from_scale(dw/iw, dh/ih)：源图标 (iw×ih) 等比缩放到目标尺寸 (dw×dh) 的左上角原点。
+    dst.draw_pixmap(
+        0,
+        0,
+        icon.as_ref(),
+        &paint,
+        Transform::from_scale(dw / iw, dh / ih),
+        None,
+    );
     let x = (sx + r.x as f32 + (r.w as f32 - dw) / 2.0).round() as i32;
     let y = (sx + r.y as f32 + (r.h as f32 - dh) / 2.0).round() as i32;
     let paint2 = PixmapPaint::default();
@@ -1033,5 +1039,54 @@ mod tests {
         // 空标签不 panic（极小表面）
         let empty = render_tooltip("", &theme_light(), 1.0, &mut t);
         assert!(empty.pixels.len() % 4 == 0);
+    }
+
+    /// 构造合成图标：四角透明 + 中心不透明（模拟真实图标"居中 + 透明边距"）。
+    /// from_bbox 漏洞只会采样左上角像素（透明）→ 回归测试能抓住。
+    fn center_icon(w: u32, h: u32, inner: u32) -> Pixmap {
+        let mut p = Pixmap::new(w, h).unwrap();
+        p.fill(tiny_skia::Color::TRANSPARENT);
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(0x12, 0x34, 0x56, 0xFF);
+        let x0 = ((w as i32 - inner as i32) / 2) as f32;
+        let y0 = ((h as i32 - inner as i32) / 2) as f32;
+        if let Some(rect) = Rect::from_xywh(x0, y0, inner as f32, inner as f32) {
+            p.fill_rect(rect, &paint, Transform::identity(), None);
+        }
+        p
+    }
+
+    /// 采样 (x,y) 的 alpha（surface 坐标）。
+    fn alpha_at(surface: &Surface, x: u32, y: u32) -> u8 {
+        let idx = ((y * surface.w + x) * 4 + 3) as usize;
+        surface.pixels[idx]
+    }
+
+    #[test]
+    fn render_toolbar_icon_visible_not_corner_crop() {
+        // 回归：from_bbox 曾导致图标只采样左上角 1 像素（透明 → 整片空白）。
+        // from_scale 应把"中心不透明"的图标完整缩小绘制 → 按钮中心采样不透明。
+        let mut icons = ToolbarIcons::default();
+        icons.logo = Some(center_icon(284, 282, 200));
+        let spec = ToolbarSpec {
+            icons: &icons,
+            mode: 0,
+            width: 0,
+            punct: 0,
+            script: 0,
+            hover: None,
+            pressed: None,
+        };
+        let (surf, rects) = render_toolbar(&spec, &theme_light(), 1.0);
+        let shadow = theme_light().shadow_size as u32;
+        // logo 按钮中心采样（surface 坐标 = 内容偏移 shadow + 按钮矩形中心）
+        let cx = shadow + (rects[TB_LOGO].x + rects[TB_LOGO].w / 2) as u32;
+        let cy = shadow + (rects[TB_LOGO].y + rects[TB_LOGO].h / 2) as u32;
+        let a = alpha_at(&surf, cx, cy);
+        assert!(a > 0, "logo 按钮中心应绘制出图标（不透明），实际 alpha={a}");
+        // 对照：背景（非按钮区，如按钮间隙）应恒透明以外的背景底（不透明）
+        let bg_x = shadow + (rects[TB_LOGO].x + rects[TB_LOGO].w + 1) as u32;
+        let bg_a = alpha_at(&surf, bg_x, cy);
+        assert!(bg_a > 0, "按钮间隙应为背景底（不透明）");
     }
 }

@@ -11,7 +11,7 @@
 //! 全部失败静默降级（记日志，不 panic；iuv-tsf 硬性约定）。
 
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -21,7 +21,9 @@ use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::HBRUSH;
+use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::{GetCurrentThreadId, OpenThread, THREAD_ALL_ACCESS};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, PostMessageW,
     RegisterClassExW, SetWindowLongPtrW, GWLP_USERDATA, HWND_MESSAGE, WM_APP, WNDCLASS_STYLES,
@@ -54,18 +56,21 @@ pub(crate) struct CtlEndpoint {
     hwnd: HWND,
     /// 待应用命令（跨线程共享；accept 线程写、TSF 线程取）。
     pending: Arc<Mutex<Option<CtlJob>>>,
-    /// 当前 accept 服务端句柄（跨线程共享；Deactivate 关闭以中断 ConnectNamedPipe）。
+    /// 当前 accept 服务端句柄（跨线程共享；Deactivate 关闭以中断 ConnectNamedPipe，兜底）。
     handle_slot: Arc<Mutex<Option<usize>>>,
+    /// accept 线程 OS 线程 id（accept 线程启动时写入；Drop 用 `CancelSynchronousIo`
+    /// 中断其阻塞的同步 I/O——`ConnectNamedPipe`/`ReadFile`/`WriteFile`）。
+    os_tid: Arc<AtomicU32>,
     /// 停止标志（accept 线程退出判定）。
     stop: Arc<AtomicBool>,
     /// accept 线程句柄（Drop 时 join）。
     thread: Option<std::thread::JoinHandle<()>>,
-    /// 应用目标：TSF 线程上的 `TextService_Impl`（`&dyn CtlApplier`）。
+    /// 应用目标：TSF 线程上的 `TextService`（`&dyn CtlApplier`）。
     svc: *const dyn CtlApplier,
 }
 
 // SAFETY: 端点只在创建线程（TSF 线程）触碰 wndproc 路径；accept 线程经 Arc 字段访问
-// pending/handle_slot/stop（互斥保护）。svc 指针只在 TSF 线程解引用，不跨线程移动。
+// pending/handle_slot/stop/os_tid（互斥/原子保护）。svc 指针只在 TSF 线程解引用，不跨线程移动。
 // 端点整体不 Send（JoinHandle 之外字段含裸指针，但未声明 Send——默认非 Send，安全）。
 impl CtlEndpoint {
     /// 建隐藏窗（TSF 线程调用；懒注册类）。失败 → None（记录日志）。
@@ -114,6 +119,7 @@ impl CtlEndpoint {
             hwnd,
             pending: Arc::new(Mutex::new(None)),
             handle_slot: Arc::new(Mutex::new(None)),
+            os_tid: Arc::new(AtomicU32::new(0)),
             stop: Arc::new(AtomicBool::new(false)),
             thread: None,
             svc,
@@ -131,10 +137,11 @@ impl CtlEndpoint {
         let hwnd_val = self.hwnd.0 as usize;
         let pending = self.pending.clone();
         let handle_slot = self.handle_slot.clone();
+        let os_tid = self.os_tid.clone();
         let stop = self.stop.clone();
         let spawned = std::thread::Builder::new()
             .name("iuv-ctl-accept".to_string())
-            .spawn(move || accept_thread(name, hwnd_val, pending, handle_slot, stop));
+            .spawn(move || accept_thread(name, hwnd_val, pending, handle_slot, os_tid, stop));
         match spawned {
             Ok(h) => {
                 self.thread = Some(h);
@@ -153,14 +160,28 @@ impl CtlEndpoint {
 
 impl Drop for CtlEndpoint {
     fn drop(&mut self) {
-        // 1. 停止 accept 线程：置标志 + 关闭当前服务端句柄（中断 ConnectNamedPipe）。
+        // 1. 停止 accept 线程。
         self.stop.store(true, Ordering::SeqCst);
-        let slot = self.handle_slot.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(h) = *slot {
-            // SAFETY: 关闭服务端句柄中断阻塞中的 ConnectNamedPipe；accept 线程随后
-            // 的重复关闭返回错误被忽略（良性竞态，见 accept_thread 注释）。
-            let _ = unsafe { CloseHandle(HANDLE(h as *mut core::ffi::c_void)) };
+        // 1a. CancelSynchronousIo：中断 accept 线程阻塞中的同步 I/O（ConnectNamedPipe /
+        //     ReadFile / WriteFile）。这是官方文档途径——CloseHandle 不能可靠中断阻塞的
+        //     ConnectNamedPipe（2026-08-21 实测切输入法时 join 永久卡死 notepad）。
+        let os_tid = self.os_tid.load(Ordering::SeqCst);
+        if os_tid != 0 {
+            // SAFETY: OpenThread 同进程线程；失败（线程已退出）静默。
+            if let Ok(h) = unsafe { OpenThread(THREAD_ALL_ACCESS, false, os_tid) } {
+                // SAFETY: CancelSynchronousIo 取消该线程在途的同步 I/O（返回错误无害）。
+                let _ = unsafe { CancelSynchronousIo(h) };
+                // SAFETY: 关闭线程句柄（CancelSynchronousIo 已同步完成调用）。
+                let _ = unsafe { CloseHandle(h) };
+            }
         }
+        // 1b. 兜底：关闭当前服务端句柄（覆盖非 I/O 阻塞的窗口期，如 create 失败 sleep）。
+        let slot = self.handle_slot.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(hv) = *slot {
+            // SAFETY: 关闭服务端句柄；accept 线程后续重复关闭返回错误被忽略（良性竞态）。
+            let _ = unsafe { CloseHandle(HANDLE(hv as *mut core::ffi::c_void)) };
+        }
+        drop(slot);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -177,17 +198,20 @@ impl Drop for CtlEndpoint {
 
 /// accept 线程主体：循环建服务端管道 → 阻塞等待 daemon 连接 → 服务一条 Cmd → 断开。
 ///
-/// 跨线程中断（Deactivate）：`stop` 置位 + `CloseHandle` 中断 `ConnectNamedPipe`/读写；
-/// 中断后 `connect`/`serve` 返回 Err → 循环顶部判 stop 退出。服务端句柄值被跨线程关闭
-/// 后本线程的 CtlServer::drop 再关闭一次（CloseHandle 返回错误，忽略）——理论上的句柄
-/// 值复用窗口极小（微秒级同进程，可接受，注释留痕）。
+/// 停止（Deactivate）：`stop` 置位 + 端点 Drop 调 `CancelSynchronousIo` 中断阻塞的
+/// `ConnectNamedPipe`/读写 → 返回 Err → 循环顶部判 stop 退出（官方文档途径，可靠）。
+/// 服务端句柄值可能被端点 Drop 兜底关闭一次后本线程再关闭（CloseHandle 返回错误忽略）。
 fn accept_thread(
     name: String,
     hwnd_val: usize,
     pending: Arc<Mutex<Option<CtlJob>>>,
     handle_slot: Arc<Mutex<Option<usize>>>,
+    os_tid: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
 ) {
+    // 登记本线程 OS 线程 id（端点 Drop 用 CancelSynchronousIo 中断阻塞 I/O）。
+    // SAFETY: GetCurrentThreadId 纯查询。
+    os_tid.store(unsafe { GetCurrentThreadId() }, Ordering::SeqCst);
     let hwnd = HWND(hwnd_val as *mut core::ffi::c_void);
     while !stop.load(Ordering::SeqCst) {
         let server = match CtlServer::create(&name) {
