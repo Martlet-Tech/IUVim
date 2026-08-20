@@ -187,6 +187,17 @@ daemon 按结果更新实例表 + 按钮图标（成功/失败分别呈现）。
 - 悬停 tooltip（「全半角」「简体/繁体」等）。
 - **无自身右键菜单**（2026-08-20 用户拍板）：显隐唯一入口 = 语言栏「中/英」右键菜单。
 
+### 6.7 工具栏图标（2026-08-20 决策：不建工具，内嵌 + 运行时处理）
+
+- 源图已入库：`assets/main.png`（输入法主 logo，202×198，2026-08-21 补）+ `assets/toolbar-icons/*.png`
+  （gear + 4 组双态 = 9 张，~28-32px 近方形）。
+- **tiny-skia 自带 PNG 解码（`Pixmap::decode_png`）+ `draw_pixmap` 缩放绘制** → 无需独立
+  缩放/转换工具（曾考虑的 build 工具方案否决，2026-08-20；源图即最终素材，改图即生效）。
+- 编译期：daemon `include_bytes!("../../assets/...")` 内嵌进 exe，零外部文件依赖。
+- 运行时：`toolbar_icons.rs` 解码成 `Pixmap`（一次，失败降级 None 不 panic），
+  `render_toolbar` 按目标尺寸/DPI 用 `draw_pixmap` 缩放绘制——归一化到按钮规格在渲染层
+  完成（源图已近 32px，高 DPI 自动放大）。
+
 ## 7. 决策点（已全部拍板，2026-08-20）
 
 1. **渲染技术** = **B：iuv-ui + ULW 自绘**（依据 33-skin.md，皮肤框架免费继承，见 §6.4）。
@@ -211,10 +222,11 @@ daemon 按结果更新实例表 + 按钮图标（成功/失败分别呈现）。
 | `platforms/windows/iuv-tsf/src/daemon_client.rs` | Register/StateSync/Active 上报 + poll 在线翻转重注册 |
 | `platforms/windows/iuv-daemon/src/state.rs` | 实例表/focused/pref/pos + 看板判定 + 点击协议 + toolbar.json 持久化 |
 | `platforms/windows/iuv-daemon/src/main.rs` | 工具栏宿主：独立 win32 消息泵线程（ULW 窗口 + 前台看板轮询定时器） |
-| `platforms/windows/iuv-daemon/Cargo.toml` | 新增 `iuv-ui` 依赖（非新 crate） |
+| `platforms/windows/iuv-daemon/Cargo.toml` | `iuv-ui` 依赖已存在（2026-08-21 核对），无需新增 |
+| `platforms/windows/iuv-daemon/src/toolbar_icons.rs` | 图标内嵌 `include_bytes!`（`assets/main.png` + `assets/toolbar-icons/*.png`）+ 运行时解码成 `Pixmap`（失败降级 None，见 §6.7） |
 | **新共享 Windows crate**（抽自 iuv-tsf） | `ulw.rs` ULW 窗口代码抽取（daemon/TSF 复用；契约 §2 白名单需批准） |
 | `platforms/windows/iuv-daemon/src/settings.rs` | 无工具栏相关改造（设置页不动） |
-| `crates/iuv-ui/src/render.rs` | 新增 `render_toolbar`（横排按钮条，复用 Theme/MenuWindow 模式） |
+| `crates/iuv-ui/src/render.rs` | 新增 `render_toolbar`（横排按钮条，`draw_pixmap` 缩放绘制图标，复用 Theme/MenuWindow 模式） |
 | `scripts/`、`docs/plan/01-contract.md`、`AGENTS.md` | 同步 |
 
 ## 9. 测试要点
