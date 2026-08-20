@@ -128,6 +128,16 @@ impl Engine {
         Session::new(self.clone())
     }
 
+    /// 注入实例运行时四态开会话（32-status-toolbar.md §5.1）：TSF 每实例持有自己的
+    /// `Arc<Mutex<RuntimeState>>`，会话 live 读；引擎进程级单例共享多实例不受影响。
+    pub fn start_session_with_runtime(
+        self: &Arc<Self>,
+        runtime: Arc<std::sync::Mutex<crate::RuntimeState>>,
+    ) -> Session {
+        self.reload_user_dict();
+        Session::with_runtime(self.clone(), runtime)
+    }
+
     /// 装配用户权重覆盖表（M2 主动调权）。
     /// **任何失败都降级为空库继续**（用户库不允许阻断输入法）：缺失/损坏 → 空
     /// UserDict + 路径照常记录（后续 swap 写盘时创建/重建文件）。返回 `Err` 仅

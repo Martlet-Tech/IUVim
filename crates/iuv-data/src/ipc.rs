@@ -94,12 +94,97 @@ pub enum Request {
     OpenSettings,
     /// M6 语言栏菜单/卸载脚本：通知 daemon 干净退出（写盘后退出）。
     Quit,
+    /// 32-status-toolbar.md §4.1：TSF 实例 Activate 时注册 + 上报初始四态。
+    /// daemon 记入实例表（pid:tid 唯一），供看板判定/点击寻址。
+    Register {
+        pid: u32,
+        tid: u32,
+        state: ToolbarState,
+    },
+    /// 32-status-toolbar.md §4.1：实例运行时四态变化上报（OPENCLOSE OnChange /
+    /// Cmd::SetState 应用成功后）。
+    StateSync {
+        pid: u32,
+        tid: u32,
+        state: ToolbarState,
+    },
+    /// 32-status-toolbar.md §4.1：Activate/Deactivate 通知（daemon 判「iuv 被选中」）。
+    Active { pid: u32, tid: u32, active: bool },
+    /// 32-status-toolbar.md §4.1：语言栏右键菜单「显示/隐藏工具栏」（全局偏好切换）。
+    ToggleToolbar,
+    /// 32-status-toolbar.md §4.1：实例 Drop 注销（从实例表移除）。
+    Unregister { pid: u32, tid: u32 },
 }
 
 /// 守护进程 → 会话进程的响应。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Response {
     Ok { version: u32 },
+    Err { msg: String },
+}
+
+// ===== 32-status-toolbar.md 工具栏四态 + 反向控制通道 =====
+
+/// 工具栏四态传输值（每 TSF 实例，32-status-toolbar.md §2.4/§4）。
+/// u8 编码（与 iuv-core `RuntimeState` 一致，见其 to_toolbar/from_toolbar）：
+/// `mode` 0=中文 1=英文；`width` 0=半角 1=全角；`script` 0=简体 1=繁体；`punct` 0=中文标点 1=英文标点。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ToolbarState {
+    pub mode: u8,
+    pub width: u8,
+    pub script: u8,
+    pub punct: u8,
+}
+
+impl ToolbarState {
+    pub const fn new(mode: u8, width: u8, script: u8, punct: u8) -> Self {
+        ToolbarState {
+            mode,
+            width,
+            script,
+            punct,
+        }
+    }
+
+    /// 读单字段（field 0=mode 1=width 2=script 3=punct；非法 → 0）。
+    pub fn field(&self, field: u8) -> u8 {
+        match field {
+            0 => self.mode,
+            1 => self.width,
+            2 => self.script,
+            3 => self.punct,
+            _ => 0,
+        }
+    }
+}
+
+/// 反向控制通道字段 id（daemon → TSF 的 Cmd::SetState 用）。
+pub const CTL_FIELD_MODE: u8 = 0;
+pub const CTL_FIELD_WIDTH: u8 = 1;
+pub const CTL_FIELD_SCRIPT: u8 = 2;
+pub const CTL_FIELD_PUNCT: u8 = 3;
+
+/// 反向控制通道管道名前缀：`\\.\pipe\iuv-ctl-<pid>-<tid>`。
+pub const CTL_PIPE_PREFIX: &str = r"\\.\pipe\iuv-ctl";
+
+/// 实例控制管道完整名（pid:tid 唯一，32-status-toolbar.md §4.2）。
+pub fn ctl_pipe_name(pid: u32, tid: u32) -> String {
+    format!("{CTL_PIPE_PREFIX}-{pid}-{tid}")
+}
+
+/// daemon → TSF 的控制命令（按需连接 per-实例管道，32-status-toolbar.md §4.2）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CtlCmd {
+    /// 设置某字段为指定值（field 0=mode 1=width 2=script 3=punct，value 0/1）。
+    SetState { field: u8, value: u8 },
+}
+
+/// TSF 应用命令后的响应（§6.5 点击协议：daemon 按结果更新实例表 + 按钮图标）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CtlResult {
+    /// 应用成功：返回**新**四态（成功后 TSF 还会 StateSync 上报，双路径一致）。
+    Ok { state: ToolbarState },
+    /// 应用失败（写 OPENCLOSE 失败/非法字段等）。
     Err { msg: String },
 }
 
@@ -187,8 +272,45 @@ pub fn encode_request(req: &Request) -> Vec<u8> {
         Request::Quit => {
             out.push(0x07);
         }
+        Request::Register { pid, tid, state } => {
+            out.push(0x08);
+            out.extend_from_slice(&pid.to_le_bytes());
+            out.extend_from_slice(&tid.to_le_bytes());
+            put_toolbar_state(&mut out, state);
+        }
+        Request::StateSync { pid, tid, state } => {
+            out.push(0x09);
+            out.extend_from_slice(&pid.to_le_bytes());
+            out.extend_from_slice(&tid.to_le_bytes());
+            put_toolbar_state(&mut out, state);
+        }
+        Request::Active {
+            pid,
+            tid,
+            active,
+        } => {
+            out.push(0x0A);
+            out.extend_from_slice(&pid.to_le_bytes());
+            out.extend_from_slice(&tid.to_le_bytes());
+            out.push(u8::from(*active));
+        }
+        Request::ToggleToolbar => {
+            out.push(0x0B);
+        }
+        Request::Unregister { pid, tid } => {
+            out.push(0x0C);
+            out.extend_from_slice(&pid.to_le_bytes());
+            out.extend_from_slice(&tid.to_le_bytes());
+        }
     }
     out
+}
+
+fn put_toolbar_state(out: &mut Vec<u8>, s: &ToolbarState) {
+    out.push(s.mode);
+    out.push(s.width);
+    out.push(s.script);
+    out.push(s.punct);
 }
 
 /// Response → 载荷字节（不含帧前缀）。
@@ -268,6 +390,37 @@ pub fn decode_request(payload: &[u8]) -> io::Result<Request> {
             r.finish()?;
             Ok(Request::Quit)
         }
+        0x08 => {
+            let pid = r.u32()?;
+            let tid = r.u32()?;
+            let state = r.toolbar_state()?;
+            r.finish()?;
+            Ok(Request::Register { pid, tid, state })
+        }
+        0x09 => {
+            let pid = r.u32()?;
+            let tid = r.u32()?;
+            let state = r.toolbar_state()?;
+            r.finish()?;
+            Ok(Request::StateSync { pid, tid, state })
+        }
+        0x0A => {
+            let pid = r.u32()?;
+            let tid = r.u32()?;
+            let active = r.u8()? != 0;
+            r.finish()?;
+            Ok(Request::Active { pid, tid, active })
+        }
+        0x0B => {
+            r.finish()?;
+            Ok(Request::ToggleToolbar)
+        }
+        0x0C => {
+            let pid = r.u32()?;
+            let tid = r.u32()?;
+            r.finish()?;
+            Ok(Request::Unregister { pid, tid })
+        }
         t => Err(bad(&format!("未知 Request tag 0x{t:02X}"))),
     }
 }
@@ -288,6 +441,80 @@ pub fn decode_response(payload: &[u8]) -> io::Result<Response> {
             Ok(Response::Err { msg })
         }
         t => Err(bad(&format!("未知 Response tag 0x{t:02X}"))),
+    }
+}
+
+/// CtlCmd → 载荷字节（反向控制通道，§4.2）。
+///
+/// ```text
+/// u8 tag
+///   0x01 SetState : u8 field, u8 value
+/// ```
+pub fn encode_ctl_cmd(cmd: &CtlCmd) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8);
+    match cmd {
+        CtlCmd::SetState { field, value } => {
+            out.push(0x01);
+            out.push(*field);
+            out.push(*value);
+        }
+    }
+    out
+}
+
+/// 载荷 → CtlCmd。非法 → `Err`。
+pub fn decode_ctl_cmd(payload: &[u8]) -> io::Result<CtlCmd> {
+    let mut r = Reader::new(payload);
+    let tag = r.u8()?;
+    match tag {
+        0x01 => {
+            let field = r.u8()?;
+            let value = r.u8()?;
+            r.finish()?;
+            Ok(CtlCmd::SetState { field, value })
+        }
+        t => Err(bad(&format!("未知 CtlCmd tag 0x{t:02X}"))),
+    }
+}
+
+/// CtlResult → 载荷字节。
+///
+/// ```text
+/// u8 tag
+///   0x01 Ok  : 新四态（4 × u8）
+///   0x02 Err : u32 msg_len|msg
+/// ```
+pub fn encode_ctl_result(res: &CtlResult) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16);
+    match res {
+        CtlResult::Ok { state } => {
+            out.push(0x01);
+            put_toolbar_state(&mut out, state);
+        }
+        CtlResult::Err { msg } => {
+            out.push(0x02);
+            put_str(&mut out, msg);
+        }
+    }
+    out
+}
+
+/// 载荷 → CtlResult。非法 → `Err`。
+pub fn decode_ctl_result(payload: &[u8]) -> io::Result<CtlResult> {
+    let mut r = Reader::new(payload);
+    let tag = r.u8()?;
+    match tag {
+        0x01 => {
+            let state = r.toolbar_state()?;
+            r.finish()?;
+            Ok(CtlResult::Ok { state })
+        }
+        0x02 => {
+            let msg = r.str_()?;
+            r.finish()?;
+            Ok(CtlResult::Err { msg })
+        }
+        t => Err(bad(&format!("未知 CtlResult tag 0x{t:02X}"))),
     }
 }
 
@@ -323,6 +550,18 @@ impl<'a> Reader<'a> {
             .map(str::to_owned)
             .map_err(|_| bad("字符串非 UTF-8"))
     }
+    fn toolbar_state(&mut self) -> io::Result<ToolbarState> {
+        let mode = self.u8()?;
+        let width = self.u8()?;
+        let script = self.u8()?;
+        let punct = self.u8()?;
+        Ok(ToolbarState {
+            mode,
+            width,
+            script,
+            punct,
+        })
+    }
     fn finish(&self) -> io::Result<()> {
         if self.pos != self.data.len() {
             return Err(bad("载荷尾部有残留字节"));
@@ -339,6 +578,90 @@ mod imp {
 
     pub fn pipe_name_wide() -> Vec<u16> {
         OsStr::new(PIPE_NAME).encode_wide().chain(Some(0)).collect()
+    }
+
+    /// 任意管道名 → 宽字符（NUL 结尾）。
+    pub fn name_wide(name: &str) -> Vec<u16> {
+        OsStr::new(name).encode_wide().chain(Some(0)).collect()
+    }
+
+    /// 创建命名管道服务端句柄（不连接；调用方持有，可跨线程 Close 中断 ConnectNamedPipe）。
+    pub fn create_server(name_wide: &[u16]) -> io::Result<HANDLE> {
+        // SAFETY: 消息模式 + 阻塞；缓冲 PIPE_FRAME_MAX 内单帧。返回 HANDLE（非 Result）。
+        let handle = unsafe {
+            CreateNamedPipeW(
+                PCWSTR(name_wide.as_ptr()),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                PIPE_UNLIMITED_INSTANCES,
+                PIPE_FRAME_MAX as u32,
+                PIPE_FRAME_MAX as u32,
+                0,
+                None,
+            )
+        };
+        if handle.is_invalid() {
+            let e = unsafe { windows::Win32::Foundation::GetLastError() };
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("创建命名管道失败: {}", e.0),
+            ));
+        }
+        Ok(handle)
+    }
+
+    /// 阻塞等待客户端连接（非重叠）。失败 → `Err`（含被跨线程 Close 中断的取消路径）。
+    pub fn connect_server(handle: HANDLE) -> io::Result<()> {
+        // SAFETY: 阻塞等待客户端 ConnectNamedPipe（非重叠）。
+        let r = unsafe { ConnectNamedPipe(handle, None) };
+        if let Err(_e) = r {
+            let code = unsafe { windows::Win32::Foundation::GetLastError() };
+            if code != ERROR_PIPE_CONNECTED {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("等待客户端连接失败: {}", code.0),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// 客户端连接任意命名管道（daemon 侧发起，按需连接 per-实例，§4.2）。
+    /// daemon 不在线（文件未找到 / 忙超时）→ `Err`，调用方降级。
+    pub fn connect_client(name_wide: &[u16]) -> io::Result<HANDLE> {
+        loop {
+            // SAFETY: name 以 NUL 结尾；管道句柄读写复用。
+            let result = unsafe {
+                CreateFileW(
+                    PCWSTR(name_wide.as_ptr()),
+                    (GENERIC_READ | GENERIC_WRITE).0,
+                    windows::Win32::Storage::FileSystem::FILE_SHARE_MODE(0),
+                    None,
+                    OPEN_EXISTING,
+                    Default::default(),
+                    None,
+                )
+            };
+            if let Ok(handle) = result {
+                return Ok(handle);
+            }
+            let e = unsafe { windows::Win32::Foundation::GetLastError() };
+            if e == ERROR_PIPE_BUSY {
+                // SAFETY: name 以 NUL 结尾；等待超时视为 daemon 不在线。
+                let ok = unsafe { WaitNamedPipeW(PCWSTR(name_wide.as_ptr()), PIPE_CONNECT_TIMEOUT_MS) };
+                if !ok.as_bool() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "命名管道忙且超时（服务端不在线）",
+                    ));
+                }
+                continue; // 管道可用了，重试 CreateFileW
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("命名管道不可达: {}", e.0),
+            ));
+        }
     }
 
     pub fn read_frame(handle: HANDLE) -> io::Result<Vec<u8>> {
@@ -541,6 +864,157 @@ impl Drop for PipeServer {
     }
 }
 
+/// 反向控制管道服务端（TSF 每实例一个 accept 线程，§4.2）：阻塞等待 daemon 连接 →
+/// 处理一条 Cmd → 回 CtlResult → 断开。句柄经 `handle()` 暴露供调用方跨线程 `Close` 中断等待。
+/// 非 Windows = 桩。
+pub struct CtlServer {
+    #[cfg(windows)]
+    pub(crate) handle: HANDLE,
+    #[cfg(not(windows))]
+    _stub: (),
+}
+
+impl CtlServer {
+    /// 创建管道实例（**不连接**）：`connect` 才阻塞等待。句柄可由其他线程
+    /// `CloseHandle` 中断 `connect`（TSF Deactivate 停 accept 线程用）。
+    pub fn create(name: &str) -> io::Result<CtlServer> {
+        #[cfg(windows)]
+        {
+            let wide = imp::name_wide(name);
+            let handle = imp::create_server(&wide)?;
+            Ok(CtlServer { handle })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = name;
+            Err(err_unsupported())
+        }
+    }
+
+    /// 阻塞等待 daemon 连接。跨线程关闭句柄（`interrupt`）→ `Err`（取消路径）。
+    pub fn connect(&self) -> io::Result<()> {
+        #[cfg(windows)]
+        {
+            imp::connect_server(self.handle)
+        }
+        #[cfg(not(windows))]
+        {
+            Err(err_unsupported())
+        }
+    }
+
+    /// 读一 Cmd → `handler` 求结果 → 写回。任何一步失败返回 `Err`。
+    pub fn serve(&self, handler: impl FnOnce(&CtlCmd) -> CtlResult) -> io::Result<()> {
+        #[cfg(windows)]
+        {
+            let payload = imp::read_frame(self.handle)?;
+            let cmd = decode_ctl_cmd(&payload)?;
+            let result = handler(&cmd);
+            imp::write_frame(self.handle, &encode_ctl_result(&result))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = handler;
+            Err(err_unsupported())
+        }
+    }
+
+    /// 服务端句柄（跨进程/线程共享：调用方可持有后从其他线程 `CloseHandle` 中断阻塞等待）。
+    pub fn handle(&self) -> HANDLE {
+        #[cfg(windows)]
+        {
+            self.handle
+        }
+        #[cfg(not(windows))]
+        {
+            HANDLE::default()
+        }
+    }
+
+    /// 中断阻塞中的 `connect`（从其他线程调用；幂等，关闭后句柄无效）。
+    pub fn interrupt(&self) {
+        #[cfg(windows)]
+        {
+            // SAFETY: 关闭句柄中断 ConnectNamedPipe 等待；句柄值的重复关闭由 Drop 忽略错误。
+            let _ = unsafe { CloseHandle(self.handle) };
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = ();
+        }
+    }
+}
+
+impl Drop for CtlServer {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            // SAFETY: 断开 + 关闭句柄；重复关闭（interrupt 已关）返回错误，忽略。
+            let _ = unsafe { DisconnectNamedPipe(self.handle) };
+            let _ = unsafe { CloseHandle(self.handle) };
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = ();
+        }
+    }
+}
+
+/// 反向控制管道客户端（daemon 侧，§4.2 按需连接）：连入 `\\.\pipe\iuv-ctl-<pid>-<tid>` →
+/// 发一帧 Cmd → 收一帧 CtlResult → 断开。非 Windows = 桩。
+pub struct CtlClient {
+    #[cfg(windows)]
+    handle: HANDLE,
+    #[cfg(not(windows))]
+    _stub: (),
+}
+
+impl CtlClient {
+    /// 连接指定实例控制管道。实例不在线（未启动 accept / 已死）→ `Err`（daemon 干净退出）。
+    pub fn connect(name: &str) -> io::Result<CtlClient> {
+        #[cfg(windows)]
+        {
+            let wide = imp::name_wide(name);
+            let handle = imp::connect_client(&wide)?;
+            Ok(CtlClient { handle })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = name;
+            Err(err_unsupported())
+        }
+    }
+
+    /// 发命令 → 收结果（单次会话；成功后调用方断开连接，贴合按需连接风格）。
+    pub fn request(&self, cmd: &CtlCmd) -> io::Result<CtlResult> {
+        #[cfg(windows)]
+        {
+            let _ = imp::write_frame(self.handle, &encode_ctl_cmd(cmd))?;
+            let resp_payload = imp::read_frame(self.handle)?;
+            decode_ctl_result(&resp_payload)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = cmd;
+            Err(err_unsupported())
+        }
+    }
+}
+
+impl Drop for CtlClient {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            // SAFETY: 句柄由本对象独占持有；关闭失败无处理路径，忽略。
+            let _ = unsafe { CloseHandle(self.handle) };
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = ();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,5 +1084,114 @@ mod tests {
         let mut bytes = encode_request(&Request::Ping);
         bytes.push(0xAA);
         assert!(decode_request(&bytes).is_err(), "Ping 后残留字节");
+    }
+
+    #[test]
+    fn toolbar_requests_roundtrip() {
+        let state = ToolbarState::new(1, 0, 1, 1);
+        for req in [
+            Request::Register {
+                pid: 1234,
+                tid: 56,
+                state,
+            },
+            Request::StateSync {
+                pid: 1234,
+                tid: 56,
+                state: ToolbarState::new(0, 1, 0, 0),
+            },
+            Request::Active {
+                pid: 1234,
+                tid: 56,
+                active: true,
+            },
+            Request::Active {
+                pid: 1234,
+                tid: 56,
+                active: false,
+            },
+            Request::ToggleToolbar,
+            Request::Unregister {
+                pid: 1234,
+                tid: 56,
+            },
+        ] {
+            let bytes = encode_request(&req);
+            assert_eq!(decode_request(&bytes).unwrap(), req);
+        }
+        // 帧前缀 + 载荷往返
+        let frame = to_frame(&encode_request(&Request::Register {
+            pid: 7,
+            tid: 8,
+            state,
+        }));
+        let payload = parse_frame(&frame).unwrap();
+        assert_eq!(
+            decode_request(payload).unwrap(),
+            Request::Register {
+                pid: 7,
+                tid: 8,
+                state,
+            }
+        );
+        // 截断拒绝
+        assert!(decode_request(&[0x08, 0x01]).is_err(), "Register 截断");
+    }
+
+    #[test]
+    fn ctl_cmd_roundtrip() {
+        for cmd in [
+            CtlCmd::SetState {
+                field: CTL_FIELD_MODE,
+                value: 1,
+            },
+            CtlCmd::SetState {
+                field: CTL_FIELD_SCRIPT,
+                value: 0,
+            },
+        ] {
+            let bytes = encode_ctl_cmd(&cmd);
+            assert_eq!(decode_ctl_cmd(&bytes).unwrap(), cmd);
+            // 帧前缀往返
+            let frame = to_frame(&bytes);
+            assert_eq!(decode_ctl_cmd(parse_frame(&frame).unwrap()).unwrap(), cmd);
+        }
+        assert!(decode_ctl_cmd(&[0x01]).is_err(), "SetState 截断");
+        assert!(decode_ctl_cmd(&[0xFF]).is_err(), "未知 Cmd tag");
+        let mut bytes = encode_ctl_cmd(&CtlCmd::SetState {
+            field: 1,
+            value: 0,
+        });
+        bytes.push(0xAA);
+        assert!(decode_ctl_cmd(&bytes).is_err(), "残留字节");
+    }
+
+    #[test]
+    fn ctl_result_roundtrip() {
+        let ok = CtlResult::Ok {
+            state: ToolbarState::new(0, 1, 1, 0),
+        };
+        let bytes = encode_ctl_result(&ok);
+        assert_eq!(decode_ctl_result(&bytes).unwrap(), ok);
+        let err = CtlResult::Err {
+            msg: "写 OPENCLOSE 失败".into(),
+        };
+        let bytes = encode_ctl_result(&err);
+        assert_eq!(decode_ctl_result(&bytes).unwrap(), err);
+        assert!(decode_ctl_result(&[0x01]).is_err(), "Ok 截断");
+    }
+
+    #[test]
+    fn toolbar_state_field_accessor() {
+        let s = ToolbarState::new(1, 0, 1, 0);
+        assert_eq!(s.field(CTL_FIELD_MODE), 1);
+        assert_eq!(s.field(CTL_FIELD_WIDTH), 0);
+        assert_eq!(s.field(CTL_FIELD_SCRIPT), 1);
+        assert_eq!(s.field(CTL_FIELD_PUNCT), 0);
+        assert_eq!(s.field(0xFF), 0, "非法字段 → 0");
+        assert_eq!(
+            ctl_pipe_name(1234, 56),
+            r"\\.\pipe\iuv-ctl-1234-56"
+        );
     }
 }

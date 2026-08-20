@@ -15,10 +15,12 @@ path = "src/main.rs"
 iuv-core = { workspace = true }
 iuv-data = { workspace = true }
 iuv-ui = { workspace = true }
+iuv-win = { workspace = true }
 windows = { workspace = true }
 windows-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tiny-skia = { workspace = true }
 # eframe 0.36.1（2026-08 crates.io 最新稳定；默认 features = glow 渲染后端）。
 # egui 由 eframe 重导出（eframe::egui），版本一致锁定，无需另列。
 eframe = "0.36"

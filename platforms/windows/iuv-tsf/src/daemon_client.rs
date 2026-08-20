@@ -17,12 +17,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use iuv_core::{Engine, UserMutation, UserRemote};
-use iuv_data::{PipeClient, Request, Response, ShmReader};
+use iuv_data::{PipeClient, Request, Response, ShmReader, ToolbarState};
 use windows::Win32::System::Threading::{
-    CreateProcessW, STARTUPINFOW, PROCESS_INFORMATION, CREATE_NO_WINDOW,
+    CreateProcessW, GetCurrentProcessId, GetCurrentThreadId, STARTUPINFOW, PROCESS_INFORMATION,
+    CREATE_NO_WINDOW,
 };
 
 use crate::log::log_line;
+
+/// 当前进程 id（32-toolbar 实例标识 pid:tid 的 pid）。
+pub fn process_id() -> u32 {
+    // SAFETY: 纯查询系统 API，无指针参数，无副作用。
+    unsafe { GetCurrentProcessId() }
+}
+
+/// 当前线程 id（32-toolbar 实例标识 pid:tid 的 tid = **OS 线程 id**，非 TSF client id——
+/// 前台看板判定 `GetWindowThreadProcessId` 返回的就是 OS 线程 id，直接匹配）。
+pub fn thread_id() -> u32 {
+    // SAFETY: 纯查询系统 API，无指针参数，无副作用。
+    unsafe { GetCurrentThreadId() }
+}
 
 /// daemon 自启节流（秒）：Activate 检测离线后 60s 内不重复拉起（防多进程/多键风暴；
 /// 并发拉起由 daemon 单实例互斥兜底）。
@@ -137,11 +151,17 @@ impl DaemonClient {
     ///    （只注入内存态，不写盘），更新 last_version（None/Err 跳过——段未写入/损坏）；
     /// 3. `config_epoch != last_epoch` → 调用 `on_config_epoch`（text_service 注入：
     ///    engine.set_config + candwin.set_theme 等），更新 last_epoch；
-    /// 4. 在线状态翻转记日志；**不**把引擎 user_remote 置 None（apply 返回 false 即降级，
-    ///    天然兜底）。
+    /// 4. 在线状态翻转记日志；**离线→在线**时调用 `on_online`（text_service 注入：
+    ///    重新 Register 工具栏实例——§4.4 daemon 重启恢复，实例表/看板失联重建）；
+    ///    不把引擎 user_remote 置 None（apply 返回 false 即降级，天然兜底）。
     ///
     /// 返回 true = 用户库或配置有变化（调用方无需特殊处理，仅日志/断言用）。
-    pub fn poll(&self, engine: &Arc<Engine>, on_config_epoch: impl Fn(&Arc<Engine>)) -> bool {
+    pub fn poll(
+        &self,
+        engine: &Arc<Engine>,
+        on_config_epoch: impl Fn(&Arc<Engine>),
+        on_online: impl Fn(),
+    ) -> bool {
         // 1. 共享段打开失败 → 离线（写路径自动降级本地）。
         let (version, epoch) = {
             let mut shm = self.shm.lock().unwrap_or_else(|e| e.into_inner());
@@ -190,7 +210,12 @@ impl DaemonClient {
         // 3. config_epoch 变化 → 回调（与用户库注入解耦，独立热载）。
         changed |= self.on_config_epoch_consume(engine, epoch, &on_config_epoch);
 
-        self.set_online(true);
+        // 4. 在线翻转：离线→在线 → 重新 Register（§4.4 daemon 重启恢复）。
+        let was_offline = !self.set_online(true);
+        if was_offline {
+            log_line("[daemon] daemon 上线翻转：重新注册工具栏实例（§4.4）");
+            on_online();
+        }
         changed
     }
 
@@ -271,9 +296,10 @@ impl DaemonClient {
         }
     }
 
-    /// 在线/离线翻转记日志（幂等）。
-    fn set_online(&self, online: bool) {
+    /// 在线/离线翻转记日志（幂等）。返回**切换前**状态（调用方据此判断"上线翻转"）。
+    fn set_online(&self, online: bool) -> bool {
         let mut cur = self.online.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = *cur;
         if *cur != online {
             *cur = online;
             if online {
@@ -285,6 +311,7 @@ impl DaemonClient {
                 ));
             }
         }
+        prev
     }
 
     /// daemon 存活检测（管道 Ping）：连接复用；连接失败（daemon 未建管道）/Ping
@@ -310,6 +337,34 @@ impl DaemonClient {
                 false
             }
         }
+    }
+
+    // ===== 32-status-toolbar.md §4.1 TSF→daemon 上报（Register/StateSync/Active/Unregister） =====
+
+    /// Activate 注册 + 上报初始四态（失败 = daemon 离线，静默——在线翻转后 poll 重注册）。
+    pub fn register(&self, pid: u32, tid: u32, state: ToolbarState) -> bool {
+        self.send_request(&Request::Register { pid, tid, state })
+            .is_some()
+    }
+
+    /// 运行时四态变化上报（OPENCLOSE OnChange / CtlCmd::SetState 应用成功后）。
+    pub fn state_sync(&self, pid: u32, tid: u32, state: ToolbarState) {
+        let _ = self.send_request(&Request::StateSync { pid, tid, state });
+    }
+
+    /// Activate/Deactivate 通知（daemon 判「iuv 被选中」）。
+    pub fn set_active(&self, pid: u32, tid: u32, active: bool) {
+        let _ = self.send_request(&Request::Active { pid, tid, active });
+    }
+
+    /// 实例 Drop 注销（从 daemon 实例表移除）。
+    pub fn unregister(&self, pid: u32, tid: u32) {
+        let _ = self.send_request(&Request::Unregister { pid, tid });
+    }
+
+    /// 语言栏菜单「显示/隐藏工具栏」（全局偏好切换）。
+    pub fn toggle_toolbar(&self) {
+        let _ = self.send_request(&Request::ToggleToolbar);
     }
 }
 
@@ -505,14 +560,14 @@ mod tests {
         ));
         let client = DaemonClient::new(std::env::temp_dir().join("poll-inject.imedic"));
         // 首 poll：注入共享段用户库（覆盖 base 权重 100000 → 7）
-        assert!(client.poll(&engine, |_| {}), "首次应有变化");
+        assert!(client.poll(&engine, |_| {}, || {}), "首次应有变化");
         assert_eq!(engine.lookup("da")[0].weight, 7, "共享段用户库注入引擎");
         // version 未变：不再注入/不再有变化
-        assert!(!client.poll(&engine, |_| {}), "同 version 无变化");
+        assert!(!client.poll(&engine, |_| {}, || {}), "同 version 无变化");
         // 再写新库（version+1）→ 重新注入
         w.write(&UserDict::empty().set_entry("da", "龘", 8))
             .unwrap();
-        assert!(client.poll(&engine, |_| {}), "新版本应再注入");
+        assert!(client.poll(&engine, |_| {}, || {}), "新版本应再注入");
         assert_eq!(engine.lookup("da")[0].weight, 8);
     }
 
@@ -528,13 +583,13 @@ mod tests {
         let fired = std::sync::atomic::AtomicUsize::new(0);
         client.poll(&engine, |_| {
             fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        });
+        }, || {});
         let base = fired.load(std::sync::atomic::Ordering::SeqCst);
         // bump 一次 → 触发一次
         w.bump_config_epoch();
         client.poll(&engine, |_| {
             fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        });
+        }, || {});
         assert_eq!(
             fired.load(std::sync::atomic::Ordering::SeqCst),
             base + 1,
@@ -543,7 +598,7 @@ mod tests {
         // 同纪元再 poll → 不触发
         client.poll(&engine, |_| {
             fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        });
+        }, || {});
         assert_eq!(
             fired.load(std::sync::atomic::Ordering::SeqCst),
             base + 1,
@@ -557,6 +612,6 @@ mod tests {
     fn offline_degrade_paths() {
         let client = DaemonClient::new(std::env::temp_dir().join("offline.imedic"));
         let engine = Arc::new(Engine::new(Dict::default(), Config::default()));
-        let _ = client.poll(&engine, |_| {});
+        let _ = client.poll(&engine, |_| {}, || {});
     }
 }

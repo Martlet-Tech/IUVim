@@ -22,7 +22,11 @@ pub use layout::{
     CARET_GAP, PAD_X, PAD_Y, ROW_GAP,
 };
 pub use menu::{menu_hit_test, MenuEntry};
-pub use render::{render_candidate, render_menu, Surface};
+pub use render::{
+    render_candidate, render_menu, render_toolbar, render_tooltip, Surface, ToolbarIcons,
+    ToolbarSpec, TB_COUNT, TB_GEAR, TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
+    TOOLBAR_BTN, TOOLBAR_GAP, TOOLBAR_PAD,
+};
 pub use snapshot::{effect_to_snapshot, CaretRect, UiSnapshot};
 pub use text::{TextRenderer, FALLBACK_FAMILIES, FONT_PX_96};
 pub use theme::{theme_dark, theme_light, Theme};

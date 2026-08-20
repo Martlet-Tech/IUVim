@@ -1,0 +1,12 @@
+[package]
+name = "iuv-win"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "iuv Windows 共享 UI 呈现层（ULW 抽取，daemon/TSF 复用，32-status-toolbar.md §6.4）"
+
+[dependencies]
+iuv-ui = { workspace = true }
+windows = { workspace = true }
+windows-core = { workspace = true }

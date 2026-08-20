@@ -78,7 +78,7 @@ pub struct CandwinCandidateWindow {
     /// 文本渲染器（fontdb 首扫只在窗口创建时一次；每帧 measure+draw 复用）。
     text: Option<TextRenderer>,
     /// ULW 呈现缓存（懒建；尺寸变化自动重建 DIB）。
-    ulw: super::ulw::UlwSurface,
+    ulw: iuv_win::UlwSurface,
 }
 
 impl CandwinCandidateWindow {
@@ -95,7 +95,7 @@ impl CandwinCandidateWindow {
             suppressed: false,
             theme,
             text: None,
-            ulw: super::ulw::UlwSurface::new(),
+            ulw: iuv_win::UlwSurface::new(),
         }
     }
 
