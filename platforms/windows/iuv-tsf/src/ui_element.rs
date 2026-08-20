@@ -8,8 +8,9 @@
 //! （TIP 不应自绘——游戏内框场景）；true = TIP 自绘（notepad 场景维持现状）。
 //! 实测（2026-08-16）：IMM 应用（WoW）pbshow=true（系统认为 TIP 自绘），但桥
 //! **同时**把候选转给游戏（游戏也画）——所以自绘窗隐藏不能靠 pbshow，靠
-//! ImmDetect（text_service.rs：GetTextExt 退化矩形 w/h<=2 连续 3 次 = IMM 客户端
-//! → CandwinCandidateWindow::set_suppressed）。
+//! config `candidate_owner_apps` 名单（text_service.rs：命中进程 → set_suppressed）。
+//! 2026-08-20 起弃 GetTextExt 矩形启发式（误伤微信等真实 TSF 应用：编辑器对折叠
+//! range 返回 2×1 薄光标被误判为 IMM），自绘窗抑制改名单驱动。
 //!
 //! 桥对元素的数据消费（日志实证）：候选变化（Update）时拉 GetCount/GetString
 //! （**全量**，全局索引）/GetPageIndex/GetCurrentPage/GetSelection；翻页时只拉

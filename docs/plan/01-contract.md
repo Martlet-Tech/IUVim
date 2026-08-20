@@ -661,6 +661,12 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
   `GetSelection`=**全局索引**（page×page_size+selected，游戏翻页校验 dwSelection 所在页区间，
   页内索引会导致游戏候选栏翻页关闭）、`GetPageIndex`=每页起始数组。桥把元素数据转给 IMM
   应用（游戏）自绘候选栏；TSF 应用（notepad）pbshow=true 自绘窗照常。
-- **自绘窗自动抑制（`ImmDetect`，wow-ime 2026-08-16）**：GetTextExt 退化矩形（w/h≤2）连续 3 次
-  = IMM 客户端（游戏自绘候选栏）→ `CandwinCandidateWindow::set_suppressed(true)`（show/update 空操作）；
-  任意一次非退化立即恢复。pbshow 不可靠（IMM 应用恒 true——系统认为 TIP 自绘，但桥同时转候选给游戏）。
+- **自绘窗抑制（`candidate_owner_apps` 名单驱动，2026-08-20 弃矩形启发式）**：配置
+  `candidate_owner_apps`（exe 名列表，大小写不敏感精确匹配，同 `passthrough_apps`）命中进程 →
+  `CandwinCandidateWindow::set_suppressed(true)`（show/update 空操作）；**默认空 = 恒自绘**。
+  语义 = 这些 app 自己绘制候选栏（TSF→IMM 桥消费候选 UI 元素，如 WoW 游戏内框），iuv 不再
+  绘制自绘候选窗（避免双候选栏）。**历史教训**：旧按 GetTextExt 退化矩形（w/h≤2）连续 3 次
+  自动判 IMM 客户端会误伤真实 TSF 应用——微信编辑器对折叠 range 返回 2×1 薄光标（位置逐键
+  右移，是真实光标仅尺寸小），3 键即误判抑制 → 候选栏消失（微信不自绘候选栏）；notepad/
+  WinTerm 返回真矩形（9×19+）不受影响。pbshow 不可靠（IMM 应用恒 true——系统认为 TIP 自绘，
+  但桥同时转候选给游戏）。候选 UI 元素（`cand_elem`）同步不受抑制影响，游戏桥仍可拉取候选数据。

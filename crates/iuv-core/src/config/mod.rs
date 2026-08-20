@@ -163,6 +163,13 @@ pub struct Config {
     /// 按键直通进程名单：命中进程（exe 名，大小写不敏感精确匹配）TSF 层全部按键放行，
     /// 不建会话/无候选窗（输入法在该进程完全透明，游戏场景）。默认空 = 不启用。
     pub passthrough_apps: Vec<String>,
+    /// 候选渲染自持进程名单：这些 app 自己绘制候选栏（TSF→IMM 桥消费候选 UI 元素，
+    /// 如 WoW 游戏内候选框）→ iuv **抑制自绘候选窗**（避免双候选栏重叠）。
+    /// 默认空 = 恒自绘（所有正常 app 都显示 iuv 候选窗）。
+    /// 历史教训（2026-08-20）：按 GetTextExt 退化矩形自动判 IMM 应用会误伤真实 TSF
+    /// 应用（微信编辑器对折叠 range 返回 2×1 薄光标 → 3 次即误判抑制，候选栏消失），
+    /// 故改为显式名单驱动，不再做矩形启发式。
+    pub candidate_owner_apps: Vec<String>,
     /// 候选窗主题（light/dark，默认 light；M4 起生效，见 19-m4-cross-render.md）。
     /// 深色切换需重载输入法生效（热切换 M6 设置页做）。
     pub theme: ThemeChoice,
@@ -183,6 +190,7 @@ impl Default for Config {
             candidate_orientation: Orientation::Vertical,
             initial_state: InitialState::default(),
             passthrough_apps: Vec::new(),
+            candidate_owner_apps: Vec::new(),
             theme: ThemeChoice::Light,
             disabled_log_modules: Vec::new(),
         }
@@ -335,6 +343,8 @@ mod tests {
         assert!(c.keymap.page_next.contains(&Key::Char('.')));
         // 直通名单默认空（不启用）
         assert!(c.passthrough_apps.is_empty());
+        // 候选渲染自持名单默认空（恒自绘）
+        assert!(c.candidate_owner_apps.is_empty());
         // 主题默认浅色
         assert_eq!(c.theme, ThemeChoice::Light);
         // 日志禁用模块默认空（全记录）
@@ -411,6 +421,21 @@ mod tests {
             c.passthrough_apps,
             vec!["cyberpunk2077.exe".to_owned(), "dota2.exe".to_owned()]
         );
+    }
+
+    #[test]
+    fn candidate_owner_apps_parse() {
+        // 候选渲染自持名单解析 + 缺省空（恒自绘）
+        let c: Config = serde_json::from_str(r#"{ "page_size": 5 }"#).unwrap();
+        assert!(c.candidate_owner_apps.is_empty());
+        let p = tmp_file("cand_owner.json");
+        std::fs::write(
+            &p,
+            r#"{ "candidate_owner_apps": ["Wow.exe"] }"#,
+        )
+        .unwrap();
+        let c2 = Config::from_file(&p);
+        assert_eq!(c2.candidate_owner_apps, vec!["Wow.exe".to_owned()]);
     }
 
     #[test]

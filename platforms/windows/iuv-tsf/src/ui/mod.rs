@@ -18,7 +18,7 @@ pub trait CandidateUi {
     fn move_to(&mut self, caret: CaretRect);
     fn hide(&mut self);
     fn is_visible(&self) -> bool;
-    /// 抑制显示：IMM 应用（游戏自绘候选栏）时静默——show/update 空操作，
+    /// 抑制显示：`candidate_owner_apps` 命中（app 自绘候选栏）时静默——show/update 空操作，
     /// 开启瞬间隐藏已显示窗口；false 恢复。引擎/元素/交互逻辑不受影响。
     fn set_suppressed(&mut self, suppressed: bool);
 }

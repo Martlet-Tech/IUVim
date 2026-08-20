@@ -109,6 +109,16 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
    迁移 shim/导出）、iuv-tsf（Activate 默认模式 + 标点判定）、iuv-daemon（config.rs 签名重构
    `save_config(&DaemonConfig)` + settings 常用页重排 + page_size 钳制 5..=9）、脚本模板、契约/文档同步。
    测试：iuv-core 迁移/默认 5 + daemon load/save/迁移/钳制 6 全绿。
+- [x] **自绘候选窗抑制改名单驱动（2026-08-20 已修，待手测）**：微信打字 `ceshi` 到第 4 键候选栏消失
+  ——根因是 wow-ime 的 `ImmDetect` 按 GetTextExt 退化矩形（w/h≤2 连续 3 次）自动判 IMM 客户端并抑制
+  自绘候选窗，微信编辑器对折叠 composition range 返回 2×1 薄光标（日志实测：首字母 14×16 真矩形、
+  此后每键 2×1；位置逐键右移是真实光标仅尺寸小）→ 第 3 键即误判抑制，而微信不自绘候选栏（不像
+  WoW 走 TSF→IMM 桥），候选整个消失。**修复**：删 `ImmDetect` 矩形启发式，改 `config.json` 新字段
+  `candidate_owner_apps`（exe 名单，同 `passthrough_apps` 匹配语义）驱动 `set_suppressed`——命中进程
+  （如 WoW 自绘游戏内候选栏）才抑制，**默认空 = 恒自绘（微信自动修复）**；候选 UI 元素同步不受抑制
+  影响（游戏桥仍可拉候选）。改动：iuv-core config（字段+测试）、iuv-tsf（text_service.rs 删 ImmDetect/
+  dispatch_effect 名单判定 + candwin 翻转日志/注释）、daemon（settings.rs LOG_MODULES 删 immdetect）、
+  契约/26/install 模板/AGENTS 同步。测试：iuv-core 1 + iuv-tsf 1 新增全绿。
 - [x] **全角行为（2026-08-19 落地，待手测）**：`initial_state.width == Full` 时**会话外直通路径**套
   `fullwidth` 转换——**中文模式**数字 `0-9`→`０-９`、标点表未收符号（`/` `_`）→全角形、空格→`U+3000`，
   标点表内符号仍归标点开关、字母照常进拼音会话；**英文模式**字母（大小写=Shift⊕Caps）/数字/符号/空格

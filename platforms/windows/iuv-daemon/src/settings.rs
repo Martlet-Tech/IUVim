@@ -25,11 +25,15 @@ use crate::state::DaemonState;
 
 /// eframe 窗口主体（阻塞直到窗口关闭；主线程调用）。返回 Ok(()) = 正常关闭。
 pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
+    const WIDTH: f32 = 640.0;
+    const HEIGHT: f32 = 480.0;
+
     let options = eframe::NativeOptions {
+
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1024.0, 800.0])
-            .with_min_inner_size([1024.0, 800.0])
-            .with_max_inner_size([1024.0, 800.0]) // 锁死 1024×800
+            .with_inner_size([WIDTH, HEIGHT])
+            .with_min_inner_size([WIDTH, HEIGHT])
+            .with_max_inner_size([WIDTH, HEIGHT]) // 锁死 1024×800
             .with_resizable(false) // 禁最大化/拉伸
             .with_maximize_button(false) // 标题栏只剩 最小化 + 关闭
             .with_title("iuv 设置"),
@@ -142,7 +146,7 @@ fn tabs() -> Vec<Tab> {
 }
 
 /// 日志模块目录（tag, 说明）——开发者标签开关（26-log-modules.md）。
-/// TSF 侧：uielem/key/commit/caret/candwin/menuwin/immdetect/daemon；
+/// TSF 侧：uielem/key/commit/caret/candwin/menuwin/daemon；
 /// daemon 侧：main/pipe/settings/state。tag 须与 log_line 消息前缀 `[tag]` 一致。
 #[cfg(any(debug_assertions, feature = "dev"))]
 const LOG_MODULES: &[(&str, &str)] = &[
@@ -152,7 +156,6 @@ const LOG_MODULES: &[(&str, &str)] = &[
     ("caret", "光标量取"),
     ("candwin", "候选窗窗口层"),
     ("menuwin", "语言栏右键菜单"),
-    ("immdetect", "IMM 探测"),
     ("punct", "中文标点直接上屏"),
     ("daemon", "TSF 侧 daemon_client"),
     ("main", "守护进程主循环"),

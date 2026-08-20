@@ -219,9 +219,6 @@ pub(crate) struct TextService {
     lang_bar: RefCell<Option<ComObject<LangBarItemButton>>>,
     /// TSF 候选 UI 元素宿主（WoW 游戏内候选框实验）。Rc 共享：dispatch 路径同线程访问。
     cand_elem: Rc<RefCell<CandidateElementHost>>,
-    /// IMM 应用检测（GetTextExt 退化矩形）：命中 → 抑制自绘候选窗（游戏自绘候选栏）。
-    /// Rc 共享：dispatch 路径同线程访问（候选窗点击回调共用）。
-    imm_detect: Rc<RefCell<ImmDetect>>,
     /// M6 daemon 客户端（共享段读取 + 管道写；Arc 与引擎 UserRemote 共享）。
     /// Deactivate 不撤——随进程/实例生命周期（TextService Drop 释放）。
     daemon: RefCell<Option<Arc<DaemonClient>>>,
@@ -238,7 +235,6 @@ impl TextService {
         let composition = Rc::new(RefCell::new(None));
         let caret = Rc::new(Cell::new(CaretRect::default()));
         let cand_elem = Rc::new(RefCell::new(CandidateElementHost::new()));
-        let imm_detect = Rc::new(RefCell::new(ImmDetect::default()));
         // 候选窗交互接线（同线程回调；点击=页内行号→Digit 键上屏；悬停=纯视觉，
         // 窗口内部处理，不驱动会话）。
         // M4 主题：直接读 config.json（引擎可能仍在后台加载，engine() 不可依赖）：
@@ -258,7 +254,6 @@ impl TextService {
             let u = ui_rc.clone();
             let ca = caret.clone();
             let ce = cand_elem.clone();
-            let id = imm_detect.clone();
             ui_rc.borrow_mut().set_on_click(Some(Box::new(move |row: usize| {
                 // Digit 键位上限 1-9（row 0-8）；超限忽略（page_size 配置极端时防御）。
                 if row >= 9 {
@@ -269,7 +264,7 @@ impl TextService {
                     .as_mut()
                     .map(|sess: &mut Session| sess.on_key(Key::Digit((row + 1) as u8)));
                 if let Some(e) = effect {
-                    dispatch_effect(&s, &c, &u, &ca, &ce, &id, &e);
+                    dispatch_effect(&s, &c, &u, &ca, &ce, &e);
                 }
             })));
         }
@@ -283,7 +278,6 @@ impl TextService {
             ui: ui_rc,
             caret,
             cand_elem,
-            imm_detect,
             english_mode: Arc::new(AtomicBool::new(false)),
             lang_bar: RefCell::new(None),
             daemon: RefCell::new(None),
@@ -591,7 +585,6 @@ impl TextService {
             &self.ui,
             &self.caret,
             &self.cand_elem,
-            &self.imm_detect,
             effect,
         )
     }
@@ -625,14 +618,13 @@ impl TextService {
 }
 
 /// dispatch 的自由函数版：候选窗点击回调（同线程）与 TextService 共用同一路径。
-/// 经 Rc 共享槽访问 session/composition/ui/caret/cand_elem/imm_detect；orientation 取自引擎配置。
+/// 经 Rc 共享槽访问 session/composition/ui/caret/cand_elem；orientation 取自引擎配置。
 fn dispatch_effect(
     session: &Rc<RefCell<Option<Session>>>,
     composition: &Rc<RefCell<Option<Composition>>>,
     ui: &Rc<RefCell<CandwinCandidateWindow>>,
     caret: &Rc<Cell<CaretRect>>,
     cand_elem: &Rc<RefCell<CandidateElementHost>>,
-    imm_detect: &Rc<RefCell<ImmDetect>>,
     effect: &iuv_core::Effect,
 ) {
     // TSF 候选 UI 元素同步（与自绘窗平行）：候选非空 → Begin/Update；空 → End。
@@ -679,13 +671,14 @@ fn dispatch_effect(
         }
     };
     caret.set(caret_pos);
-    // IMM 应用检测（GetTextExt 退化矩形）：连续 3 次退化 → 抑制自绘候选窗。
-    // 会话结束路径（commit/cancel）无新光标，跳过观察、同步抑制状态（保留进程内判定）。
-    if effect.end.is_none() {
-        imm_detect.borrow_mut().observe(caret_pos);
-    }
-    ui.borrow_mut()
-        .set_suppressed(imm_detect.borrow().is_suppressed());
+    // 自绘候选窗抑制（candidate_owner_apps 名单驱动，2026-08-20 弃矩形启发式）：
+    // 命中进程（如 WoW 自绘游戏内候选栏）→ 抑制自绘窗（避免双候选栏）；默认空 = 恒自绘。
+    // 名单空时零开销（不查进程名）。候选 UI 元素同步不受影响（游戏桥仍可拉取候选数据）。
+    let suppress = engine()
+        .map(|e| e.config().candidate_owner_apps)
+        .map(|apps| should_suppress_candidate_window(&apps, &log::module_name()))
+        .unwrap_or(false);
+    ui.borrow_mut().set_suppressed(suppress);
     if ended {
         ui.borrow_mut().hide();
         cand_elem.borrow_mut().end();
@@ -1025,107 +1018,23 @@ fn char_code(vk: u16) -> u32 {
     unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_CHAR) & 0xFFFF }
 }
 
+/// 自绘候选窗抑制判定（candidate_owner_apps 名单驱动，2026-08-20 弃矩形启发式）：
+/// 名单空 = 恒自绘（false，零开销）；命中进程名 = 抑制自绘窗（true，app 自绘候选栏）。
+fn should_suppress_candidate_window(apps: &[String], exe: &str) -> bool {
+    !apps.is_empty() && is_passthrough_app(exe, apps)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn caret(w: i32, h: i32) -> CaretRect {
-        CaretRect { x: 0, y: 0, w, h }
-    }
-
     #[test]
-    fn imm_detect_requires_three_degrades() {
-        let mut d = ImmDetect::default();
-        // 1-2 次退化：不抑制
-        assert!(!d.observe(caret(1, 1)));
-        assert!(!d.is_suppressed());
-        assert!(!d.observe(caret(1, 1)));
-        assert!(!d.is_suppressed());
-        // 第 3 次：翻转抑制
-        assert!(d.observe(caret(1, 1)));
-        assert!(d.is_suppressed());
-        // 持续退化：状态稳定（不再翻转）
-        assert!(!d.observe(caret(0, 0)));
-        assert!(d.is_suppressed());
-    }
-
-    #[test]
-    fn imm_detect_recovers_on_normal_caret() {
-        let mut d = ImmDetect::default();
-        for _ in 0..3 {
-            d.observe(caret(1, 1));
-        }
-        assert!(d.is_suppressed());
-        // 非退化一次：立即恢复（焦点切换/新窗口）
-        assert!(d.observe(caret(12, 20)));
-        assert!(!d.is_suppressed());
-        // 恢复后退化计数清零：再退化需重新累计 3 次
-        assert!(!d.observe(caret(1, 1)));
-        assert!(!d.observe(caret(1, 1)));
-        assert!(d.observe(caret(1, 1)));
-        assert!(d.is_suppressed());
-    }
-
-    #[test]
-    fn imm_detect_tsf_apps_never_suppress() {
-        let mut d = ImmDetect::default();
-        // TSF 应用（notepad/WinTerm）：真实光标（w>=12）
-        for _ in 0..10 {
-            assert!(!d.observe(caret(12, 20)));
-        }
-        assert!(!d.is_suppressed());
-        // 单次异常退化（只读控件）：不误判
-        assert!(!d.observe(caret(1, 1)));
-        assert!(!d.is_suppressed());
-    }
-}
-
-/// IMM 应用检测（游戏内候选栏实验）：GetTextExt 退化矩形判定。
-///
-/// TSF→IMM 桥对 IMM 客户端（游戏）的 GetTextExt 返回退化矩形（w/h<=1，
-/// 实测 WoW 恒 rc=(2559,1389,2560,1389)）；TSF 应用返回真实光标（notepad
-/// w=12+ 随打字移动、WindowsTerminal w=12）。据此**连续 3 次退化**判定为
-/// IMM 客户端 → 抑制自绘候选窗（游戏自绘候选栏接管）；**任意一次非退化
-/// 立即恢复**（焦点切换/新窗口自然复位）。ImmGetContext 探测已实测无区分度
-/// （系统为所有激活 TSF 的线程统一创建 HIMC），故弃用。
-#[derive(Default)]
-struct ImmDetect {
-    /// 连续退化计数（w/h 均 <=1）。
-    degrade: u32,
-    /// 当前是否判定为 IMM 应用（抑制自绘窗）。
-    suppressed: bool,
-}
-
-/// 退化矩形判定阈值（px）：桥对 IMM 应用的 stub 返回 w=1；真实光标 >=12。
-const DEGRADE_THRESHOLD: i32 = 2;
-/// 连续退化多少次才确认（防 TSF 应用单次异常误判）。
-const DEGRADE_COUNT: u32 = 3;
-
-impl ImmDetect {
-    /// 观察一次光标矩形；返回抑制状态是否翻转（true = 变化，调用方同步 ui）。
-    fn observe(&mut self, caret: CaretRect) -> bool {
-        let degraded = caret.w <= DEGRADE_THRESHOLD && caret.h <= DEGRADE_THRESHOLD;
-        if degraded {
-            self.degrade += 1;
-            if self.degrade >= DEGRADE_COUNT && !self.suppressed {
-                self.suppressed = true;
-                log_line(
-                    "[immdetect] GetTextExt 连续退化（IMM 客户端，游戏自绘候选栏）→ 抑制自绘候选窗",
-                );
-                return true;
-            }
-        } else if self.degrade > 0 || self.suppressed {
-            self.degrade = 0;
-            if self.suppressed {
-                self.suppressed = false;
-                log_line("[immdetect] GetTextExt 恢复（TSF 应用）→ 恢复自绘候选窗");
-                return true;
-            }
-        }
-        false
-    }
-
-    fn is_suppressed(&self) -> bool {
-        self.suppressed
+    fn suppress_only_for_listed_apps() {
+        // 空名单 = 恒自绘（微信/notepad/WinTerm 等主流应用不误伤）
+        assert!(!should_suppress_candidate_window(&[], "weixin.exe"));
+        // 命中名单（大小写不敏感精确匹配）= 抑制（WoW 游戏自绘候选栏）
+        assert!(should_suppress_candidate_window(&["wow.exe".into()], "WoW.exe"));
+        // 未命中名单 = 恒自绘
+        assert!(!should_suppress_candidate_window(&["wow.exe".into()], "weixin.exe"));
     }
 }

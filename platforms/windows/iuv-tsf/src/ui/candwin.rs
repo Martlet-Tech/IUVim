@@ -69,7 +69,8 @@ pub struct CandwinCandidateWindow {
     /// 由 WM_MOUSEMOVE 更新、WM_MOUSELEAVE/命中落空/隐藏清除；
     /// 键盘事件不清除——鼠标仍悬停候选上就持续有悬停框。
     hover_row: Option<usize>,
-    /// 抑制显示：IMM 应用（游戏自绘候选栏）时静默（show/update 空操作）。
+    /// 抑制显示：`candidate_owner_apps` 命中（app 自绘候选栏，如 WoW 游戏内框）时静默
+    /// （show/update 空操作）。2026-08-20 起由配置名单驱动，不再做矩形启发式。
     suppressed: bool,
     /// 主题（装配时从 config 注入；M6 起可经 `set_theme` 热载——设置页保存后
     /// config_epoch 变化 → text_service 调 set_theme，下帧 paint 用新主题重渲染）。
@@ -416,7 +417,7 @@ impl Default for CandwinCandidateWindow {
 impl CandidateUi for CandwinCandidateWindow {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect) {
         if self.suppressed {
-            return; // IMM 应用：游戏自绘候选栏，本窗静默
+            return; // candidate_owner_apps 命中：app 自绘候选栏，本窗静默
         }
         if snap.reading.is_empty() && snap.candidates.is_empty() {
             crate::log::log_line("[candwin] show：快照为空，转 hide");
@@ -439,7 +440,7 @@ impl CandidateUi for CandwinCandidateWindow {
 
     fn update(&mut self, snap: &UiSnapshot) {
         if self.suppressed {
-            return; // IMM 应用：本窗静默
+            return; // candidate_owner_apps 命中：本窗静默
         }
         self.snap = snap.clone();
         if self.hwnd.is_invalid() || !self.visible {
@@ -493,8 +494,11 @@ impl CandidateUi for CandwinCandidateWindow {
             return;
         }
         self.suppressed = suppressed;
+        crate::log::log_line(&format!(
+            "[candwin] 自绘候选窗抑制 → {suppressed}（candidate_owner_apps：app 自绘候选栏接管）"
+        ));
         if suppressed {
-            // 抑制开启：立即隐藏已显示的窗口（游戏自绘候选栏接管）。
+            // 抑制开启：立即隐藏已显示的窗口（app 自绘候选栏接管）。
             self.hide();
         }
     }

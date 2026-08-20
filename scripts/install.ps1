@@ -181,6 +181,9 @@ if (-not (Test-Path $configPath)) {
   },
   // 前缀联想（高级）：false = 候选仅精确匹配（默认）/ true = 追加前缀长词
   "candidate_prefix": false,
+  // 候选渲染自持进程（高级）：这些 app 自己绘制候选栏（如 WoW 游戏内候选框）→ iuv 不绘制
+  // 自绘候选窗（默认空 = 恒自绘）。例：["Wow.exe"]
+  // "candidate_owner_apps": [],
   // 新 TSF 实例初始状态（2026-08-19 起，替换旧顶层 english_punctuation）：
   // mode = 中文/英文、width = 半角/全角（仅存默认值）、script = 简体/繁体（仅存默认值）、
   // punct = 中文标点/英文标点（中文状态按标点键直通英文形）

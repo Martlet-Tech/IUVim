@@ -70,7 +70,8 @@ fn module_disabled(msg: &str) -> bool {
 ### 6. 设置页 UI（开发者标签）
 
 `settings.rs` `dev_tab()` 新增「日志模块」区：
-- 模块目录（常量列表）：`uielem, key, commit, caret, candwin, menuwin, immdetect, daemon, main, pipe, settings, state`
+- 模块目录（常量列表）：`uielem, key, commit, caret, candwin, menuwin, daemon, main, pipe, settings, state`
+  （`immdetect` 已于 2026-08-20 移除——自绘窗抑制改 `candidate_owner_apps` 名单驱动，无矩形探测日志）
 - 每个模块一个 `ui.checkbox(启用, 名称 + 说明)`；勾选 = 记录（= 不在禁用集），默认全勾。
 - 存 `SettingsApp` 本地 `disabled: Vec<String>`（与目录补集）；apply 时并入保存。
 - 附一行说明：改动点「确定/应用」生效，TSF 侧经 config_epoch 热载。
