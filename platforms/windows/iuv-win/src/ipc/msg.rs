@@ -57,7 +57,7 @@ pub enum Response {
 // ===== 32-status-toolbar.md 工具栏四态 + 反向控制通道 =====
 
 /// 工具栏四态传输值（每 TSF 实例，32-status-toolbar.md §2.4/§4）。
-/// u8 编码（与 iuv-core `RuntimeState::to_toolbar` 一致）：
+/// u8 编码（与 iuv-core `ImeState::to_toolbar` 一致）：
 /// `mode` 0=中文 1=英文；`width` 0=半角 1=全角；`script` 0=简体 1=繁体；`punct` 0=中文标点 1=英文标点。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ToolbarState {
@@ -68,7 +68,7 @@ pub struct ToolbarState {
 }
 
 impl From<(u8, u8, u8, u8)> for ToolbarState {
-    /// iuv-core `RuntimeState::to_toolbar()` 的裸元组 → 传输结构（字段序 mode/width/script/punct）。
+    /// iuv-core `ImeState::to_toolbar()` 的裸元组 → 传输结构（字段序 mode/width/script/punct）。
     fn from((mode, width, script, punct): (u8, u8, u8, u8)) -> Self {
         ToolbarState {
             mode,

@@ -1,7 +1,7 @@
 //! 模式与实例状态（P2.2 从 text_service.rs 拆出）：中英切换、会话清理、
 //! 会话外标点/全角直接上屏判定、运行时四态收尾。均挂 `impl TextService`。
 
-use iuv_core::{chinese_punct, shifted_punct, InitialMode, PunctMode, RuntimeState};
+use iuv_core::{chinese_punct, shifted_punct, ImeState, InitialMode, PunctMode};
 use windows::Win32::UI::TextServices::ITfContext;
 
 use crate::composition::Composition;
@@ -14,7 +14,7 @@ use super::text_service::TextService;
 
 impl TextService {
     /// 当前运行时四态快照。
-    pub(crate) fn runtime_snapshot(&self) -> RuntimeState {
+    pub(crate) fn runtime_snapshot(&self) -> ImeState {
         *self.runtime.lock().unwrap_or_else(|e| e.into_inner())
     }
 

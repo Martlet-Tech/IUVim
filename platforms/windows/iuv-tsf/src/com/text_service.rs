@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use iuv_core::{Config, Key, RuntimeState, Session};
+use iuv_core::{Config, ImeState, Key, Session};
 use iuv_win::{CtlCmd, CtlResult, CTL_FIELD_MODE};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{
@@ -107,7 +107,7 @@ pub(crate) struct TextService {
     /// 实例运行时四态（32-status-toolbar.md §5.1）：per-实例（非进程级 config），
     /// 启动 = `config.initial_state`，运行时操作才改；Session 构造注入（live 读）。
     /// `Arc<Mutex<...>>`：控制通道（SetState）与 OnChange 都写，会话/热键路径读。
-    pub(crate) runtime: Arc<Mutex<RuntimeState>>,
+    pub(crate) runtime: Arc<Mutex<ImeState>>,
     /// 反向控制端点（32-toolbar §4.2/§4.3）：accept 线程 + 隐藏消息窗。Activate 起、
     /// Deactivate/Drop 停（懒建，每个实例一个）。
     ctl: RefCell<Option<CtlEndpoint>>,
@@ -175,9 +175,7 @@ impl TextService {
             punct_quote_open: Cell::new(false),
             // 实例运行时四态：创建时（首次 Activate 前）从 config 初始值取一次
             // （32-toolbar §2.5：设置页默认值 = 新建实例时的初始值；热载不改运行实例）。
-            runtime: Arc::new(Mutex::new(RuntimeState::from(
-                Config::load().initial_state,
-            ))),
+            runtime: Arc::new(Mutex::new(Config::load().initial_state)),
             ctl: RefCell::new(None),
             registered: Cell::new(false),
         }

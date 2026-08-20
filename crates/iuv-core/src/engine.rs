@@ -68,10 +68,10 @@ impl Engine {
     }
 
     /// 注入实例运行时四态开会话（32-status-toolbar.md §5.1）：TSF 每实例持有自己的
-    /// `Arc<Mutex<RuntimeState>>`，会话 live 读；引擎进程级单例共享多实例不受影响。
+    /// `Arc<Mutex<ImeState>>`，会话 live 读；引擎进程级单例共享多实例不受影响。
     pub fn start_session_with_runtime(
         self: &Arc<Self>,
-        runtime: Arc<std::sync::Mutex<crate::RuntimeState>>,
+        runtime: Arc<std::sync::Mutex<crate::ImeState>>,
     ) -> Session {
         self.reload_user_dict();
         Session::with_runtime(self.clone(), runtime)

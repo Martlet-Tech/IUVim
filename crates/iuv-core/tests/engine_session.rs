@@ -2,7 +2,7 @@
 //! 用 Dict::from_entries 造小词典，不依赖真实词库文件。
 
 use iuv_core::{
-    Candidate, CandidateKind, Config, Engine, InitialState, Key, Session, SessionEnd, WidthMode,
+    Candidate, CandidateKind, Config, Engine, ImeState, Key, Session, SessionEnd, WidthMode,
 };
 use iuv_data::Dict;
 use std::sync::Arc;
@@ -2353,9 +2353,9 @@ fn preview_editorial_rules_aligned_with_mainstream() {
 #[test]
 fn full_width_enter_commits_fullwidth_raw() {
     let cfg = Config {
-        initial_state: InitialState {
+        initial_state: ImeState {
             width: WidthMode::Full,
-            ..InitialState::default()
+            ..ImeState::default()
         },
         ..Config::default()
     };
@@ -2381,9 +2381,9 @@ fn full_width_enter_commits_fullwidth_raw() {
 #[test]
 fn full_width_space_candidate_vs_fallback() {
     let cfg = Config {
-        initial_state: InitialState {
+        initial_state: ImeState {
             width: WidthMode::Full,
-            ..InitialState::default()
+            ..ImeState::default()
         },
         ..Config::default()
     };
@@ -2427,9 +2427,9 @@ fn traditional_candidates_converted() {
         ("wang".into(), "旺".into(), 300),
     ]);
     let cfg = Config {
-        initial_state: InitialState {
+        initial_state: ImeState {
             script: iuv_core::ScriptMode::Traditional,
-            ..InitialState::default()
+            ..ImeState::default()
         },
         ..Config::default()
     };
@@ -2454,9 +2454,9 @@ fn traditional_single_char_converted() {
     // 需要词典里有一个网字词条；fixture_dict 无网 → 用 from_entries 注入
     let dict = Dict::from_entries(vec![("wang".into(), "网".into(), 500)]);
     let cfg = Config {
-        initial_state: InitialState {
+        initial_state: ImeState {
             script: iuv_core::ScriptMode::Traditional,
-            ..InitialState::default()
+            ..ImeState::default()
         },
         ..Config::default()
     };
@@ -2479,9 +2479,9 @@ fn traditional_commit_converted() {
     // fixture_dict 无「以后」，注入
     let dict = Dict::from_entries(vec![("yi'hou".into(), "以后".into(), 8000)]);
     let cfg = Config {
-        initial_state: InitialState {
+        initial_state: ImeState {
             script: iuv_core::ScriptMode::Traditional,
-            ..InitialState::default()
+            ..ImeState::default()
         },
         ..Config::default()
     };
@@ -2507,9 +2507,9 @@ fn traditional_selfmade_records_simplified() {
         ("luo".into(), "络".into(), 400),
     ]);
     let cfg = Config {
-        initial_state: InitialState {
+        initial_state: ImeState {
             script: iuv_core::ScriptMode::Traditional,
-            ..InitialState::default()
+            ..ImeState::default()
         },
         ..Config::default()
     };
@@ -2575,9 +2575,9 @@ fn simplified_mode_converter_inert() {
 #[test]
 fn traditional_no_converter_degraded() {
     let cfg = Config {
-        initial_state: InitialState {
+        initial_state: ImeState {
             script: iuv_core::ScriptMode::Traditional,
-            ..InitialState::default()
+            ..ImeState::default()
         },
         ..Config::default()
     };

@@ -29,6 +29,7 @@
 
 - **P3.1** 解耦 iuv-core→ToolbarState：`to_toolbar()` 返回 `(u8,u8,u8,u8)`
 - **P3.2** `ipc.rs`+`shm.rs`（1673 行，占 iuv-data 44%，纯 Windows）移入 iuv-win（`ipc/{msg,codec,pipe,ctl}` + `shm.rs`），消费方改 import，依赖边零新增；iuv-data 保留 mmap（有 `fs::read` 真降级）
+- **P3.3** `InitialState`/`RuntimeState`（字段同构、机械 From + 重复 Default）合并单类型 `ImeState`（Copy + serde + `#[derive(Default)]`）；`session.rs`/`text_service.rs` 构造点改 `config.initial_state` 直取（Copy）；JSON schema 不变
 
 ## 风险控制
 

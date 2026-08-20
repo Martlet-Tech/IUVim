@@ -19,7 +19,7 @@ pub struct DaemonConfig {
     pub page_size: usize,
     /// 新 TSF 实例初始状态（中/英、半/全角、简/繁、标点风格；复用 iuv-core 类型，单一事实源）。
     /// 旧顶层 `english_punctuation: bool` 键在 load 时迁移并入、save 时清理（见 28-initial-state-settings.md）。
-    pub initial_state: iuv_core::InitialState,
+    pub initial_state: iuv_core::ImeState,
     /// 按键直通进程名列表（exe 名，大小写不敏感精确匹配，TSF 层消费）。
     pub passthrough_apps: Vec<String>,
     /// 候选渲染自持进程名列表（exe 名，大小写不敏感精确匹配；命中进程 iuv 抑制自绘候选窗，
@@ -36,7 +36,7 @@ impl Default for DaemonConfig {
             theme: "light".into(),
             candidate_orientation: "vertical".into(),
             page_size: 5,
-            initial_state: iuv_core::InitialState::default(),
+            initial_state: iuv_core::ImeState::default(),
             passthrough_apps: Vec::new(),
             candidate_owner_apps: Vec::new(),
             disabled_log_modules: Vec::new(),
@@ -113,7 +113,7 @@ pub fn load_config() -> DaemonConfig {
 }
 
 /// 解析 `initial_state` 节点（复用 iuv-core 类型与 serde 规则：缺字段补默认、未知值回退默认）。
-fn parse_initial_state(node: &serde_json::Value) -> iuv_core::InitialState {
+fn parse_initial_state(node: &serde_json::Value) -> iuv_core::ImeState {
     serde_json::from_value(node.clone()).unwrap_or_default()
 }
 
@@ -276,7 +276,7 @@ mod tests {
             theme: "dark".into(),
             candidate_orientation: "horizontal".into(),
             page_size: 7,
-            initial_state: iuv_core::InitialState {
+            initial_state: iuv_core::ImeState {
                 mode: iuv_core::InitialMode::Chinese,
                 width: iuv_core::WidthMode::Half,
                 script: iuv_core::ScriptMode::Simplified,
@@ -375,7 +375,7 @@ mod tests {
         assert_eq!(cfg.page_size, 5, "缺省每页 5 条");
         assert_eq!(
             cfg.initial_state,
-            iuv_core::InitialState::default(),
+            iuv_core::ImeState::default(),
             "缺省初始状态 = 中文/半角/简体/中文标点"
         );
         assert!(cfg.passthrough_apps.is_empty());

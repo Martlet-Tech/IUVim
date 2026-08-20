@@ -304,16 +304,17 @@ pub struct Config {
     pub keymap: Keymap,          // 翻页/候选移动四组语义键（M1.5，8f479f9/d1dcfb8）
     pub candidate_prefix: bool,  // 前缀联想开关，默认 false（候选仅 exact，微软化）
     pub candidate_orientation: Orientation, // 候选窗布局方向，默认 Vertical
-    pub initial_state: InitialState, // 新 TSF 实例初始状态（中/英、半/全角、简/繁、标点），默认全主流值
+    pub initial_state: ImeState, // 新 TSF 实例初始状态（中/英、半/全角、简/繁、标点），默认全主流值
     pub passthrough_apps: Vec<String>, // 按键直通白名单（exe 名，大小写不敏感精确匹配，TSF 层消费）
 }
 
 // 新 TSF 实例初始状态（28-initial-state-settings.md）：JSON `initial_state` 节点，全部 lowercase 枚举。
+// P3.3 合并 InitialState/RuntimeState 为单类型 ImeState（配置节点默认值 + 实例运行时 live 值，见 32 §5.1）。
 pub enum InitialMode { Chinese, English }        // 默认 Chinese；English = 每个新 TSF 实例从英文起
 pub enum WidthMode { Half, Full }                // 默认 Half；Full = 会话外全角转换（28 §8，2026-08-19 生效）
 pub enum ScriptMode { Simplified, Traditional }  // 默认 Simplified；Traditional = 繁体输出（31，2026-08-19 生效：s2t 通用繁体，数据 iuv.opencc 缺失降级简体）
 pub enum PunctMode { Chinese, English }          // 默认 Chinese（全角中文标点）；English = 中文状态用英文标点
-pub struct InitialState { mode: InitialMode, width: WidthMode, script: ScriptMode, punct: PunctMode }
+pub struct ImeState { mode: InitialMode, width: WidthMode, script: ScriptMode, punct: PunctMode }
 
 impl Default for Config { /* page_size:5, max_candidates:1024, max_word_syllables:7, keymap:默认表, candidate_prefix:false, candidate_orientation:Vertical, initial_state:全默认（中文/半角/简体/中文标点）, passthrough_apps:空 */ }
 

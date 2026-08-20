@@ -16,7 +16,7 @@ mod runtime;
 
 pub use enums::{InitialMode, Orientation, PunctMode, ScriptMode, ThemeChoice, WidthMode};
 pub use io::default_config_path;
-pub use runtime::{InitialState, RuntimeState};
+pub use runtime::ImeState;
 
 /// 引擎配置。
 ///
@@ -40,7 +40,7 @@ pub struct Config {
     pub candidate_orientation: Orientation,
     /// 新 TSF 实例初始状态（中/英、半/全角、简/繁、标点风格）。默认主流值；
     /// 旧版顶层 `english_punctuation: bool` 经 from_file 迁移 shim 并入 `initial_state.punct`。
-    pub initial_state: InitialState,
+    pub initial_state: ImeState,
     /// 按键直通进程名单：命中进程（exe 名，大小写不敏感精确匹配）TSF 层全部按键放行，
     /// 不建会话/无候选窗（输入法在该进程完全透明，游戏场景）。默认空 = 不启用。
     pub passthrough_apps: Vec<String>,
@@ -69,7 +69,7 @@ impl Default for Config {
             keymap: Keymap::default(),
             candidate_prefix: false,
             candidate_orientation: Orientation::Vertical,
-            initial_state: InitialState::default(),
+            initial_state: ImeState::default(),
             passthrough_apps: Vec::new(),
             candidate_owner_apps: Vec::new(),
             theme: ThemeChoice::Light,
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(c.initial_state.punct, PunctMode::Chinese, "默认中文标点");
         // 缺 initial_state 节点（旧配置）→ serde 补全默认
         let c2: Config = serde_json::from_str(r#"{ "page_size": 5 }"#).unwrap();
-        assert_eq!(c2.initial_state, InitialState::default());
+        assert_eq!(c2.initial_state, ImeState::default());
         // 显式配置可序列化/反序列化
         let json = serde_json::to_string(&c).unwrap();
         assert!(json.contains("\"initial_state\":"));

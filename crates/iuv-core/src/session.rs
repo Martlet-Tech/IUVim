@@ -1,6 +1,6 @@
 //! 会话状态机。契约 01-contract.md §4 session.rs / §4.1 按键行为。
 
-use crate::{fullwidth_text, Candidate, Effect, Engine, Key, PageInfo, RuntimeState, ScriptMode, SessionEnd};
+use crate::{fullwidth_text, Candidate, Effect, Engine, ImeState, Key, PageInfo, ScriptMode, SessionEnd};
 use std::sync::{Arc, Mutex};
 
 /// 一次输入会话。TSF/REPL 创建后逐键喂入。
@@ -9,7 +9,7 @@ pub struct Session {
     /// 实例运行时四态（32-status-toolbar.md §5.1）：**live 读**——工具栏点简繁等
     /// 切换后 `effect()`/`to_output` 立即读取新值，当前候选/预编辑马上重渲，不重建会话。
     /// 与引擎配置解耦：进程级 Engine 单例共享多实例，运行时态必须 per-实例。
-    runtime: Arc<Mutex<RuntimeState>>,
+    runtime: Arc<Mutex<ImeState>>,
     raw: String,
     seg: Vec<String>,
     /// 已确认选词栈：(文本, 词条 code)——选中间级词入栈（悬空，未上屏），退格回退栈顶
@@ -24,14 +24,14 @@ pub struct Session {
 impl Session {
     /// 默认运行时 = 引擎配置 `initial_state`（REPL/测试路径；TSF 用 `with_runtime`）。
     pub(crate) fn new(engine: Arc<Engine>) -> Session {
-        let runtime = RuntimeState::from(engine.config().initial_state);
+        let runtime = engine.config().initial_state;
         Session::with_runtime(engine, Arc::new(Mutex::new(runtime)))
     }
 
     /// 注入实例运行时态（32-status-toolbar.md §5.1：per-实例四态，live 读）。
     pub(crate) fn with_runtime(
         engine: Arc<Engine>,
-        runtime: Arc<Mutex<RuntimeState>>,
+        runtime: Arc<Mutex<ImeState>>,
     ) -> Session {
         Session {
             engine,

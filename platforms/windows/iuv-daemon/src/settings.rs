@@ -176,7 +176,7 @@ struct SettingsApp {
     /// 每页候选数（常用页下拉，[5,6,7,8,9]）。
     page_size: usize,
     /// 新 TSF 实例初始状态（中/英、半/全角、简/繁、标点风格；复用 iuv-core 类型）。
-    initial: iuv_core::InitialState,
+    initial: iuv_core::ImeState,
     /// 直通名单文本编辑（每行一个 exe 名）。
     passthrough: String,
     /// 候选自绘名单文本编辑（每行一个 exe 名）。
