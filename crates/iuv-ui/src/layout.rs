@@ -43,8 +43,9 @@ pub struct Area {
 
 /// 候选行显示文本：原文兜底候选（text == 预编辑原文去 `'`）不编号——
 /// "不认识"语义，候选窗只呈现原文，不是可数候选；正常候选 `"N.候选"`。
-/// layout 与 render 共用本规则，保证测量与绘制一致。
-pub(crate) fn candidate_label(snap: &UiSnapshot, index: usize, cand: &str) -> String {
+/// layout 与 render 共用本规则，保证测量与绘制一致（P2.4：pub，供消费方
+/// 直接调用，不再各自重复实现）。
+pub fn candidate_label(snap: &UiSnapshot, index: usize, cand: &str) -> String {
     if cand == snap.reading.replace('\'', "") {
         cand.to_string()
     } else {

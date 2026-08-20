@@ -22,8 +22,8 @@
 - **P2.2 iuv-tsf**：`text_service.rs`(1249)→`engine_host.rs`/`key_routing.rs`/`mode.rs`/`daemon_host.rs`/`dispatch.rs`，text_service 剩 COM 壳 ~500 行
 - **P2.3**：抽纯函数 `route_key(...) -> KeyAction`，`test_key_down`/`handle_key_down` 共用（消灭 ~60 行对称复制）
 - **P2.4 iuv-ui**：`render.rs`(1092)→`render.rs`/`toolbar.rs`/`paint.rs`；`render_candidate` 返回 `(Surface, Vec<Rect>)` + `candidate_label` pub → 删 `candwin::compute_rows`
-- **P2.5 iuv-win**：新增 `popup.rs`（LayeredWindow：类注册/创建/DPI/GWLP_USERDATA/wndproc 默认臂/Drop），candwin/menu_window/daemon toolbar 各瘦 ~200 行
-- **P2.6 iuv-daemon**：`toolbar.rs`(1183)→`toolbar/{host,window,tooltip,prefs}.rs`；`daemon_client` 的 `send_request`/`pipe_online` 合并 `request_once`
+- **P2.5 iuv-win**：新增 `popup.rs`（LayeredWindow：类注册/创建/DPI/GWLP_USERDATA/wndproc 默认臂/Drop），candwin/menu_window 各瘦 ~200 行；**daemon 工具栏未改**（bar/tip 双类各自 wnd_proc + 类注册与建窗解耦的线程结构，与 LayeredWindow「create 即注册即挂接」流程不合，其瘦身由 P2.6 拆分承担）
+- **P2.6 iuv-daemon**：`toolbar.rs`(1183)→`toolbar/{mod,window,tooltip,prefs}.rs`（mod.rs 即 host）；`daemon_client` 的 `send_request`/`pipe_online` 合并 `request_once`（`silent_connect` 区分静默存活探测 / 记日志写请求）
 
 ## P3 架构移动（iuv-data 恢复跨平台）
 

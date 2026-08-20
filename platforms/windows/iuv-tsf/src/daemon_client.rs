@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use iuv_core::{Engine, UserMutation, UserRemote};
-use iuv_data::{PipeClient, Request, Response, ShmReader, ToolbarState};
+use iuv_win::{PipeClient, Request, Response, ShmReader, ToolbarState};
 use windows::Win32::System::Threading::{
     CreateProcessW, STARTUPINFOW, PROCESS_INFORMATION, CREATE_NO_WINDOW,
 };
@@ -31,7 +31,7 @@ const LAUNCH_COOLDOWN_SECS: u64 = 60;
 /// M6 daemon 客户端。单实例经 `Arc` 与引擎 `user_remote` 共享（text_service 持一份、
 /// 引擎持一份），全部方法 `&self`（内部 Mutex）。
 pub struct DaemonClient {
-    /// 命名管道连接（惰性：首次 `daemon_online`/`send_request` 时 connect）。
+    /// 命名管道连接（惰性：首次 `request_once`（send_request/pipe_online）时 connect）。
     /// **每笔请求后用即弃**——服务端一连接只服务一请求（accept → serve → DisconnectNamedPipe，
     /// 刻意的一请求一连接以公平服务多进程客户端），缓存复用会把下笔请求打到已断开的句柄
     /// （实测 0x800700E9 ERROR_PIPE_BROKEN，靠重连自愈但多一次失败往返）。
@@ -242,15 +242,22 @@ impl DaemonClient {
         }
     }
 
-    /// 通用请求（超时/失败 → None）。连接缺失时先尝试连接；发送失败 → 清缓存重连一次。
-    /// 成功/失败重试后一律丢连接（对齐服务端一连接一请求），下次请求新建。
-    pub fn send_request(&self, req: &Request) -> Option<Response> {
+    /// 单笔管道请求（连接→发送→用后即弃，失败重连一次）：服务端一连接只服务一请求
+    /// （accept → serve → DisconnectNamedPipe，刻意以公平服务多进程客户端），缓存复用
+    /// 会把下笔请求打到已断开的句柄（实测 0x800700E9 ERROR_PIPE_BROKEN，靠重连自愈
+    /// 但多一次失败往返）——故成功/失败重试后一律丢连接，下次请求新建。
+    ///
+    /// `silent_connect`：连接失败时**不记日志**（`ensure_daemon` 的存活探测用——
+    /// daemon 未运行时"无管道"是常态，不值得刷噪声；普通写请求传 false 记录降级）。
+    fn request_once(&self, req: &Request, silent_connect: bool) -> Option<Response> {
         let mut pipe = self.pipe.lock().unwrap_or_else(|e| e.into_inner());
         if pipe.is_none() {
             match PipeClient::connect() {
                 Ok(c) => *pipe = Some(c),
                 Err(e) => {
-                    log_line(&format!("[daemon] 写请求连接失败（降级本地写盘）：{e}"));
+                    if !silent_connect {
+                        log_line(&format!("[daemon] 写请求连接失败（降级本地写盘）：{e}"));
+                    }
                     return None;
                 }
             }
@@ -265,7 +272,9 @@ impl DaemonClient {
             Err(e) => {
                 // 连接断开：清缓存 + 重连一次（daemon 可能刚重启）。
                 *pipe = None;
-                log_line(&format!("[daemon] 写请求发送失败（重连一次）：{e}"));
+                if !silent_connect {
+                    log_line(&format!("[daemon] 写请求发送失败（重连一次）：{e}"));
+                }
                 match PipeClient::connect() {
                     Ok(c) => {
                         let resp = c.request(req);
@@ -274,12 +283,19 @@ impl DaemonClient {
                         resp.ok()
                     }
                     Err(e2) => {
-                        log_line(&format!("[daemon] 重连失败（降级本地写盘）：{e2}"));
+                        if !silent_connect {
+                            log_line(&format!("[daemon] 重连失败（降级本地写盘）：{e2}"));
+                        }
                         None
                     }
                 }
             }
         }
+    }
+
+    /// 通用请求（超时/失败 → None）。发送失败 → 清缓存重连一次；用后即弃（`request_once`）。
+    pub fn send_request(&self, req: &Request) -> Option<Response> {
+        self.request_once(req, false)
     }
 
     /// 在线/离线翻转记日志（幂等）。返回**切换前**状态（调用方据此判断"上线翻转"）。
@@ -301,28 +317,10 @@ impl DaemonClient {
     }
 
     /// daemon 存活检测（管道 Ping）：连接复用；连接失败（daemon 未建管道）/Ping
-    /// 失败（连接断开）→ 清缓存返回 false。静默（不记"写请求失败"噪声日志）。
-    /// Ping 成功后丢连接（一连接一请求，对齐 send_request）。
+    /// 失败（连接断开）→ 清缓存返回 false。**静默**（不记"写请求失败"噪声日志——
+    /// 由 `request_once` 的 `silent_connect=true` 承担）。Ping 成功后丢连接（一请求一连接）。
     fn pipe_online(&self) -> bool {
-        let mut pipe = self.pipe.lock().unwrap_or_else(|e| e.into_inner());
-        if pipe.is_none() {
-            match PipeClient::connect() {
-                Ok(c) => *pipe = Some(c),
-                Err(_) => return false, // daemon 未运行（无管道）
-            }
-        }
-        match pipe.as_ref().expect("已连接（上方刚置位）").request(&Request::Ping) {
-            Ok(_) => {
-                // 服务端已断开本连接 → 丢缓存，下次请求新建。
-                *pipe = None;
-                true
-            }
-            Err(e) => {
-                log_line(&format!("[daemon] Ping 失败（连接断开，清缓存）：{e}"));
-                *pipe = None;
-                false
-            }
-        }
+        self.request_once(&Request::Ping, true).is_some()
     }
 
     // ===== 32-status-toolbar.md §4.1 TSF→daemon 上报（Register/StateSync/Active/Unregister） =====
@@ -440,7 +438,8 @@ fn daemon_exe_path() -> Option<std::ffi::OsString> {
 mod tests {
     use super::*;
     use iuv_core::Config;
-    use iuv_data::{Dict, ShmWriter, UserDict};
+    use iuv_data::{Dict, UserDict};
+    use iuv_win::ShmWriter;
 
     /// 自启冷却：60s 内第二次尝试被拒；期满放行。
     #[test]

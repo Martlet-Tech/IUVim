@@ -24,25 +24,20 @@
 //! - Layered 窗口全量重传（~300×200 每键一次，性能无虞）；无效果器（阴影由 iuv-ui 软件画）。
 
 use std::mem::size_of;
-use std::sync::OnceLock;
 
 use super::{CandidateUi, CaretRect, UiSnapshot};
 use iuv_ui::layout::{Area, Rect};
-use iuv_ui::{hit_test, render_candidate, update_position, TextRenderer, Theme, FONT_PX_96};
+use iuv_ui::{hit_test, render_candidate, update_position, TextRenderer, Theme};
+use iuv_win::LayeredWindow;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{
-    GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
-};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect,
-    RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW,
-    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HTCLIENT, HTTRANSPARENT, MA_NOACTIVATE,
-    SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA,
+    GetWindowRect, SetWindowPos, ShowWindow, SystemParametersInfoW, HTCLIENT, HTTRANSPARENT,
+    MA_NOACTIVATE, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
-    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 // WM_MOUSELEAVE 在 windows-rs 0.62 中位于 Controls 模块（值 0x02A3 = 675），
 // 语义属鼠标消息，本地定义避免跨模块依赖。
@@ -51,12 +46,12 @@ const WM_MOUSELEAVE: u32 = 675;
 const CLASS_NAME: PCWSTR = w!("IuvCandidateWindow");
 
 /// 主字号（px @96dpi）；dpi 缩放由每帧 scale 处理。
-const FONT_PX: f32 = FONT_PX_96;
 
 /// ULW 自绘候选窗：无边框、置顶、不抢焦点、真透明圆角/阴影。
 /// `new(theme)` 不建窗；首次 `show` 懒建（窗口必须建在调用线程）。
 pub struct CandwinCandidateWindow {
-    hwnd: HWND,
+    /// 窗口骨架（类注册/创建/DPI/Drop；P2.5 抽取到 iuv-win popup.rs）。
+    layered: iuv_win::LayeredWindow,
     snap: UiSnapshot,
     visible: bool,
     /// 最近一次定位用的光标锚点（update 超屏时翻屏用）。
@@ -85,7 +80,7 @@ impl CandwinCandidateWindow {
     /// 以指定主题构造（不建窗，首次 show 懒建）。
     pub fn new(theme: Theme) -> Self {
         CandwinCandidateWindow {
-            hwnd: HWND::default(),
+            layered: iuv_win::LayeredWindow::new(),
             snap: UiSnapshot::default(),
             visible: false,
             last_caret: None,
@@ -111,162 +106,44 @@ impl CandwinCandidateWindow {
         self.repaint();
     }
 
-    /// 进程内注册一次窗口类；失败（非"已注册"）记日志，不 panic。
-    fn register_class() {
-        static REGISTERED: OnceLock<()> = OnceLock::new();
-        REGISTERED.get_or_init(|| {
-            // SAFETY: 所有字段显式/Default 填充；类名为静态宽字符串，进程生命周期有效。
-            // 失败仅记日志（W0 桩 log.rs，Agent D 会落盘 %TEMP%\iuv-tsf.log）。
-            unsafe {
-                let class = WNDCLASSEXW {
-                    cbSize: size_of::<WNDCLASSEXW>() as u32,
-                    style: CS_HREDRAW | CS_VREDRAW,
-                    lpfnWndProc: Some(wnd_proc),
-                    hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH::default(),
-                    lpszMenuName: PCWSTR::null(),
-                    lpszClassName: CLASS_NAME,
-                    ..Default::default()
-                };
-                if RegisterClassExW(&class) == 0 {
-                    let err = GetLastError();
-                    if err != ERROR_CLASS_ALREADY_EXISTS {
-                        crate::log::log_line("[candwin] RegisterClassExW 失败");
-                    }
-                }
-            }
-        });
-    }
-
-    /// 当前 DPI：窗口 HDC 的 `LOGPIXELSY`，失败兜底 96。
-    fn get_dpi(&self) -> u32 {
-        // SAFETY: hdc 由 GetDC 取得，使用后立即 ReleaseDC
-        unsafe {
-            let hdc = windows::Win32::Graphics::Gdi::GetDC(Some(self.hwnd));
-            if hdc.is_invalid() {
-                return 96;
-            }
-            let dpi = windows::Win32::Graphics::Gdi::GetDeviceCaps(
-                Some(hdc),
-                windows::Win32::Graphics::Gdi::LOGPIXELSY,
-            );
-            windows::Win32::Graphics::Gdi::ReleaseDC(Some(self.hwnd), hdc);
-            if dpi <= 0 {
-                96
-            } else {
-                dpi as u32
-            }
-        }
-    }
-
     /// 懒建窗口 + 文本渲染器（ULW 呈现缓存随首次 present 建立，无设备初始化）。
     /// 失败仅记日志并保持 `hwnd` 无效（后续调用静默降级）。
     fn ensure_window(&mut self) {
-        if !self.hwnd.is_invalid() {
-            return;
-        }
-        Self::register_class();
-        // SAFETY: GetModuleHandleW(None) 取当前进程实例句柄
-        let hinst = unsafe { GetModuleHandleW(None) }.unwrap_or_default();
-        if hinst.is_invalid() {
-            crate::log::log_line("[candwin] GetModuleHandleW 失败");
+        if self.layered.is_created() {
             return;
         }
         // SAFETY: WS_EX_TOPMOST|TOOLWINDOW|NOACTIVATE 保证置顶且不抢焦点；
         // WS_EX_LAYERED = per-pixel alpha 合成（UpdateLayeredWindow 前置条件）；
-        // WS_POPUP 无边框。
-        let hwnd = unsafe {
-            CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
-                CLASS_NAME,
-                PCWSTR::null(),
-                WS_POPUP,
-                0,
-                0,
-                0,
-                0,
-                None,
-                None,
-                Some(hinst.into()),
-                None,
-            )
-        };
-        let Ok(hwnd) = hwnd else {
-            crate::log::log_line("[candwin] CreateWindowExW 失败");
-            return;
-        };
-        // SAFETY: self 仅在创建线程存活；Drop 先清零 GWLP_USERDATA 再销毁窗口，
-        // 因此 wnd_proc 经 GetWindowLongPtrW 取到的指针不会悬垂。
-        // `as usize as _` 按平台推断：x64 = isize（指针同宽），x86 = i32（32 位指针无损）。
-        unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, self as *mut Self as usize as _) };
-        self.hwnd = hwnd;
-
-        // TextRenderer：fontdb 首扫系统字体（几十 ms，仅窗口创建时一次，可接受）。
-        self.text = Some(TextRenderer::new());
+        // WS_POPUP 无边框。外层指针生命周期由 LayeredWindow::drop 清零保证。
+        let outer = self as *mut Self;
+        self.layered.create(
+            CLASS_NAME,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+            wnd_proc,
+            outer,
+            "candwin",
+        );
+        if self.layered.is_created() {
+            self.text = Some(TextRenderer::new());
+        }
     }
 
     /// 渲染当前 snapshot → Surface（含阴影外缘尺寸；失败返回 None）。
-    /// 同时刷新命中测试行矩形（与 render_candidate 内部 layout 同测量，保证一致）。
+    /// 行矩形由 render_candidate 直接产出（P2.4：与绘制同测量，删本地 compute_rows）。
     fn frame(&mut self) -> Option<iuv_ui::Surface> {
         if self.snap.reading.is_empty() && self.snap.candidates.is_empty() {
             return None;
         }
-        let scale = self.get_dpi() as f32 / 96.0;
-        let surf = {
+        let scale = self.layered.dpi() as f32 / 96.0;
+        let (surf, rows) = {
             let text = self.text.as_mut()?;
             render_candidate(&self.snap, &self.theme, scale, text, self.hover_row)
         };
         if surf.w == 0 || surf.h == 0 {
             return None;
         }
-        self.rows = self.compute_rows(scale);
+        self.rows = rows;
         Some(surf)
-    }
-
-    /// 命中测试行矩形：与 render_candidate 相同的测量规则（候选编号/页码/字号）。
-    fn compute_rows(&mut self, scale: f32) -> Vec<Rect> {
-        let labels: Vec<String> = self
-            .snap
-            .candidates
-            .iter()
-            .enumerate()
-            .map(|(i, c)| self.candidate_label(i, c))
-            .collect();
-        let Some(text) = self.text.as_mut() else {
-            return Vec::new();
-        };
-        let size_px = FONT_PX * scale;
-        let page_px = size_px / 2.0;
-        let mut sizes: Vec<(String, (i32, i32))> = Vec::with_capacity(labels.len());
-        for (label, _cand) in labels.iter().zip(self.snap.candidates.iter()) {
-            sizes.push((label.clone(), text.measure(label, size_px)));
-        }
-        let mut page_size = None;
-        if self.snap.page.page_count > 1 {
-            let label = format!("{}/{}", self.snap.page.page + 1, self.snap.page.page_count);
-            page_size = Some(text.measure(&label, page_px));
-        }
-        let (_, _, rects) = iuv_ui::layout(
-            &self.snap,
-            |s| {
-                sizes
-                    .iter()
-                    .find(|(t, _)| t == s)
-                    .map(|(_, sz)| *sz)
-                    .unwrap_or((0, 0))
-            },
-            |_s| page_size.unwrap_or((0, 0)),
-            self.snap.orientation,
-        );
-        rects
-    }
-
-    /// 候选行显示文本：原文兜底候选不编号（与 iuv-ui candidate_label 规则一致）。
-    fn candidate_label(&self, index: usize, cand: &str) -> String {
-        if cand == self.snap.reading.replace('\'', "") {
-            cand.to_string()
-        } else {
-            format!("{}.{}", index + 1, cand)
-        }
     }
 
     /// 按当前 snapshot 重算尺寸 → 定位（caret 或原位）→ ULW 上屏
@@ -282,12 +159,12 @@ impl CandwinCandidateWindow {
             None => {
                 // SAFETY: GetWindowRect 读当前窗口矩形
                 let mut rc = RECT::default();
-                let _ = unsafe { GetWindowRect(self.hwnd, &mut rc) };
+                let _ = unsafe { GetWindowRect(self.layered.hwnd, &mut rc) };
                 update_position(
                     (rc.left, rc.top),
                     w,
                     h,
-                    work_area_for(self.hwnd),
+                    work_area_for(self.layered.hwnd),
                     self.last_caret,
                 )
             }
@@ -297,7 +174,7 @@ impl CandwinCandidateWindow {
 
     /// 原位重绘（悬停高亮 / 主题热载）：读当前窗口矩形 → 渲染 → ULW 上屏。
     fn repaint(&mut self) {
-        if self.hwnd.is_invalid() || !self.visible {
+        if self.layered.hwnd.is_invalid() || !self.visible {
             return;
         }
         let Some(surf) = self.frame() else {
@@ -305,7 +182,7 @@ impl CandwinCandidateWindow {
         };
         // SAFETY: GetWindowRect 读当前窗口矩形
         let mut rc = RECT::default();
-        if unsafe { GetWindowRect(self.hwnd, &mut rc) }.is_err() {
+        if unsafe { GetWindowRect(self.layered.hwnd, &mut rc) }.is_err() {
             return;
         }
         self.present(
@@ -322,7 +199,7 @@ impl CandwinCandidateWindow {
     /// ULW 呈现（共享模块 ulw.rs：DIB 重建 + 像素直拷 + UpdateLayeredWindow
     /// 一次定位/定尺寸/per-pixel alpha 合成）。失败静默（记日志，不 panic）。
     fn present(&mut self, surf: &iuv_ui::Surface, x: i32, y: i32, w: i32, h: i32) {
-        self.ulw.upload(self.hwnd, surf, x, y, w, h, "[candwin]");
+        self.ulw.upload(self.layered.hwnd, surf, x, y, w, h, "[candwin]");
     }
 }
 
@@ -420,15 +297,15 @@ impl CandidateUi for CandwinCandidateWindow {
         }
         self.snap = snap.clone();
         self.last_caret = Some(caret);
-        if self.hwnd.is_invalid() {
+        if self.layered.hwnd.is_invalid() {
             self.ensure_window();
-            if self.hwnd.is_invalid() {
+            if self.layered.hwnd.is_invalid() {
                 return; // 建窗失败：静默降级（绝不 panic）
             }
         }
         self.apply_layout_and_pos(Some(caret));
         // SAFETY: SW_SHOWNA 显示但不激活——绝不抢焦点
-        let _ = unsafe { ShowWindow(self.hwnd, SW_SHOWNA) };
+        let _ = unsafe { ShowWindow(self.layered.hwnd, SW_SHOWNA) };
         self.visible = true;
     }
 
@@ -437,7 +314,7 @@ impl CandidateUi for CandwinCandidateWindow {
             return; // candidate_owner_apps 命中：本窗静默
         }
         self.snap = snap.clone();
-        if self.hwnd.is_invalid() || !self.visible {
+        if self.layered.hwnd.is_invalid() || !self.visible {
             return;
         }
         self.apply_layout_and_pos(None);
@@ -446,9 +323,9 @@ impl CandidateUi for CandwinCandidateWindow {
     fn hide(&mut self) {
         self.visible = false;
         self.hover_row = None; // 窗口隐藏，悬停高亮一并清
-        if !self.hwnd.is_invalid() {
+        if !self.layered.hwnd.is_invalid() {
             // SAFETY: 隐藏候选窗
-            let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
+            let _ = unsafe { ShowWindow(self.layered.hwnd, SW_HIDE) };
         }
     }
 
@@ -475,14 +352,14 @@ impl CandwinCandidateWindow {
     /// 仅移动窗口到新光标位置（不重建/不上屏；候选窗已显示时用）。
     /// 候选窗 trait 不含此法（生产路径 show/update 已覆盖）；保留为示例/demo 用。
     pub fn move_to(&mut self, caret: CaretRect) {
-        if self.hwnd.is_invalid() || !self.visible {
+        if self.layered.hwnd.is_invalid() || !self.visible {
             return;
         }
         self.last_caret = Some(caret);
         // SAFETY: GetWindowRect 读当前窗口矩形
         unsafe {
             let mut rc = RECT::default();
-            if GetWindowRect(self.hwnd, &mut rc).is_err() {
+            if GetWindowRect(self.layered.hwnd, &mut rc).is_err() {
                 return;
             }
             let w = rc.right - rc.left;
@@ -490,7 +367,7 @@ impl CandwinCandidateWindow {
             let (x, y) = position_for(caret, w, h);
             // SAFETY: 仅移动（SWP_NOSIZE），不激活；layered 窗口内容由 DWM 缓存随动
             let _ = SetWindowPos(
-                self.hwnd,
+                self.layered.hwnd,
                 None,
                 x,
                 y,
@@ -502,26 +379,8 @@ impl CandwinCandidateWindow {
     }
 }
 
-impl Drop for CandwinCandidateWindow {
-    fn drop(&mut self) {
-        if !self.hwnd.is_invalid() {
-            // SAFETY: 先清零 GWLP_USERDATA，杜绝 wnd_proc 访问到即将释放的 self
-            let _ = unsafe { SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0) };
-            // SAFETY: 在创建线程上销毁窗口
-            unsafe {
-                let _ = DestroyWindow(self.hwnd);
-            };
-            self.hwnd = HWND::default();
-        }
-        // ulw（DIB/DC）与 text 按字段声明序自然 drop。
-    }
-}
-
-/// lparam 低 32 位的坐标 (x, y)（WM_MOUSEMOVE 等 = 客户区；WM_NCHITTEST = 屏幕坐标）。
-fn client_pos(lparam: LPARAM) -> (i32, i32) {
-    let v = lparam.0 as u32;
-    ((v & 0xFFFF) as i32, ((v >> 16) & 0xFFFF) as i32)
-}
+// 窗口销毁（先清 GWLP_USERDATA 再 DestroyWindow）由 LayeredWindow::drop 负责；
+// ulw（DIB/DC）与 text 按字段声明序自然 drop。
 
 /// 圆角几何命中：窗口矩形内、圆角弧线内（含边界）→ true（HTCLIENT）；
 /// 四角圆弧外 → false（HTTRANSPARENT，点击穿透到下层窗口）。
@@ -555,30 +414,6 @@ fn in_rounded_rect(x: i32, y: i32, w: i32, h: i32, r: f32) -> bool {
     true
 }
 
-/// 从 GWLP_USERDATA 取回窗口属主；0（未挂接/已销毁）返回 None。
-fn get_self(hwnd: HWND) -> Option<&'static CandwinCandidateWindow> {
-    // SAFETY: 指针在窗口销毁前由 Drop 先清零，不悬垂；调用都在创建线程
-    let p = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
-    if p == 0 {
-        None
-    } else {
-        // SAFETY: p 非 0 即此前 SetWindowLongPtrW 写入的有效指针
-        Some(unsafe { &*(p as *const CandwinCandidateWindow) })
-    }
-}
-
-/// 可变版（hover 更新本地 selected 高亮用）。线程约束同 `get_self`。
-fn get_self_mut(hwnd: HWND) -> Option<&'static mut CandwinCandidateWindow> {
-    // SAFETY: 同 get_self：指针生命周期由 Drop 清零保证；调用都在创建线程
-    let p = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
-    if p == 0 {
-        None
-    } else {
-        // SAFETY: p 非 0 即此前 SetWindowLongPtrW 写入的有效指针
-        Some(unsafe { &mut *(p as *mut CandwinCandidateWindow) })
-    }
-}
-
 /// 类窗口过程：WM_PAINT 只做 BeginPaint/EndPaint 校验区管理（ULW 内容不画窗口 DC，
 /// 每帧内容由 UpdateLayeredWindow 直接送 DWM 合成）；
 /// WM_ERASEBKGND 返回 1（layered 窗口无 GDI 背景可擦）；
@@ -610,15 +445,15 @@ unsafe extern "system" fn wnd_proc(
         WM_ERASEBKGND => LRESULT(1),
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_NCHITTEST => {
-            let (sx, sy) = client_pos(lparam); // 屏幕坐标
+            let (sx, sy) = LayeredWindow::client_pos(lparam); // 屏幕坐标
             let mut rc = RECT::default();
             if GetWindowRect(hwnd, &mut rc).is_err() {
                 return LRESULT(HTCLIENT as isize);
             }
             let (x, y) = (sx - rc.left, sy - rc.top);
             let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
-            let radius = match get_self(hwnd) {
-                Some(wnd) => wnd.theme.corner_radius * wnd.get_dpi() as f32 / 96.0,
+            let radius = match unsafe { LayeredWindow::get_self::<CandwinCandidateWindow>(hwnd) } {
+                Some(wnd) => wnd.theme.corner_radius * wnd.layered.dpi() as f32 / 96.0,
                 None => 0.0,
             };
             if in_rounded_rect(x, y, w, h, radius) {
@@ -629,8 +464,8 @@ unsafe extern "system" fn wnd_proc(
             }
         }
         WM_MOUSEMOVE => {
-            let (x, y) = client_pos(lparam);
-            if let Some(wnd) = get_self_mut(hwnd) {
+            let (x, y) = LayeredWindow::client_pos(lparam);
+            if let Some(wnd) = unsafe { LayeredWindow::get_self_mut::<CandwinCandidateWindow>(hwnd) } {
                 // TrackMouseEvent 重挂 WM_MOUSELEAVE（离开窗口清除悬停高亮）。
                 // SAFETY: hwnd 由消息循环保证有效；单次调用无副作用。
                 let mut tme = TRACKMOUSEEVENT {
@@ -653,7 +488,7 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_MOUSELEAVE => {
             // 鼠标离开窗口：清除悬停高亮（命中落空同路径）。
-            if let Some(wnd) = get_self_mut(hwnd) {
+            if let Some(wnd) = unsafe { LayeredWindow::get_self_mut::<CandwinCandidateWindow>(hwnd) } {
                 if wnd.hover_row.take().is_some() {
                     // SAFETY: 悬停清除 → ULW 原位重绘
                     wnd.repaint();
@@ -662,8 +497,8 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
-            let (x, y) = client_pos(lparam);
-            if let Some(wnd) = get_self(hwnd) {
+            let (x, y) = LayeredWindow::client_pos(lparam);
+            if let Some(wnd) = unsafe { LayeredWindow::get_self::<CandwinCandidateWindow>(hwnd) } {
                 if let Some(row) = hit_test(&wnd.rows, x, y) {
                     if row < wnd.snap.candidates.len() {
                         if let Some(cb) = wnd.click.as_ref() {
@@ -675,7 +510,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_RBUTTONDOWN | WM_MBUTTONDOWN => LRESULT(0),
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        _ => LayeredWindow::default_wnd_proc(hwnd, msg, wparam, lparam),
     }
 }
 
@@ -726,13 +561,20 @@ mod tests {
     #[test]
     fn candidate_label_rules() {
         // 原文兜底候选不编号；正常候选编号（与 iuv-ui candidate_label 规则一致）
-        let mut w = CandwinCandidateWindow::new(iuv_ui::theme_light());
-        w.snap = UiSnapshot {
+        let mut snap = UiSnapshot {
             reading: "i'n'pu't".into(),
             ..Default::default()
         };
-        assert_eq!(w.candidate_label(0, "input"), "input", "原文兜底不编号");
-        w.snap.reading = "ni'hao".into();
-        assert_eq!(w.candidate_label(0, "你好"), "1.你好", "正常候选编号");
+        assert_eq!(
+            iuv_ui::candidate_label(&snap, 0, "input"),
+            "input",
+            "原文兜底不编号"
+        );
+        snap.reading = "ni'hao".into();
+        assert_eq!(
+            iuv_ui::candidate_label(&snap, 0, "你好"),
+            "1.你好",
+            "正常候选编号"
+        );
     }
 }

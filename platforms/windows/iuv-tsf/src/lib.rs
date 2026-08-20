@@ -53,7 +53,7 @@ pub unsafe extern "system" fn DllGetClassObject(
 /// （加载线程运行中访问 DLL 代码，卸载会导致宿主进程崩溃）。
 #[no_mangle]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
-    if com::class_factory::active_count() == 0 && !com::text_service::engine_loading() {
+    if com::class_factory::active_count() == 0 && !com::engine_host::engine_loading() {
         S_OK
     } else {
         S_FALSE

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use iuv_data::{ctl_pipe_name, CtlCmd, CtlResult, CtlServer};
+use iuv_win::{ctl_pipe_name, CtlCmd, CtlResult, CtlServer};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM,

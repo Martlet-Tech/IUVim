@@ -37,7 +37,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows_core::{implement, BSTR, BOOL, ComObject, GUID, Interface, PCWSTR, Ref, Result, IUnknown};
 
 use crate::log::log_line;
-use iuv_data::Request;
+use iuv_win::Request;
 use iuv_ui::{MenuEntry, Theme};
 
 /// 「关于」对话框（自绘菜单与 InitMenu 菜单共用）。

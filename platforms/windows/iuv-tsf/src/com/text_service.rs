@@ -4,23 +4,20 @@
 //!
 //! 时序：Activate → AdviseKeyEventSink / AdviseSink；按键经 session_bridge 映射进
 //! iuv_core::Session，Effect 由 composition + CandidateUi 应用；Deactivate 反向清理。
+//!
+//! P2.2 拆分：本文件 = COM 壳（实例结构 + 生命周期 + Ctl 端点 + COM trait 实现）；
+//! 引擎生命周期 → `engine_host.rs`；按键路由 → `key_routing.rs`；模式/会话外上屏
+//! → `mode.rs`；daemon 协作 → `daemon_host.rs`；Effect 应用 → `dispatch.rs`。
 
 use std::cell::{Cell, RefCell};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use iuv_core::{
-    apply_keymap, chinese_punct, is_session_start_key, shifted_punct, Config, Engine, Key,
-    RuntimeState, Session,
-};
-use iuv_data::{CtlCmd, CtlResult, CTL_FIELD_MODE};
+use iuv_core::{Config, Key, RuntimeState, Session};
+use iuv_win::{CtlCmd, CtlResult, CTL_FIELD_MODE};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VK_CAPITAL, VK_SHIFT,
-};
 use windows::Win32::UI::TextServices::{
     ITfCompartment, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr,
     ITfContext, ITfDocumentMgr, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource,
@@ -34,143 +31,18 @@ use crate::composition::Composition;
 use crate::ctl::{CtlApplier, CtlEndpoint};
 use crate::daemon_client::DaemonClient;
 use crate::langbar::{self, LangBarItemButton};
-use crate::log::{self, log_line, process_id, thread_id};
-use crate::session_bridge::{apply_effect, caps_passthrough, fullwidth_pending, is_passthrough_app, map_key};
+use crate::log::{log_line, process_id, thread_id};
 use crate::ui::{CandidateUi, CandwinCandidateWindow, CaretRect};
 use crate::ui_element::CandidateElementHost;
 
-/// 进程级引擎单例（契约 §7：`OnceLock<Arc<Engine>>`）。
-/// 词典加载失败 → None = 透明模式（全部按键放行，绝不卡用户）。
-static ENGINE: OnceLock<Option<Arc<Engine>>> = OnceLock::new();
-/// 加载是否已启动（防重复 spawn；Activate 与 engine() 兜底并发安全）。
-static ENGINE_LOAD_STARTED: AtomicBool = AtomicBool::new(false);
+use super::dispatch::dispatch_effect;
+use super::engine_host::{engine, start_engine_load, user_dict_path};
 
 /// 全局活动对象计数（DllCanUnloadNow 用）：实例创建 +1，Drop −1。
 static INSTANCE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub(crate) fn instance_count() -> u32 {
     INSTANCE_COUNT.load(Ordering::SeqCst)
-}
-
-/// 取引擎单例（非阻塞）。透明模式 / 加载未完成时返回 None（按键放行）。
-pub(crate) fn engine() -> Option<&'static Arc<Engine>> {
-    let loaded = ENGINE.get().and_then(|e| e.as_ref());
-    if loaded.is_none() && ENGINE.get().is_none() {
-        // 兜底：未走 Activate 就被按键（极端路径），触发后台加载。
-        start_engine_load();
-    }
-    loaded
-}
-
-/// 后台异步加载引擎：词库 17MB/65 万词条，首键同步加载会卡顿。
-/// Activate（切到输入法）时调用；加载中按键 = 透明放行，绝不阻塞按键路径。
-/// 加载失败 → set(None) = 永久透明模式（与现状语义一致，不重试）。
-pub(crate) fn start_engine_load() {
-    if ENGINE_LOAD_STARTED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    std::thread::spawn(|| {
-        let t0 = std::time::Instant::now();
-        log_line("引擎加载开始（后台线程）");
-        let engine = load_engine();
-        log_line(&format!(
-            "引擎加载完成：耗时 {:.0} ms，结果 {:?}",
-            t0.elapsed().as_millis(),
-            engine.as_ref().map(|_| "就绪").unwrap_or("失败→透明模式")
-        ));
-        let _ = ENGINE.set(engine);
-    });
-}
-
-/// 引擎后台加载是否仍在进行（DllCanUnloadNow 用：加载线程运行中访问 DLL 代码，
-/// 不可卸载）。set 完成（含失败 set(None)）后恒 false。
-pub(crate) fn engine_loading() -> bool {
-    ENGINE_LOAD_STARTED.load(Ordering::SeqCst) && ENGINE.get().is_none()
-}
-
-fn load_engine() -> Option<Arc<Engine>> {
-    let path = dict_path();
-    match iuv_data::load(&path) {
-        Ok(dict) => {
-            log_line(&format!(
-                "引擎加载成功：{}（词条 {}）",
-                path.display(),
-                dict.entry_count()
-            ));
-            let engine = Engine::new(dict, Config::load());
-            // M6 日志模块禁用集装配（26-log-modules.md）：引擎配置即共享 config.json，
-            // 首装配与 config_epoch 热载（apply_config_hot_reload）两处同步。
-            crate::log::set_log_modules_disabled(&engine.config().disabled_log_modules);
-            // M2 主动调权用户库装配（18-m2-user-dict.md）：缺失/损坏 → 空库继续，
-            // attach 返回 Err 仅记日志（不代表未装配——路径已记录，首次交换时创建文件）。
-            let user_path = user_dict_path();
-            if let Err(e) = engine.attach_user_dict(user_path.clone()) {
-                log_line(&format!("用户词库装配失败（空库继续，路径已记录）：{}", e));
-            } else {
-                log_line(&format!("用户词库装配成功：{}", user_path.display()));
-            }
-            // M2.5 简→繁转换器装配（31-script-traditional.md）：iuv.opencc 缺失/损坏 →
-            // None 降级简体输出（不阻断）。数据与词库独立装配。
-            let occ_path = script_path();
-            match iuv_data::OpenccTable::load(&occ_path) {
-                Ok(t) => {
-                    let conv = iuv_core::ScriptConverter::new(t);
-                    engine.attach_script_converter(Some(std::sync::Arc::new(conv)));
-                    log_line(&format!(
-                        "简繁转换器装配成功：{}（{} 词条）",
-                        occ_path.display(),
-                        engine.script_converter().map(|c| c.entry_count()).unwrap_or(0)
-                    ));
-                }
-                Err(e) => {
-                    engine.attach_script_converter(None);
-                    log_line(&format!(
-                        "简繁转换器装配失败（繁体模式降级简体输出）：{}",
-                        e
-                    ));
-                }
-            }
-            Some(engine)
-        }
-        Err(e) => {
-            log_line(&format!(
-                "引擎加载失败：{e}（{}），进入透明模式",
-                path.display()
-            ));
-            None
-        }
-    }
-}
-
-/// %LOCALAPPDATA%\iuv\iuv.imedic（用户级数据，契约 §7）。
-fn dict_path() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-        std::env::var("APPDATA")
-            .map(|a| {
-                PathBuf::from(a)
-                    .join("Local")
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .unwrap_or_else(|_| "C:\\Users\\Default\\AppData\\Local".to_owned())
-    });
-    PathBuf::from(base)
-        .join("iuv")
-        .join(crate::registration::DICT_FILENAME)
-}
-
-/// %LOCALAPPDATA%\iuv\iuv.user.imedic（M2 用户权重覆盖表，与基本库同目录）。
-fn user_dict_path() -> PathBuf {
-    let mut p = dict_path();
-    p.set_file_name("iuv.user.imedic");
-    p
-}
-
-/// %LOCALAPPDATA%\iuv\iuv.opencc（31-script-traditional.md 简繁转换表，与基本库同目录）。
-fn script_path() -> PathBuf {
-    let mut p = dict_path();
-    p.set_file_name("iuv.opencc");
-    p
 }
 
 /// COM 边界兜底：回调内任何 panic 不得穿透到宿主进程，统一捕获降级。
@@ -189,6 +61,8 @@ where
 ///
 /// 实例状态全部用 RefCell/Cell 包裹：edit session 同步回调会重入同一对象，
 /// 不允许出现跨方法 &mut 借用。
+///
+/// 字段可见性（P2.2）：`impl TextService` 块分散在 com/ 各子模块，共享字段 pub(crate)。
 #[implement(
     ITfTextInputProcessorEx,
     ITfKeyEventSink,
@@ -199,7 +73,7 @@ pub(crate) struct TextService {
     /// ITfThreadMgr（Activate 传入，Deactivate 用）。
     thread_mgr: RefCell<Option<ITfThreadMgr>>,
     /// 本实例的 client id（Activate 传入）。
-    client_id: Cell<u32>,
+    pub(crate) client_id: Cell<u32>,
     /// ITfThreadMgrEventSink 的 advise cookie（UnadviseSink 用）。
     event_cookie: Cell<u32>,
     /// OPENCLOSE compartment 监听（系统"输入法/非输入法切换"热键驱动，
@@ -208,37 +82,37 @@ pub(crate) struct TextService {
     compartment: RefCell<Option<(ITfCompartment, u32)>>,
     /// 活动会话；None = 无会话（字母键将开启新会话）。
     /// Rc 共享：候选窗点击/hover 回调（同线程）经克隆访问。
-    session: Rc<RefCell<Option<Session>>>,
+    pub(crate) session: Rc<RefCell<Option<Session>>>,
     /// composition 封装（随会话创建/销毁）。Rc 共享：候选窗回调 dispatch 用。
-    composition: Rc<RefCell<Option<Composition>>>,
+    pub(crate) composition: Rc<RefCell<Option<Composition>>>,
     /// 候选窗：CandwinCandidateWindow（M4：ULW 呈现，iuv-ui 绘图）。Rc 共享：同上。
     /// 具体类型（非 `Box<dyn>`）：M6 配置热载需直调 `set_theme`；交互/效果应用同槽。
-    ui: Rc<RefCell<CandwinCandidateWindow>>,
+    pub(crate) ui: Rc<RefCell<CandwinCandidateWindow>>,
     /// 上一次光标矩形（GetTextExt 失败时复用；首次用屏幕中央）。Rc 共享：同上。
-    caret: Rc<Cell<CaretRect>>,
+    pub(crate) caret: Rc<Cell<CaretRect>>,
     /// Shift 临时英文模式（会话非 active 时 Shift 切换）。
     /// `Arc` 共享：语言栏"中/英"图标与按键路径读同一状态。
-    english_mode: Arc<AtomicBool>,
+    pub(crate) english_mode: Arc<AtomicBool>,
     /// 语言栏"中/英"切换图标（Activate 挂载，Deactivate 卸载）。
-    lang_bar: RefCell<Option<ComObject<LangBarItemButton>>>,
+    pub(crate) lang_bar: RefCell<Option<ComObject<LangBarItemButton>>>,
     /// TSF 候选 UI 元素宿主（WoW 游戏内候选框实验）。Rc 共享：dispatch 路径同线程访问。
-    cand_elem: Rc<RefCell<CandidateElementHost>>,
+    pub(crate) cand_elem: Rc<RefCell<CandidateElementHost>>,
     /// M6 daemon 客户端（共享段读取 + 管道写；Arc 与引擎 UserRemote 共享）。
     /// Deactivate 不撤——随进程/实例生命周期（TextService Drop 释放）。
-    daemon: RefCell<Option<Arc<DaemonClient>>>,
+    pub(crate) daemon: RefCell<Option<Arc<DaemonClient>>>,
     /// 远端写后端是否已注册到引擎（Activate 时引擎可能仍在后台加载，首键补注册）。
-    remote_registered: Cell<bool>,
+    pub(crate) remote_registered: Cell<bool>,
     /// 引号配对状态（`'`/`"` 交替开/关形）。会话开始/模式切换复位为开。
-    punct_quote_open: Cell<bool>,
+    pub(crate) punct_quote_open: Cell<bool>,
     /// 实例运行时四态（32-status-toolbar.md §5.1）：per-实例（非进程级 config），
     /// 启动 = `config.initial_state`，运行时操作才改；Session 构造注入（live 读）。
     /// `Arc<Mutex<...>>`：控制通道（SetState）与 OnChange 都写，会话/热键路径读。
-    runtime: Arc<Mutex<RuntimeState>>,
+    pub(crate) runtime: Arc<Mutex<RuntimeState>>,
     /// 反向控制端点（32-toolbar §4.2/§4.3）：accept 线程 + 隐藏消息窗。Activate 起、
     /// Deactivate/Drop 停（懒建，每个实例一个）。
     ctl: RefCell<Option<CtlEndpoint>>,
     /// 本实例是否已向 daemon 注册（§5.3：passthrough 进程不注册；防重复）。
-    registered: Cell<bool>,
+    pub(crate) registered: Cell<bool>,
 }
 
 impl TextService {
@@ -255,7 +129,7 @@ impl TextService {
         // 窗口内部处理，不驱动会话）。
         // M4 主题：直接读 config.json（引擎可能仍在后台加载，engine() 不可依赖）：
         // `theme` 字段（默认 light）→ theme_light()/theme_dark()。M6 起可经 set_theme 热载。
-        let theme = match iuv_core::Config::load().theme {
+        let theme = match Config::load().theme {
             iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
             iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
         };
@@ -302,7 +176,7 @@ impl TextService {
             // 实例运行时四态：创建时（首次 Activate 前）从 config 初始值取一次
             // （32-toolbar §2.5：设置页默认值 = 新建实例时的初始值；热载不改运行实例）。
             runtime: Arc::new(Mutex::new(RuntimeState::from(
-                iuv_core::Config::load().initial_state,
+                Config::load().initial_state,
             ))),
             ctl: RefCell::new(None),
             registered: Cell::new(false),
@@ -312,45 +186,8 @@ impl TextService {
     /// 实例标识（pid:tid）：pid = 进程 id，tid = **OS 线程 id**（`GetCurrentThreadId`，
     /// 非 TSF client id）——前台看板判定 `GetWindowThreadProcessId` 返回 OS 线程 id，
     /// 直接用同一标识匹配实例表（32-toolbar §4.1）。
-    fn instance_id(&self) -> (u32, u32) {
+    pub(crate) fn instance_id(&self) -> (u32, u32) {
         (process_id(), thread_id())
-    }
-
-    /// 当前运行时四态快照。
-    fn runtime_snapshot(&self) -> RuntimeState {
-        *self.runtime.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// 向 daemon 注册实例 + 通知 active（Activate 时；passthrough 进程不注册，iuv 完全透明）。
-    /// Register 仅首 Activate 发一次（防重复）；`Active{true}` 每次 Activate 都发（daemon 判
-    /// 「iuv 被选中」→ 看板显示；Deactivate 发 false 隐藏）。Register 失败 = daemon 离线
-    /// （静默；poll 在线翻转后重注册，§4.4）。
-    fn register_instance(&self) {
-        let cfg = iuv_core::Config::load();
-        let passthrough = !cfg.passthrough_apps.is_empty()
-            && is_passthrough_app(&log::module_name(), &cfg.passthrough_apps);
-        if passthrough {
-            log_line("[toolbar] passthrough 进程：不注册工具栏实例（iuv 完全透明）");
-            return;
-        }
-        let Some(client) = self.daemon.borrow().as_ref().cloned() else {
-            return;
-        };
-        let (pid, tid) = self.instance_id();
-        if !self.registered.get() {
-            if client.register(pid, tid, self.runtime_snapshot().to_toolbar()) {
-                self.registered.set(true);
-                log_line(&format!("[toolbar] 实例注册（{pid}:{tid}）"));
-            }
-        }
-        client.set_active(pid, tid, true);
-    }
-
-    /// daemon 重启恢复重注册（§4.4：poll 检测离线→在线翻转后调用）：
-    /// daemon 重启清空实例表，本进程仍在运行（registered 仍 true）→ 强制重新 Register。
-    fn re_register_instance(&self) {
-        self.registered.set(false);
-        self.register_instance();
     }
 
     /// 启动反向控制端点（accept 线程 + 隐藏消息窗；§4.2/§4.3）。懒建：Deactivate 停、
@@ -377,20 +214,6 @@ impl TextService {
     fn stop_ctl_endpoint(&self) {
         let ep = self.ctl.borrow_mut().take();
         drop(ep); // CtlEndpoint::drop 停线程 + 清 GWLP_USERDATA + 销毁窗口
-    }
-
-    /// 运行时四态变化后的收尾：live 重渲当前会话（点简繁/全半角/标点立即生效）+ StateSync 上报。
-    fn after_runtime_change(&self) {
-        // 当前会话重渲：effect() 内部 live 读 runtime，切换后候选/预编辑立即跟随。
-        if let Some(sess) = self.session.borrow().as_ref() {
-            let effect = sess.effect();
-            self.dispatch(&effect);
-        }
-        // 上报 daemon 看板（§4.1 StateSync）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.state_sync(pid, tid, self.runtime_snapshot().to_toolbar());
-        }
     }
 
     /// 应用反向控制命令（CtlCmd::SetState；TSF 线程 wndproc 调用，§4.3）。
@@ -431,434 +254,9 @@ impl TextService {
                     self.after_runtime_change();
                 }
                 CtlResult::Ok {
-                    state: self.runtime_snapshot().to_toolbar(),
+                    state: self.runtime_snapshot().to_toolbar().into(),
                 }
             }
-        }
-    }
-
-    /// OnTestKeyDown 判定（无副作用）：本键是否由本输入法消费。
-    /// 与 handle_key_down 保持**一致**（放行判定必须同时落在 Test 阶段）：
-    /// 应用在 OnTestKeyDown 返回 eaten 时即跳过自己的按键处理，若 Test 吃而
-    /// OnKeyDown 放，字母会被静默吞掉（实测 2026-08-19：Caps 直通失效）。
-    fn test_key_down(&self, wparam: WPARAM, _lparam: LPARAM) -> bool {
-        // 透明模式：全部放行。
-        let Some(engine) = engine() else { return false };
-        // M6：daemon 共享段轮询（与 handle_key_down 对称）。Test 阶段即消费 config_epoch，
-        // 否则「取消英文标点」后首个标点键按旧配置放行（放行→OnKeyDown 不触发→不轮询）
-        // → 配置长期陈旧（2026-08-19 实测：取消后仍英文，打字母才触发重载变中文）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            client.poll(&engine, |engine| self.apply_config_hot_reload(engine), || {
-                self.re_register_instance()
-            });
-        }
-        let config = engine.config();
-        let vk = wparam.0 as u16;
-        let shift = shift_pressed();
-        let ctrl = ctrl_pressed();
-        let alt = alt_pressed();
-        let session_active = self.session.borrow().is_some();
-        // 按键直通白名单：命中进程全部按键放行（与 handle_key_down 判定一致），名单为空零开销。
-        if !config.passthrough_apps.is_empty()
-            && is_passthrough_app(&log::module_name(), &config.passthrough_apps)
-        {
-            return false;
-        }
-        // 英文模式：全角命中则吃掉（与 handle_key_down 对称），否则全部放行。
-        if self.english_mode.load(Ordering::SeqCst) {
-            return self
-                .fullwidth_pending_compute(vk, shift, ctrl, alt, session_active)
-                .is_some();
-        }
-        // 中文标点（会话外直接上屏）：Test 阶段与 handle_key_down 同判定，防应用双处理。
-        if let Some(_) = self.chinese_punct_pending(
-            char_code(vk),
-            shift,
-            ctrl,
-            alt,
-            session_active,
-        ) {
-            return true;
-        }
-        // 全角（会话外数字/符号/空格直接上屏全角）：与 handle_key_down 同判定。
-        if self
-            .fullwidth_pending_compute(vk, shift, ctrl, alt, session_active)
-            .is_some()
-        {
-            return true;
-        }
-        let caps = capslock_on();
-        let key = map_key(
-            vk,
-            char_code(vk),
-            shift_pressed(),
-            caps,
-            ctrl_pressed(),
-            alt_pressed(),
-        );
-        let Some(key) = key else { return false };
-        match &*self.session.borrow() {
-            // 会话 active：映射键一律吃掉（含经 keymap 重映射的翻页键）。
-            Some(_) => true,
-            // 非 active：仅字母键（含 '）吃掉并开启会话；标点/数字等放行给应用。
-            // CapsLock 例外：Caps 生效时字母放行直通（Caps = 英文模式，不建会话）——
-            // 与 handle_key_down 的 caps_passthrough 对称，Test 阶段即放行。
-            None => is_session_start_key(key) && !caps_passthrough(&key, caps),
-        }
-    }
-
-    /// 翻转中/英模式（Shift / 语言栏点击共用入口）。
-    /// 按 OPENCLOSE compartment 值同步中英模式（OnChange / 初始化共用）。
-    ///
-    /// open=false（0）= 英文模式；open=true（非 0）= 中文模式。值未变化则不动
-    /// （SetValue 会同步重入 OnChange，防抖避免循环）。关闭时清理活动会话。
-    /// 32-toolbar §2.4：runtime.mode 镜像 OPENCLOSE（真相源）→ 工具栏中英按钮读它；
-    /// 每次变化 StateSync 上报 daemon（§4.1）。
-    fn apply_openclose(&self, open: bool) {
-        let next = !open;
-        if self.english_mode.load(Ordering::SeqCst) == next {
-            return;
-        }
-        self.english_mode.store(next, Ordering::SeqCst);
-        {
-            let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
-            runtime.mode = if open {
-                iuv_core::InitialMode::Chinese
-            } else {
-                iuv_core::InitialMode::English
-            };
-        }
-        self.punct_quote_open.set(false); // 模式切换复位引号配对（下个引号从开形起）
-        log_line(&format!(
-            "OPENCLOSE 变化：open={open} → {}模式",
-            if next { "英文" } else { "中文" }
-        ));
-        // 同步语言栏"中/英"图标。
-        if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
-            langbar::refresh_lang_bar(lang_bar);
-        }
-        // 工具栏看板同步（中英钮真相源 OnChange → StateSync）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.state_sync(pid, tid, self.runtime_snapshot().to_toolbar());
-        }
-        // 关闭输入法：未确认输入按**原文上屏**语义结束（见 flush_session）。
-        if !open && (self.session.borrow().is_some() || self.composition.borrow().is_some()) {
-            self.flush_session();
-            log_line("OPENCLOSE 关闭：活动输入已原文上屏");
-        }
-    }
-
-    /// 未确认输入以**原文上屏**并清理会话（关闭输入法 Ctrl+Space / 焦点切换 Alt+Tab 共用）。
-    ///
-    /// 用户语义：结束中文输入时，拼音原文提交上屏（`zhu'jin'cheng` 预编辑 →
-    /// `zhujincheng`——raw 是用户敲的字母串，撇号只是切分显示层）。
-    /// 修复：旧实现只清内存态不终止 TSF composition → 系统终止时带撇号的分节预览
-    /// 残留在文档（实测 2026-08-14：Ctrl+Space 后 zhu'jin'cheng 残留上屏）。
-    /// 文本为空（异常态）→ cancel 清空；commit/cancel 失败记日志不阻断（残留由系统终止兜底）。
-    fn flush_session(&self) {
-        self.ui.borrow_mut().hide();
-        self.cand_elem.borrow_mut().end();
-        let text: Option<String> = self.session.borrow().as_ref().map(|s| s.pending_text());
-        if let Some(comp) = self.composition.borrow().as_ref() {
-            match text.as_deref() {
-                Some(t) if !t.is_empty() => match comp.commit(t) {
-                    Ok(()) => log_line(&format!("会话清理：原文上屏 {t}")),
-                    Err(e) => log_line(&format!("会话清理：原文上屏失败：{e}")),
-                },
-                _ => match comp.cancel() {
-                    Ok(()) => log_line("会话清理：cancel 清空预编辑"),
-                    Err(e) => log_line(&format!("会话清理：cancel 失败：{e}")),
-                },
-            }
-        }
-        *self.session.borrow_mut() = None;
-        *self.composition.borrow_mut() = None;
-    }
-
-    /// 会话外中文标点判定（handle_key_down 与 test_key_down **共用**，保证对称：
-    /// Test 吃而 OnKeyDown 放会静默吞键，见 Caps 直通 2026-08-19 教训）。
-    /// 命中 → Some(上屏文本)：中文模式 + 无会话 + `runtime.punct` 非英文标点 +
-    /// 非 Ctrl/Alt 组合 + 按键字符（含 Shift 推导）命中中文标点映射。
-    /// 标点开关读**实例运行时态**（32-toolbar §5.1，非引擎 config）。
-    /// 内部处理引号配对状态翻转（`'`/`"` 交替开/关）。
-    fn chinese_punct_pending(
-        &self,
-        char_code: u32,
-        shift: bool,
-        ctrl: bool,
-        alt: bool,
-        session_active: bool,
-    ) -> Option<String> {
-        if self.english_mode.load(Ordering::SeqCst) || session_active || ctrl || alt {
-            return None;
-        }
-        let runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
-        if runtime.punct == iuv_core::PunctMode::English {
-            return None;
-        }
-        let base = char::from_u32(char_code)?;
-        let ascii = shifted_punct(base, shift);
-        let quote_open = self.punct_quote_open.get();
-        let punct = chinese_punct(ascii, quote_open)?;
-        if matches!(ascii, '\'' | '"') {
-            self.punct_quote_open.set(!quote_open);
-        }
-        Some(punct.to_string())
-    }
-
-    /// 全角直接上屏判定（会话外；中/英模式统一入口，handle_key_down 与 test_key_down **共用**，
-    /// 对称保证 Test 吃 OnKeyDown 也吃，防静默吞键——同 2026-08-19 Caps 直通教训）。
-    /// 命中 → Some(全角文本)：`runtime.width == Full` + 非 Ctrl/Alt 组合 + 可全角化 ASCII（见
-    /// `session_bridge::fullwidth_pending`：英文模式全转，中文模式数字/符号/空格、字母除外）。
-    /// 宽度/标点读**实例运行时态**（32-toolbar §5.1）。
-    fn fullwidth_pending_compute(
-        &self,
-        vk: u16,
-        shift: bool,
-        ctrl: bool,
-        alt: bool,
-        session_active: bool,
-    ) -> Option<String> {
-        if ctrl || alt || session_active {
-            return None;
-        }
-        let base = char::from_u32(char_code(vk))?;
-        let runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
-        fullwidth_pending(
-            self.english_mode.load(Ordering::SeqCst),
-            runtime.width,
-            runtime.punct,
-            base,
-            shift,
-            capslock_on(),
-        )
-    }
-
-    /// 会话外中文标点直接上屏：临时 composition 一次 set_text+commit（两次 edit session，
-    /// 复用既有 Composition 方法；与 flush_session 原文上屏同款路径）。
-    fn commit_punct(&self, pic: &ITfContext, text: &str) {
-        let comp = Composition::new(pic.clone(), self.client_id.get());
-        match comp.set_text(text) {
-            Ok(_) => match comp.commit(text) {
-                Ok(()) => log_line(&format!("[punct] 中文标点直接上屏 {text}")),
-                Err(e) => log_line(&format!("[punct] commit 失败：{e}")),
-            },
-            Err(e) => log_line(&format!("[punct] set_text 失败：{e}")),
-        }
-    }
-
-    /// OnKeyDown 完整处理：映射 → 会话推进 → 应用 Effect。
-    fn handle_key_down(&self, pic: &ITfContext, wparam: WPARAM, _lparam: LPARAM) -> bool {
-        let Some(engine) = engine() else { return false };
-        // M6：daemon 共享段轮询（低成本：读 u32 版本；用户库版本/配置纪元变化 → 即时生效）。
-        // 远端写后端在 Activate 注册；引擎后台加载未完成则此处补注册（幂等，无副作用）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            if !self.remote_registered.get() {
-                engine.set_user_remote(Some(client.clone()));
-                self.remote_registered.set(true);
-            }
-            client.poll(&engine, |engine| self.apply_config_hot_reload(engine), || {
-                self.re_register_instance()
-            });
-        }
-        let config = engine.config();
-
-        let vk = wparam.0 as u16;
-        let shift = shift_pressed();
-        let ctrl = ctrl_pressed();
-        let alt = alt_pressed();
-        let session_active = self.session.borrow().is_some();
-
-        // 按键直通白名单：命中进程全部按键放行（不建会话/无候选窗/不转全角，
-        // 输入法在该进程完全透明），名单为空零开销。
-        if !config.passthrough_apps.is_empty()
-            && is_passthrough_app(&log::module_name(), &config.passthrough_apps)
-        {
-            return false;
-        }
-
-        if self.english_mode.load(Ordering::SeqCst) {
-            // 英文模式 + 全角：ASCII 直接上屏全角（ｍｉｃｒｏｓｏｆｔ１２３），否则放行。
-            if let Some(text) = self.fullwidth_pending_compute(vk, shift, ctrl, alt, session_active)
-            {
-                self.commit_punct(pic, &text);
-                return true;
-            }
-            return false;
-        }
-
-        // 中文标点（会话外直接上屏全角）：判定与 test_key_down 对称。
-        if let Some(punct) = self.chinese_punct_pending(char_code(vk), shift, ctrl, alt, session_active)
-        {
-            self.commit_punct(pic, &punct);
-            return true;
-        }
-
-        // 全角（会话外数字/符号/空格直接上屏全角；字母不在此列，照常进拼音会话）。
-        if let Some(text) = self.fullwidth_pending_compute(vk, shift, ctrl, alt, session_active) {
-            self.commit_punct(pic, &text);
-            return true;
-        }
-
-        let caps = capslock_on();
-        let key = map_key(
-            vk,
-            char_code(vk),
-            shift,
-            caps,
-            ctrl,
-            alt,
-        );
-        let Some(key) = key else { return false };
-        log_line(&format!(
-            "[key] 按键：{}（{}）",
-            key.name(),
-            if self.session.borrow().is_some() {
-                "会话内"
-            } else {
-                "会话外"
-            }
-        ));
-
-        // 开启新会话：仅字母键；CapsLock 生效时字母放行直通（仿微软：Caps = 英文模式，
-        // 不建会话；会话内 Caps 字母照常进序列，避免 composition 残留错乱）。
-        if self.session.borrow().is_none() {
-            if !is_session_start_key(key) || caps_passthrough(&key, caps) {
-                return false;
-            }
-            // 注入实例运行时四态（32-toolbar §5.1：per-实例，live 读）。
-            let mut session = engine.start_session_with_runtime(self.runtime.clone());
-            self.punct_quote_open.set(false); // 拼音输入开始：引号配对复位为开形
-            let effect = session.on_key(key);
-            *self.session.borrow_mut() = Some(session);
-            *self.composition.borrow_mut() =
-                Some(Composition::new(pic.clone(), self.client_id.get()));
-            self.dispatch(&effect);
-            return true;
-        }
-
-        // 会话内按键：先应用快捷键映射（翻页键重映射），映射键一律消费（test_key_down 已放行非映射键）。
-        let key = apply_keymap(key, &config.keymap);
-        let effect = self
-            .session
-            .borrow_mut()
-            .as_mut()
-            .map(|s| s.on_key(key))
-            .expect("会话存在性已在上方校验");
-        self.dispatch(&effect);
-        true
-    }
-
-    /// 应用 Effect（契约 §7）：composition → 候选窗；end 则上屏/取消并清理会话。
-    fn dispatch(&self, effect: &iuv_core::Effect) {
-        dispatch_effect(
-            &self.session,
-            &self.composition,
-            &self.ui,
-            &self.caret,
-            &self.cand_elem,
-            effect,
-        )
-    }
-
-    /// M6 配置热载（config_epoch 变化触发，DaemonClient::poll 回调）：
-    /// 重载 config.json → 引擎配置（page_size/passthrough_apps/主题等读取点随新值生效）
-    /// + 候选窗主题即时切换（set_theme，下帧 paint 生效）。
-    /// 键位（keymap）热载为 M7 范畴（TSF 键映射装配不热切），keymap 变化仅记日志。
-    fn apply_config_hot_reload(&self, engine: &Arc<Engine>) {
-        let cfg = iuv_core::Config::load();
-        let keymap_changed = cfg.keymap != engine.config().keymap;
-        engine.set_config(cfg.clone());
-        // 日志模块禁用集热载（26-log-modules.md）：随 config_epoch 生效。
-        crate::log::set_log_modules_disabled(&cfg.disabled_log_modules);
-        let theme = match cfg.theme {
-            iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
-            iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
-        };
-        self.ui.borrow_mut().set_theme(theme);
-        log_line(&format!(
-            "[daemon] 配置热载：theme={:?} passthrough_apps={} keymap{}",
-            cfg.theme,
-            cfg.passthrough_apps.len(),
-            if keymap_changed {
-                "变化（键位热载 M7）"
-            } else {
-                "不变"
-            }
-        ));
-    }
-}
-
-/// dispatch 的自由函数版：候选窗点击回调（同线程）与 TextService 共用同一路径。
-/// 经 Rc 共享槽访问 session/composition/ui/caret/cand_elem；orientation 取自引擎配置。
-fn dispatch_effect(
-    session: &Rc<RefCell<Option<Session>>>,
-    composition: &Rc<RefCell<Option<Composition>>>,
-    ui: &Rc<RefCell<CandwinCandidateWindow>>,
-    caret: &Rc<Cell<CaretRect>>,
-    cand_elem: &Rc<RefCell<CandidateElementHost>>,
-    effect: &iuv_core::Effect,
-) {
-    // TSF 候选 UI 元素同步（与自绘窗平行）：候选非空 → Begin/Update；空 → End。
-    // effect.end 的提交/取消路径统一走 ended 分支 End，这里跳过避免多余一次 Update。
-    if effect.end.is_none() {
-        let snap = crate::ui::effect_to_snapshot(effect);
-        cand_elem.borrow_mut().sync(&snap);
-    }
-    let orientation = engine()
-        .map(|e| e.config().candidate_orientation)
-        .unwrap_or_default();
-    let mut caret_pos = caret.get();
-    let mut degraded = false;
-    let ended = {
-        let comp = composition.borrow();
-        match comp.as_ref() {
-            Some(comp) => {
-                // 外部终止（OnCompositionTerminated）降级：丢弃会话，
-                // 文档残留文本由用户自行清理，下一键重新开会话（透明放行避免 0x8000FFFF 卡死）。
-                if comp.terminated() {
-                    log_line("dispatch：composition 被外部终止，降级丢弃会话");
-                    degraded = true;
-                    true
-                } else {
-                    let mut ui_guard = ui.borrow_mut();
-                    apply_effect(comp, &mut *ui_guard, &mut caret_pos, effect, orientation)
-                }
-            }
-            // composition 缺失（异常路径）：仅更新候选窗并继续。
-            None => {
-                log_line("dispatch：composition 缺失，仅更新候选窗");
-                let mut snap = crate::ui::effect_to_snapshot(effect);
-                snap.orientation = orientation;
-                let mut ui_guard = ui.borrow_mut();
-                if snap.candidates.is_empty() && snap.reading.is_empty() {
-                    ui_guard.hide();
-                } else if ui_guard.is_visible() {
-                    ui_guard.update(&snap);
-                } else {
-                    ui_guard.show(&snap, caret_pos);
-                }
-                effect.end.is_some()
-            }
-        }
-    };
-    caret.set(caret_pos);
-    // 自绘候选窗抑制（candidate_owner_apps 名单驱动，2026-08-20 弃矩形启发式）：
-    // 命中进程（如 WoW 自绘游戏内候选栏）→ 抑制自绘窗（避免双候选栏）；默认空 = 恒自绘。
-    // 名单空时零开销（不查进程名）。候选 UI 元素同步不受影响（游戏桥仍可拉取候选数据）。
-    let suppress = engine()
-        .map(|e| e.config().candidate_owner_apps)
-        .map(|apps| should_suppress_candidate_window(&apps, &log::module_name()))
-        .unwrap_or(false);
-    ui.borrow_mut().set_suppressed(suppress);
-    if ended {
-        ui.borrow_mut().hide();
-        cand_elem.borrow_mut().end();
-        *session.borrow_mut() = None;
-        *composition.borrow_mut() = None;
-        if degraded {
-            log_line("dispatch：降级完成，会话已丢弃");
         }
     }
 }
@@ -934,7 +332,7 @@ impl TextService_Impl {
                             // 若 Activate 在「切走输入法再切回」时重触发且强行写默认，会把用户
                             // 在该窗口改过的中英重置回 config（违反 §2.4 per-实例保留语义）。
                             // 运行时值随实例存活（runtime 字段，本线程此前的设置天然保留）。
-                            let default_open = iuv_core::Config::load().initial_state.mode
+                            let default_open = Config::load().initial_state.mode
                                 == iuv_core::InitialMode::Chinese;
                             match langbar::read_openclose(&comp) {
                                 None => {
@@ -990,7 +388,7 @@ impl TextService_Impl {
         // 挂载语言栏"中/英"切换图标（失败仅记日志，不影响输入法主体）。
         // 点击归一为写 OPENCLOSE compartment（OnChange 统一响应）；右键弹自定义菜单
         // （设置/关于，经 daemon 客户端发管道命令，2026-08-17 决策：无独立托盘图标）。
-        let menu_theme = match iuv_core::Config::load().theme {
+        let menu_theme = match Config::load().theme {
             iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
             iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
         };
@@ -1194,56 +592,5 @@ impl ITfCompartmentEventSink_Impl for TextService_Impl {
             self.apply_openclose(langbar::read_openclose(&comp).unwrap_or(true));
             Ok(())
         })
-    }
-}
-
-/// 当前 Shift 是否按下（GetKeyState 高位，返回 SHORT）。
-fn shift_pressed() -> bool {
-    // SAFETY: GetKeyState 查询当前线程键盘状态，返回符号位表示按下。
-    (unsafe { GetKeyState(VK_SHIFT.0 as i32) }) < 0
-}
-
-/// CapsLock 是否生效（切换状态位，与消息队列无关）。
-fn capslock_on() -> bool {
-    // SAFETY: GetKeyState 对 VK_CAPITAL 返回切换状态（最低位 1 = 生效）。
-    (unsafe { GetKeyState(VK_CAPITAL.0 as i32) }) & 1 != 0
-}
-
-/// 当前 Ctrl 是否按下。Ctrl/Alt 组合键一律放行给应用（map_key 内约定）。
-fn ctrl_pressed() -> bool {
-    // SAFETY: 同上；VK_CONTROL 无.0 常量，用 0x11 字面量。
-    (unsafe { GetKeyState(0x11) }) < 0
-}
-
-/// 当前 Alt 是否按下。
-fn alt_pressed() -> bool {
-    // SAFETY: 同上；VK_MENU 无.0 常量，用 0x12 字面量。
-    (unsafe { GetKeyState(0x12) }) < 0
-}
-
-/// 无副作用的字符映射：MapVirtualKeyW(MAPVK_VK_TO_CHAR) 给出该键的无 Shift 字符值。
-fn char_code(vk: u16) -> u32 {
-    // SAFETY: MapVirtualKeyW 是纯查询，返回 0 表示无对应字符（死键等）。
-    unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_CHAR) & 0xFFFF }
-}
-
-/// 自绘候选窗抑制判定（candidate_owner_apps 名单驱动，2026-08-20 弃矩形启发式）：
-/// 名单空 = 恒自绘（false，零开销）；命中进程名 = 抑制自绘窗（true，app 自绘候选栏）。
-fn should_suppress_candidate_window(apps: &[String], exe: &str) -> bool {
-    !apps.is_empty() && is_passthrough_app(exe, apps)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn suppress_only_for_listed_apps() {
-        // 空名单 = 恒自绘（微信/notepad/WinTerm 等主流应用不误伤）
-        assert!(!should_suppress_candidate_window(&[], "weixin.exe"));
-        // 命中名单（大小写不敏感精确匹配）= 抑制（WoW 游戏自绘候选栏）
-        assert!(should_suppress_candidate_window(&["wow.exe".into()], "WoW.exe"));
-        // 未命中名单 = 恒自绘
-        assert!(!should_suppress_candidate_window(&["wow.exe".into()], "weixin.exe"));
     }
 }

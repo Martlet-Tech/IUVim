@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use iuv_data::{ShmWriter, UserDict};
+use iuv_data::UserDict;
+use iuv_win::ShmWriter;
 
 use crate::config::DaemonConfig;
 use crate::log;

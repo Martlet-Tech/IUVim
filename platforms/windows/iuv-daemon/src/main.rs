@@ -24,7 +24,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use iuv_data::{PipeServer, Request, Response, ShmWriter, UserDict};
+use iuv_data::UserDict;
+use iuv_win::{PipeServer, Request, Response, ShmWriter};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,

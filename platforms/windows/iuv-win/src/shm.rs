@@ -1,7 +1,7 @@
 //! 用户库共享内存段（M6 守护进程唯一写者 → 会话进程只读引用）。
 //!
-//! 设计见 `docs/plan/22-m6-daemon.md` §3。**M6 仅 Windows 生效**；非 Windows 编译降级
-//! stub（全部方法返回 `Err(Unsupported)`，保持编译与跨平台测试可跑）。
+//! 设计见 `docs/plan/22-m6-daemon.md` §3。P3.2 自 iuv-data/shm.rs 移入 iuv-win
+//! （纯 Windows；iuv-data 恢复跨平台）。
 //!
 //! 段布局（`#[repr(C)]` 头 + 变长数据区，段容量固定 `SHM_CAPACITY`）：
 //!
@@ -35,12 +35,13 @@
 use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-#[cfg(windows)]
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
-#[cfg(windows)]
-use windows::Win32::System::Memory::UnmapViewOfFile;
-
-use crate::UserDict;
+use iuv_data::UserDict;
+use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, INVALID_HANDLE_VALUE};
+use windows::Win32::System::Memory::{
+    CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ,
+    FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
+};
+use windows_core::PCWSTR;
 
 /// 段 magic。
 const MAGIC: &[u8; 8] = b"IUVSHM01";
@@ -67,27 +68,10 @@ fn err(kind: io::ErrorKind, msg: impl AsRef<str>) -> io::Error {
     io::Error::new(kind, msg.as_ref())
 }
 
-#[cfg(not(windows))]
-fn err_unsupported() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        "共享内存段 M6 仅 Windows 生效（iuv-data/src/shm.rs 非 Windows 为桩）",
-    )
-}
-
-#[cfg(windows)]
 mod imp {
     use super::*;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use windows::Win32::Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, INVALID_HANDLE_VALUE,
-    };
-    use windows::Win32::System::Memory::{
-        CreateFileMappingW, MapViewOfFile, OpenFileMappingW, FILE_MAP_READ,
-        FILE_MAP_WRITE, PAGE_READWRITE,
-    };
-    use windows_core::PCWSTR;
 
     fn name_wide() -> Vec<u16> {
         OsStr::new(SHM_NAME).encode_wide().chain(Some(0)).collect()
@@ -151,213 +135,142 @@ mod imp {
     }
 }
 
-/// 共享段可写端（守护进程唯一写者）。非 Windows = 桩（不可构造成功）。
+/// 共享段可写端（守护进程唯一写者）。
 pub struct ShmWriter {
-    #[cfg(windows)]
     mapping: HANDLE,
-    #[cfg(windows)]
     view: *mut u8,
     /// 最近一次写入的 version（写前自增；打开时从段头续读，重启不重置纪元）。
-    #[cfg(windows)]
     version: u32,
-    #[cfg(windows)]
     config_epoch: u32,
-    #[cfg(not(windows))]
-    _stub: (),
 }
 
 // SAFETY: view/mapping 由本对象独占持有（生命周期 = 对象）；共享映射区域由调用方
 // （DaemonState 内 Mutex）串行访问，读侧视图可跨线程只读访问——与 mmap.rs Mapped 同理由。
-#[cfg(windows)]
 unsafe impl Send for ShmWriter {}
-#[cfg(windows)]
 unsafe impl Sync for ShmWriter {}
 
 impl ShmWriter {
     /// 创建/打开段（可写映射）。已存在段则复用（单实例守护进程场景 = 首建）。
     pub fn create_or_open() -> io::Result<ShmWriter> {
-        #[cfg(windows)]
-        {
-            let (mapping, view, created) = imp::create_or_open_write()?;
-            if created {
-                // 新段：写入 magic 头（读侧据此判定段格式有效）。
-                // SAFETY: view 指向可写映射（容量 SHM_CAPACITY ≥ 8）。
-                unsafe {
-                    std::ptr::copy_nonoverlapping(MAGIC.as_ptr(), view, MAGIC.len());
-                }
-                return Ok(ShmWriter {
-                    mapping,
-                    view,
-                    version: 0,
-                    config_epoch: 0,
-                });
+        let (mapping, view, created) = imp::create_or_open_write()?;
+        if created {
+            // 新段：写入 magic 头（读侧据此判定段格式有效）。
+            // SAFETY: view 指向可写映射（容量 SHM_CAPACITY ≥ 8）。
+            unsafe {
+                std::ptr::copy_nonoverlapping(MAGIC.as_ptr(), view, MAGIC.len());
             }
-            // 续读既有 version/config_epoch（守护重启不重置纪元，避免读侧抖动）。
-            let base = view.cast::<u32>();
-            // SAFETY: 段容量 SHM_CAPACITY ≥ 20，头四字段均在映射内且 4 字节对齐。
-            let v = unsafe { AtomicU32::from_ptr(base.add(VERSION_OFFSET / 4)) };
-            let ce = unsafe { AtomicU32::from_ptr(base.add(CONFIG_EPOCH_OFFSET / 4)) };
-            Ok(ShmWriter {
+            return Ok(ShmWriter {
                 mapping,
                 view,
-                version: v.load(Ordering::Acquire),
-                config_epoch: ce.load(Ordering::Acquire),
-            })
+                version: 0,
+                config_epoch: 0,
+            });
         }
-        #[cfg(not(windows))]
-        {
-            Err(err_unsupported())
-        }
+        // 续读既有 version/config_epoch（守护重启不重置纪元，避免读侧抖动）。
+        let base = view.cast::<u32>();
+        // SAFETY: 段容量 SHM_CAPACITY ≥ 20，头四字段均在映射内且 4 字节对齐。
+        let v = unsafe { AtomicU32::from_ptr(base.add(VERSION_OFFSET / 4)) };
+        let ce = unsafe { AtomicU32::from_ptr(base.add(CONFIG_EPOCH_OFFSET / 4)) };
+        Ok(ShmWriter {
+            mapping,
+            view,
+            version: v.load(Ordering::Acquire),
+            config_epoch: ce.load(Ordering::Acquire),
+        })
     }
 
     /// 写入用户库：to_bytes → memcpy 数据区 → data_len(Release) → version(Release)。
     /// 返回写后的 version（会话进程响应可携带，非必须）。
     pub fn write(&mut self, dict: &UserDict) -> io::Result<u32> {
-        #[cfg(windows)]
-        {
-            let bytes = dict.to_bytes();
-            if bytes.len() > DATA_CAPACITY {
-                return Err(err(
-                    io::ErrorKind::InvalidData,
-                    format!("用户库序列化超段容量 {} > {}", bytes.len(), DATA_CAPACITY),
-                ));
-            }
-            // SAFETY: view 指向可写映射（容量 SHM_CAPACITY）；DATA_OFFSET + bytes.len()
-            // ≤ SHM_CAPACITY（已校验 bytes.len() ≤ DATA_CAPACITY）。
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    bytes.as_ptr(),
-                    self.view.add(DATA_OFFSET),
-                    bytes.len(),
-                );
-            }
-            let v = self.version.wrapping_add(1);
-            let base = self.view.cast::<u32>();
-            // 先后写序：data_len 先（Release），version 最后（Release）。
-            // 读侧 Acquire version 后，data_len 与数据区写入必可见（无半新半旧）。
-            // SAFETY: 头四字段均在映射内且 4 字节对齐。
-            unsafe {
-                AtomicU32::from_ptr(base.add(DATA_LEN_OFFSET / 4))
-                    .store(bytes.len() as u32, Ordering::Release);
-                AtomicU32::from_ptr(base.add(VERSION_OFFSET / 4)).store(v, Ordering::Release);
-            }
-            self.version = v;
-            Ok(v)
+        let bytes = dict.to_bytes();
+        if bytes.len() > DATA_CAPACITY {
+            return Err(err(
+                io::ErrorKind::InvalidData,
+                format!("用户库序列化超段容量 {} > {}", bytes.len(), DATA_CAPACITY),
+            ));
         }
-        #[cfg(not(windows))]
-        {
-            let _ = dict;
-            Err(err_unsupported())
+        // SAFETY: view 指向可写映射（容量 SHM_CAPACITY）；DATA_OFFSET + bytes.len()
+        // ≤ SHM_CAPACITY（已校验 bytes.len() ≤ DATA_CAPACITY）。
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                self.view.add(DATA_OFFSET),
+                bytes.len(),
+            );
         }
+        let v = self.version.wrapping_add(1);
+        let base = self.view.cast::<u32>();
+        // 先后写序：data_len 先（Release），version 最后（Release）。
+        // 读侧 Acquire version 后，data_len 与数据区写入必可见（无半新半旧）。
+        // SAFETY: 头四字段均在映射内且 4 字节对齐。
+        unsafe {
+            AtomicU32::from_ptr(base.add(DATA_LEN_OFFSET / 4))
+                .store(bytes.len() as u32, Ordering::Release);
+            AtomicU32::from_ptr(base.add(VERSION_OFFSET / 4)).store(v, Ordering::Release);
+        }
+        self.version = v;
+        Ok(v)
     }
 
     /// 递增并写 config_epoch（设置页保存后调用；会话进程检测变化重载 config）。
     pub fn bump_config_epoch(&mut self) -> u32 {
-        #[cfg(windows)]
-        {
-            let e = self.config_epoch.wrapping_add(1);
-            let base = self.view.cast::<u32>();
-            // SAFETY: config_epoch 字段在映射内且 4 字节对齐。
-            unsafe { AtomicU32::from_ptr(base.add(CONFIG_EPOCH_OFFSET / 4)).store(e, Ordering::Release) };
-            self.config_epoch = e;
-            e
-        }
-        #[cfg(not(windows))]
-        {
-            0
-        }
+        let e = self.config_epoch.wrapping_add(1);
+        let base = self.view.cast::<u32>();
+        // SAFETY: config_epoch 字段在映射内且 4 字节对齐。
+        unsafe {
+            AtomicU32::from_ptr(base.add(CONFIG_EPOCH_OFFSET / 4)).store(e, Ordering::Release)
+        };
+        self.config_epoch = e;
+        e
     }
 
     /// 当前 version（最近一次写后的纪元；Ping 响应/日志用）。
     pub fn version(&self) -> u32 {
-        #[cfg(windows)]
-        {
-            self.version
-        }
-        #[cfg(not(windows))]
-        {
-            0
-        }
+        self.version
     }
 }
 
 impl Drop for ShmWriter {
     fn drop(&mut self) {
-        #[cfg(windows)]
-        {
-            // SAFETY: 视图与句柄由本对象独占持有；关闭失败无处理路径，忽略。
-            let _ = unsafe {
-                UnmapViewOfFile(windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS {
-                    Value: self.view as *mut _,
-                })
-            };
-            let _ = unsafe { CloseHandle(self.mapping) };
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = ();
-        }
+        // SAFETY: 视图与句柄由本对象独占持有；关闭失败无处理路径，忽略。
+        let _ = unsafe {
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
+                Value: self.view as *mut _,
+            })
+        };
+        let _ = unsafe { CloseHandle(self.mapping) };
     }
 }
 
-/// 共享段只读端（会话进程）。非 Windows = 桩。
+/// 共享段只读端（会话进程）。
 pub struct ShmReader {
-    #[cfg(windows)]
     mapping: HANDLE,
-    #[cfg(windows)]
     view: *const u8,
-    #[cfg(not(windows))]
-    _stub: (),
 }
 
 // SAFETY: 同 ShmWriter：视图由本对象独占持有，跨进程映射区域只读访问线程安全。
-#[cfg(windows)]
 unsafe impl Send for ShmReader {}
-#[cfg(windows)]
 unsafe impl Sync for ShmReader {}
 
 impl ShmReader {
     /// 打开现有段只读映射。段不存在（守护进程未启动）→ `Err(NotFound)`，调用方降级。
     pub fn open() -> io::Result<ShmReader> {
-        #[cfg(windows)]
-        {
-            let (mapping, view) = imp::open_read()?;
-            Ok(ShmReader { mapping, view })
-        }
-        #[cfg(not(windows))]
-        {
-            Err(err_unsupported())
-        }
+        let (mapping, view) = imp::open_read()?;
+        Ok(ShmReader { mapping, view })
     }
 
     /// 当前 version（原子读）。会话进程轮询：变化 → `read()` 重解析。
     pub fn version(&self) -> u32 {
-        #[cfg(windows)]
-        {
-            let base = self.view.cast_mut().cast::<u32>();
-            // SAFETY: version 字段在映射内且 4 字节对齐（只读原子取，指针可变性仅满足 from_ptr）。
-            unsafe { AtomicU32::from_ptr(base.add(VERSION_OFFSET / 4)).load(Ordering::Acquire) }
-        }
-        #[cfg(not(windows))]
-        {
-            0
-        }
+        let base = self.view.cast_mut().cast::<u32>();
+        // SAFETY: version 字段在映射内且 4 字节对齐（只读原子取，指针可变性仅满足 from_ptr）。
+        unsafe { AtomicU32::from_ptr(base.add(VERSION_OFFSET / 4)).load(Ordering::Acquire) }
     }
 
     /// 当前 config_epoch（原子读）。会话进程轮询：变化 → 重载 config.json。
     pub fn config_epoch(&self) -> u32 {
-        #[cfg(windows)]
-        {
-            let base = self.view.cast_mut().cast::<u32>();
-            // SAFETY: config_epoch 字段在映射内且 4 字节对齐（只读原子取，指针可变性仅满足 from_ptr）。
-            unsafe {
-                AtomicU32::from_ptr(base.add(CONFIG_EPOCH_OFFSET / 4)).load(Ordering::Acquire)
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            0
-        }
+        let base = self.view.cast_mut().cast::<u32>();
+        // SAFETY: config_epoch 字段在映射内且 4 字节对齐（只读原子取，指针可变性仅满足 from_ptr）。
+        unsafe { AtomicU32::from_ptr(base.add(CONFIG_EPOCH_OFFSET / 4)).load(Ordering::Acquire) }
     }
 
     /// 解析当前用户库。返回语义：
@@ -366,64 +279,47 @@ impl ShmReader {
     ///   调用方视同"暂无可读用户库"降级；
     /// - `Err`：data_len 越界 / 序列化损坏——调用方降级自读文件。
     pub fn read(&self) -> io::Result<Option<UserDict>> {
-        #[cfg(windows)]
-        {
-            let base = self.view.cast_mut().cast::<u32>();
-            // SAFETY: 头四字段均在映射内且 4 字节对齐（只读原子取，指针可变性仅满足 from_ptr）。
-            let version =
-                unsafe { AtomicU32::from_ptr(base.add(VERSION_OFFSET / 4)).load(Ordering::Acquire) };
-            let data_len = unsafe {
-                AtomicU32::from_ptr(base.add(DATA_LEN_OFFSET / 4)).load(Ordering::Acquire) as usize
-            };
-            // SAFETY: magic 在段头 [0..8]（段容量 SHM_CAPACITY ≥ 8）。
-            let magic_bytes = unsafe { std::slice::from_raw_parts(self.view, 8) };
-            if magic_bytes != MAGIC {
-                return Ok(None); // 段存在但格式不符（不同代 IUVSHM 布局）
-            }
-            if version == 0 && data_len == 0 {
-                return Ok(None); // 尚未首次写入
-            }
-            if data_len > DATA_CAPACITY {
-                return Err(err(
-                    io::ErrorKind::InvalidData,
-                    format!("共享段 data_len 越界: {data_len}"),
-                ));
-            }
-            // SAFETY: data_len ≤ DATA_CAPACITY，故 [DATA_OFFSET, DATA_OFFSET+data_len)
-            // 在段内；version 已在 Acquire 读（其前写入全部可见）。
-            let data = unsafe { std::slice::from_raw_parts(self.view.add(DATA_OFFSET), data_len) };
-            match UserDict::from_bytes(data) {
-                Ok(d) => Ok(Some(d)),
-                Err(e) => Err(e),
-            }
+        let base = self.view.cast_mut().cast::<u32>();
+        // SAFETY: 头四字段均在映射内且 4 字节对齐（只读原子取，指针可变性仅满足 from_ptr）。
+        let version =
+            unsafe { AtomicU32::from_ptr(base.add(VERSION_OFFSET / 4)).load(Ordering::Acquire) };
+        let data_len = unsafe {
+            AtomicU32::from_ptr(base.add(DATA_LEN_OFFSET / 4)).load(Ordering::Acquire) as usize
+        };
+        // SAFETY: magic 在段头 [0..8]（段容量 SHM_CAPACITY ≥ 8）。
+        let magic_bytes = unsafe { std::slice::from_raw_parts(self.view, 8) };
+        if magic_bytes != MAGIC {
+            return Ok(None); // 段存在但格式不符（不同代 IUVSHM 布局）
         }
-        #[cfg(not(windows))]
-        {
-            Err(err_unsupported())
+        if version == 0 && data_len == 0 {
+            return Ok(None); // 尚未首次写入
         }
+        if data_len > DATA_CAPACITY {
+            return Err(err(
+                io::ErrorKind::InvalidData,
+                format!("共享段 data_len 越界: {data_len}"),
+            ));
+        }
+        // SAFETY: data_len ≤ DATA_CAPACITY，故 [DATA_OFFSET, DATA_OFFSET+data_len)
+        // 在段内；version 已在 Acquire 读（其前写入全部可见）。
+        let data = unsafe { std::slice::from_raw_parts(self.view.add(DATA_OFFSET), data_len) };
+        UserDict::from_bytes(data).map(Some)
     }
 }
 
 impl Drop for ShmReader {
     fn drop(&mut self) {
-        #[cfg(windows)]
-        {
-            // SAFETY: 视图与句柄由本对象独占持有；关闭失败无处理路径，忽略。
-            let _ = unsafe {
-                UnmapViewOfFile(windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS {
-                    Value: self.view as *mut _,
-                })
-            };
-            let _ = unsafe { CloseHandle(self.mapping) };
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = ();
-        }
+        // SAFETY: 视图与句柄由本对象独占持有；关闭失败无处理路径，忽略。
+        let _ = unsafe {
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
+                Value: self.view as *mut _,
+            })
+        };
+        let _ = unsafe { CloseHandle(self.mapping) };
     }
 }
 
-#[cfg(all(windows, test))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
