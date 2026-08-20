@@ -84,6 +84,12 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   屏蔽拦截）、iuv-tsf（map_key Shift+Delete）。测试：数据层 5 + 引擎 4 + 会话 7 全绿。
 - 点子库（暂不做，2026-08-19 记录）：**Tab 键用途**——整句翻译（在线 API：空闲 0.5s 触发、候选 N+1 槽、
   Tab 高亮 + 空格上屏）与自动补全（Tab 钉选当前候选续打，不结束会话），语义分配未定，`29-tab-ideas.md`
+- **M9 可自定义贴图皮肤框架——调研定稿/挂起（2026-08-20，未实现）**：候选窗换肤 = 自研 `IUVSKIN01`
+  （`skins/<name>/manifest.json` + 多区域 PNG，9-patch 缩放，部分贴图渐进增强，加载失败降级 light/dark），
+  零新增依赖（tiny-skia 默认 `png-format` + `draw_pixmap` 缩放已确认）。**Lua 插件兼容已否决**（调研实测：
+  librime 不内置 Lua、Weasel 默认不带、全 GitHub 用户级 Lua 插件仅 ~4 个合计 <100 星——`33-skin.md` §1）。
+  皮肤格式互操作合法（红线：不抄搜狗/QQ 解析代码；只做自研格式）。**挂起原因**：前置 M8 悬浮工具栏
+  （feat-toolbar 分支，效果差）需先改进。`33-skin.md`
 - 后续：M3 整句增强(LMDG)/模糊音 · **M4 跨平台渲染候选窗——已实现（2026-08-16，ui-rewrite 分支待手测）**：
   tiny-skia+cosmic-text 绘图（crates/iuv-ui）+ D2D/DComp 呈现（ui/candwin.rs）+ 浅色/深色主题 + 圆角阴影，`19-m4-cross-render.md`
   · **M5 语言栏右键菜单——已实现（2026-08-17 重定义，去托盘）**：右键语言栏「中/英」按钮弹「设置/关于」
