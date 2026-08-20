@@ -10,10 +10,13 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
-use iuv_core::{apply_keymap, chinese_punct, is_session_start_key, shifted_punct, Config, Engine, Key, Session};
+use iuv_core::{
+    apply_keymap, chinese_punct, is_session_start_key, shifted_punct, Config, Engine, Key,
+    RuntimeState, Session,
+};
+use iuv_data::{CtlCmd, CtlResult, CTL_FIELD_MODE};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VK_CAPITAL, VK_SHIFT,
@@ -28,7 +31,8 @@ use windows::Win32::UI::TextServices::{
 use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, BOOL};
 
 use crate::composition::Composition;
-use crate::daemon_client::DaemonClient;
+use crate::ctl::{CtlApplier, CtlEndpoint};
+use crate::daemon_client::{process_id, thread_id, DaemonClient};
 use crate::langbar::{self, LangBarItemButton};
 use crate::log::{self, log_line};
 use crate::session_bridge::{apply_effect, caps_passthrough, fullwidth_pending, is_passthrough_app, map_key};
@@ -226,11 +230,23 @@ pub(crate) struct TextService {
     remote_registered: Cell<bool>,
     /// 引号配对状态（`'`/`"` 交替开/关形）。会话开始/模式切换复位为开。
     punct_quote_open: Cell<bool>,
+    /// 实例运行时四态（32-status-toolbar.md §5.1）：per-实例（非进程级 config），
+    /// 启动 = `config.initial_state`，运行时操作才改；Session 构造注入（live 读）。
+    /// `Arc<Mutex<...>>`：控制通道（SetState）与 OnChange 都写，会话/热键路径读。
+    runtime: Arc<Mutex<RuntimeState>>,
+    /// 反向控制端点（32-toolbar §4.2/§4.3）：accept 线程 + 隐藏消息窗。Activate 起、
+    /// Deactivate/Drop 停（懒建，每个实例一个）。
+    ctl: RefCell<Option<CtlEndpoint>>,
+    /// 本实例是否已向 daemon 注册（§5.3：passthrough 进程不注册；防重复）。
+    registered: Cell<bool>,
 }
 
 impl TextService {
     pub(crate) fn new() -> Self {
         INSTANCE_COUNT.fetch_add(1, Ordering::SeqCst);
+        // iuv-win 共享呈现层日志钩子注入（一次即可，幂等）。
+        static LOGGER_SET: OnceLock<()> = OnceLock::new();
+        LOGGER_SET.get_or_init(|| iuv_win::set_logger(Some(crate::log::log_line)));
         let session = Rc::new(RefCell::new(None));
         let composition = Rc::new(RefCell::new(None));
         let caret = Rc::new(Cell::new(CaretRect::default()));
@@ -283,6 +299,141 @@ impl TextService {
             daemon: RefCell::new(None),
             remote_registered: Cell::new(false),
             punct_quote_open: Cell::new(false),
+            // 实例运行时四态：创建时（首次 Activate 前）从 config 初始值取一次
+            // （32-toolbar §2.5：设置页默认值 = 新建实例时的初始值；热载不改运行实例）。
+            runtime: Arc::new(Mutex::new(RuntimeState::from(
+                iuv_core::Config::load().initial_state,
+            ))),
+            ctl: RefCell::new(None),
+            registered: Cell::new(false),
+        }
+    }
+
+    /// 实例标识（pid:tid）：pid = 进程 id，tid = **OS 线程 id**（`GetCurrentThreadId`，
+    /// 非 TSF client id）——前台看板判定 `GetWindowThreadProcessId` 返回 OS 线程 id，
+    /// 直接用同一标识匹配实例表（32-toolbar §4.1）。
+    fn instance_id(&self) -> (u32, u32) {
+        (process_id(), thread_id())
+    }
+
+    /// 当前运行时四态快照。
+    fn runtime_snapshot(&self) -> RuntimeState {
+        *self.runtime.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 向 daemon 注册实例 + 通知 active（Activate 时；passthrough 进程不注册，iuv 完全透明）。
+    /// Register 仅首 Activate 发一次（防重复）；`Active{true}` 每次 Activate 都发（daemon 判
+    /// 「iuv 被选中」→ 看板显示；Deactivate 发 false 隐藏）。Register 失败 = daemon 离线
+    /// （静默；poll 在线翻转后重注册，§4.4）。
+    fn register_instance(&self) {
+        let cfg = iuv_core::Config::load();
+        let passthrough = !cfg.passthrough_apps.is_empty()
+            && is_passthrough_app(&log::module_name(), &cfg.passthrough_apps);
+        if passthrough {
+            log_line("[toolbar] passthrough 进程：不注册工具栏实例（iuv 完全透明）");
+            return;
+        }
+        let Some(client) = self.daemon.borrow().as_ref().cloned() else {
+            return;
+        };
+        let (pid, tid) = self.instance_id();
+        if !self.registered.get() {
+            if client.register(pid, tid, self.runtime_snapshot().to_toolbar()) {
+                self.registered.set(true);
+                log_line(&format!("[toolbar] 实例注册（{pid}:{tid}）"));
+            }
+        }
+        client.set_active(pid, tid, true);
+    }
+
+    /// daemon 重启恢复重注册（§4.4：poll 检测离线→在线翻转后调用）：
+    /// daemon 重启清空实例表，本进程仍在运行（registered 仍 true）→ 强制重新 Register。
+    fn re_register_instance(&self) {
+        self.registered.set(false);
+        self.register_instance();
+    }
+
+    /// 启动反向控制端点（accept 线程 + 隐藏消息窗；§4.2/§4.3）。懒建：Deactivate 停、
+    /// Drop 清。失败静默（记日志——工具栏按钮无法到达本实例，其余功能不受影响）。
+    fn start_ctl_endpoint(&self) {
+        if self.ctl.borrow().is_some() {
+            return;
+        }
+        let Some(hwnd) = CtlEndpoint::create_window() else {
+            return;
+        };
+        // SAFETY: self 为 TextService（COM 对象内层，端点存活期间有效）；端点存于
+        // self.ctl 的 RefCell 槽位（地址固定），attach 后 GWLP_USERDATA 指向该固定地址。
+        let svc: *const dyn CtlApplier = self as *const TextService as *const dyn CtlApplier;
+        let (pid, tid) = self.instance_id();
+        *self.ctl.borrow_mut() = Some(CtlEndpoint::new(hwnd, svc, pid, tid));
+        let mut slot = self.ctl.borrow_mut();
+        slot.as_mut()
+            .map(|ep| ep.attach(pid, tid))
+            .unwrap_or(false);
+    }
+
+    /// 停反向控制端点（Deactivate：Drop 兜底清理，此处显式调以尽快释放窗口/线程）。
+    fn stop_ctl_endpoint(&self) {
+        let ep = self.ctl.borrow_mut().take();
+        drop(ep); // CtlEndpoint::drop 停线程 + 清 GWLP_USERDATA + 销毁窗口
+    }
+
+    /// 运行时四态变化后的收尾：live 重渲当前会话（点简繁/全半角/标点立即生效）+ StateSync 上报。
+    fn after_runtime_change(&self) {
+        // 当前会话重渲：effect() 内部 live 读 runtime，切换后候选/预编辑立即跟随。
+        if let Some(sess) = self.session.borrow().as_ref() {
+            let effect = sess.effect();
+            self.dispatch(&effect);
+        }
+        // 上报 daemon 看板（§4.1 StateSync）。
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            let (pid, tid) = self.instance_id();
+            client.state_sync(pid, tid, self.runtime_snapshot().to_toolbar());
+        }
+    }
+
+    /// 应用反向控制命令（CtlCmd::SetState；TSF 线程 wndproc 调用，§4.3）。
+    /// mode 走 OPENCLOSE compartment（真相源，OnChange 统一响应）；其余字段直改 runtime。
+    fn apply_ctl_cmd(&self, cmd: &CtlCmd) -> CtlResult {
+        match cmd {
+            CtlCmd::SetState { field, value } => {
+                if *field == CTL_FIELD_MODE {
+                    // 中英：写 OPENCLOSE compartment（open=1 中文 / 0 英文）；SetValue
+                    // 同步重入 OnChange → apply_openclose 更新 runtime.mode + StateSync。
+                    let open = *value == 0; // 值 0=中文=打开
+                    let mut ok = false;
+                    if let Some((comp, tid)) = self
+                        .compartment
+                        .borrow()
+                        .as_ref()
+                        .map(|(c, t)| (c.clone(), *t))
+                    {
+                        ok = langbar::write_openclose(&comp, tid, open).is_ok();
+                        if !ok {
+                            log_line("[toolbar] 写 OPENCLOSE 失败，本地翻转 mode 兜底");
+                        }
+                    }
+                    if !ok {
+                        let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+                        runtime.set_field(CTL_FIELD_MODE, *value);
+                        drop(runtime);
+                        self.after_runtime_change();
+                    }
+                } else {
+                    let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+                    if !runtime.set_field(*field, *value) {
+                        return CtlResult::Err {
+                            msg: format!("非法字段 {field}"),
+                        };
+                    }
+                    drop(runtime);
+                    self.after_runtime_change();
+                }
+                CtlResult::Ok {
+                    state: self.runtime_snapshot().to_toolbar(),
+                }
+            }
         }
     }
 
@@ -297,7 +448,9 @@ impl TextService {
         // 否则「取消英文标点」后首个标点键按旧配置放行（放行→OnKeyDown 不触发→不轮询）
         // → 配置长期陈旧（2026-08-19 实测：取消后仍英文，打字母才触发重载变中文）。
         if let Some(client) = self.daemon.borrow().as_ref() {
-            client.poll(&engine, |engine| self.apply_config_hot_reload(engine));
+            client.poll(&engine, |engine| self.apply_config_hot_reload(engine), || {
+                self.re_register_instance()
+            });
         }
         let config = engine.config();
         let vk = wparam.0 as u16;
@@ -359,12 +512,22 @@ impl TextService {
     ///
     /// open=false（0）= 英文模式；open=true（非 0）= 中文模式。值未变化则不动
     /// （SetValue 会同步重入 OnChange，防抖避免循环）。关闭时清理活动会话。
+    /// 32-toolbar §2.4：runtime.mode 镜像 OPENCLOSE（真相源）→ 工具栏中英按钮读它；
+    /// 每次变化 StateSync 上报 daemon（§4.1）。
     fn apply_openclose(&self, open: bool) {
         let next = !open;
         if self.english_mode.load(Ordering::SeqCst) == next {
             return;
         }
         self.english_mode.store(next, Ordering::SeqCst);
+        {
+            let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+            runtime.mode = if open {
+                iuv_core::InitialMode::Chinese
+            } else {
+                iuv_core::InitialMode::English
+            };
+        }
         self.punct_quote_open.set(false); // 模式切换复位引号配对（下个引号从开形起）
         log_line(&format!(
             "OPENCLOSE 变化：open={open} → {}模式",
@@ -373,6 +536,11 @@ impl TextService {
         // 同步语言栏"中/英"图标。
         if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
             langbar::refresh_lang_bar(lang_bar);
+        }
+        // 工具栏看板同步（中英钮真相源 OnChange → StateSync）。
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            let (pid, tid) = self.instance_id();
+            client.state_sync(pid, tid, self.runtime_snapshot().to_toolbar());
         }
         // 关闭输入法：未确认输入按**原文上屏**语义结束（见 flush_session）。
         if !open && (self.session.borrow().is_some() || self.composition.borrow().is_some()) {
@@ -410,8 +578,9 @@ impl TextService {
 
     /// 会话外中文标点判定（handle_key_down 与 test_key_down **共用**，保证对称：
     /// Test 吃而 OnKeyDown 放会静默吞键，见 Caps 直通 2026-08-19 教训）。
-    /// 命中 → Some(上屏文本)：中文模式 + 无会话 + `initial_state.punct` 非英文标点 +
+    /// 命中 → Some(上屏文本)：中文模式 + 无会话 + `runtime.punct` 非英文标点 +
     /// 非 Ctrl/Alt 组合 + 按键字符（含 Shift 推导）命中中文标点映射。
+    /// 标点开关读**实例运行时态**（32-toolbar §5.1，非引擎 config）。
     /// 内部处理引号配对状态翻转（`'`/`"` 交替开/关）。
     fn chinese_punct_pending(
         &self,
@@ -424,8 +593,8 @@ impl TextService {
         if self.english_mode.load(Ordering::SeqCst) || session_active || ctrl || alt {
             return None;
         }
-        let engine = engine()?;
-        if engine.config().initial_state.punct == iuv_core::PunctMode::English {
+        let runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+        if runtime.punct == iuv_core::PunctMode::English {
             return None;
         }
         let base = char::from_u32(char_code)?;
@@ -440,8 +609,9 @@ impl TextService {
 
     /// 全角直接上屏判定（会话外；中/英模式统一入口，handle_key_down 与 test_key_down **共用**，
     /// 对称保证 Test 吃 OnKeyDown 也吃，防静默吞键——同 2026-08-19 Caps 直通教训）。
-    /// 命中 → Some(全角文本)：`width == Full` + 非 Ctrl/Alt 组合 + 可全角化 ASCII（见
+    /// 命中 → Some(全角文本)：`runtime.width == Full` + 非 Ctrl/Alt 组合 + 可全角化 ASCII（见
     /// `session_bridge::fullwidth_pending`：英文模式全转，中文模式数字/符号/空格、字母除外）。
+    /// 宽度/标点读**实例运行时态**（32-toolbar §5.1）。
     fn fullwidth_pending_compute(
         &self,
         vk: u16,
@@ -453,12 +623,12 @@ impl TextService {
         if ctrl || alt || session_active {
             return None;
         }
-        let engine = engine()?;
         let base = char::from_u32(char_code(vk))?;
+        let runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
         fullwidth_pending(
             self.english_mode.load(Ordering::SeqCst),
-            engine.config().initial_state.width,
-            engine.config().initial_state.punct,
+            runtime.width,
+            runtime.punct,
             base,
             shift,
             capslock_on(),
@@ -488,7 +658,9 @@ impl TextService {
                 engine.set_user_remote(Some(client.clone()));
                 self.remote_registered.set(true);
             }
-            client.poll(&engine, |engine| self.apply_config_hot_reload(engine));
+            client.poll(&engine, |engine| self.apply_config_hot_reload(engine), || {
+                self.re_register_instance()
+            });
         }
         let config = engine.config();
 
@@ -555,7 +727,8 @@ impl TextService {
             if !is_session_start_key(key) || caps_passthrough(&key, caps) {
                 return false;
             }
-            let mut session = engine.start_session();
+            // 注入实例运行时四态（32-toolbar §5.1：per-实例，live 读）。
+            let mut session = engine.start_session_with_runtime(self.runtime.clone());
             self.punct_quote_open.set(false); // 拼音输入开始：引号配对复位为开形
             let effect = session.on_key(key);
             *self.session.borrow_mut() = Some(session);
@@ -693,6 +866,22 @@ fn dispatch_effect(
 impl Drop for TextService {
     fn drop(&mut self) {
         INSTANCE_COUNT.fetch_sub(1, Ordering::SeqCst);
+        // 先停反向控制端点（accept 线程 join + 隐藏窗销毁），再注销——避免 Drop 期间
+        // 字段仍存活时 wndproc 并发访问（TSF 线程 Drop 内不泵消息，但防御性先停干净）。
+        self.stop_ctl_endpoint();
+        // 32-toolbar §4.1：实例 Drop 注销（daemon 从实例表移除，看板失联清理）。
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            let (pid, tid) = self.instance_id();
+            client.unregister(pid, tid);
+        }
+    }
+}
+
+/// 反向控制命令应用目标（32-toolbar §4.3：TSF 线程 wndproc 调用，跨线程经原始指针间接）。
+/// 实现挂 `TextService`（内层结构体，非 COM 壳）：字段全部在 TextService 上，指针稳定。
+impl CtlApplier for TextService {
+    fn apply_cmd(&self, cmd: &CtlCmd) -> CtlResult {
+        self.apply_ctl_cmd(cmd)
     }
 }
 
@@ -738,30 +927,35 @@ impl TextService_Impl {
                     } {
                         Ok(cookie) => {
                             *self.compartment.borrow_mut() = Some((comp.clone(), cookie));
-                            // 新 TSF 实例初始中英模式（2026-08-19，见 28-initial-state-settings.md）：
-                            // 中文默认 = 激活即打开（MS IME 同款语义，与旧版零行为变化）；
-                            // 英文默认 = 激活即关闭（Ctrl+Space 可切回）。初始未设置（VT_EMPTY）
-                            // 或与默认不符时强制写默认值，保证切入输入法即配置态；同时保持
-                            // 系统状态与我们一致（后续 SetValue 会同步重入 OnChange，防抖无害）。
+                            // 新 TSF 实例初始中英模式（2026-08-19，见 28-initial-state-settings.md；
+                            // 32-status-toolbar.md §5.2 修正）：中文默认 = 激活即打开；
+                            // 英文默认 = 激活即关闭（Ctrl+Space 可切回）。
+                            // **仅 VT_EMPTY（全新线程，compartment 未设置）时写配置默认**——
+                            // 若 Activate 在「切走输入法再切回」时重触发且强行写默认，会把用户
+                            // 在该窗口改过的中英重置回 config（违反 §2.4 per-实例保留语义）。
+                            // 运行时值随实例存活（runtime 字段，本线程此前的设置天然保留）。
                             let default_open = iuv_core::Config::load().initial_state.mode
                                 == iuv_core::InitialMode::Chinese;
-                            if langbar::read_openclose(&comp) != Some(default_open) {
-                                if let Err(e) =
-                                    langbar::write_openclose(&comp, tid, default_open)
-                                {
+                            match langbar::read_openclose(&comp) {
+                                None => {
+                                    if let Err(e) =
+                                        langbar::write_openclose(&comp, tid, default_open)
+                                    {
+                                        log_line(&format!(
+                                            "OPENCLOSE 激活写默认 open={default_open} 失败：{e:?}"
+                                        ));
+                                    }
                                     log_line(&format!(
-                                        "OPENCLOSE 激活写 open={default_open} 失败：{e:?}"
+                                        "OPENCLOSE VT_EMPTY：写默认 open={default_open}"
                                     ));
                                 }
+                                Some(open) => log_line(&format!(
+                                    "OPENCLOSE 已有值 open={open}（保持，运行时值随实例存活）"
+                                )),
                             }
-                            log_line(&format!(
-                                "OPENCLOSE compartment 监听注册 OK（当前 open={}，默认={default_open}）",
-                                match langbar::read_openclose(&comp) {
-                                    Some(v) => i32::from(v).to_string(),
-                                    None => "未设置".to_owned(),
-                                }
-                            ));
-                            self.apply_openclose(default_open);
+                            // 用**实际** compartment 值初始化（含 VT_EMPTY→默认与既有值两种路径），
+                            // 不以 config 默认强制——切走再切回保持用户改过的中英。
+                            self.apply_openclose(langbar::read_openclose(&comp).unwrap_or(true));
                         }
                         Err(e) => log_line(&format!(
                             "OPENCLOSE compartment AdviseSink 失败：{e:?}（不影响输入法）"
@@ -817,6 +1011,12 @@ impl TextService_Impl {
             Err(e) => log_line(&format!("语言栏图标挂载失败：{e:?}（不影响输入法）")),
         }
 
+        // 32-toolbar：向 daemon 注册实例（四态上报 + Active 通知；passthrough 进程不注册）。
+        self.register_instance();
+
+        // 32-toolbar：启动反向控制端点（accept 线程 + 隐藏消息窗；§4.2/§4.3）。
+        self.start_ctl_endpoint();
+
         log_line(&format!("Activate：tid={tid}"));
 
         // M7 daemon 自启（IME 惰性拉起，搜狗同款）：离线且冷却期满 → CreateProcess
@@ -835,6 +1035,15 @@ impl TextService_Impl {
         self.cand_elem.borrow_mut().clear();
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
+
+        // 32-toolbar：停反向控制端点（accept 线程 + 隐藏窗）+ Active=false 通知
+        // （daemon 判「iuv 未被选中」→ 看板隐藏）。registered 保留——同一实例
+        // 再激活不重复 Register，但 Active 通知仍发。
+        self.stop_ctl_endpoint();
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            let (pid, tid) = self.instance_id();
+            client.set_active(pid, tid, false);
+        }
 
         // 卸载语言栏"中/英"图标（失败仅记日志）。
         if let Some(lang_bar_com) = self.lang_bar.borrow_mut().take() {

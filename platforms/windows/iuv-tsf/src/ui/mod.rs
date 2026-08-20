@@ -4,7 +4,6 @@
 
 pub mod candwin;
 pub mod menu_window;
-pub mod ulw;
 pub use candwin::CandwinCandidateWindow;
 pub use menu_window::MenuWindow;
 pub use iuv_core::Orientation;

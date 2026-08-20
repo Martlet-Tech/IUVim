@@ -1,4 +1,6 @@
-//! ULW（UpdateLayeredWindow）呈现共享模块：候选窗与自绘菜单窗口复用。
+//! ULW（UpdateLayeredWindow）呈现共享模块（32-status-toolbar.md §6.4 从 iuv-tsf 抽取）。
+//!
+//! daemon 工具栏窗口与 TSF 候选窗/自绘菜单窗口复用。
 //!
 //! 机制（M4 定稿路线，见 `19-m4-cross-render.md`）：
 //! 1. iuv-ui 软件光栅 premultiplied BGRA `Surface`
@@ -30,7 +32,8 @@ pub struct UlwSurface {
     h: u32,
 }
 
-// SAFETY: UlwSurface 仅在创建线程使用（TSF 回调线程），bits 指针不跨线程传递。
+// SAFETY: UlwSurface 仅在创建线程使用（TSF 回调线程 / daemon 工具条线程），
+// bits 指针不跨线程传递。
 unsafe impl Send for UlwSurface {}
 
 impl UlwSurface {
@@ -47,7 +50,7 @@ impl UlwSurface {
 
     /// 上屏：确保 DIB 匹配 surf 尺寸 → 拷贝 premultiplied BGRA → UpdateLayeredWindow
     /// （一次调用同时定位 ptDst + 定尺寸 psize + per-pixel alpha 合成）。
-    /// `log_prefix`：日志前缀（如 "[candwin]" / "[menuwin]"），失败记日志不 panic。
+    /// `log_prefix`：日志前缀（如 "[candwin]" / "[menuwin]" / "[toolbar]"），失败记日志不 panic。
     pub fn upload(
         &mut self,
         hwnd: HWND,
@@ -86,7 +89,7 @@ impl UlwSurface {
         };
         let hdc_dst = unsafe { GetDC(None) };
         if hdc_dst.is_invalid() {
-            crate::log::log_line(&format!("{log_prefix} GetDC(桌面) 失败"));
+            crate::log_line(&format!("{log_prefix} GetDC(桌面) 失败"));
             return false;
         }
         let r = unsafe {
@@ -105,7 +108,7 @@ impl UlwSurface {
         // SAFETY: GetDC/ReleaseDC 配对
         let _ = unsafe { ReleaseDC(None, hdc_dst) };
         if r.is_err() {
-            crate::log::log_line(&format!(
+            crate::log_line(&format!(
                 "{log_prefix} UpdateLayeredWindow 失败：{:?}",
                 r.unwrap_err()
             ));
@@ -135,7 +138,7 @@ impl UlwSurface {
         // SAFETY: CreateCompatibleDC(None) 以桌面 DC 为模板创建内存 DC。
         let hdc = unsafe { CreateCompatibleDC(None) };
         if hdc.is_invalid() {
-            crate::log::log_line(&format!("{log_prefix} CreateCompatibleDC 失败"));
+            crate::log_line(&format!("{log_prefix} CreateCompatibleDC 失败"));
             return false;
         }
         // 32bpp 自顶向下（biHeight 负数）；内存序 = BGRA little-endian，与 iuv-ui 一致。
@@ -158,7 +161,7 @@ impl UlwSurface {
         } {
             Ok(d) => d,
             Err(e) => {
-                crate::log::log_line(&format!("{log_prefix} CreateDIBSection 失败：{e:?}"));
+                crate::log_line(&format!("{log_prefix} CreateDIBSection 失败：{e:?}"));
                 // SAFETY: DC 未选中任何对象，可立即删除。
                 unsafe {
                     let _ = DeleteDC(hdc);
@@ -167,7 +170,7 @@ impl UlwSurface {
             }
         };
         if bits.is_null() {
-            crate::log::log_line(&format!("{log_prefix} CreateDIBSection 返回空位图指针"));
+            crate::log_line(&format!("{log_prefix} CreateDIBSection 返回空位图指针"));
             // SAFETY: DIB 成功但无像素指针（理论不发生）：释放后降级。
             unsafe {
                 let _ = DeleteObject(dib.into());

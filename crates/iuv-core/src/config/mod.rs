@@ -137,6 +137,140 @@ impl Default for InitialState {
     }
 }
 
+/// 运行时四态（每 TSF 实例，`docs/plan/32-status-toolbar.md` §5.1）。
+///
+/// 与 `InitialState` 字段同构，但语义 = **实例运行时值**（非"新实例默认值"）：
+/// 每个 TSF 实例（一个窗口/线程的 TextService）持有自己的值，工具栏/会话外操作
+/// 修改只影响本实例；Alt+Tab 往返保留；设置页初始值仅在新实例创建时生效一次。
+///
+/// `Session` 构造接收 `Arc<Mutex<RuntimeState>>`（**live 读**，非快照）：点简繁/全半角
+/// 当前候选/预编辑立即重渲 = 用户已确认。中英字段镜像 OPENCLOSE compartment 真相源
+/// （OnChange 统一写），其余三字段由工具栏 Cmd::SetState 写入。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeState {
+    /// 中/英（镜像 OPENCLOSE compartment：`InitialMode::Chinese` = 打开）
+    pub mode: InitialMode,
+    /// 半角/全角
+    pub width: WidthMode,
+    /// 简体/繁体
+    pub script: ScriptMode,
+    /// 中文标点/英文标点
+    pub punct: PunctMode,
+}
+
+impl Default for RuntimeState {
+    fn default() -> Self {
+        RuntimeState {
+            mode: InitialMode::Chinese,
+            width: WidthMode::Half,
+            script: ScriptMode::Simplified,
+            punct: PunctMode::Chinese,
+        }
+    }
+}
+
+impl From<InitialState> for RuntimeState {
+    fn from(s: InitialState) -> Self {
+        RuntimeState {
+            mode: s.mode,
+            width: s.width,
+            script: s.script,
+            punct: s.punct,
+        }
+    }
+}
+
+impl RuntimeState {
+    /// 工具栏四态 → 管道传输值（iuv-data `ToolbarState`，u8 编码见 ipc.rs）。
+    pub fn to_toolbar(&self) -> iuv_data::ToolbarState {
+        iuv_data::ToolbarState {
+            mode: match self.mode {
+                InitialMode::Chinese => 0,
+                InitialMode::English => 1,
+            },
+            width: match self.width {
+                WidthMode::Half => 0,
+                WidthMode::Full => 1,
+            },
+            script: match self.script {
+                ScriptMode::Simplified => 0,
+                ScriptMode::Traditional => 1,
+            },
+            punct: match self.punct {
+                PunctMode::Chinese => 0,
+                PunctMode::English => 1,
+            },
+        }
+    }
+
+    /// 管道传输值 → 运行时四态（逆映射；非法 u8 一律按 0 = 主流值兜底）。
+    pub fn from_toolbar(t: iuv_data::ToolbarState) -> Self {
+        RuntimeState {
+            mode: if t.mode == 1 {
+                InitialMode::English
+            } else {
+                InitialMode::Chinese
+            },
+            width: if t.width == 1 {
+                WidthMode::Full
+            } else {
+                WidthMode::Half
+            },
+            script: if t.script == 1 {
+                ScriptMode::Traditional
+            } else {
+                ScriptMode::Simplified
+            },
+            punct: if t.punct == 1 {
+                PunctMode::English
+            } else {
+                PunctMode::Chinese
+            },
+        }
+    }
+
+    /// 单字段写入（工具栏 Cmd::SetState：field 0=mode 1=width 2=script 3=punct，value 0/1）。
+    /// 返回 true = 字段合法且已修改。mode 字段不经此路径（走 OPENCLOSE compartment）。
+    pub fn set_field(&mut self, field: u8, value: u8) -> bool {
+        let v = value != 0;
+        match field {
+            0 => {
+                self.mode = if v {
+                    InitialMode::English
+                } else {
+                    InitialMode::Chinese
+                };
+                true
+            }
+            1 => {
+                self.width = if v {
+                    WidthMode::Full
+                } else {
+                    WidthMode::Half
+                };
+                true
+            }
+            2 => {
+                self.script = if v {
+                    ScriptMode::Traditional
+                } else {
+                    ScriptMode::Simplified
+                };
+                true
+            }
+            3 => {
+                self.punct = if v {
+                    PunctMode::English
+                } else {
+                    PunctMode::Chinese
+                };
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 /// 引擎配置。
 ///
 /// 默认值：page_size=5, max_candidates=1024, max_word_syllables=7,

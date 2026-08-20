@@ -44,7 +44,7 @@ pub struct MenuWindow {
     selected: Option<usize>,
     theme: Theme,
     text: Option<TextRenderer>,
-    ulw: super::ulw::UlwSurface,
+    ulw: iuv_win::UlwSurface,
     /// 最近一次布局的行矩形（命中测试用）。
     rows: Vec<Rect>,
     /// 点击回调（菜单项 id；None = 未接线）。
@@ -64,7 +64,7 @@ impl MenuWindow {
             selected: None,
             theme,
             text: None,
-            ulw: super::ulw::UlwSurface::new(),
+            ulw: iuv_win::UlwSurface::new(),
             rows: Vec::new(),
             on_select,
             visible: false,

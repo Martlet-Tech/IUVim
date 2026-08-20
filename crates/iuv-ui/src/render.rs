@@ -8,7 +8,10 @@
 //! Windows 呈现层（ULW 32bpp DIB / D2D CreateBitmap 等）直供；
 //! 其他平台自行转格式。
 
-use tiny_skia::{FillRule, Paint, Path, PathBuilder, Pixmap, Rect, Stroke, Transform};
+use tiny_skia::{
+    FillRule, NonZeroRect, Paint, Path, PathBuilder, Pixmap, PixmapPaint, FilterQuality, Rect, Stroke,
+    Transform,
+};
 
 use crate::layout::{candidate_label, layout, Rect as LayoutRect};
 use crate::menu::MenuEntry;
@@ -255,6 +258,234 @@ pub fn render_menu(
         },
     );
     (surface, rows)
+}
+
+// ===== 32-status-toolbar.md §6.4 浮动工具栏 =====
+
+/// 工具栏按钮几何（物理像素 @96dpi 基准；render 乘 scale）。
+pub const TOOLBAR_BTN: f32 = 30.0;
+pub const TOOLBAR_GAP: f32 = 4.0;
+pub const TOOLBAR_PAD: f32 = 6.0;
+
+/// 工具栏按钮索引（布局顺序：logo | 中英 | 全半角 | 标点 | 简繁 | 齿轮）。
+pub const TB_LOGO: usize = 0;
+pub const TB_MODE: usize = 1;
+pub const TB_WIDTH: usize = 2;
+pub const TB_PUNCT: usize = 3;
+pub const TB_SCRIPT: usize = 4;
+pub const TB_GEAR: usize = 5;
+pub const TB_COUNT: usize = 6;
+
+/// 工具栏图标集（daemon 从内嵌 PNG 解码，失败降级 None——按钮留空不 panic，
+/// §6.7：源图即最终素材，`Pixmap::decode_png` + `draw_pixmap` 缩放绘制）。
+#[derive(Clone, Default)]
+pub struct ToolbarIcons {
+    /// 输入法 logo（TB_LOGO，拖动把手）。
+    pub logo: Option<Pixmap>,
+    /// 中英双态（TB_MODE）。
+    pub lang_cn: Option<Pixmap>,
+    pub lang_en: Option<Pixmap>,
+    /// 全半角双态（TB_WIDTH）。
+    pub width_half: Option<Pixmap>,
+    pub width_full: Option<Pixmap>,
+    /// 中英文标点双态（TB_PUNCT）。
+    pub punct_cn: Option<Pixmap>,
+    pub punct_en: Option<Pixmap>,
+    /// 简繁双态（TB_SCRIPT）。
+    pub script_simplified: Option<Pixmap>,
+    pub script_traditional: Option<Pixmap>,
+    /// 齿轮设置（TB_GEAR）。
+    pub gear: Option<Pixmap>,
+}
+
+/// 工具栏渲染规格：图标集 + 当前四态（u8，与 iuv-data `ToolbarState` 编码一致，
+/// 0=中/半/简/中标，1=英/全/繁/英标）+ 交互态。
+pub struct ToolbarSpec<'a> {
+    pub icons: &'a ToolbarIcons,
+    pub mode: u8,
+    pub width: u8,
+    pub punct: u8,
+    pub script: u8,
+    /// 悬停按钮（纯视觉，浅底）。
+    pub hover: Option<usize>,
+    /// 按下按钮（更深底，点击反馈）。
+    pub pressed: Option<usize>,
+}
+
+/// 渲染浮动工具栏：横排 6 按钮条，风格与候选窗/菜单一致（圆角阴影 + 主题）。
+/// 返回 `(Surface, 按钮矩形列表)`——矩形为 surface 坐标（含阴影偏移），
+/// 直接喂 `hit_test` 做按钮命中。
+pub fn render_toolbar(
+    spec: &ToolbarSpec,
+    theme: &Theme,
+    scale: f32,
+) -> (Surface, Vec<LayoutRect>) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let btn = (TOOLBAR_BTN * scale).ceil();
+    let gap = (TOOLBAR_GAP * scale).ceil();
+    let pad = (TOOLBAR_PAD * scale).ceil();
+    let content_w = (btn * TB_COUNT as f32) + (gap * (TB_COUNT as f32 - 1.0)) + pad * 2.0;
+    let content_h = btn + pad * 2.0;
+    // 按钮矩形（内容坐标；render_to_surface 回调内叠 sx 阴影偏移）
+    let mut rects = Vec::with_capacity(TB_COUNT);
+    for i in 0..TB_COUNT {
+        rects.push(LayoutRect {
+            x: (pad + i as f32 * (btn + gap)).round() as i32,
+            y: pad.round() as i32,
+            w: btn.round() as i32,
+            h: btn.round() as i32,
+        });
+    }
+    let surface = render_to_surface(
+        theme,
+        scale,
+        content_w as u32,
+        content_h as u32,
+        |pixmap, sx| {
+            for (i, r) in rects.iter().enumerate() {
+                let hover = spec.hover == Some(i);
+                let pressed = spec.pressed == Some(i);
+                if hover || pressed {
+                    // 悬停浅底 / 按下更深底（用主题正文字色叠加低 alpha，两套主题都成立）
+                    let alpha = if pressed { 0x2A } else { 0x14 };
+                    fill_rounded(
+                        pixmap,
+                        sx + r.x as f32,
+                        sx + r.y as f32,
+                        r.w as f32,
+                        r.h as f32,
+                        (HL_RADIUS * scale).min(r.h as f32 / 2.0),
+                        [theme.fg[0], theme.fg[1], theme.fg[2], alpha],
+                    );
+                }
+                if let Some(icon) = toolbar_icon(spec, i) {
+                    // 图标按目标尺寸缩放居中（inset 内边距；源图 ~28-32px 近方形）
+                    let inset = (3.0 * scale).ceil();
+                    draw_icon_scaled(pixmap, icon, r, inset, sx);
+                }
+            }
+        },
+    );
+    (surface, rects)
+}
+
+/// 按按钮索引 + 当前四态选图标（None = 图标缺失/未知索引）。
+fn toolbar_icon<'a>(spec: &'a ToolbarSpec, i: usize) -> Option<&'a Pixmap> {
+    match i {
+        TB_LOGO => spec.icons.logo.as_ref(),
+        TB_MODE => {
+            if spec.mode == 0 {
+                spec.icons.lang_cn.as_ref()
+            } else {
+                spec.icons.lang_en.as_ref()
+            }
+        }
+        TB_WIDTH => {
+            if spec.width == 0 {
+                spec.icons.width_half.as_ref()
+            } else {
+                spec.icons.width_full.as_ref()
+            }
+        }
+        TB_PUNCT => {
+            if spec.punct == 0 {
+                spec.icons.punct_cn.as_ref()
+            } else {
+                spec.icons.punct_en.as_ref()
+            }
+        }
+        TB_SCRIPT => {
+            if spec.script == 0 {
+                spec.icons.script_simplified.as_ref()
+            } else {
+                spec.icons.script_traditional.as_ref()
+            }
+        }
+        TB_GEAR => spec.icons.gear.as_ref(),
+        _ => None,
+    }
+}
+
+/// 图标按目标矩形缩放绘制（等比，居中，留 inset 内边距；`sx` 为 surface 阴影偏移）。
+/// 缩放 = 预缩放到目标尺寸的临时 Pixmap + identity 绘制（语义直白，避免 transform
+/// 叠加歧义）；分配失败静默跳过（按钮留空，不 panic）。
+fn draw_icon_scaled(
+    canvas: &mut Pixmap,
+    icon: &Pixmap,
+    r: &LayoutRect,
+    inset: f32,
+    sx: f32,
+) {
+    let avail = (r.w as f32 - inset * 2.0).min(r.h as f32 - inset * 2.0);
+    if avail <= 0.0 {
+        return;
+    }
+    let iw = icon.width() as f32;
+    let ih = icon.height() as f32;
+    if iw <= 0.0 || ih <= 0.0 {
+        return;
+    }
+    let scale = (avail / iw).min(avail / ih);
+    let dw = (iw * scale).round().max(1.0);
+    let dh = (ih * scale).round().max(1.0);
+    let Some(mut dst) = Pixmap::new(dw as u32, dh as u32) else {
+        return; // 分配失败：静默跳过
+    };
+    let Some(bbox) = NonZeroRect::from_xywh(0.0, 0.0, dw, dh) else {
+        return;
+    };
+    let paint = PixmapPaint {
+        opacity: 1.0,
+        quality: FilterQuality::Bilinear,
+        ..Default::default()
+    };
+    // from_bbox：把源图标（iw×ih）仿射映射到目标矩形（0,0,dw,dh）。
+    dst.draw_pixmap(0, 0, icon.as_ref(), &paint, Transform::from_bbox(bbox), None);
+    let x = (sx + r.x as f32 + (r.w as f32 - dw) / 2.0).round() as i32;
+    let y = (sx + r.y as f32 + (r.h as f32 - dh) / 2.0).round() as i32;
+    let paint2 = PixmapPaint::default();
+    canvas.draw_pixmap(x, y, dst.as_ref(), &paint2, Transform::identity(), None);
+}
+
+/// 渲染悬停 tooltip（32-status-toolbar.md §6.6「全半角」「简体/繁体」等）：单行小标签，
+/// 风格与候选窗一致（圆角阴影）。返回 Surface（无命中矩形——tooltip 不接收点击）。
+pub fn render_tooltip(
+    label: &str,
+    theme: &Theme,
+    scale: f32,
+    text: &mut TextRenderer,
+) -> Surface {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let size_px = FONT_PX_96 * scale;
+    let (w, h) = text.measure(label, size_px);
+    let pad_x = (8.0 * scale).ceil() as i32;
+    let pad_y = (4.0 * scale).ceil() as i32;
+    let cw = w + pad_x * 2;
+    let ch = h + pad_y * 2;
+    render_to_surface(
+        theme,
+        scale,
+        cw.max(1) as u32,
+        ch.max(1) as u32,
+        |pixmap, sx| {
+            text.draw(
+                pixmap,
+                label,
+                sx + pad_x as f32,
+                sx + pad_y as f32,
+                size_px,
+                theme.fg,
+            );
+        },
+    )
 }
 
 /// 通用外壳：建 Surface 画布（内容区 + 阴影外缘）→ 画阴影/圆角底/边框 → 调用 `draw`。
@@ -759,5 +990,48 @@ mod tests {
             Some(0)
         );
         assert_eq!(crate::menu::menu_hit_test(&rows, -5, -5), None);
+    }
+
+    #[test]
+    fn render_toolbar_geometry_and_hit() {
+        let icons = ToolbarIcons::default();
+        let spec = ToolbarSpec {
+            icons: &icons,
+            mode: 1,
+            width: 0,
+            punct: 1,
+            script: 0,
+            hover: Some(TB_GEAR),
+            pressed: None,
+        };
+        let (surf, rects) = render_toolbar(&spec, &theme_light(), 1.0, );
+        assert_eq!(rects.len(), TB_COUNT, "6 按钮");
+        assert!(rects.iter().all(|r| r.h == rects[0].h), "等高");
+        // 按钮横排：x 递增、y 相同
+        assert_eq!(rects[0].y, rects[1].y);
+        assert!(rects[1].x > rects[0].x);
+        assert!(rects[2].x > rects[1].x);
+        // 命中测试：首按钮中心命中 0
+        assert_eq!(
+            hit_test(&rects, rects[0].x + rects[0].w / 2, rects[0].y + rects[0].h / 2),
+            Some(TB_LOGO)
+        );
+        // surface 尺寸 = 内容 + 阴影外缘
+        let shadow = theme_light().shadow_size as u32;
+        assert_eq!(surf.w, (rects[0].w * TB_COUNT as i32 + TOOLBAR_GAP as i32 * (TB_COUNT as i32 - 1) + TOOLBAR_PAD as i32 * 2) as u32 + shadow * 2);
+        assert!(surf.h > 0);
+        // 图标缺失（默认空）：渲染不 panic 且表面有效
+        assert!(surf.pixels.len() % 4 == 0);
+    }
+
+    #[test]
+    fn render_tooltip_smoke() {
+        let mut t = renderer();
+        let surf = render_tooltip("简体/繁体", &theme_light(), 1.0, &mut t);
+        assert!(surf.w > 0 && surf.h > 0);
+        assert!(surf.pixels.len() % 4 == 0);
+        // 空标签不 panic（极小表面）
+        let empty = render_tooltip("", &theme_light(), 1.0, &mut t);
+        assert!(empty.pixels.len() % 4 == 0);
     }
 }

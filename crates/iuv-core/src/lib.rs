@@ -17,8 +17,8 @@ pub mod viterbi;
 pub use candidate::{Candidate, CandidateKind};
 pub use config::keymap::{apply_keymap, is_session_start_key};
 pub use config::{
-    Config, InitialMode, InitialState, Keymap, Orientation, PunctMode, ScriptMode, ThemeChoice,
-    WidthMode,
+    Config, InitialMode, InitialState, Keymap, Orientation, PunctMode, RuntimeState, ScriptMode,
+    ThemeChoice, WidthMode,
 };
 pub use engine::{Engine, UserMutation, UserRemote};
 pub use key::{Effect, Key, PageInfo, SessionEnd};

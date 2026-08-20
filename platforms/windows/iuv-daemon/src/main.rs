@@ -17,6 +17,8 @@ mod config;
 mod log;
 mod settings;
 mod state;
+mod toolbar;
+mod toolbar_icons;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,6 +32,7 @@ use windows::Win32::Foundation::{
 use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
 
 use crate::state::DaemonState;
+use crate::toolbar::ToolbarHost;
 
 /// 用户库文件名（%LOCALAPPDATA%\iuv\iuv.user.imedic）。
 const USER_DICT_FILENAME: &str = "iuv.user.imedic";
@@ -95,10 +98,13 @@ fn run() -> i32 {
     let state = DaemonState::new(dict, shm, daemon_config, upath.clone());
     state.publish();
 
-    // ---- 5. 管道监听线程（写请求应用 + publish + 立即写盘）----
-    spawn_pipe_thread(state.clone());
+    // ---- 5. 浮动工具栏宿主（32-status-toolbar.md §6：全局唯一看板，独立消息泵线程）----
+    let toolbar = ToolbarHost::spawn(state.clone());
 
-    // ---- 6. 主线程：命令轮询 + eframe 设置窗（winit 事件循环必须在主线程）----
+    // ---- 6. 管道监听线程（写请求应用 + publish + 立即写盘）----
+    spawn_pipe_thread(state.clone(), toolbar.clone());
+
+    // ---- 7. 主线程：命令轮询 + eframe 设置窗（winit 事件循环必须在主线程）----
     log::log_line("[main] 就绪，主线程进入命令轮询循环（后台常驻，无托盘图标）");
     loop {
         if state.quit_flag.swap(false, Ordering::AcqRel) {
@@ -117,8 +123,9 @@ fn run() -> i32 {
         std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
     }
 
-    // ---- 7. 退出清理 ----
+    // ---- 8. 退出清理 ----
     log::log_line("[main] 收到退出信号，开始清理");
+    toolbar.shutdown(); // 停工具条消息泵线程（PostThreadMessage WM_QUIT）
     state.close_settings.store(true, Ordering::Release);
     state.flush_now();
     let _ = mutex_daemon;
@@ -158,9 +165,9 @@ fn acquire_mutex(name: &str) -> Option<HANDLE> {
 }
 
 /// 管道监听线程：循环 Accept → 处理请求（写请求应用 → publish → 立即写盘；
-/// 命令请求 OpenSettings/Quit 置标志 → 主线程轮询处理）→ 响应。
+/// 命令请求 OpenSettings/Quit 置标志 → 主线程轮询处理；工具栏请求 → toolbar 宿主消费）→ 响应。
 /// 阻塞 Accept 在进程退出时随线程终止（无清理路径，可接受）。
-fn spawn_pipe_thread(state: Arc<DaemonState>) {
+fn spawn_pipe_thread(state: Arc<DaemonState>, toolbar: Arc<ToolbarHost>) {
     let spawned = std::thread::Builder::new()
         .name("iuv-pipe".to_string())
         .spawn(move || loop {
@@ -173,8 +180,9 @@ fn spawn_pipe_thread(state: Arc<DaemonState>) {
                 }
             };
             let state = state.clone();
+            let toolbar = toolbar.clone();
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _ = server.serve(|req| handle_request(&state, req));
+                let _ = server.serve(|req| handle_request(&state, &toolbar, req));
             }));
         });
     match spawned {
@@ -184,8 +192,15 @@ fn spawn_pipe_thread(state: Arc<DaemonState>) {
 }
 
 /// 处理单个请求。写请求：应用（写时复制）→ publish（bump version）→ 立即写盘；
-/// 命令请求：置标志返回（主线程消费），不触碰用户库。
-fn handle_request(state: &Arc<DaemonState>, req: &Request) -> Response {
+/// 命令请求：置标志返回（主线程消费），不触碰用户库；工具栏请求（32-status-toolbar.md
+/// §4.1 Register/StateSync/Active/Unregister/ToggleToolbar）→ toolbar 宿主消费，不触碰用户库。
+fn handle_request(state: &Arc<DaemonState>, toolbar: &Arc<ToolbarHost>, req: &Request) -> Response {
+    // 工具栏相关请求先行消费（不触碰用户库）。
+    if toolbar.handle_request(req) {
+        return Response::Ok {
+            version: state.current_version(),
+        };
+    }
     match req {
         // Ping：健康检查 + 当前 version（不触碰用户库）。
         Request::Ping => {

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-daemon"]
+members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-daemon", "platforms/windows/iuv-win"]
 # M6 追加：platforms/windows/iuv-daemon
 
 [workspace.package]
@@ -28,6 +28,7 @@ windows-registry = "0.6"
 iuv-data = { path = "crates/iuv-data" }
 iuv-core = { path = "crates/iuv-core" }
 iuv-ui = { path = "crates/iuv-ui" }
+iuv-win = { path = "platforms/windows/iuv-win" }
 
 [profile.release]
 lto = "fat"
