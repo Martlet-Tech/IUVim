@@ -73,7 +73,7 @@ daemon 持有**全局唯一**工具栏窗口 + 全局显示/隐藏偏好 + 全�
 
 | 变体 | 载荷 | 触发 |
 |---|---|---|
-| `Register` | instance_id(pid:tid), state | Activate 时注册 + 上报初始四态 |
+| `Register` | instance_id(pid:tid), state | Activate 时注册 + 上报初始四态。**幂等，每次 Activate 都发**（2026-08-21 修订：配合 ctl 窗 2s 定时轮询，daemon 重启后自愈不再依赖打字/切焦点） |
 | `StateSync` | instance_id, state | 状态变化上报（OPENCLOSE OnChange / SetState 成功后） |
 | `Active` | instance_id, active | Activate/Deactivate 通知（daemon 判「iuv 被选中」） |
 | `ToggleToolbar` | — | 语言栏右键菜单「显示/隐藏工具栏」 |

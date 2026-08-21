@@ -40,11 +40,8 @@ impl TextService {
         // 透明模式：全部放行。
         let Some(engine) = engine() else { return KeyAction::Pass };
         // M6：daemon 共享段轮询（低成本：读 u32 版本；用户库版本/配置纪元变化 → 即时生效）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            client.poll(&engine, |engine| self.apply_config_hot_reload(engine), || {
-                self.re_register_instance()
-            });
-        }
+        // 与 ctl 隐藏窗 2s 定时器共用同一入口（daemon_poll_tick，自愈不依赖按键）。
+        self.daemon_poll_tick();
         let config = engine.config();
 
         let shift = shift_pressed();

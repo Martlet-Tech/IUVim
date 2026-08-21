@@ -75,6 +75,9 @@ const DEFAULT_MARGIN: i32 = 12;
 struct ToolbarInstance {
     state: ImeState,
     active: bool,
+    /// 最近一次 Active{true} 的单调序号（Shared::next_seq 分配）；前台窗口未命中
+    /// 实例表时，看板选「最近激活」实例渲染其四态（2026-08-21 显示判定放宽）。
+    seq: u64,
 }
 
 /// 工具栏共享状态（管道线程写、工具条线程读；Mutex 串行）。
@@ -88,6 +91,8 @@ struct Shared {
     visible: bool,
     /// 记忆位置（拖动后写；持久化；None = 首次默认主屏右下角）。
     pos: Option<(i32, i32)>,
+    /// Active{true} 单调序号源（「最近激活实例」判定）。
+    next_seq: u64,
 }
 
 /// 工具栏宿主（daemon 主线程持有；工具条线程共享共享态 + 唤醒句柄）。
@@ -156,6 +161,7 @@ impl ToolbarHost {
                     ToolbarInstance {
                         state: *state,
                         active: false,
+                        seq: 0,
                     },
                 );
                 drop(sh);
@@ -174,8 +180,16 @@ impl ToolbarHost {
             }
             Request::Active { pid, tid, active } => {
                 let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                // 记录激活顺序（前台未命中时看板选最近激活实例渲染）。
+                let seq = if *active {
+                    sh.next_seq += 1;
+                    sh.next_seq
+                } else {
+                    0
+                };
                 if let Some(i) = sh.instances.get_mut(&(*pid, *tid)) {
                     i.active = *active;
+                    i.seq = seq;
                 }
                 drop(sh);
                 self.wake();

@@ -120,7 +120,10 @@ impl ToolbarWindow {
         }
     }
 
-    /// 前台看板判定（§6.2）：前台 pid:tid 命中 active 实例 → focused + 显示；否则隐藏。
+    /// 前台看板判定（§6.2，2026-08-21 用户简化语义）：**全局显隐偏好决定显隐**——
+    /// 只要有任一活动实例（= iuv 在某处持有输入焦点）且偏好为显示即显示；不再要求
+    /// 前台窗口 pid:tid 精确命中实例表（时序脆弱：daemon 重启窗口期/焦点切换瞬间误隐藏）。
+    /// 渲染态优先级：前台命中实例 > 最近激活实例 > 默认四态。
     fn poll_foreground(&mut self) {
         // SAFETY: GetForegroundWindow 纯查询；GetWindowThreadProcessId 输出 pid。
         let fg = unsafe { GetForegroundWindow() };
@@ -128,14 +131,24 @@ impl ToolbarWindow {
         let tid = unsafe { GetWindowThreadProcessId(fg, Some(&mut pid)) };
         let (focused, visible) = {
             let sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-            let inst = sh.instances.get(&(pid, tid)).copied();
-            let focused = inst.filter(|i| i.active).map(|_| (pid, tid));
+            // 前台命中 active 实例优先；否则取最近激活的 active 实例。
+            let chosen = sh
+                .instances
+                .get(&(pid, tid))
+                .filter(|i| i.active)
+                .map(|_| (pid, tid))
+                .or_else(|| {
+                    sh.instances
+                        .iter()
+                        .filter(|(_, i)| i.active)
+                        .max_by_key(|(_, i)| i.seq)
+                        .map(|(k, _)| *k)
+                });
             let visible = sh.visible;
             drop(sh);
-            // 前台未命中 active 实例时恒不显示（即使实例表另有 active 也如此）。
             let mut sh2 = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-            sh2.focused = focused;
-            (focused, visible)
+            sh2.focused = chosen;
+            (chosen, visible)
         };
         if focused.is_some() && visible {
             // 已可见：**不重定位**（交由 reconcile 的 repaint 按当前窗口矩形刷新）——

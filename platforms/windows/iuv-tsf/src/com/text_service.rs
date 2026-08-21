@@ -111,8 +111,6 @@ pub(crate) struct TextService {
     /// 反向控制端点（32-toolbar §4.2/§4.3）：accept 线程 + 隐藏消息窗。Activate 起、
     /// Deactivate/Drop 停（懒建，每个实例一个）。
     ctl: RefCell<Option<CtlEndpoint>>,
-    /// 本实例是否已向 daemon 注册（§5.3：passthrough 进程不注册；防重复）。
-    pub(crate) registered: Cell<bool>,
 }
 
 impl TextService {
@@ -177,7 +175,6 @@ impl TextService {
             // （32-toolbar §2.5：设置页默认值 = 新建实例时的初始值；热载不改运行实例）。
             runtime: Arc::new(Mutex::new(Config::load().initial_state)),
             ctl: RefCell::new(None),
-            registered: Cell::new(false),
         }
     }
 
@@ -301,6 +298,10 @@ impl Drop for TextService {
 impl CtlApplier for TextService {
     fn apply_cmd(&self, cmd: &CtlCmd) -> CtlResult {
         self.apply_ctl_cmd(cmd)
+    }
+
+    fn on_poll_tick(&self) {
+        self.daemon_poll_tick();
     }
 }
 
@@ -456,8 +457,8 @@ impl TextService_Impl {
         *self.composition.borrow_mut() = None;
 
         // 32-toolbar：停反向控制端点（accept 线程 + 隐藏窗）+ Active=false 通知
-        // （daemon 判「iuv 未被选中」→ 看板隐藏）。registered 保留——同一实例
-        // 再激活不重复 Register，但 Active 通知仍发。
+        // （daemon 判「iuv 未被选中」→ 看板隐藏）。Register 幂等——同一实例
+        // 再 Activate 会重发（daemon 重启自愈，见 register_instance）。
         self.stop_ctl_endpoint();
         if let Some(client) = self.daemon.borrow().as_ref() {
             let (pid, tid) = self.instance_id();
