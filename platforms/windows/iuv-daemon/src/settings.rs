@@ -13,14 +13,20 @@
 //! 按键=键位自定义（灰置占位，M7）、开发者（仅 dev 构建）=清除日志。绝不 panic：
 //! run_settings 包 `catch_unwind`。
 
+use std::mem::size_of;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use eframe::egui;
 use iuv_data::UserDict;
 use windows::core::PCWSTR;
+use windows::Win32::Foundation::RECT;
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    FindWindowW, GetWindowRect, IsIconic, SetForegroundWindow, SetWindowPos, ShowWindow,
+    SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
 };
 
 use crate::config::{self, DaemonConfig};
@@ -62,6 +68,49 @@ pub fn focus_existing_window() -> bool {
     true
 }
 
+/// 把已存在的设置窗挪到所在显示器工作区正中（每次打开调用一次，creator 回调时机：
+/// 原生窗口已建、首帧未画 → 零闪烁）。物理像素全程运算（进程 PMv2，GetWindowRect/
+/// 工作区均为物理值）天然 DPI 正确；基准 = 窗口实际落地的显示器（多屏跟随系统放置，
+/// 不写死主屏）；工作区而非整屏 → 下沿不被任务栏压住。egui 0.36 ViewportCommand
+/// 无居中命令，OuterPosition 是逻辑坐标还得换算 DPI——故走 Win32 直操（同聚焦套路）。
+/// 找不到窗口静默返回（与聚焦函数同款防御）。
+fn center_window_on_screen() {
+    let wide: Vec<u16> = SETTINGS_TITLE.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: 标题为 NUL 结尾宽字符串；FindWindowW 纯查询。
+    let hwnd = unsafe { FindWindowW(PCWSTR::null(), PCWSTR(wide.as_ptr())) }.unwrap_or_default();
+    if hwnd.is_invalid() {
+        return;
+    }
+    // SAFETY: GetWindowRect 读当前矩形。
+    let mut rc = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rc) }.is_err() {
+        return;
+    }
+    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+    // SAFETY: MonitorFromWindow 纯查询；MONITORINFO.cbSize 按约定先填。
+    let hmon = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut mi = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(hmon, &mut mi) }.as_bool() {
+        let x = mi.rcWork.left + ((mi.rcWork.right - mi.rcWork.left) - w) / 2;
+        let y = mi.rcWork.top + ((mi.rcWork.bottom - mi.rcWork.top) - h) / 2;
+        // SAFETY: SetWindowPos 仅移动（NOSIZE|NOZORDER|NOACTIVATE），不抢焦点不改层级。
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
 /// eframe 窗口主体（阻塞直到窗口关闭；主线程调用）。返回 Ok(()) = 正常关闭。
 pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
     const WIDTH: f32 = 640.0;
@@ -85,6 +134,7 @@ pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
             options,
             Box::new(move |cc| {
                 install_cjk_font(&cc.egui_ctx);
+                center_window_on_screen();
                 Ok(Box::new(SettingsApp::new(state)))
             }),
         )
