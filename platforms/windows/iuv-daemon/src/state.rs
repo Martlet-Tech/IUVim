@@ -28,6 +28,9 @@ pub struct DaemonState {
     pub close_settings: AtomicBool,
     /// 语言栏菜单「设置」命令：主线程轮询发现后 run_settings 弹窗（egui 常驻线程）。
     pub open_settings: AtomicBool,
+    /// 设置窗口运行中（主线程进 run_settings 前置位、返回后复位）：管道线程据此
+    /// 把重复的 OpenSettings 转发为 Win32 还原/置前而非积压重开（防关窗后幽灵重开）。
+    pub settings_open: AtomicBool,
     /// 语言栏菜单/卸载「退出」命令：主线程轮询发现后退出主循环。
     pub quit_flag: AtomicBool,
     /// 当前配置快照（设置页保存后更新；托盘菜单主题读取）。
@@ -49,6 +52,7 @@ impl DaemonState {
             dirty: AtomicBool::new(false),
             close_settings: AtomicBool::new(false),
             open_settings: AtomicBool::new(false),
+            settings_open: AtomicBool::new(false),
             quit_flag: AtomicBool::new(false),
             config: Mutex::new(config),
             user_dict_path,

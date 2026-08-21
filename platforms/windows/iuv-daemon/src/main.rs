@@ -126,8 +126,11 @@ fn run() -> i32 {
         }
         if state.open_settings.swap(false, Ordering::AcqRel) {
             state.close_settings.store(false, Ordering::Release);
+            // 标记窗口运行中：此后的 OpenSettings 转发聚焦而非积压（防幽灵重开）。
+            state.settings_open.store(true, Ordering::Release);
             log::log_line("[main] 收到 OpenSettings，运行设置窗口");
             let _ = settings::run_settings(&state);
+            state.settings_open.store(false, Ordering::Release);
             log::log_line("[main] 设置窗口已关闭，继续后台常驻");
             continue;
         }
@@ -228,10 +231,20 @@ fn handle_request(state: &Arc<DaemonState>, toolbar: &Arc<ToolbarHost>, req: &Re
                 visible: toolbar.visible(),
             }
         }
-        // 语言栏菜单「设置」：主线程弹 egui 设置窗。
+        // 语言栏菜单「设置」：主线程弹 egui 设置窗。窗口已开时直接 Win32 还原/置前
+        //（学任务栏 SC_RESTORE 手法）——最小化态 eframe 无帧，egui ViewportCommand
+        // 永远执行不到；也不积压 open_settings 标志（否则关窗后幽灵重开，2026-08-22 实测）。
         Request::OpenSettings => {
-            log::log_line("[pipe] 收到 OpenSettings 命令");
-            state.open_settings.store(true, Ordering::Release);
+            if state.settings_open.load(Ordering::Acquire) {
+                if crate::settings::focus_existing_window() {
+                    log::log_line("[pipe] 设置页已打开 → 已还原/置前");
+                } else {
+                    log::log_line("[pipe] 设置页已打开 → 窗口未就绪（创建中？），忽略本次聚焦");
+                }
+            } else {
+                log::log_line("[pipe] 收到 OpenSettings 命令");
+                state.open_settings.store(true, Ordering::Release);
+            }
             return Response::Ok {
                 version: state.current_version(),
             };

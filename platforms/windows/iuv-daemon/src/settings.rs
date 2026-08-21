@@ -18,10 +18,49 @@ use std::sync::Arc;
 
 use eframe::egui;
 use iuv_data::UserDict;
+use windows::core::PCWSTR;
+use windows::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
+};
 
 use crate::config::{self, DaemonConfig};
 use crate::log;
 use crate::state::DaemonState;
+
+/// 设置窗标题（eframe viewport 标题；`FindWindowW` 按此查找，两处必须一致）。
+const SETTINGS_TITLE: &str = "iuv 设置";
+
+/// 把已存在的设置窗还原/置前（齿轮重复点击）：最小化 → `SW_RESTORE`（还原+激活
+/// 一步到位）；非最小化 → `SetForegroundWindow` 置前。纯 Win32、**不依赖 egui 帧
+/// 循环**——最小化窗口无 WM_PAINT → winit 不派发 RedrawRequested → logic()/
+/// ViewportCommand 停摆（2026-08-22 实测五次点击零反应）。任务栏点击还原窗口走
+/// 的就是同款系统路径。跨线程合法（托盘应用标准手法）；前台锁不拦——工具栏是
+/// 本进程窗口、刚收过点击。
+/// 返回是否找到窗口（首开的字体注入间隙 ~300ms 内可能尚未建窗，调用方记日志忽略）。
+pub fn focus_existing_window() -> bool {
+    let wide: Vec<u16> = SETTINGS_TITLE.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: 标题为 NUL 结尾宽字符串；FindWindowW 纯查询。
+    let hwnd = unsafe { FindWindowW(PCWSTR::null(), PCWSTR(wide.as_ptr())) }.unwrap_or_default();
+    if hwnd.is_invalid() {
+        return false;
+    }
+    // SAFETY: IsIconic 纯查询。
+    if unsafe { IsIconic(hwnd) }.as_bool() {
+        // SAFETY: ShowWindow 投递显示状态变更给属主线程序列化执行；SW_RESTORE 只负责
+        // 翻最小化状态——跨线程调用时其隐式"激活"可能被静默跳过（实测还原后仍被
+        // 前台窗口压住），置前交给下面的 SetForegroundWindow。两次调用均为同步系统
+        // 调用（状态变更在返回前完成，不依赖属主线程序列化通知），顺序安全。
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+    }
+    // 无条件置前+聚焦（非最小化路径同样需要：被遮挡时拉到最前面）。
+    // SAFETY: 本进程刚收过工具栏点击，前台锁允许设前台。
+    unsafe {
+        let _ = SetForegroundWindow(hwnd);
+    }
+    true
+}
 
 /// eframe 窗口主体（阻塞直到窗口关闭；主线程调用）。返回 Ok(()) = 正常关闭。
 pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
@@ -36,13 +75,13 @@ pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
             .with_max_inner_size([WIDTH, HEIGHT]) // 锁死 640×480
             .with_resizable(false) // 禁最大化/拉伸
             .with_maximize_button(false) // 标题栏只剩 最小化 + 关闭
-            .with_title("iuv 设置"),
+            .with_title(SETTINGS_TITLE),
         ..Default::default()
     };
     let state = state.clone();
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         eframe::run_native(
-            "iuv 设置",
+            SETTINGS_TITLE,
             options,
             Box::new(move |cc| {
                 install_cjk_font(&cc.egui_ctx);
@@ -556,6 +595,8 @@ impl SettingsApp {
 
 impl eframe::App for SettingsApp {
     /// 每帧先跑（窗口隐藏时也调用）：检测退出信号。
+    /// 聚焦不走这里——最小化窗口无 WM_PAINT → 无帧 → 本函数停摆，改走
+    /// `focus_existing_window()` 的 Win32 直操路径。
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.state.close_settings.swap(false, Ordering::AcqRel) {
             let _ = ctx.send_viewport_cmd(egui::ViewportCommand::Close);
