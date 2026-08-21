@@ -1,5 +1,5 @@
 //! 浮动工具栏渲染（32-status-toolbar.md §6.4；P2.4 自 render.rs 拆出）。
-//! 横排 6 按钮条（logo | 中英 | 全半角 | 标点 | 简繁 | 齿轮），圆角阴影风格
+//! 横排 6 按钮条（logo | 中英 | 全半角 | 标点 | 简繁 | 齿轮），扁平圆角细边框风格
 //! 与候选窗/菜单一致；按钮命中用返回的矩形列表喂 `hit_test`。
 
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
@@ -58,9 +58,9 @@ pub struct ToolbarSpec<'a> {
     pub pressed: Option<usize>,
 }
 
-/// 渲染浮动工具栏：横排 6 按钮条，风格与候选窗/菜单一致（圆角阴影 + 主题）。
-/// 返回 `(Surface, 按钮矩形列表)`——矩形为 surface 坐标（含阴影偏移），
-/// 直接喂 `hit_test` 做按钮命中。
+/// 渲染浮动工具栏：横排 6 按钮条，风格与候选窗/菜单一致（扁平圆角细边框）。
+/// 返回 `(Surface, 按钮矩形列表)`——矩形为 surface 坐标（= 内容坐标，无边框留白
+/// 偏移），与窗口客户区坐标系重合，直接喂 `hit_test` 做按钮命中。
 pub fn render_toolbar(
     spec: &ToolbarSpec,
     theme: &Theme,
@@ -76,7 +76,7 @@ pub fn render_toolbar(
     let pad = (TOOLBAR_PAD * scale).ceil();
     let content_w = (btn * TB_COUNT as f32) + (gap * (TB_COUNT as f32 - 1.0)) + pad * 2.0;
     let content_h = btn + pad * 2.0;
-    // 按钮矩形（内容坐标；render_to_surface 回调内叠 sx 阴影偏移）
+    // 按钮矩形（内容坐标；无阴影时代内容坐标即表面坐标，命中区与绘制严格重合）
     let mut rects = Vec::with_capacity(TB_COUNT);
     for i in 0..TB_COUNT {
         rects.push(LayoutRect {
@@ -91,7 +91,7 @@ pub fn render_toolbar(
         scale,
         content_w as u32,
         content_h as u32,
-        |pixmap, sx| {
+        |pixmap| {
             for (i, r) in rects.iter().enumerate() {
                 let hover = spec.hover == Some(i);
                 let pressed = spec.pressed == Some(i);
@@ -100,8 +100,8 @@ pub fn render_toolbar(
                     let alpha = if pressed { 0x2A } else { 0x14 };
                     fill_rounded(
                         pixmap,
-                        sx + r.x as f32,
-                        sx + r.y as f32,
+                        r.x as f32,
+                        r.y as f32,
                         r.w as f32,
                         r.h as f32,
                         (HL_RADIUS * scale).min(r.h as f32 / 2.0),
@@ -111,7 +111,7 @@ pub fn render_toolbar(
                 if let Some(icon) = toolbar_icon(spec, i) {
                     // 图标按目标尺寸缩放居中（inset 内边距；源图 ~28-32px 近方形）
                     let inset = (3.0 * scale).ceil();
-                    draw_icon_scaled(pixmap, icon, r, inset, sx);
+                    draw_icon_scaled(pixmap, icon, r, inset);
                 }
             }
         },
@@ -144,19 +144,13 @@ fn toolbar_icon<'a>(spec: &'a ToolbarSpec, i: usize) -> Option<&'a Pixmap> {
     }
 }
 
-/// 图标按目标矩形缩放绘制（等比，居中，留 inset 内边距；`sx` 为 surface 阴影偏移）。
+/// 图标按目标矩形缩放绘制（等比，居中，留 inset 内边距）。
 /// 缩放 = 预缩放到目标尺寸的临时 Pixmap + identity 绘制（语义直白，避免 transform
 /// 叠加歧义）；分配失败静默跳过（按钮留空，不 panic）。
 /// 2026-08-21 修：缩放变换用 `from_scale` 而非 `from_bbox`——`from_bbox` 把源坐标
 /// (0..iw) 映射到 (0..iw*scale)，目标画布只有 dw 大小 → 只采样源图左上角 ~1 像素
 /// （图标居中、四角透明 → 整片空白，实测 32-toolbar 图标全空）。
-fn draw_icon_scaled(
-    canvas: &mut Pixmap,
-    icon: &Pixmap,
-    r: &LayoutRect,
-    inset: f32,
-    sx: f32,
-) {
+fn draw_icon_scaled(canvas: &mut Pixmap, icon: &Pixmap, r: &LayoutRect, inset: f32) {
     let avail = (r.w as f32 - inset * 2.0).min(r.h as f32 - inset * 2.0);
     if avail <= 0.0 {
         return;
@@ -186,8 +180,8 @@ fn draw_icon_scaled(
         Transform::from_scale(dw / iw, dh / ih),
         None,
     );
-    let x = (sx + r.x as f32 + (r.w as f32 - dw) / 2.0).round() as i32;
-    let y = (sx + r.y as f32 + (r.h as f32 - dh) / 2.0).round() as i32;
+    let x = (r.x as f32 + (r.w as f32 - dw) / 2.0).round() as i32;
+    let y = (r.y as f32 + (r.h as f32 - dh) / 2.0).round() as i32;
     let paint2 = PixmapPaint::default();
     canvas.draw_pixmap(x, y, dst.as_ref(), &paint2, Transform::identity(), None);
 }

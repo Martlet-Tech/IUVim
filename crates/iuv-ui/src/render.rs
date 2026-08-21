@@ -1,7 +1,8 @@
 //! 渲染：候选窗 / 菜单 / tooltip → `Surface`（premultiplied BGRA 像素缓冲）。
 //!
-//! 绘制管线（自底向上）：阴影（分层假模糊）→ 圆角矩形底 → 高亮行底 → 行文本
-//! （含编号，原文兜底候选不编号）→ 页码小字 → 1px 边框。
+//! 绘制管线（自底向上）：圆角矩形底 → 高亮行底 → 行文本（含编号，原文兜底候选
+//! 不编号）→ 页码小字 → 细边框。扁平风格：无阴影，surface 尺寸 = 内容精确尺寸，
+//! 内容坐标 = 表面坐标 = 窗口客户区坐标（命中矩形无需任何偏移换算）。
 //! 全程 tiny-skia 纯 safe API；分配失败/非法参数静默降级返回空 `Surface`，绝不 panic。
 //!
 //! `Surface.pixels` 为 **premultiplied BGRA**、u32 对齐行、无 stride 填充——
@@ -14,7 +15,7 @@ use tiny_skia::{Paint, Pixmap, Rect, Stroke, Transform};
 
 use crate::layout::{candidate_label, layout, Rect as LayoutRect};
 use crate::menu::MenuEntry;
-use crate::paint::{draw_shadow, fill_path, fill_rounded, stroke_rounded_dashed, rounded_rect_path, HL_RADIUS};
+use crate::paint::{fill_path, fill_rounded, stroke_rounded_dashed, rounded_rect_path, HL_RADIUS};
 use crate::snapshot::UiSnapshot;
 use crate::text::{TextRenderer, FONT_PX_96};
 use crate::theme::Theme;
@@ -88,7 +89,7 @@ pub fn render_candidate(
         scale,
         cw.max(0) as u32,
         ch.max(0) as u32,
-        |pixmap, sx| {
+        |pixmap| {
             // 候选行：真高亮填充底 + 悬停虚线框（叠加，互不覆盖）+ 文本
             // （原文兜底候选不编号，规则与 layout 一致）
             for (i, cand) in snap.candidates.iter().enumerate() {
@@ -99,8 +100,8 @@ pub fn render_candidate(
                 if sel {
                     fill_rounded(
                         pixmap,
-                        sx + r.x as f32,
-                        sx + r.y as f32,
+                        r.x as f32,
+                        r.y as f32,
                         r.w as f32,
                         r.h as f32,
                         (HL_RADIUS * scale).min(r.h as f32 / 2.0),
@@ -110,8 +111,8 @@ pub fn render_candidate(
                 if hover == Some(i) {
                     stroke_rounded_dashed(
                         pixmap,
-                        sx + r.x as f32,
-                        sx + r.y as f32,
+                        r.x as f32,
+                        r.y as f32,
                         r.w as f32,
                         r.h as f32,
                         (HL_RADIUS * scale).min(r.h as f32 / 2.0),
@@ -121,14 +122,7 @@ pub fn render_candidate(
                 }
                 let label = candidate_label(snap, i, cand);
                 let color = if sel { theme.hl_fg } else { theme.fg };
-                text.draw(
-                    pixmap,
-                    &label,
-                    sx + r.x as f32,
-                    sx + r.y as f32,
-                    size_px,
-                    color,
-                );
+                text.draw(pixmap, &label, r.x as f32, r.y as f32, size_px, color);
             }
             // 页码小字（多页时；行号 = candidates.len()）
             if snap.page.page_count > 1 {
@@ -137,8 +131,8 @@ pub fn render_candidate(
                     text.draw(
                         pixmap,
                         &label,
-                        sx + r.x as f32,
-                        sx + r.y as f32,
+                        r.x as f32,
+                        r.y as f32,
                         page_px,
                         theme.page_fg,
                     );
@@ -149,9 +143,9 @@ pub fn render_candidate(
     (surface, rects)
 }
 
-/// 渲染菜单（M5 托盘菜单用）：竖排条目列表 + 阴影圆角，风格与候选窗一致。
+/// 渲染菜单（M5 语言栏右键菜单用）：竖排条目列表，扁平圆角 + 细边框，风格与候选窗一致。
 ///
-/// 返回 `(Surface, 行矩形列表)`——行矩形为 **surface 坐标**（含阴影偏移），
+/// 返回 `(Surface, 行矩形列表)`——行矩形为 **surface 坐标**（= 内容坐标，无阴影偏移），
 /// 窗口客户区 = surface 尺寸时可直接喂 `menu_hit_test`。
 /// `id == 0` 条目画分隔线（不参与高亮）；`selected` 行画高亮底 + 高亮字。
 pub fn render_menu(
@@ -189,7 +183,7 @@ pub fn render_menu(
     let content_h = row_h.saturating_mul(items.len() as i32).saturating_add(
         crate::layout::ROW_GAP.saturating_mul(items.len().saturating_sub(1) as i32),
     ) + crate::layout::PAD_Y * 2;
-    // 行矩形（surface 坐标，含阴影偏移）
+    // 行矩形（surface 坐标，无偏移）
     let mut rows = Vec::with_capacity(items.len());
     let mut y = crate::layout::PAD_Y;
     for _item in items.iter() {
@@ -206,7 +200,7 @@ pub fn render_menu(
         scale,
         content_w as u32,
         content_h as u32,
-        |pixmap, sx| {
+        |pixmap| {
             for (i, item) in items.iter().enumerate() {
                 let Some(r) = rows.get(i) else {
                     break; // 防御
@@ -215,8 +209,8 @@ pub fn render_menu(
                 if sel {
                     fill_rounded(
                         pixmap,
-                        sx + r.x as f32,
-                        sx + r.y as f32,
+                        r.x as f32,
+                        r.y as f32,
                         r.w as f32,
                         r.h as f32,
                         (HL_RADIUS * scale).min(r.h as f32 / 2.0),
@@ -225,8 +219,8 @@ pub fn render_menu(
                 }
                 if item.is_separator() {
                     // 分隔线：水平 1px（行内垂直居中）
-                    let cy = sx + r.y as f32 + r.h as f32 / 2.0;
-                    if let Some(rect) = Rect::from_xywh(sx + r.x as f32, cy - 0.5, r.w as f32, 1.0)
+                    let cy = r.y as f32 + r.h as f32 / 2.0;
+                    if let Some(rect) = Rect::from_xywh(r.x as f32, cy - 0.5, r.w as f32, 1.0)
                     {
                         let mut paint = Paint::default();
                         paint.set_color_rgba8(
@@ -240,8 +234,8 @@ pub fn render_menu(
                     continue;
                 }
                 let color = if sel { theme.hl_fg } else { theme.fg };
-                let tx = sx + r.x as f32;
-                let ty = sx + r.y as f32 + pad_y as f32;
+                let tx = r.x as f32;
+                let ty = r.y as f32 + pad_y as f32;
                 text.draw(pixmap, &item.label, tx, ty, size_px, color);
             }
         },
@@ -252,7 +246,7 @@ pub fn render_menu(
 // ===== 32-status-toolbar.md §6.6 浮动工具栏 tooltip =====
 
 /// 渲染悬停 tooltip（32-status-toolbar.md §6.6「全半角」「简体/繁体」等）：单行小标签，
-/// 风格与候选窗一致（圆角阴影）。返回 Surface（无命中矩形——tooltip 不接收点击）。
+/// 风格与候选窗一致（扁平圆角细边框）。返回 Surface（无命中矩形——tooltip 不接收点击）。
 pub fn render_tooltip(
     label: &str,
     theme: &Theme,
@@ -270,56 +264,30 @@ pub fn render_tooltip(
     let pad_y = (crate::layout::PAD_Y as f32 * scale).ceil() as i32;
     let cw = w + pad_x * 2;
     let ch = h + pad_y * 2;
-    render_to_surface(
-        theme,
-        scale,
-        cw.max(1) as u32,
-        ch.max(1) as u32,
-        |pixmap, sx| {
-            text.draw(
-                pixmap,
-                label,
-                sx + pad_x as f32,
-                sx + pad_y as f32,
-                size_px,
-                theme.fg,
-            );
-        },
-    )
+    render_to_surface(theme, scale, cw.max(1) as u32, ch.max(1) as u32, |pixmap| {
+        text.draw(pixmap, label, pad_x as f32, pad_y as f32, size_px, theme.fg);
+    })
 }
 
-/// 通用外壳：建 Surface 画布（内容区 + 阴影外缘）→ 画阴影/圆角底/边框 → 调用 `draw`。
-pub(crate) fn render_to_surface(
-    theme: &Theme,
-    scale: f32,
-    cw: u32,
-    ch: u32,
-    draw: impl FnOnce(&mut Pixmap, f32),
-) -> Surface {
+/// 通用外壳：建 Surface 画布（内容精确尺寸）→ 圆角底 + 细边框 → 调用 `draw`。
+/// 扁平风格：无阴影；边框宽度 = `(scale).round().max(1)`（100%/125%→1px、150%+→2px），
+/// 描边路径内缩 `宽度/2` 使整条边框完整落在位图内（外缘贴齐位图边缘，不被裁半）。
+pub(crate) fn render_to_surface(theme: &Theme, scale: f32, cw: u32, ch: u32, draw: impl FnOnce(&mut Pixmap)) -> Surface {
     if cw == 0 || ch == 0 {
         return Surface::empty();
     }
-    let shadow_px = (theme.shadow_size * scale).round().max(0.0) as u32;
-    let margin = shadow_px.saturating_mul(2);
-    let (Some(w), Some(h)) = (cw.checked_add(margin), ch.checked_add(margin)) else {
-        return Surface::empty();
-    };
-    let Some(mut pixmap) = Pixmap::new(w, h) else {
+    let Some(mut pixmap) = Pixmap::new(cw, ch) else {
         return Surface::empty(); // 分配失败：静默降级
     };
-    let sx = shadow_px as f32; // 内容区偏移（阴影内边距）
-                               // 1) 阴影（分层假模糊：由内向外膨胀 + 减淡）
-    draw_shadow(&mut pixmap, theme, scale, sx, cw as f32, ch as f32);
-    // 2) 圆角矩形底
-    let radius = theme.corner_radius * scale;
-    let bg_path = rounded_rect_path(sx, sx, cw as f32, ch as f32, radius);
+    // 边框几何：宽 bw 的描边以路径为中心向两侧各延伸 bw/2——路径内缩 bw/2 后
+    // 外缘恰达位图边界（完整可见），内缘与底色衔接。
+    let bw = scale.round().max(1.0);
+    let inset = bw / 2.0;
+    // 1) 圆角矩形底 + 2) 细边框（同一路径，圆角同心）
+    let radius = (theme.corner_radius * scale - inset).max(0.0);
+    let bg_path = rounded_rect_path(inset, inset, cw as f32 - bw, ch as f32 - bw, radius);
     if let Some(path) = &bg_path {
         fill_path(&mut pixmap, path, theme.bg);
-    }
-    // 3) 内容（高亮行/文本/页码）
-    draw(&mut pixmap, sx);
-    // 4) 1px 边框（圆角跟随）
-    if let Some(path) = &bg_path {
         let mut paint = Paint::default();
         paint.set_color_rgba8(
             theme.border[0],
@@ -328,11 +296,13 @@ pub(crate) fn render_to_surface(
             theme.border[3],
         );
         let stroke = Stroke {
-            width: 1.0_f32.max(scale),
+            width: bw,
             ..Stroke::default()
         };
         pixmap.stroke_path(path, &paint, &stroke, Transform::identity(), None);
     }
+    // 3) 内容（高亮行/文本/页码）
+    draw(&mut pixmap);
     // tiny-skia 0.12 像素缓冲为 premultiplied RGBA（内存序 r,g,b,a）；
     // Surface 契约要求 premultiplied BGRA（Windows ULW DIB / D2D 直供）——交换每像素 R/B。
     let data = pixmap.data();
@@ -341,7 +311,7 @@ pub(crate) fn render_to_surface(
     for px in pixels.chunks_exact_mut(4) {
         px.swap(0, 2);
     }
-    Surface { w, h, pixels }
+    Surface { w: cw, h: ch, pixels }
 }
 
 #[cfg(test)]
@@ -441,13 +411,12 @@ mod tests {
             |_s| (0, 0),
             Orientation::Vertical,
         );
-        let shadow = theme_light().shadow_size as u32;
         let row = rects[1];
         // 行矩形尾部 3px 内（尾随空格区）应等于 hl_bg #0078D7
         let (r, g, b, a) = px(
             &surf,
-            shadow + (row.x + row.w - 3) as u32,
-            shadow + (row.y + row.h / 2) as u32,
+            (row.x + row.w - 3) as u32,
+            (row.y + row.h / 2) as u32,
         );
         let [hr, hg, hb, _ha] = theme_light().hl_bg;
         assert!(a > 250, "高亮行完全不透明");
@@ -460,8 +429,8 @@ mod tests {
         // 对照：非高亮行同位置是背景白
         let (r2, g2, b2, _) = px(
             &surf,
-            shadow + (rects[0].x + rects[0].w - 3) as u32,
-            shadow + (rects[0].y + rects[0].h / 2) as u32,
+            (rects[0].x + rects[0].w - 3) as u32,
+            (rects[0].y + rects[0].h / 2) as u32,
         );
         assert_eq!((r2, g2, b2), (0xFF, 0xFF, 0xFF), "非高亮行背景白");
     }
@@ -479,12 +448,12 @@ mod tests {
     }
 
     /// 悬停行行内采样坐标（尾随空格区，远离文字墨迹）。
-    fn row_sample(rects: &[LayoutRect], idx: usize, shadow: u32) -> (u32, u32) {
+    fn row_sample(rects: &[LayoutRect], idx: usize) -> (u32, u32) {
         let r = rects[idx];
-        (shadow + (r.x + r.w - 3) as u32, shadow + (r.y + r.h / 2) as u32)
+        ((r.x + r.w - 3) as u32, (r.y + r.h / 2) as u32)
     }
 
-    fn layout_rects(snap: &UiSnapshot, t: &mut TextRenderer) -> (u32, Vec<LayoutRect>) {
+    fn layout_rects(snap: &UiSnapshot, t: &mut TextRenderer) -> Vec<LayoutRect> {
         let size_px = FONT_PX_96;
         let mut sizes: Vec<(String, (i32, i32))> = Vec::new();
         for (i, c) in snap.candidates.iter().enumerate() {
@@ -503,11 +472,7 @@ mod tests {
             |_s| (0, 0),
             Orientation::Vertical,
         );
-        (shadow_size_for(snap), rects)
-    }
-
-    fn shadow_size_for(_snap: &UiSnapshot) -> u32 {
-        theme_light().shadow_size as u32
+        rects
     }
 
     #[test]
@@ -527,13 +492,13 @@ mod tests {
             "悬停渲染必须与无悬停不同（虚线框像素）"
         );
         // 悬停行内部（尾随空格区）= 背景白（无填充底）
-        let (shadow, rects) = layout_rects(&snap_sel, &mut t);
-        let (x, y) = row_sample(&rects, 1, shadow);
+        let rects = layout_rects(&snap_sel, &mut t);
+        let (x, y) = row_sample(&rects, 1);
         let (r, g, b, a) = px(&hovered, x, y);
         assert!(a > 250, "悬停行内部不透明");
         assert_eq!((r, g, b), (0xFF, 0xFF, 0xFF), "悬停行内部背景白（无填充底）");
         // 对照：真高亮第 0 行内部 = hl_bg
-        let (x0, y0) = row_sample(&rects, 0, shadow);
+        let (x0, y0) = row_sample(&rects, 0);
         let (r2, g2, b2, _) = px(&hovered, x0, y0);
         let [hlr, hlg, hlb, _] = theme_light().hl_bg;
         assert!(
@@ -560,8 +525,8 @@ mod tests {
             diff_count(&sel_only, &hovered) > 0,
             "悬停叠加必须改变表面（虚线框像素）"
         );
-        let (shadow, rects) = layout_rects(&snap_sel, &mut t);
-        let (x, y) = row_sample(&rects, 1, shadow);
+        let rects = layout_rects(&snap_sel, &mut t);
+        let (x, y) = row_sample(&rects, 1);
         let (r, g, b, _) = px(&hovered, x, y);
         let [hlr, hlg, hlb, _] = theme_light().hl_bg;
         assert!(
@@ -573,17 +538,24 @@ mod tests {
     }
 
     #[test]
-    fn render_candidate_shadow_soft() {
+    fn render_candidate_flat_border_no_shadow() {
         let mut t = renderer();
         let s = snap("ni'hao", &["你好", "泥嚎", "你好吗"], 0, 1);
         let (surf, _rows) = render_candidate(&s, &theme_light(), 1.0, &mut t, None);
-        let shadow = theme_light().shadow_size as u32;
-        assert!(surf.w > shadow * 2 && surf.h > shadow * 2);
-        // 阴影区（内容矩形外、surface 边缘内）：alpha 0 < a < 255
-        let (_, _, _, a) = px(&surf, 1, surf.h / 2);
-        assert!(a > 0 && a < 255, "左缘阴影半透明，实际 alpha={a}");
-        let (_, _, _, a2) = px(&surf, surf.w - 2, surf.h / 2);
-        assert!(a2 > 0 && a2 < 255, "右缘阴影半透明，实际 alpha={a2}");
+        // 无阴影：surface 尺寸 = 内容精确尺寸（无边距），边缘像素不半透明
+        // 左缘像素列 0 = 完整覆盖的边框浅灰（scale=1 → 1px 描边）
+        let (r, g, b, a) = px(&surf, 0, surf.h / 2);
+        let [br, bg_, bb, _] = theme_light().border;
+        assert_eq!(a, 255, "左缘为实心边框（无半透明阴影），实际 alpha={a}");
+        assert!(
+            (r as i16 - br as i16).abs() <= 3
+                && (g as i16 - bg_ as i16).abs() <= 3
+                && (b as i16 - bb as i16).abs() <= 3,
+            "左缘色 ≈ 边框 #{br:02X}{bg_:02X}{bb:02X}，实际 {r:02X}{g:02X}{b:02X}"
+        );
+        // 内侧一列已是背景白（无边框残留/阴影渐变）
+        let (r2, g2, b2, a2) = px(&surf, 1, surf.h / 2);
+        assert_eq!((r2, g2, b2, a2), (0xFF, 0xFF, 0xFF, 255), "缘内即背景白");
     }
 
     #[test]
@@ -605,30 +577,20 @@ mod tests {
         let s = snap("ni'hao", &["你好", "泥嚎", "你好吗"], 0, 1);
         let (s1, _) = render_candidate(&s, &theme_light(), 1.0, &mut t, None);
         let (s2, _) = render_candidate(&s, &theme_light(), 2.0, &mut t, None);
-        // 内容区（去掉阴影边距）应约 2 倍：padding 为常量不随 scale 缩放，
-        // 字号翻倍后 ceil 舍入每行 ≤1px，总偏差很小。
-        let m = theme_light().shadow_size as i64;
-        let c1w = s1.w as i64 - m * 2;
-        let c2w = s2.w as i64 - m * 4;
+        // surface 即内容尺寸（无阴影边距）：字号翻倍后 ceil 舍入每行 ≤1px，
+        // padding 常量随 scale 缩放，总偏差很小。
         assert!(
-            (c2w - c1w * 2).abs() <= 24,
-            "scale=2 内容宽约 2 倍：{} vs {}",
-            c1w,
-            c2w
+            (s2.w as i64 - s1.w as i64 * 2).abs() <= 24,
+            "scale=2 宽约 2 倍：{} vs {}",
+            s1.w,
+            s2.w
         );
-        let c1h = s1.h as i64 - m * 2;
-        let c2h = s2.h as i64 - m * 4;
         assert!(
-            (c2h - c1h * 2).abs() <= 24,
-            "scale=2 内容高约 2 倍：{} vs {}",
-            c1h,
-            c2h
+            (s2.h as i64 - s1.h as i64 * 2).abs() <= 24,
+            "scale=2 高约 2 倍：{} vs {}",
+            s1.h,
+            s2.h
         );
-        // 整体（含阴影边距）比例 ≈ 2
-        let rw = s2.w as f64 / s1.w as f64;
-        let rh = s2.h as f64 / s1.h as f64;
-        assert!(rw > 1.7 && rw < 2.3, "整体宽比例 ≈2：{rw}");
-        assert!(rh > 1.7 && rh < 2.3, "整体高比例 ≈2：{rh}");
     }
 
     #[test]
@@ -662,17 +624,16 @@ mod tests {
             hit_test(&rows, rows[2].x + 1, rows[2].y + rows[2].h - 1),
             Some(2)
         );
-        // 菜单窗口尺寸 = 行高总和 + gap + padding + 阴影外缘
+        // 菜单窗口尺寸 = 行高总和 + gap + padding（无阴影边距）
         assert_eq!(
             surf.w,
-            (rows[0].w + crate::layout::PAD_X * 2) as u32 + (theme_light().shadow_size as u32) * 2
+            (rows[0].w + crate::layout::PAD_X * 2) as u32
         );
         // 分隔线行：采样点避让中线分隔线（行内靠下）→ 背景底
-        let shadow = theme_light().shadow_size as u32;
         let (_, _, _, a) = px(
             &surf,
-            shadow + rows[1].x as u32 + rows[1].w as u32 / 2,
-            shadow + rows[1].y as u32 + rows[1].h as u32 - 2,
+            (rows[1].x + rows[1].w / 2) as u32,
+            (rows[1].y + rows[1].h - 2) as u32,
         );
         assert_eq!(a, 255, "分隔线行是背景底（不透明白）");
     }
@@ -715,10 +676,18 @@ mod tests {
             hit_test(&rects, rects[0].x + rects[0].w / 2, rects[0].y + rects[0].h / 2),
             Some(TB_LOGO)
         );
-        // surface 尺寸 = 内容 + 阴影外缘
-        let shadow = theme_light().shadow_size as u32;
-        assert_eq!(surf.w, (rects[0].w * TB_COUNT as i32 + TOOLBAR_GAP as i32 * (TB_COUNT as i32 - 1) + TOOLBAR_PAD as i32 * 2) as u32 + shadow * 2);
+        // surface 尺寸 = 内容精确尺寸（扁平无阴影边距）
+        assert_eq!(surf.w, (rects[0].w * TB_COUNT as i32 + TOOLBAR_GAP as i32 * (TB_COUNT as i32 - 1) + TOOLBAR_PAD as i32 * 2) as u32);
         assert!(surf.h > 0);
+        // 命中区与绘制重合回归锚：矩形即表面坐标（无偏移）——首按钮矩形左上角
+        // 必须落在 surface 内且不越出（2026-08-22 曾因阴影 margin 未计入矩形，
+        // 命中区相对图标整体左上偏移 8×scale px）。
+        let r0 = &rects[TB_LOGO];
+        assert!(r0.x >= TOOLBAR_PAD as i32 && r0.y >= TOOLBAR_PAD as i32);
+        assert!(
+            (r0.x + r0.w) as u32 <= surf.w && (r0.y + r0.h) as u32 <= surf.h,
+            "按钮矩形必须完整落在 surface 内"
+        );
         // 图标缺失（默认空）：渲染不 panic 且表面有效
         assert!(surf.pixels.len() % 4 == 0);
     }
@@ -768,14 +737,13 @@ mod tests {
             pressed: None,
         };
         let (surf, rects) = render_toolbar(&spec, &theme_light(), 1.0);
-        let shadow = theme_light().shadow_size as u32;
-        // logo 按钮中心采样（surface 坐标 = 内容偏移 shadow + 按钮矩形中心）
-        let cx = shadow + (rects[TB_LOGO].x + rects[TB_LOGO].w / 2) as u32;
-        let cy = shadow + (rects[TB_LOGO].y + rects[TB_LOGO].h / 2) as u32;
+        // logo 按钮中心采样（surface 坐标 = 按钮矩形坐标，扁平无偏移）
+        let cx = (rects[TB_LOGO].x + rects[TB_LOGO].w / 2) as u32;
+        let cy = (rects[TB_LOGO].y + rects[TB_LOGO].h / 2) as u32;
         let a = alpha_at(&surf, cx, cy);
         assert!(a > 0, "logo 按钮中心应绘制出图标（不透明），实际 alpha={a}");
         // 对照：背景（非按钮区，如按钮间隙）应恒透明以外的背景底（不透明）
-        let bg_x = shadow + (rects[TB_LOGO].x + rects[TB_LOGO].w + 1) as u32;
+        let bg_x = (rects[TB_LOGO].x + rects[TB_LOGO].w + 1) as u32;
         let bg_a = alpha_at(&surf, bg_x, cy);
         assert!(bg_a > 0, "按钮间隙应为背景底（不透明）");
     }
