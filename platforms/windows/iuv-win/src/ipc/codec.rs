@@ -13,11 +13,13 @@
 //!     0x08 Register / 0x09 StateSync : u32 pid u32 tid 4×u8（ImeState，序 mode/width/script/punct）
 //!     0x0A Active : u32 pid u32 tid u8(active)
 //!     0x0C Unregister : u32 pid u32 tid
+//!     0x0D GetToolbarVisible : （无载荷）
 //!
 //! Response:
 //!   u8 tag
 //!     0x01 Ok  : u32 version   （应用后的用户库段 version；Ping 时为当前 version）
 //!     0x02 Err : u32 msg_len|msg（UTF-8 错误消息）
+//!     0x03 ToolbarVisible : u8(visible)（0/1；GetToolbarVisible 应答）
 //!
 //! CtlCmd:
 //!   u8 tag
@@ -147,6 +149,9 @@ pub(crate) fn encode_request(req: &Request) -> Vec<u8> {
             out.extend_from_slice(&pid.to_le_bytes());
             out.extend_from_slice(&tid.to_le_bytes());
         }
+        Request::GetToolbarVisible => {
+            out.push(0x0D);
+        }
     }
     out
 }
@@ -166,6 +171,10 @@ pub(crate) fn encode_response(resp: &Response) -> Vec<u8> {
         Response::Err { msg } => {
             out.push(0x02);
             put_str(&mut out, msg);
+        }
+        Response::ToolbarVisible { visible } => {
+            out.push(0x03);
+            out.push(u8::from(*visible));
         }
     }
     out
@@ -263,6 +272,10 @@ pub(crate) fn decode_request(payload: &[u8]) -> io::Result<Request> {
             r.finish()?;
             Ok(Request::Unregister { pid, tid })
         }
+        0x0D => {
+            r.finish()?;
+            Ok(Request::GetToolbarVisible)
+        }
         t => Err(bad(&format!("未知 Request tag 0x{t:02X}"))),
     }
 }
@@ -281,6 +294,11 @@ pub(crate) fn decode_response(payload: &[u8]) -> io::Result<Response> {
             let msg = r.str_()?;
             r.finish()?;
             Ok(Response::Err { msg })
+        }
+        0x03 => {
+            let visible = r.bool()?;
+            r.finish()?;
+            Ok(Response::ToolbarVisible { visible })
         }
         t => Err(bad(&format!("未知 Response tag 0x{t:02X}"))),
     }
@@ -455,6 +473,7 @@ mod tests {
                 word: "手癣".into(),
             },
             Request::Ping,
+            Request::GetToolbarVisible,
         ] {
             let bytes = encode_request(&req);
             assert_eq!(decode_request(&bytes).unwrap(), req);
@@ -471,6 +490,9 @@ mod tests {
         };
         let bytes = encode_response(&err);
         assert_eq!(decode_response(&bytes).unwrap(), err);
+        let vis = Response::ToolbarVisible { visible: true };
+        let bytes = encode_response(&vis);
+        assert_eq!(decode_response(&bytes).unwrap(), vis);
     }
 
     #[test]
@@ -484,6 +506,8 @@ mod tests {
         let mut bytes = encode_request(&Request::Ping);
         bytes.push(0xAA);
         assert!(decode_request(&bytes).is_err(), "Ping 后残留字节");
+        // ToolbarVisible 布尔字节非法（须 0/1）
+        assert!(decode_response(&[0x03, 2]).is_err());
     }
 
     #[test]

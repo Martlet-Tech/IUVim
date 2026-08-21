@@ -222,6 +222,12 @@ fn handle_request(state: &Arc<DaemonState>, toolbar: &Arc<ToolbarHost>, req: &Re
                 version: state.current_version(),
             }
         }
+        // 语言栏菜单打开时查询显隐偏好（菜单项文案「显示/隐藏工具栏」二选一）。
+        Request::GetToolbarVisible => {
+            return Response::ToolbarVisible {
+                visible: toolbar.visible(),
+            }
+        }
         // 语言栏菜单「设置」：主线程弹 egui 设置窗。
         Request::OpenSettings => {
             log::log_line("[pipe] 收到 OpenSettings 命令");

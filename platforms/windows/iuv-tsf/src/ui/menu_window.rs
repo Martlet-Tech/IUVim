@@ -65,6 +65,13 @@ impl MenuWindow {
         }
     }
 
+    /// 替换菜单项（下次 `show_at` 渲染生效；窗口复用场景刷新文案用——如工具栏
+    /// 显隐菜单项按当前偏好二选一）。
+    pub fn set_items(&mut self, items: Vec<MenuEntry>) {
+        self.items = items;
+        self.selected = None;
+    }
+
     /// 在屏幕坐标 (x, y)（语言栏按钮位置）弹出菜单：懒建窗 → 渲染 → 定位内收 →
     /// ULW 上屏 → 显示并尝试激活（收键盘）。失败静默（记日志，不 panic）。
     pub fn show_at(&mut self, x: i32, y: i32) {

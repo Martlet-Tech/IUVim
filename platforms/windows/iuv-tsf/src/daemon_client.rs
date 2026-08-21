@@ -323,6 +323,15 @@ impl DaemonClient {
         self.request_once(&Request::Ping, true).is_some()
     }
 
+    /// 查询工具栏全局显隐偏好（语言栏右键菜单项文案用，菜单打开频度极低可承受一次
+    /// 管道往返）。daemon 离线 / 旧版 daemon（未知请求 → Err 应答）→ None（调用方回退中性文案）。
+    pub fn toolbar_visible(&self) -> Option<bool> {
+        match self.send_request(&Request::GetToolbarVisible) {
+            Some(Response::ToolbarVisible { visible }) => Some(visible),
+            _ => None,
+        }
+    }
+
     // ===== 32-status-toolbar.md §4.1 TSF→daemon 上报（Register/StateSync/Active/Unregister） =====
 
     /// Activate 注册 + 上报初始四态（失败 = daemon 离线，静默——在线翻转后 poll 重注册）。

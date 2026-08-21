@@ -138,10 +138,17 @@ impl ToolbarHost {
         host
     }
 
+    /// 当前全局显隐偏好（`Request::GetToolbarVisible` 应答用；语言栏菜单项文案）。
+    pub fn visible(&self) -> bool {
+        self.shared
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .visible
+    }
+
     /// 处理工具栏相关管道请求（Register/StateSync/Active/Unregister/ToggleToolbar）。
     /// 返回 true = 本请求已消费（调用方不再按用户库写请求处理）。
-    pub fn handle_request(&self, req: &Request) -> bool {
-        match req {
+    pub fn handle_request(&self, req: &Request) -> bool {    match req {
             Request::Register { pid, tid, state } => {
                 let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
                 sh.instances.insert(

@@ -255,19 +255,31 @@ impl LangBarItemButton {
         }
     }
 
+    /// 工具栏菜单项文案：按 daemon 当前全局显隐偏好二选一（2026-08-21 用户需求：
+    /// 已显示 →「隐藏工具栏」、已隐藏 →「显示工具栏」）。查询失败（离线/旧版 daemon）
+    /// → 中性文案兜底。
+    fn toolbar_menu_label(&self) -> String {
+        match self.daemon.toolbar_visible() {
+            Some(true) => "隐藏工具栏".to_string(),
+            Some(false) => "显示工具栏".to_string(),
+            None => "显示/隐藏工具栏".to_string(),
+        }
+    }
+
     /// 右键菜单：懒建自绘菜单窗（iuv-ui 渲染 + ULW 呈现），在按钮位置弹出。
-    /// 菜单项：显示/隐藏工具栏 / 设置 / 关于（无"退出"——用户 2026-08-17 决策）。
+    /// 菜单项：显示/隐藏工具栏 / 设置 / 关于（无"退出"——用户 2026-08-17 决策）；
+    /// 工具栏项文案每次弹出前按当前偏好刷新（窗口复用，set_items 替换）。
     fn show_menu(&self, pt: &POINT) {
+        const MENU_TOOLBAR: u16 = 1;
+        const MENU_SETTINGS: u16 = 2;
+        const MENU_ABOUT: u16 = 3;
         let mut m = self.menu.borrow_mut();
+        let items = vec![
+            MenuEntry::new(self.toolbar_menu_label(), MENU_TOOLBAR),
+            MenuEntry::new("设置".to_string(), MENU_SETTINGS),
+            MenuEntry::new("关于".to_string(), MENU_ABOUT),
+        ];
         if m.is_none() {
-            const MENU_TOOLBAR: u16 = 1;
-            const MENU_SETTINGS: u16 = 2;
-            const MENU_ABOUT: u16 = 3;
-            let items = vec![
-                MenuEntry::new("显示/隐藏工具栏".to_string(), MENU_TOOLBAR),
-                MenuEntry::new("设置".to_string(), MENU_SETTINGS),
-                MenuEntry::new("关于".to_string(), MENU_ABOUT),
-            ];
             let daemon = self.daemon.clone();
             *m = Some(crate::ui::menu_window::MenuWindow::new(
                 self.menu_theme.clone(),
@@ -288,6 +300,8 @@ impl LangBarItemButton {
                     _ => log_line(&format!("语言栏菜单：未知项 {id}")),
                 })),
             ));
+        } else if let Some(w) = m.as_mut() {
+            w.set_items(items);
         }
         if let Some(w) = m.as_mut() {
             log_line("语言栏菜单：右键弹出自绘菜单");
@@ -344,10 +358,12 @@ impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
             log_line("语言栏菜单：InitMenu 收到空 ITfMenu");
             return Ok(());
         };
-        let items: &[(&str, u32)] = &[
-            ("显示/隐藏工具栏", MENU_TOOLBAR),
-            ("设置", MENU_SETTINGS),
-            ("关于", MENU_ABOUT),
+        // 工具栏项文案按当前全局显隐偏好二选一（与自绘菜单一致）。
+        let toolbar_label = self.toolbar_menu_label();
+        let items: &[(String, u32)] = &[
+            (toolbar_label, MENU_TOOLBAR),
+            ("设置".to_string(), MENU_SETTINGS),
+            ("关于".to_string(), MENU_ABOUT),
         ];
         for (label, wid) in items {
             let text: Vec<u16> = label.encode_utf16().collect();

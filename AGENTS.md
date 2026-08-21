@@ -94,6 +94,15 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   iuv-ui（toolbar.rs ToolbarSpec.state + render.rs 夹具）、iuv-tsf（daemon_client 签名/daemon_host/
   mode 直传快照/text_service apply_ctl_cmd match 四变体）、iuv-daemon（toolbar mod 实例表/window
   点击类型化翻转）。契约/35/36/37 同步。测试：工作区全绿（303）。H2（english_mode 双源）按用户决策暂不做。
+- [x] **语言栏右键菜单工具栏项文案动态化（2026-08-21，待手测）**：菜单项按 daemon 当前
+  显隐偏好二选一（已显示→「隐藏工具栏」/已隐藏→「显示工具栏」/查询失败→中性
+  「显示/隐藏工具栏」兜底）：新增 `Request::GetToolbarVisible`（0x0D）+
+  `Response::ToolbarVisible{visible}`（0x03），选管道查询而非 shm 加字段（避免段布局偏移
+  移动破坏热部署后旧 DLL 读段）；daemon `ToolbarHost::visible()` + main.rs 显式处理；
+  tsf `DaemonClient::toolbar_visible() -> Option<bool>`；langbar 自绘菜单（show_menu 每次
+  弹出前刷新第一项，MenuWindow 新增 set_items）与 InitMenu 官方路径同改。改动：iuv-win
+  （msg/codec+测试）、iuv-daemon（toolbar mod/main）、iuv-tsf（daemon_client/langbar/
+  menu_window）。测试：工作区全绿（305）。
 - 点子库（暂不做，2026-08-19 记录）：**Tab 键用途**——整句翻译（在线 API：空闲 0.5s 触发、候选 N+1 槽、
   Tab 高亮 + 空格上屏）与自动补全（Tab 钉选当前候选续打，不结束会话），语义分配未定，`29-tab-ideas.md`
 - **M9 可自定义贴图皮肤框架——调研定稿/挂起（2026-08-20，未实现）**：候选窗换肤 = 自研 `IUVSKIN01`

@@ -47,6 +47,8 @@ pub enum Request {
     ToggleToolbar,
     /// 32-status-toolbar.md §4.1：实例 Drop 注销（从实例表移除）。
     Unregister { pid: u32, tid: u32 },
+    /// 语言栏右键菜单打开时查询工具栏全局显隐偏好（菜单项文案「显示/隐藏工具栏」二选一）。
+    GetToolbarVisible,
 }
 
 /// 守护进程 → 会话进程的响应。
@@ -54,6 +56,8 @@ pub enum Request {
 pub enum Response {
     Ok { version: u32 },
     Err { msg: String },
+    /// `Request::GetToolbarVisible` 的应答：当前全局显隐偏好。
+    ToolbarVisible { visible: bool },
 }
 
 // ===== 32-status-toolbar.md 工具栏四态 + 反向控制通道 =====

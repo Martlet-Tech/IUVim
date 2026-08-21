@@ -78,6 +78,7 @@ daemon 持有**全局唯一**工具栏窗口 + 全局显示/隐藏偏好 + 全�
 | `Active` | instance_id, active | Activate/Deactivate 通知（daemon 判「iuv 被选中」） |
 | `ToggleToolbar` | — | 语言栏右键菜单「显示/隐藏工具栏」 |
 | `Unregister` | instance_id | 实例 Drop 注销 |
+| `GetToolbarVisible` | — | 语言栏菜单打开时查询显隐偏好；应答 `Response::ToolbarVisible{visible}`（2026-08-21 追加：菜单项文案「显示工具栏/隐藏工具栏」二选一，查询失败回退中性文案） |
 
 ### 4.2 daemon→TSF（新增反向通道，定稿 = 按需连接）
 
