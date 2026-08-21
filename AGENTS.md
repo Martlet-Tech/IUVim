@@ -128,7 +128,8 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   皮肤格式互操作合法（红线：不抄搜狗/QQ 解析代码；只做自研格式）。**挂起原因**：前置 M8 悬浮工具栏
   （feat-toolbar 分支，效果差）需先改进。`33-skin.md`
 - 后续：M3 整句增强(LMDG)/模糊音 · **M4 跨平台渲染候选窗——已实现（2026-08-16，ui-rewrite 分支待手测）**：
-  tiny-skia+cosmic-text 绘图（crates/iuv-ui）+ D2D/DComp 呈现（ui/candwin.rs）+ 浅色/深色主题 + 圆角阴影，`19-m4-cross-render.md`
+  tiny-skia+cosmic-text 绘图（crates/iuv-ui）+ D2D/DComp 呈现（ui/candwin.rs）+ 浅色/深色主题
+  （2026-08-22 起扁平细边框，阴影已移除——见上方 f56e41a 条目），`19-m4-cross-render.md`
   · **M5 语言栏右键菜单——已实现（2026-08-17 重定义，去托盘）**：右键语言栏「中/英」按钮弹「设置/关于」
   （TSF InitMenu/ITfMenu 官方机制），`21-m5-tray-menu.md`
   · **M6 守护进程——已实现（2026-08-16，2026-08-17 修正）**：iuv-daemon exe 唯一持有用户库（共享段 + 命名管道 IPC +
@@ -139,8 +140,9 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   - **Tauri 已废**（2026-08-16 用户决策）：M4 不做 WebView helper；候选窗/菜单用 iuv-ui 自绘（tiny-skia），设置页 M6 用 egui/eframe
   - **无独立托盘图标**（2026-08-17 用户决策）：右键菜单挂语言栏「中/英」按钮（TSF InitMenu），托盘/自绘菜单窗口已删；
     daemon 纯后台（无图标），设置页入口 = 语言栏菜单 → 管道 OpenSettings
-  - **M4~M6 待手测项**（2026-08-16 完成后未验收）：M4 真透明圆角/阴影/深色主题/不抢焦点/多显示器 DPI（2026-08-17
-    已修 BeginDraw 关联 bug，候选窗此前不可见）；M5 语言栏右键菜单两项；M6 双进程即时一致/守护杀死降级/设置页热载
+  - **M4~M6 待手测项**（2026-08-16 完成后未验收）：M4 真透明圆角/深色主题/不抢焦点/多显示器 DPI
+    （阴影项已失效：2026-08-22 移除改细边框，见 f56e41a；2026-08-17 已修 BeginDraw 关联 bug，
+    候选窗此前不可见）；M5 语言栏右键菜单两项；M6 双进程即时一致/守护杀死降级/设置页热载
 - [x] **设置-常用 = 新 TSF 实例初始状态（28-initial-state-settings.md，2026-08-19 落地，待手测）**：
   「常用」页四组开关（中/英、半角/全角、简/繁、标点）+ 每页候选数下拉 [5,6,7,8,9]，存
   `config.json` 新父节点 `initial_state`（全部 lowercase 枚举：`mode`/`width`/`script`/`punct`，
@@ -203,6 +205,30 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   （opencc.rs + dictc opencc + 导出）、iuv-core（script.rs ScriptConverter + engine 字段 + session 挂点）、
   iuv-tsf（load_engine 装配 + script_path）、iuv-daemon（settings 文案已生效）、scripts、契约/02/AGENTS 同步。
   测试：iuv-data 9 + script 2 + 会话集成 6（繁体候选/单字/整词上屏/自造词录简体/简体回归/降级）全绿。
+- [x] **工具栏悬停光标修复：类默认箭头 + 功能钮手指头（2026-08-22，手测通过，53f4c18）**：
+  所有自绘窗口类注册 `WNDCLASSEXW` 走 `..Default::default()` → `hCursor = NULL`，
+  DefWindowProc 对 NULL 类光标**不设光标**——悬停时残留上一进程的光标形状（实测忙等漏斗）。
+  修复：iuv-win `popup.rs`（候选窗/菜单窗类注册）与 iuv-daemon `toolbar/mod.rs`（工具条+tooltip
+  类注册）补 `hCursor = LoadCursorW(IDC_ARROW)` 默认值；`bar_wnd_proc` 新增 WM_SETCURSOR 臂——
+  hit_test 命中功能钮（四态/齿轮）设 IDC_HAND、logo/空白设箭头并返回 1（WM_SETCURSOR 的
+  lparam 不含坐标，GetCursorPos − GetWindowRect 原点换算客户区坐标；拖拽捕获期系统不发此
+  消息，无需特判）。语言栏右键自绘菜单保持普通箭头（用户拍板：手指头仅浮动工具条用）。
+  测试：工作区全绿（win32 胶水靠手测）。
+- [x] **自绘窗口去阴影改细边框 + 根治工具栏命中区偏移（2026-08-22，手测通过，f56e41a）**：
+  用户反馈工具栏悬停可点区相对图标**整体左上偏移**（图标右下沿点不到、左上外侧反而能点）
+  ——根因：`render_toolbar` 返回矩形为内容坐标，而绘制经 `render_to_surface` 叠加了阴影偏移
+  `sx = shadow_size×scale`（surface 四周留 2×shadow_px 阴影边），文档契约写「含阴影偏移」
+  实现漏加 → 命中区比绘制内容偏左上 10~12px（125%/150% 缩放下）。借用户视觉改版需求
+  （阴影过时）一并根治：`render_to_surface` 删阴影层与外围 margin——**surface 尺寸 =
+  内容精确尺寸，内容坐标 = 表面坐标 = 客户区坐标**，daemon 三处 hit_test（hover/按下/
+  WM_SETCURSOR）零改动自动与图标重合；边界改 `theme.border` 细边框，宽度
+  `(scale).round().max(1)`（100%/125%→1px、150%+→2px，用户选定 round 规则），描边路径
+  内缩宽度/2 使整条边完整落在位图内（外缘贴齐边缘不被裁半）。候选窗/语言栏菜单/tooltip/
+  工具条四类窗口统一扁平化（共享渲染路径，外部消费者零改动）。改动全部在 crates/iuv-ui
+  （theme.rs 删 shadow/shadow_size 字段、paint.rs 删 draw_shadow 死代码、render.rs/toolbar.rs
+  闭包去 sx 参数）；测试适配（采样去手动 shadow 补偿、尺寸断言纯内容化）+ 新增边框像素断言
+  `render_candidate_flat_border_no_shadow` + 工具栏几何测试补「按钮矩形完整落在 surface 内」
+  回归锚。测试：工作区全绿（iuv-ui 43 含新用例）。
 - **中英切换已改系统机制（2026-08-12）**：`OPENCLOSE` compartment 真相源（系统"输入法/非输入法切换"热键驱动，
   OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；**激活初值 = config `initial_state.mode`**，
   中文默认 = 激活即打开）。前置条件：用户在
