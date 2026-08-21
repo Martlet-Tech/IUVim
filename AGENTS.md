@@ -103,23 +103,22 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   弹出前刷新第一项，MenuWindow 新增 set_items）与 InitMenu 官方路径同改。改动：iuv-win
   （msg/codec+测试）、iuv-daemon（toolbar mod/main）、iuv-tsf（daemon_client/langbar/
   menu_window）。测试：工作区全绿（305）。
-- [x] **daemon 重启后工具栏自愈：2s 定时轮询 + 显示判定放宽（2026-08-21，待手测）**：
-  日志实测两轮盲区——①Activate 发生在 daemon 死亡期 → 只发 Active 被丢弃；②**Register
-  恰在 daemon 重启窗口期失败**（新开记事本 Activate 即时触发但管道未就绪，静默丢失）
-  → 所有自愈路径都汇聚在按键驱动的 poll（route_key 唯一触发点），不打字不恢复。
-  修复三层：**(a)** `register_instance` 删 `registered` 门（Cell 字段删），每次 Activate
-  无条件发 Register（daemon `instances.insert` 幂等覆盖），焦点切回即自愈；
-  **(b) 根治：ctl 隐藏消息窗挂 2s WM_TIMER**（`POLL_TIMER_ID`，wndproc 新增 WM_TIMER 臂 →
-  `CtlApplier::on_poll_tick`）→ `TextService::daemon_poll_tick()`（与 route_key 共用入口）：
-  共享段版本/纪元检测 + 离线→在线重注册，**自愈不再依赖打字/切焦点**，顺带修复离线期
-  用户库/配置热载延迟；成本 = 每 tick 读两个 u32 原子量；Deactivate KillTimer。
-  **(c) daemon 显示判定放宽（用户拍板语义「全局显隐变量决定，有输入焦点即显示」）**：
+- [x] **daemon 重启后工具栏自愈：无条件注册 + 显示判定放宽（2026-08-21，待手测）**：
+  日志实测两轮盲区——①Activate 发生在 daemon 死亡期 → 只发 Active 被丢弃；②Register
+  恰在 daemon 重启窗口期失败（新开记事本 Activate 即时触发但管道未就绪，静默丢失）
+  → 所有自愈路径都汇聚在按键驱动的 poll，不打字不恢复。修复（纯事件驱动，**不用
+  轮询定时器**——用户决策弃用 SetTimer 手法，对齐小狼毫零定时器架构）：
+  **(a)** `register_instance` 删 `registered` 门（Cell 字段删），每次 Activate 无条件发
+  Register（daemon `instances.insert` 幂等覆盖）→ 焦点切回任意 iuv 应用即自愈；
+  **(b)** daemon 显示判定放宽（用户拍板语义「全局显隐变量决定，有输入焦点即显示」）：
   `poll_foreground` 不再要求前台窗口 pid:tid 精确命中 active 实例（时序脆弱）——
   `visible && 任一活动实例` 即显示；渲染态优先级 = 前台命中 > 最近激活实例
-  （ToolbarInstance.seq 单调序号，Active{true} 分配）> 默认四态。改动：iuv-tsf
-  （ctl.rs 定时器/text_service CtlApplier+daemon_poll_tick/key_routing 复用/
-  daemon_host 无条件注册）、iuv-daemon（toolbar mod seq/window 判定放宽）、
-  契约 32 同步。测试：工作区全绿（305）。
+  （ToolbarInstance.seq 单调序号，Active{true} 分配）> 默认四态。
+  **已知盲区（接受）**：daemon 异常重启 + 用户停在原窗口完全零交互 → 工具栏陈旧到
+  下一次任意交互（打字即恢复）；正式使用不重启 daemon，升级/变更后注销规避。
+  改动：iuv-tsf（text_service CtlApplier/daemon_host 无条件注册+daemon_poll_tick/
+  key_routing 复用）、iuv-daemon（toolbar mod seq/window 判定放宽）、契约 32 同步。
+  测试：工作区全绿。
 - 点子库（暂不做，2026-08-19 记录）：**Tab 键用途**——整句翻译（在线 API：空闲 0.5s 触发、候选 N+1 槽、
   Tab 高亮 + 空格上屏）与自动补全（Tab 钉选当前候选续打，不结束会话），语义分配未定，`29-tab-ideas.md`
 - **M9 可自定义贴图皮肤框架——调研定稿/挂起（2026-08-20，未实现）**：候选窗换肤 = 自研 `IUVSKIN01`

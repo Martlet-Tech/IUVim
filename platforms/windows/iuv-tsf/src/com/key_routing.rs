@@ -39,8 +39,8 @@ impl TextService {
     fn route_key(&self, vk: u16) -> KeyAction {
         // 透明模式：全部放行。
         let Some(engine) = engine() else { return KeyAction::Pass };
-        // M6：daemon 共享段轮询（低成本：读 u32 版本；用户库版本/配置纪元变化 → 即时生效）。
-        // 与 ctl 隐藏窗 2s 定时器共用同一入口（daemon_poll_tick，自愈不依赖按键）。
+        // M6：daemon 共享段轮询（低成本：读 u32 版本；用户库版本/配置纪元变化 → 即时生效；
+        // 离线→在线翻转重注册）。daemon_poll_tick 唯一触发点在按键路径。
         self.daemon_poll_tick();
         let config = engine.config();
 

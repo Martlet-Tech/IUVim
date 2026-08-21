@@ -299,10 +299,6 @@ impl CtlApplier for TextService {
     fn apply_cmd(&self, cmd: &CtlCmd) -> CtlResult {
         self.apply_ctl_cmd(cmd)
     }
-
-    fn on_poll_tick(&self) {
-        self.daemon_poll_tick();
-    }
 }
 
 // ---- ITfTextInputProcessor / Ex ----

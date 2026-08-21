@@ -25,9 +25,9 @@ use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{GetCurrentThreadId, OpenThread, THREAD_ALL_ACCESS};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, KillTimer, PostMessageW,
-    RegisterClassExW, SetTimer, SetWindowLongPtrW, GWLP_USERDATA, HWND_MESSAGE, WM_APP, WM_TIMER,
-    WNDCLASS_STYLES, WNDCLASSEXW, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, PostMessageW,
+    RegisterClassExW, SetWindowLongPtrW, GWLP_USERDATA, HWND_MESSAGE, WM_APP, WNDCLASS_STYLES,
+    WNDCLASSEXW, WS_POPUP,
 };
 
 use crate::log::log_line;
@@ -38,18 +38,14 @@ pub(crate) const WM_APP_TOOLBAR_CMD: u32 = WM_APP + 40;
 /// 隐藏消息窗类名（进程内唯一；每实例一窗）。
 const CLASS_NAME: PCWSTR = w!("IuvCtlWindow");
 
-/// daemon 轮询定时器（§4.4 自愈）：隐藏窗每 tick 触发一次 `on_poll_tick`
-/// （共享段版本/纪元检测 + 离线→在线重注册），**不再依赖按键路径**——修「daemon 重启
-/// 窗口期内打开的应用，Register 失败后无重试、直到打字才恢复」（2026-08-21 日志实测）。
-const POLL_TIMER_ID: usize = 1;
-const POLL_TICK_MS: u32 = 2000;
-
 /// TSF 线程应用命令的回调目标（`TextService_Impl` 实现；经原始指针跨线程间接调用，
 /// 只在 TSF 线程 wndproc 内解引用——地址在端点存活期间稳定）。
+///
+/// 2026-08-21 决策：**不用轮询定时器**（对齐小狼毫纯事件驱动架构——状态自愈挂在
+/// 天然事件上：Activate 重发 Register / route_key poll / OnSetFocus tick；daemon
+/// 异常重启且用户停在原窗口零交互的盲区，正式使用以注销/重启规避）。
 pub(crate) trait CtlApplier {
     fn apply_cmd(&self, cmd: &CtlCmd) -> CtlResult;
-    /// 轮询 tick（POLL_TIMER_ID 的 WM_TIMER；TSF 线程）。
-    fn on_poll_tick(&self);
 }
 
 /// 待应用命令槽：accept 线程写入 + PostMessage；TSF 线程 wndproc 取出应用 + 回送结果。
@@ -135,10 +131,6 @@ impl CtlEndpoint {
     pub(crate) fn attach(&mut self, pid: u32, tid: u32) -> bool {
         // SAFETY: self 地址在窗口存活期间稳定（调用方保证，同 MenuWindow/Candwin 模式）。
         unsafe { SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, self as *const Self as usize as _) };
-        // SAFETY: 本线程（TSF 线程）窗口挂轮询定时器；失败仅记日志（自愈降级按键路径）。
-        if unsafe { SetTimer(Some(self.hwnd), POLL_TIMER_ID, POLL_TICK_MS, None) } == 0 {
-            log_line("[ctl] 轮询定时器创建失败（自愈退化为按键路径）");
-        }
         let name = ctl_pipe_name(pid, tid);
         // HWND 为裸指针（!Send），线程闭包只做 PostMessage（跨线程投递合法）——以 usize 传递。
         let hwnd_val = self.hwnd.0 as usize;
@@ -192,13 +184,10 @@ impl Drop for CtlEndpoint {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        // 2. 清 GWLP_USERDATA（wndproc 不再能取回本端点）→ 停定时器 → 销毁窗口（残留消息丢弃）。
+        // 2. 清 GWLP_USERDATA（wndproc 不再能取回本端点）→ 销毁窗口（残留消息丢弃）。
         if !self.hwnd.is_invalid() {
             // SAFETY: 同 Drop 惯例：先清零再销毁。
             let _ = unsafe { SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0) };
-            // SAFETY: 本线程窗口停轮询定时器（DestroyWindow 也会清理，显式更清晰）；
-            // 失败（窗口将销毁）无害，忽略。
-            let _ = unsafe { KillTimer(Some(self.hwnd), POLL_TIMER_ID) };
             // SAFETY: 在创建线程（TSF 线程）销毁窗口。
             let _ = unsafe { DestroyWindow(self.hwnd) };
             self.hwnd = HWND::default();
@@ -295,30 +284,24 @@ fn register_class() {
     });
 }
 
-/// 隐藏消息窗 wndproc：WM_APP_TOOLBAR_CMD → 取待应用命令 → TSF 线程应用 → 回送结果；
-/// WM_TIMER（POLL_TIMER_ID）→ 轮询 tick。
+/// 隐藏消息窗 wndproc：WM_APP_TOOLBAR_CMD → 取待应用命令 → TSF 线程应用 → 回送结果。
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if msg == WM_APP_TOOLBAR_CMD || (msg == WM_TIMER && wparam.0 == POLL_TIMER_ID) {
+    if msg == WM_APP_TOOLBAR_CMD {
         // SAFETY: GWLP_USERDATA 由 attach 写入端点指针，Drop 先清零再销毁窗口——取到的
         // 指针在窗口存活期间有效（调用都在 TSF 线程）。
         let p = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
         if p != 0 {
             let ep = &*(p as *const CtlEndpoint);
-            if msg == WM_TIMER {
+            let job = ep.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(job) = job {
                 // SAFETY: ep.svc 指向 TextService（端点存活期间有效），TSF 线程解引用。
-                (&*ep.svc).on_poll_tick();
-            } else {
-                let job = ep.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
-                if let Some(job) = job {
-                    // SAFETY: ep.svc 指向 TextService（端点存活期间有效），TSF 线程解引用。
-                    let result = (&*ep.svc).apply_cmd(&job.cmd);
-                    let _ = job.resp.send(result);
-                }
+                let result = (&*ep.svc).apply_cmd(&job.cmd);
+                let _ = job.resp.send(result);
             }
         }
         return LRESULT(0);

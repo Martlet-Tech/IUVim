@@ -12,11 +12,12 @@ use super::engine_host::engine;
 use super::text_service::TextService;
 
 impl TextService {
-    /// M6 daemon 轮询（按键路径 route_key 与 ctl 隐藏窗 2s 定时器**共用**）：
-    /// 共享段版本/纪元检测（用户库/配置热载）+ 离线→在线翻转重注册（§4.4 自愈）。
+    /// M6 daemon 轮询（route_key 按键路径唯一触发点）：共享段版本/纪元检测
+    /// （用户库/配置热载）+ 离线→在线翻转重注册（§4.4 自愈）。
     /// 成本 = 读两个 u32 原子量；引擎未就绪/daemon 客户端缺失时静默跳过。
-    /// 2026-08-21 起定时器承载自愈——修「daemon 重启窗口期内打开的应用 Register 失败
-    /// 后无重试、直到打字才恢复」（此前唯一触发点在按键路径，日志实测盲区）。
+    /// 2026-08-21 决策：**不挂轮询定时器**——daemon 异常重启的自愈靠事件驱动
+    /// （Activate 重发 Register + 本函数按键路径），零交互盲区以注销/重启规避
+    /// （正式使用不重启 daemon；对齐小狼毫纯事件驱动架构）。
     pub(crate) fn daemon_poll_tick(&self) {
         let Some(engine) = engine() else { return };
         if let Some(client) = self.daemon.borrow().as_ref() {
