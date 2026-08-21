@@ -14,8 +14,8 @@ use windows::Win32::Foundation::{
 use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, LOGPIXELSY};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, RegisterClassExW,
-    SetWindowLongPtrW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, WS_POPUP, WNDCLASSEXW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, LoadCursorW, RegisterClassExW,
+    SetWindowLongPtrW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, IDC_ARROW, WS_POPUP, WNDCLASSEXW,
     WINDOW_EX_STYLE,
 };
 
@@ -50,6 +50,9 @@ impl LayeredWindow {
                 cbSize: size_of::<WNDCLASSEXW>() as u32,
                 style: CS_HREDRAW | CS_VREDRAW,
                 lpfnWndProc: Some(wnd_proc),
+                // 类默认光标 = 箭头：hCursor 为 NULL 时 DefWindowProc 不设光标，悬停
+                // 残留上一窗口的形状（实测忙等漏斗）。具体窗口可再经 WM_SETCURSOR 覆盖。
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
                 hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH::default(),
                 lpszMenuName: PCWSTR::null(),
                 lpszClassName: class_name,

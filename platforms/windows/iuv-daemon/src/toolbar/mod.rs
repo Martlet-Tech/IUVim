@@ -46,10 +46,10 @@ use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORIN
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DispatchMessageW, GetCursorPos, GetMessageW, PostMessageW, PostThreadMessageW,
-    RegisterClassExW, SetTimer, SetWindowLongPtrW, TranslateMessage, WM_APP, WM_QUIT, CS_HREDRAW,
-    CS_VREDRAW, GWLP_USERDATA, MSG, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW, PostMessageW,
+    PostThreadMessageW, RegisterClassExW, SetTimer, SetWindowLongPtrW, TranslateMessage, WM_APP,
+    WM_QUIT, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, IDC_ARROW, MSG, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 // WM_MOUSELEAVE 在 windows-rs 0.62 中位于 Controls 模块（值 0x02A3 = 675），本地定义。
 const WM_MOUSELEAVE: u32 = 675;
@@ -305,6 +305,9 @@ fn register_class(
             cbSize: size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: proc,
+            // 类默认光标 = 箭头：hCursor 为 NULL 时 DefWindowProc 不设光标，悬停工具条
+            // 残留上一窗口的形状（实测忙等漏斗）。功能钮手指头在 bar_wnd_proc 覆盖。
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH::default(),
             lpszMenuName: PCWSTR::null(),
             lpszClassName: name,

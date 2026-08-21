@@ -19,10 +19,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
-    GetWindowThreadProcessId, SetWindowLongPtrW, SetWindowPos, ShowWindow, SWP_NOACTIVATE,
-    SWP_NOCOPYBITS, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, GWLP_USERDATA, HTCLIENT,
-    HTTRANSPARENT, MA_NOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_TIMER,
+    GetWindowThreadProcessId, LoadCursorW, SetCursor, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, GWLP_USERDATA,
+    HTCLIENT, HTTRANSPARENT, IDC_ARROW, IDC_HAND, MA_NOACTIVATE, WM_DESTROY, WM_ERASEBKGND,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
+    WM_SETCURSOR, WM_TIMER,
 };
 
 use super::prefs::{save_pref, ToolbarPref};
@@ -455,6 +456,34 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
         }
         WM_ERASEBKGND => LRESULT(1),
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_SETCURSOR => {
+            // 悬停光标：客户区按按钮命中二选一——功能钮（四态/齿轮）= 手指头，
+            // logo/空白 = 箭头；非客户区走类默认（箭头）。lparam 不含坐标，取
+            // GetCursorPos − 窗口原点得客户区坐标（同 WM_NCHITTEST 臂手法）。
+            // 拖拽捕获期间系统不发本消息，无需特判。
+            if (lparam.0 as u32 & 0xFFFF) == HTCLIENT as u32 {
+                let over_button = get_bar_mut(hwnd)
+                    .map(|w| {
+                        let (sx, sy) = cursor_screen();
+                        let mut rc = RECT::default();
+                        // SAFETY: GetWindowRect/GetCursorPos 纯查询。
+                        unsafe { GetWindowRect(hwnd, &mut rc) }.is_ok()
+                            && hit_test(&w.rows, sx - rc.left, sy - rc.top)
+                                .map_or(false, |i| i != TB_LOGO)
+                    })
+                    .unwrap_or(false);
+                // SAFETY: SetCursor 设标准内置光标；LoadCursorW 取系统 stock 光标。
+                unsafe {
+                    let cursor =
+                        LoadCursorW(None, if over_button { IDC_HAND } else { IDC_ARROW })
+                            .unwrap_or_default();
+                    SetCursor(Some(cursor));
+                }
+                LRESULT(1)
+            } else {
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
+        }
         WM_NCHITTEST => {
             let (sx, sy) = client_pos(lparam); // 屏幕坐标
             let mut rc = RECT::default();
