@@ -73,6 +73,7 @@ impl Composition {
     /// 上屏 `text` 并结束 composition。
     pub fn commit(&self, text: &str) -> Result<()> {
         let session = EndSession {
+            context: self.context.clone(),
             comp: self.comp.borrow().clone(),
             text: text.to_owned(),
         };
@@ -86,6 +87,7 @@ impl Composition {
     /// 取消：清空预编辑文本并结束 composition（文本不上屏）。
     pub fn cancel(&self) -> Result<()> {
         let session = EndSession {
+            context: self.context.clone(),
             comp: self.comp.borrow().clone(),
             text: String::new(),
         };
@@ -279,6 +281,7 @@ fn trace_step<T>(name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
 /// 同步 edit session：替换文本 + EndComposition（commit 上屏 / cancel 清空）。
 #[implement(ITfEditSession)]
 struct EndSession {
+    context: ITfContext,
     comp: Option<ITfComposition>,
     text: String,
 }
@@ -296,6 +299,23 @@ impl ITfEditSession_Impl for EndSession_Impl {
         // SAFETY: SetText 替换 composition 范围文本；空串 = 删除（cancel 语义）。
         trace_step(&format!("end: range.SetText(ec={ec}, len={})", wide.len()), || {
             unsafe { range.SetText(ec, 0, &wide) }
+        })?;
+        // 显式把选区折叠到文本尾端并设为当前 selection——「composition 结束后光标
+        // 放哪」TSF 未定义、由应用自定：Word 会恢复自己记录的选区锚点（composition
+        // 起点）→ 光标落回新上屏文字前面。weasel `_InsertText` 与微软官方血统的
+        // Metasequoia `_AddCharAndFinalize` 同款收尾（"insertion point just past the
+        // inserted text"），且与预编辑路径 SetTextSession 一致；cancel 空串删除后
+        // 折叠回原点，语义同样正确。
+        // SAFETY: Collapse/SetSelection 均为标准 TSF 调用，ec 为当前读写 cookie。
+        trace_step("end: range.Collapse(TF_ANCHOR_END)", || unsafe {
+            range.Collapse(ec, TF_ANCHOR_END)
+        })?;
+        let sel = [TF_SELECTION {
+            range: ManuallyDrop::new(Some(range)),
+            style: TF_SELECTIONSTYLE::default(),
+        }];
+        trace_step(&format!("end: context.SetSelection(n={})", sel.len()), || unsafe {
+            self.context.SetSelection(ec, &sel)
         })?;
         // SAFETY: EndComposition 需要写 cookie，当前 edit session 为读写。
         trace_step("end: comp.EndComposition", || unsafe {
