@@ -14,8 +14,5 @@ mod msg;
 mod pipe;
 
 pub use ctl::{CtlClient, CtlServer};
-pub use msg::{
-    ctl_pipe_name, CtlCmd, CtlResult, Request, Response, ToolbarState, CTL_FIELD_MODE,
-    CTL_FIELD_PUNCT, CTL_FIELD_SCRIPT, CTL_FIELD_WIDTH,
-};
+pub use msg::{ctl_pipe_name, CtlCmd, CtlResult, Request, Response};
 pub use pipe::{PipeClient, PipeServer};

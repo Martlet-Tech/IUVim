@@ -4,6 +4,8 @@
 
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 
+use iuv_core::{ImeState, InitialMode, PunctMode, ScriptMode, WidthMode};
+
 use crate::layout::Rect as LayoutRect;
 use crate::paint::{fill_rounded, HL_RADIUS};
 use crate::render::{render_to_surface, Surface};
@@ -45,14 +47,11 @@ pub struct ToolbarIcons {
     pub gear: Option<Pixmap>,
 }
 
-/// 工具栏渲染规格：图标集 + 当前四态（u8，与 iuv-data `ToolbarState` 编码一致，
-/// 0=中/半/简/中标，1=英/全/繁/英标）+ 交互态。
+/// 工具栏渲染规格：图标集 + 当前四态（iuv-core `ImeState`，全仓唯一四态表示）+ 交互态。
 pub struct ToolbarSpec<'a> {
     pub icons: &'a ToolbarIcons,
-    pub mode: u8,
-    pub width: u8,
-    pub punct: u8,
-    pub script: u8,
+    /// 当前实例运行时四态。
+    pub state: ImeState,
     /// 悬停按钮（纯视觉，浅底）。
     pub hover: Option<usize>,
     /// 按下按钮（更深底，点击反馈）。
@@ -124,34 +123,22 @@ pub fn render_toolbar(
 fn toolbar_icon<'a>(spec: &'a ToolbarSpec, i: usize) -> Option<&'a Pixmap> {
     match i {
         TB_LOGO => spec.icons.logo.as_ref(),
-        TB_MODE => {
-            if spec.mode == 0 {
-                spec.icons.lang_cn.as_ref()
-            } else {
-                spec.icons.lang_en.as_ref()
-            }
-        }
-        TB_WIDTH => {
-            if spec.width == 0 {
-                spec.icons.width_half.as_ref()
-            } else {
-                spec.icons.width_full.as_ref()
-            }
-        }
-        TB_PUNCT => {
-            if spec.punct == 0 {
-                spec.icons.punct_cn.as_ref()
-            } else {
-                spec.icons.punct_en.as_ref()
-            }
-        }
-        TB_SCRIPT => {
-            if spec.script == 0 {
-                spec.icons.script_simplified.as_ref()
-            } else {
-                spec.icons.script_traditional.as_ref()
-            }
-        }
+        TB_MODE => match spec.state.mode {
+            InitialMode::Chinese => spec.icons.lang_cn.as_ref(),
+            InitialMode::English => spec.icons.lang_en.as_ref(),
+        },
+        TB_WIDTH => match spec.state.width {
+            WidthMode::Half => spec.icons.width_half.as_ref(),
+            WidthMode::Full => spec.icons.width_full.as_ref(),
+        },
+        TB_PUNCT => match spec.state.punct {
+            PunctMode::Chinese => spec.icons.punct_cn.as_ref(),
+            PunctMode::English => spec.icons.punct_en.as_ref(),
+        },
+        TB_SCRIPT => match spec.state.script {
+            ScriptMode::Simplified => spec.icons.script_simplified.as_ref(),
+            ScriptMode::Traditional => spec.icons.script_traditional.as_ref(),
+        },
         TB_GEAR => spec.icons.gear.as_ref(),
         _ => None,
     }

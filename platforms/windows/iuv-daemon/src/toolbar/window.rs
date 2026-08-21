@@ -4,15 +4,13 @@
 use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
+use iuv_core::{InitialMode, PunctMode, ScriptMode, WidthMode};
 use iuv_ui::{
     hit_test, render_toolbar, TextRenderer, Theme, ToolbarIcons, ToolbarSpec, TB_GEAR, TB_LOGO,
     TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
 };
 use iuv_ui::layout::Rect;
-use iuv_win::{
-    ctl_pipe_name, CtlClient, CtlCmd, CtlResult, PipeClient, Request, CTL_FIELD_MODE,
-    CTL_FIELD_PUNCT, CTL_FIELD_SCRIPT, CTL_FIELD_WIDTH,
-};
+use iuv_win::{ctl_pipe_name, CtlClient, CtlCmd, CtlResult, PipeClient, Request};
 use iuv_win::UlwSurface;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, LOGPIXELSY};
@@ -200,10 +198,7 @@ impl ToolbarWindow {
         let state = inst.map(|i| i.state).unwrap_or_default();
         let spec = ToolbarSpec {
             icons: &self.icons,
-            mode: state.mode,
-            width: state.width,
-            punct: state.punct,
-            script: state.script,
+            state,
             hover: self.hover,
             pressed: self.pressed,
         };
@@ -252,34 +247,29 @@ impl ToolbarWindow {
                 }
             }
             _ => {
-                let field = match index {
-                    TB_MODE => CTL_FIELD_MODE,
-                    TB_WIDTH => CTL_FIELD_WIDTH,
-                    TB_PUNCT => CTL_FIELD_PUNCT,
-                    TB_SCRIPT => CTL_FIELD_SCRIPT,
-                    _ => return,
+                // 按钮点击 = 该字段双态翻转：读实例表当前态，发目标态（true = 第二态 英/全/繁/英标）。
+                let (label, cmd) = {
+                    let sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                    let st = sh
+                        .instances
+                        .get(&(pid, tid))
+                        .map(|i| i.state)
+                        .unwrap_or_default();
+                    match index {
+                        TB_MODE => ("中英", CtlCmd::SetMode(st.mode == InitialMode::Chinese)),
+                        TB_WIDTH => ("全半角", CtlCmd::SetWidth(st.width == WidthMode::Half)),
+                        TB_PUNCT => ("标点", CtlCmd::SetPunct(st.punct == PunctMode::Chinese)),
+                        TB_SCRIPT => ("简繁", CtlCmd::SetScript(st.script == ScriptMode::Simplified)),
+                        _ => return,
+                    }
                 };
-                let cur = self
-                    .shared
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .instances
-                    .get(&(pid, tid))
-                    .map(|i| i.state.field(field))
-                    .unwrap_or(0);
-                let value = 1u8 - cur; // 双态翻转
                 log::log_line(&format!(
-                    "[toolbar] 点击按钮#{index} field={field} {cur}→{value}（实例 {pid}:{tid}）"
+                    "[toolbar] 点击按钮#{index} {label}翻转（实例 {pid}:{tid}）"
                 ));
                 let name = ctl_pipe_name(pid, tid);
-                match CtlClient::connect(&name)
-                    .and_then(|c| c.request(&CtlCmd::SetState { field, value }))
-                {
+                match CtlClient::connect(&name).and_then(|c| c.request(&cmd)) {
                     Ok(CtlResult::Ok { state }) => {
-                        log::log_line(&format!(
-                            "[toolbar] 实例应用成功：mode={} width={} script={} punct={}",
-                            state.mode, state.width, state.script, state.punct
-                        ));
+                        log::log_line(&format!("[toolbar] 实例应用成功：{state:?}"));
                         let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
                         if let Some(i) = sh.instances.get_mut(&(pid, tid)) {
                             i.state = state;

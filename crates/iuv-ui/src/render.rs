@@ -353,7 +353,7 @@ mod tests {
         render_toolbar, ToolbarIcons, ToolbarSpec, TB_COUNT, TB_GEAR, TB_LOGO, TOOLBAR_GAP,
         TOOLBAR_PAD,
     };
-    use iuv_core::{Orientation, PageInfo};
+    use iuv_core::{ImeState, InitialMode, Orientation, PageInfo, PunctMode, ScriptMode, WidthMode};
 
     fn renderer() -> TextRenderer {
         TextRenderer::new()
@@ -694,10 +694,12 @@ mod tests {
         let icons = ToolbarIcons::default();
         let spec = ToolbarSpec {
             icons: &icons,
-            mode: 1,
-            width: 0,
-            punct: 1,
-            script: 0,
+            state: ImeState {
+                mode: InitialMode::English,
+                width: WidthMode::Half,
+                punct: PunctMode::English,
+                script: ScriptMode::Simplified,
+            },
             hover: Some(TB_GEAR),
             pressed: None,
         };
@@ -761,10 +763,7 @@ mod tests {
         icons.logo = Some(center_icon(284, 282, 200));
         let spec = ToolbarSpec {
             icons: &icons,
-            mode: 0,
-            width: 0,
-            punct: 0,
-            script: 0,
+            state: ImeState::default(),
             hover: None,
             pressed: None,
         };

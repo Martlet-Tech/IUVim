@@ -83,6 +83,17 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
   dict.rs merged 三叠加 + exact_raw）、iuv-core（key.rs HideCandidate、engine.rs
   record_phrase/hide_entry/install_user、session.rs commit 判定 + Hide 臂 + Sentence
   屏蔽拦截）、iuv-tsf（map_key Shift+Delete）。测试：数据层 5 + 引擎 4 + 会话 7 全绿。
+- [x] **四态表示统一（2026-08-21，35-review §H3 / 36-review §D5 结案）**：全仓只留 iuv-core
+  `ImeState` 一个四态类型——IPC `Register/StateSync/CtlResult` 与 UI `ToolbarSpec` 直接持它；
+  `ToolbarState`(u8×4)/`CTL_FIELD_*`/`to_toolbar()` 裸元组/`set_field(u8,u8)` 全删；线编码唯一
+  转换点 = `From<ImeState> for [u8;4]`/`TryFrom`（runtime.rs，序 mode/width/script/punct，
+  非法字节解码整条拒绝——顺带结掉 37 号"ToolbarState 解码值域校验"）；`CtlCmd::SetState{field,value}`
+  改 `SetMode/SetWidth/SetScript/SetPunct(bool)` 四变体（ctl 通道 tag 0x01..0x04，无线字段序数协议，
+  Register/StateSync/CtlResult 线上字节不变）；iuv-win 加 iuv-core 直接依赖（35 §5 已批准方向）。
+  改动：iuv-core（runtime.rs 转换+3 测试）、iuv-win（Cargo/msg/codec/mod/lib 导出+测试重写）、
+  iuv-ui（toolbar.rs ToolbarSpec.state + render.rs 夹具）、iuv-tsf（daemon_client 签名/daemon_host/
+  mode 直传快照/text_service apply_ctl_cmd match 四变体）、iuv-daemon（toolbar mod 实例表/window
+  点击类型化翻转）。契约/35/36/37 同步。测试：工作区全绿（303）。H2（english_mode 双源）按用户决策暂不做。
 - 点子库（暂不做，2026-08-19 记录）：**Tab 键用途**——整句翻译（在线 API：空闲 0.5s 触发、候选 N+1 槽、
   Tab 高亮 + 空格上屏）与自动补全（Tab 钉选当前候选续打，不结束会话），语义分配未定，`29-tab-ideas.md`
 - **M9 可自定义贴图皮肤框架——调研定稿/挂起（2026-08-20，未实现）**：候选窗换肤 = 自研 `IUVSKIN01`

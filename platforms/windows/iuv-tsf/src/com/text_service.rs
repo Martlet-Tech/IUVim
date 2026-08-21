@@ -15,8 +15,8 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use iuv_core::{Config, ImeState, Key, Session};
-use iuv_win::{CtlCmd, CtlResult, CTL_FIELD_MODE};
+use iuv_core::{Config, ImeState, InitialMode, Key, PunctMode, ScriptMode, Session, WidthMode};
+use iuv_win::{CtlCmd, CtlResult};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{
     ITfCompartment, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr,
@@ -214,47 +214,70 @@ impl TextService {
         drop(ep); // CtlEndpoint::drop 停线程 + 清 GWLP_USERDATA + 销毁窗口
     }
 
-    /// 应用反向控制命令（CtlCmd::SetState；TSF 线程 wndproc 调用，§4.3）。
+    /// 应用反向控制命令（CtlCmd；TSF 线程 wndproc 调用，§4.3）。
     /// mode 走 OPENCLOSE compartment（真相源，OnChange 统一响应）；其余字段直改 runtime。
     fn apply_ctl_cmd(&self, cmd: &CtlCmd) -> CtlResult {
-        match cmd {
-            CtlCmd::SetState { field, value } => {
-                if *field == CTL_FIELD_MODE {
-                    // 中英：写 OPENCLOSE compartment（open=1 中文 / 0 英文）；SetValue
-                    // 同步重入 OnChange → apply_openclose 更新 runtime.mode + StateSync。
-                    let open = *value == 0; // 值 0=中文=打开
-                    let mut ok = false;
-                    if let Some((comp, tid)) = self
-                        .compartment
-                        .borrow()
-                        .as_ref()
-                        .map(|(c, t)| (c.clone(), *t))
-                    {
-                        ok = langbar::write_openclose(&comp, tid, open).is_ok();
-                        if !ok {
-                            log_line("[toolbar] 写 OPENCLOSE 失败，本地翻转 mode 兜底");
-                        }
-                    }
+        match *cmd {
+            CtlCmd::SetMode(english) => {
+                // 中英：写 OPENCLOSE compartment（open=中文 / !open=英文）；SetValue
+                // 同步重入 OnChange → apply_openclose 更新 runtime.mode + StateSync。
+                let open = !english;
+                let mut ok = false;
+                if let Some((comp, tid)) = self
+                    .compartment
+                    .borrow()
+                    .as_ref()
+                    .map(|(c, t)| (c.clone(), *t))
+                {
+                    ok = langbar::write_openclose(&comp, tid, open).is_ok();
                     if !ok {
-                        let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
-                        runtime.set_field(CTL_FIELD_MODE, *value);
-                        drop(runtime);
-                        self.after_runtime_change();
+                        log_line("[toolbar] 写 OPENCLOSE 失败，本地翻转 mode 兜底");
                     }
-                } else {
+                }
+                if !ok {
                     let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
-                    if !runtime.set_field(*field, *value) {
-                        return CtlResult::Err {
-                            msg: format!("非法字段 {field}"),
-                        };
-                    }
+                    runtime.mode = if english {
+                        InitialMode::English
+                    } else {
+                        InitialMode::Chinese
+                    };
                     drop(runtime);
                     self.after_runtime_change();
                 }
-                CtlResult::Ok {
-                    state: self.runtime_snapshot().to_toolbar().into(),
-                }
             }
+            CtlCmd::SetWidth(full) => {
+                let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+                runtime.width = if full {
+                    WidthMode::Full
+                } else {
+                    WidthMode::Half
+                };
+                drop(runtime);
+                self.after_runtime_change();
+            }
+            CtlCmd::SetScript(traditional) => {
+                let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+                runtime.script = if traditional {
+                    ScriptMode::Traditional
+                } else {
+                    ScriptMode::Simplified
+                };
+                drop(runtime);
+                self.after_runtime_change();
+            }
+            CtlCmd::SetPunct(english_punct) => {
+                let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+                runtime.punct = if english_punct {
+                    PunctMode::English
+                } else {
+                    PunctMode::Chinese
+                };
+                drop(runtime);
+                self.after_runtime_change();
+            }
+        }
+        CtlResult::Ok {
+            state: self.runtime_snapshot(),
         }
     }
 }

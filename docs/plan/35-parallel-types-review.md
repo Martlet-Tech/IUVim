@@ -109,6 +109,12 @@
 
 ## 5. 建议修复阶段（未执行，另排期）
 
+> **2026-08-21 更新：H3 已解决**（比 Phase C 原案更彻底）——`ToolbarState`/`CTL_FIELD_*`/
+> `to_toolbar()` 裸元组/`set_field(u8,u8)` 全删，IPC 消息与 `ToolbarSpec` 直接持 `ImeState`；
+> 线编码唯一转换点 = iuv-core `From<ImeState> for [u8;4]`/`TryFrom`（非法字节解码即 Err）；
+> `CtlCmd::SetState{field,value}` 改 `SetMode/SetWidth/SetScript/SetPunct(bool)` 四变体
+> （无线字段序数协议）。iuv-win 已加 iuv-core 直接依赖。H2/H4 仍未做。
+
 - **Phase A（H2）**：删 `english_mode`，单源 `runtime.mode`；`is_english()` helper；LangBarItemButton 改持 `Arc<Mutex<ImeState>>`；三处写入点（apply_openclose / ctl fallback / langbar fallback）收敛同一函数。
 - **Phase B（D1+D2+H1 一次重构）**：DaemonConfig 复用 `iuv_core::Config`（theme/orientation 枚举化、load 改 `Config::load()` 投影、save serde 合并保留未知键、迁移收敛 core 单源）；`iuv_ui::theme_for(ThemeChoice)` 收敛 4 处调色板 match；删 daemon 版 `config_path`/`strip_jsonc_comments`。
 - **Phase C（H3/H4）**：iuv-win 加 iuv-core 直接依赖；`From<ImeState> for ToolbarState`（删裸元组中转）/`From<&UserMutation> for Request`；`ToolbarSpec` 收 `ImeState`。

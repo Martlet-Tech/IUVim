@@ -28,7 +28,7 @@ impl TextService {
         };
         let (pid, tid) = self.instance_id();
         if !self.registered.get() {
-            if client.register(pid, tid, self.runtime_snapshot().to_toolbar().into()) {
+            if client.register(pid, tid, self.runtime_snapshot()) {
                 self.registered.set(true);
                 log_line(&format!("[toolbar] 实例注册（{pid}:{tid}）"));
             }

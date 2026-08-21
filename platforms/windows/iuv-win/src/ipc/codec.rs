@@ -10,7 +10,7 @@
 //!     0x03 Remove : u32 code_len|code  u32 word_len|word
 //!     0x04 Block  : u32 code_len|code  u32 word_len|word
 //!     0x05 Ping / 0x06 OpenSettings / 0x07 Quit / 0x0B ToggleToolbar : （无载荷）
-//!     0x08 Register / 0x09 StateSync : u32 pid u32 tid 4×u8(四态)
+//!     0x08 Register / 0x09 StateSync : u32 pid u32 tid 4×u8（ImeState，序 mode/width/script/punct）
 //!     0x0A Active : u32 pid u32 tid u8(active)
 //!     0x0C Unregister : u32 pid u32 tid
 //!
@@ -21,17 +21,25 @@
 //!
 //! CtlCmd:
 //!   u8 tag
-//!     0x01 SetState : u8 field, u8 value
+//!     0x01 SetMode   : u8 value（0/1；false=中文 true=英文）
+//!     0x02 SetWidth  : u8 value（false=半角 true=全角）
+//!     0x03 SetScript : u8 value（false=简体 true=繁体）
+//!     0x04 SetPunct  : u8 value（false=中文标点 true=英文标点）
 //!
 //! CtlResult:
 //!   u8 tag
-//!     0x01 Ok  : 4×u8（新四态）
+//!     0x01 Ok  : 4×u8（新四态，ImeState 线编码）
 //!     0x02 Err : u32 msg_len|msg
 //! ```
+//!
+//! 四态字节 ↔ `iuv_core::ImeState` 的唯一转换点在 iuv-core runtime.rs
+//! （`From<ImeState> for [u8;4]` / `TryFrom<[u8;4]>`）；本模块只套用——非法字节解码即 Err。
 
 use std::io;
 
-use super::msg::{CtlCmd, CtlResult, Request, Response, ToolbarState};
+use iuv_core::ImeState;
+
+use super::msg::{CtlCmd, CtlResult, Request, Response};
 
 /// 编码失败（解码非法字节 / 越界）。
 pub(crate) fn bad(msg: &str) -> io::Error {
@@ -143,11 +151,8 @@ pub(crate) fn encode_request(req: &Request) -> Vec<u8> {
     out
 }
 
-fn put_toolbar_state(out: &mut Vec<u8>, s: &ToolbarState) {
-    out.push(s.mode);
-    out.push(s.width);
-    out.push(s.script);
-    out.push(s.punct);
+fn put_toolbar_state(out: &mut Vec<u8>, s: &ImeState) {
+    out.extend_from_slice(&<[u8; 4]>::from(*s));
 }
 
 /// Response → 载荷字节（不含帧前缀）。
@@ -285,10 +290,21 @@ pub(crate) fn decode_response(payload: &[u8]) -> io::Result<Response> {
 pub(crate) fn encode_ctl_cmd(cmd: &CtlCmd) -> Vec<u8> {
     let mut out = Vec::with_capacity(8);
     match cmd {
-        CtlCmd::SetState { field, value } => {
+        CtlCmd::SetMode(v) => {
             out.push(0x01);
-            out.push(*field);
-            out.push(*value);
+            out.push(u8::from(*v));
+        }
+        CtlCmd::SetWidth(v) => {
+            out.push(0x02);
+            out.push(u8::from(*v));
+        }
+        CtlCmd::SetScript(v) => {
+            out.push(0x03);
+            out.push(u8::from(*v));
+        }
+        CtlCmd::SetPunct(v) => {
+            out.push(0x04);
+            out.push(u8::from(*v));
         }
     }
     out
@@ -298,15 +314,15 @@ pub(crate) fn encode_ctl_cmd(cmd: &CtlCmd) -> Vec<u8> {
 pub(crate) fn decode_ctl_cmd(payload: &[u8]) -> io::Result<CtlCmd> {
     let mut r = Reader::new(payload);
     let tag = r.u8()?;
-    match tag {
-        0x01 => {
-            let field = r.u8()?;
-            let value = r.u8()?;
-            r.finish()?;
-            Ok(CtlCmd::SetState { field, value })
-        }
-        t => Err(bad(&format!("未知 CtlCmd tag 0x{t:02X}"))),
-    }
+    let cmd = match tag {
+        0x01 => CtlCmd::SetMode(r.bool()?),
+        0x02 => CtlCmd::SetWidth(r.bool()?),
+        0x03 => CtlCmd::SetScript(r.bool()?),
+        0x04 => CtlCmd::SetPunct(r.bool()?),
+        t => return Err(bad(&format!("未知 CtlCmd tag 0x{t:02X}"))),
+    };
+    r.finish()?;
+    Ok(cmd)
 }
 
 /// CtlResult → 载荷字节。
@@ -376,17 +392,20 @@ impl<'a> Reader<'a> {
             .map(str::to_owned)
             .map_err(|_| bad("字符串非 UTF-8"))
     }
-    fn toolbar_state(&mut self) -> io::Result<ToolbarState> {
-        let mode = self.u8()?;
-        let width = self.u8()?;
-        let script = self.u8()?;
-        let punct = self.u8()?;
-        Ok(ToolbarState {
-            mode,
-            width,
-            script,
-            punct,
-        })
+    fn toolbar_state(&mut self) -> io::Result<ImeState> {
+        let b = self.take(4)?;
+        let state = ImeState::try_from([b[0], b[1], b[2], b[3]])
+            .map_err(|_| bad("四态字节非法（须 0/1）"))?;
+        Ok(state)
+    }
+
+    /// u8 → bool（仅 0/1 合法）。
+    fn bool(&mut self) -> io::Result<bool> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(bad("布尔字节非法（须 0/1）")),
+        }
     }
     fn finish(&self) -> io::Result<()> {
         if self.pos != self.data.len() {
@@ -469,7 +488,12 @@ mod tests {
 
     #[test]
     fn toolbar_requests_roundtrip() {
-        let state = ToolbarState::new(1, 0, 1, 1);
+        let state = ImeState {
+            mode: iuv_core::InitialMode::English,
+            width: iuv_core::WidthMode::Half,
+            script: iuv_core::ScriptMode::Traditional,
+            punct: iuv_core::PunctMode::English,
+        };
         for req in [
             Request::Register {
                 pid: 1234,
@@ -479,7 +503,7 @@ mod tests {
             Request::StateSync {
                 pid: 1234,
                 tid: 56,
-                state: ToolbarState::new(0, 1, 0, 0),
+                state: ImeState::default(),
             },
             Request::Active {
                 pid: 1234,
@@ -520,16 +544,25 @@ mod tests {
     }
 
     #[test]
+    fn toolbar_state_rejects_invalid_byte() {
+        // 四态字节非 0/1 → 整条消息拒绝（不静默收垃圾）
+        let mut bytes = encode_request(&Request::StateSync {
+            pid: 1,
+            tid: 2,
+            state: ImeState::default(),
+        });
+        let n = bytes.len();
+        bytes[n - 1] = 7;
+        assert!(decode_request(&bytes).is_err(), "punct 字节非法");
+    }
+
+    #[test]
     fn ctl_cmd_roundtrip() {
         for cmd in [
-            CtlCmd::SetState {
-                field: super::super::msg::CTL_FIELD_MODE,
-                value: 1,
-            },
-            CtlCmd::SetState {
-                field: super::super::msg::CTL_FIELD_SCRIPT,
-                value: 0,
-            },
+            CtlCmd::SetMode(true),
+            CtlCmd::SetWidth(false),
+            CtlCmd::SetScript(true),
+            CtlCmd::SetPunct(false),
         ] {
             let bytes = encode_ctl_cmd(&cmd);
             assert_eq!(decode_ctl_cmd(&bytes).unwrap(), cmd);
@@ -537,12 +570,13 @@ mod tests {
             let frame = to_frame(&bytes);
             assert_eq!(decode_ctl_cmd(parse_frame(&frame).unwrap()).unwrap(), cmd);
         }
-        assert!(decode_ctl_cmd(&[0x01]).is_err(), "SetState 截断");
+        assert!(decode_ctl_cmd(&[0x01]).is_err(), "SetMode 截断");
         assert!(decode_ctl_cmd(&[0xFF]).is_err(), "未知 Cmd tag");
-        let mut bytes = encode_ctl_cmd(&CtlCmd::SetState {
-            field: 1,
-            value: 0,
-        });
+        assert!(
+            decode_ctl_cmd(&[0x02, 5]).is_err(),
+            "布尔字节非法（须 0/1）"
+        );
+        let mut bytes = encode_ctl_cmd(&CtlCmd::SetPunct(true));
         bytes.push(0xAA);
         assert!(decode_ctl_cmd(&bytes).is_err(), "残留字节");
     }
@@ -550,7 +584,12 @@ mod tests {
     #[test]
     fn ctl_result_roundtrip() {
         let ok = CtlResult::Ok {
-            state: ToolbarState::new(0, 1, 1, 0),
+            state: ImeState {
+                mode: iuv_core::InitialMode::Chinese,
+                width: iuv_core::WidthMode::Full,
+                script: iuv_core::ScriptMode::Traditional,
+                punct: iuv_core::PunctMode::Chinese,
+            },
         };
         let bytes = encode_ctl_result(&ok);
         assert_eq!(decode_ctl_result(&bytes).unwrap(), ok);

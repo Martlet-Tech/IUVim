@@ -114,7 +114,7 @@ Excel 反复 Activate/Deactivate 无句柄增长（任务管理器 GDI 对象数
 - `popup.rs:146` get_self::<T> 与窗口类无绑定：类名常量与 T 关联（trait WindowClass）；补 hCursor/CS_DBLCLKS。
 - `ui_element.rs:293-313` GetString 越界白克隆一次；`:337-341` upagecnt=0 理论 OOB 读。
 - `langbar.rs:156-166` 非 VT_I4 VARIANT 应 VariantClear（当前不可达）。
-- `codec.rs:42-47` ERROR_MORE_DATA 识别 + 编码端帧长断言；ToolbarState 解码值域校验。
+- `codec.rs:42-47` ERROR_MORE_DATA 识别 + 编码端帧长断言；~~ToolbarState 解码值域校验~~（**已完成 2026-08-21**：四态/布尔字节解码即校验 0/1，非法整条拒绝）。
 - `config.rs:197-201`（daemon）保存无 fsync，对齐 UserDict::save 的 sync_all 做法。
 - 重复收敛（并入 36 号批次）：scale 净化 ×4、路径解析 ×5（36-D6）、pipe connect 双份（36-D7）、
   render.rs:182-185 与既有常量重复、settings theme/orientation 裸 String 改枚举。

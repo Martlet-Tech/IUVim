@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use iuv_core::{Engine, UserMutation, UserRemote};
-use iuv_win::{PipeClient, Request, Response, ShmReader, ToolbarState};
+use iuv_core::{Engine, ImeState, UserMutation, UserRemote};
+use iuv_win::{PipeClient, Request, Response, ShmReader};
 use windows::Win32::System::Threading::{
     CreateProcessW, STARTUPINFOW, PROCESS_INFORMATION, CREATE_NO_WINDOW,
 };
@@ -326,13 +326,13 @@ impl DaemonClient {
     // ===== 32-status-toolbar.md §4.1 TSF→daemon 上报（Register/StateSync/Active/Unregister） =====
 
     /// Activate 注册 + 上报初始四态（失败 = daemon 离线，静默——在线翻转后 poll 重注册）。
-    pub fn register(&self, pid: u32, tid: u32, state: ToolbarState) -> bool {
+    pub fn register(&self, pid: u32, tid: u32, state: ImeState) -> bool {
         self.send_request(&Request::Register { pid, tid, state })
             .is_some()
     }
 
-    /// 运行时四态变化上报（OPENCLOSE OnChange / CtlCmd::SetState 应用成功后）。
-    pub fn state_sync(&self, pid: u32, tid: u32, state: ToolbarState) {
+    /// 运行时四态变化上报（OPENCLOSE OnChange / CtlCmd::Set* 应用成功后）。
+    pub fn state_sync(&self, pid: u32, tid: u32, state: ImeState) {
         let _ = self.send_request(&Request::StateSync { pid, tid, state });
     }
 

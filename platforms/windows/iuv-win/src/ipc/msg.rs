@@ -1,6 +1,8 @@
 //! 管道消息类型（P3.2 自 iuv-data/ipc.rs 移入 iuv-win）：Request/Response + 工具栏四态
 //! + 反向控制通道 Cmd/Result。编码见 `super::codec`，传输见 `super::pipe`/`super::ctl`。
 
+use iuv_core::ImeState;
+
 /// 会话进程 → 守护进程的写请求（编码表见 `codec.rs`）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -30,14 +32,14 @@ pub enum Request {
     Register {
         pid: u32,
         tid: u32,
-        state: ToolbarState,
+        state: ImeState,
     },
     /// 32-status-toolbar.md §4.1：实例运行时四态变化上报（OPENCLOSE OnChange /
-    /// Cmd::SetState 应用成功后）。
+    /// CtlCmd::Set* 应用成功后）。
     StateSync {
         pid: u32,
         tid: u32,
-        state: ToolbarState,
+        state: ImeState,
     },
     /// 32-status-toolbar.md §4.1：Activate/Deactivate 通知（daemon 判「iuv 被选中」）。
     Active { pid: u32, tid: u32, active: bool },
@@ -56,57 +58,8 @@ pub enum Response {
 
 // ===== 32-status-toolbar.md 工具栏四态 + 反向控制通道 =====
 
-/// 工具栏四态传输值（每 TSF 实例，32-status-toolbar.md §2.4/§4）。
-/// u8 编码（与 iuv-core `ImeState::to_toolbar` 一致）：
-/// `mode` 0=中文 1=英文；`width` 0=半角 1=全角；`script` 0=简体 1=繁体；`punct` 0=中文标点 1=英文标点。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ToolbarState {
-    pub mode: u8,
-    pub width: u8,
-    pub script: u8,
-    pub punct: u8,
-}
-
-impl From<(u8, u8, u8, u8)> for ToolbarState {
-    /// iuv-core `ImeState::to_toolbar()` 的裸元组 → 传输结构（字段序 mode/width/script/punct）。
-    fn from((mode, width, script, punct): (u8, u8, u8, u8)) -> Self {
-        ToolbarState {
-            mode,
-            width,
-            script,
-            punct,
-        }
-    }
-}
-
-impl ToolbarState {
-    #[cfg(test)]
-    pub(crate) const fn new(mode: u8, width: u8, script: u8, punct: u8) -> Self {
-        ToolbarState {
-            mode,
-            width,
-            script,
-            punct,
-        }
-    }
-
-    /// 读单字段（field 0=mode 1=width 2=script 3=punct；非法 → 0）。
-    pub fn field(&self, field: u8) -> u8 {
-        match field {
-            0 => self.mode,
-            1 => self.width,
-            2 => self.script,
-            3 => self.punct,
-            _ => 0,
-        }
-    }
-}
-
-/// 反向控制通道字段 id（daemon → TSF 的 Cmd::SetState 用）。
-pub const CTL_FIELD_MODE: u8 = 0;
-pub const CTL_FIELD_WIDTH: u8 = 1;
-pub const CTL_FIELD_SCRIPT: u8 = 2;
-pub const CTL_FIELD_PUNCT: u8 = 3;
+// 四态在消息里直接用 iuv-core `ImeState`（全仓唯一表示；线编码 = `[u8;4]`，
+// 转换点在 iuv-core runtime.rs，codec.rs 编解码时套用）。
 
 /// 反向控制通道管道名前缀：`\\.\pipe\iuv-ctl-<pid>-<tid>`。
 const CTL_PIPE_PREFIX: &str = r"\\.\pipe\iuv-ctl";
@@ -117,18 +70,25 @@ pub fn ctl_pipe_name(pid: u32, tid: u32) -> String {
 }
 
 /// daemon → TSF 的控制命令（按需连接 per-实例管道，32-status-toolbar.md §4.2）。
+/// 每字段一变体（无线字段序数协议）：true = 切到第二态（英/全/繁/英标），false = 第一态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CtlCmd {
-    /// 设置某字段为指定值（field 0=mode 1=width 2=script 3=punct，value 0/1）。
-    SetState { field: u8, value: u8 },
+    /// 中/英（mode 走 OPENCLOSE compartment 真相源，TSF 侧特殊处理）。
+    SetMode(bool),
+    /// 半角/全角。
+    SetWidth(bool),
+    /// 简体/繁体。
+    SetScript(bool),
+    /// 中文标点/英文标点。
+    SetPunct(bool),
 }
 
 /// TSF 应用命令后的响应（§6.5 点击协议：daemon 按结果更新实例表 + 按钮图标）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CtlResult {
     /// 应用成功：返回**新**四态（成功后 TSF 还会 StateSync 上报，双路径一致）。
-    Ok { state: ToolbarState },
-    /// 应用失败（写 OPENCLOSE 失败/非法字段等）。
+    Ok { state: ImeState },
+    /// 应用失败（写 OPENCLOSE 失败等）。
     Err { msg: String },
 }
 
@@ -137,13 +97,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn toolbar_state_field_accessor() {
-        let s = ToolbarState::new(1, 0, 1, 0);
-        assert_eq!(s.field(CTL_FIELD_MODE), 1);
-        assert_eq!(s.field(CTL_FIELD_WIDTH), 0);
-        assert_eq!(s.field(CTL_FIELD_SCRIPT), 1);
-        assert_eq!(s.field(CTL_FIELD_PUNCT), 0);
-        assert_eq!(s.field(0xFF), 0, "非法字段 → 0");
+    fn ctl_pipe_name_format() {
         assert_eq!(ctl_pipe_name(1234, 56), r"\\.\pipe\iuv-ctl-1234-56");
     }
 }

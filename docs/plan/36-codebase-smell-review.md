@@ -96,7 +96,7 @@ composition.rs 悬空槽机制干净；routes.rs 五档路由有契约对应。
 - P3 齿轮直改 `state.open_settings`
 - D7 pipe.rs 包装类改调自家 imp（各删 ~35 行）
 - D11 codec tag 提具名常量
-- D5 四态序数收敛：iuv-core 导出字段序常量（或 ImeState 派生读写），msg/codec 引用同源
+- D5 四态序数收敛：~~iuv-core 导出字段序常量（或 ImeState 派生读写），msg/codec 引用同源~~ **已解决（2026-08-21，更彻底：CTL_FIELD_*/ToolbarState 全删，CtlCmd 四变体，线编码唯一转换点 iuv-core `[u8;4]` 转换，见 35 §H3 更新）**
 - **验证**：cargo test + 双进程手测（工具栏四态切换/自造词同步/daemon 重启恢复重注册）
 
 ### 批 5：日志统一（半天）

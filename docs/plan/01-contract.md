@@ -310,6 +310,10 @@ pub struct Config {
 
 // 新 TSF 实例初始状态（28-initial-state-settings.md）：JSON `initial_state` 节点，全部 lowercase 枚举。
 // P3.3 合并 InitialState/RuntimeState 为单类型 ImeState（配置节点默认值 + 实例运行时 live 值，见 32 §5.1）。
+// 2026-08-21 四态表示统一（35 §H3 / 36 §D5）：全仓只此一个四态类型——IPC Register/StateSync/CtlResult
+// 与 UI ToolbarSpec 直接持 ImeState；线编码唯一转换点 `From<ImeState> for [u8;4]`/`TryFrom`（runtime.rs，
+// 序 mode/width/script/punct，非法字节解码即 Err）；CtlCmd = SetMode/SetWidth/SetScript/SetPunct(bool)
+// 四变体（无线字段序数协议，CTL_FIELD_*/ToolbarState/set_field 已删）。加第五态只改 iuv-core + codec 一处。
 pub enum InitialMode { Chinese, English }        // 默认 Chinese；English = 每个新 TSF 实例从英文起
 pub enum WidthMode { Half, Full }                // 默认 Half；Full = 会话外全角转换（28 §8，2026-08-19 生效）
 pub enum ScriptMode { Simplified, Traditional }  // 默认 Simplified；Traditional = 繁体输出（31，2026-08-19 生效：s2t 通用繁体，数据 iuv.opencc 缺失降级简体）

@@ -14,7 +14,7 @@ use crate::config::{InitialMode, PunctMode, ScriptMode, WidthMode};
 ///   `Arc<Mutex<ImeState>>`（live 读，非快照），工具栏/会话外操作修改只影响本实例；
 ///   Alt+Tab 往返保留；设置页初始值仅在新实例创建时生效一次。点简繁/全半角
 ///   当前候选/预编辑立即重渲 = 用户已确认。中英字段镜像 OPENCLOSE compartment 真相源
-///   （OnChange 统一写），其余三字段由工具栏 Cmd::SetState 写入。
+///   （OnChange 统一写），其余三字段由工具栏 CtlCmd::Set* 写入。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ImeState {
@@ -28,68 +28,93 @@ pub struct ImeState {
     pub punct: PunctMode,
 }
 
-impl ImeState {
-    /// 工具栏四态 → 管道传输值（u8 编码；字段序 mode/width/script/punct，见 iuv-win ipc.rs）。
-    /// 返回裸元组而非 `ToolbarState`（iuv-core 不构造传输结构，解耦依赖边）。
-    pub fn to_toolbar(&self) -> (u8, u8, u8, u8) {
-        (
-            match self.mode {
+/// 四态唯一线编码（管道传输；字段序 mode/width/script/punct，见 iuv-win codec.rs）：
+/// `mode` 0=中文 1=英文；`width` 0=半角 1=全角；`script` 0=简体 1=繁体；`punct` 0=中文标点 1=英文标点。
+/// 全仓唯一映射点——加第五态只改这里 + codec 一个函数。
+impl From<ImeState> for [u8; 4] {
+    fn from(s: ImeState) -> Self {
+        [
+            match s.mode {
                 InitialMode::Chinese => 0,
                 InitialMode::English => 1,
             },
-            match self.width {
+            match s.width {
                 WidthMode::Half => 0,
                 WidthMode::Full => 1,
             },
-            match self.script {
+            match s.script {
                 ScriptMode::Simplified => 0,
                 ScriptMode::Traditional => 1,
             },
-            match self.punct {
+            match s.punct {
                 PunctMode::Chinese => 0,
                 PunctMode::English => 1,
             },
-        )
+        ]
+    }
+}
+
+/// 线字节 → 四态。任一字节非 0/1 → `Err`（解码侧拒绝非法值，不静默收垃圾）。
+impl TryFrom<[u8; 4]> for ImeState {
+    type Error = ();
+
+    fn try_from(b: [u8; 4]) -> Result<Self, ()> {
+        fn pick<T>(v: u8, zero: T, one: T) -> Result<T, ()> {
+            match v {
+                0 => Ok(zero),
+                1 => Ok(one),
+                _ => Err(()),
+            }
+        }
+        Ok(ImeState {
+            mode: pick(b[0], InitialMode::Chinese, InitialMode::English)?,
+            width: pick(b[1], WidthMode::Half, WidthMode::Full)?,
+            script: pick(b[2], ScriptMode::Simplified, ScriptMode::Traditional)?,
+            punct: pick(b[3], PunctMode::Chinese, PunctMode::English)?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_roundtrip() {
+        for state in [
+            ImeState::default(),
+            ImeState {
+                mode: InitialMode::English,
+                width: WidthMode::Full,
+                script: ScriptMode::Traditional,
+                punct: PunctMode::English,
+            },
+            ImeState {
+                mode: InitialMode::English,
+                ..ImeState::default()
+            },
+        ] {
+            assert_eq!(ImeState::try_from(<[u8; 4]>::from(state)), Ok(state));
+        }
     }
 
-    /// 单字段写入（工具栏 Cmd::SetState：field 0=mode 1=width 2=script 3=punct，value 0/1）。
-    /// 返回 true = 字段合法且已修改。mode 字段不经此路径（走 OPENCLOSE compartment）。
-    pub fn set_field(&mut self, field: u8, value: u8) -> bool {
-        let v = value != 0;
-        match field {
-            0 => {
-                self.mode = if v {
-                    InitialMode::English
-                } else {
-                    InitialMode::Chinese
-                };
-                true
-            }
-            1 => {
-                self.width = if v {
-                    WidthMode::Full
-                } else {
-                    WidthMode::Half
-                };
-                true
-            }
-            2 => {
-                self.script = if v {
-                    ScriptMode::Traditional
-                } else {
-                    ScriptMode::Simplified
-                };
-                true
-            }
-            3 => {
-                self.punct = if v {
-                    PunctMode::English
-                } else {
-                    PunctMode::Chinese
-                };
-                true
-            }
-            _ => false,
-        }
+    #[test]
+    fn wire_encoding_order() {
+        // 字段序 mode/width/script/punct：全英/全/繁/英标 = 全 1。
+        let all_one = <[u8; 4]>::from(ImeState {
+            mode: InitialMode::English,
+            width: WidthMode::Full,
+            script: ScriptMode::Traditional,
+            punct: PunctMode::English,
+        });
+        assert_eq!(all_one, [1, 1, 1, 1]);
+        assert_eq!(<[u8; 4]>::from(ImeState::default()), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn wire_rejects_invalid_byte() {
+        assert!(ImeState::try_from([0, 0, 0, 2]).is_err());
+        assert!(ImeState::try_from([7, 0, 0, 0]).is_err());
+        assert!(ImeState::try_from([0, 0, 0xFF, 0]).is_err());
     }
 }

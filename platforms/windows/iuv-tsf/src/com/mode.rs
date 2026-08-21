@@ -28,7 +28,7 @@ impl TextService {
         // 上报 daemon 看板（§4.1 StateSync）。
         if let Some(client) = self.daemon.borrow().as_ref() {
             let (pid, tid) = self.instance_id();
-            client.state_sync(pid, tid, self.runtime_snapshot().to_toolbar().into());
+            client.state_sync(pid, tid, self.runtime_snapshot());
         }
     }
 
@@ -66,7 +66,7 @@ impl TextService {
         // 工具栏看板同步（中英钮真相源 OnChange → StateSync）。
         if let Some(client) = self.daemon.borrow().as_ref() {
             let (pid, tid) = self.instance_id();
-            client.state_sync(pid, tid, self.runtime_snapshot().to_toolbar().into());
+            client.state_sync(pid, tid, self.runtime_snapshot());
         }
         // 关闭输入法：未确认输入按**原文上屏**语义结束（见 flush_session）。
         if !open && (self.session.borrow().is_some() || self.composition.borrow().is_some()) {

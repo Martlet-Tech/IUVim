@@ -37,7 +37,8 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use iuv_win::{Request, ToolbarState};
+use iuv_core::ImeState;
+use iuv_win::Request;
 use iuv_ui::{theme_dark, theme_light, Theme, ToolbarIcons};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -72,7 +73,7 @@ const DEFAULT_MARGIN: i32 = 12;
 /// 实例表条目。
 #[derive(Clone, Copy, Debug, Default)]
 struct ToolbarInstance {
-    state: ToolbarState,
+    state: ImeState,
     active: bool,
 }
 

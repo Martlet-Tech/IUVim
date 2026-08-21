@@ -1670,6 +1670,7 @@ dependencies = [
 name = "iuv-win"
 version = "0.1.0"
 dependencies = [
+ "iuv-core",
  "iuv-data",
  "iuv-ui",
  "windows",
