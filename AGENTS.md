@@ -7,9 +7,10 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
 ## 当前状态
 
 - [x] M1 最小 MVP：全拼打字链路（见 `docs/plan/00-overview.md`）——**已结案**（2026-08-09：手测 1-8 项通过、词库缺失透明模式通过）
-  - 已知问题：Alt+Tab 切窗口残留预编辑——**已修（2026-08-14）**：未确认输入按**原文上屏**语义结束
-    （`zhujincheng` 上屏为 zhujincheng，非带撇号分节/汉字残留），与关闭输入法（Ctrl+Space）统一走
-    `flush_session`（session.pending_text() → composition.commit → 清槽；空/失败降级 cancel）。
+  - 已知问题：Alt+Tab 切窗口残留预编辑——**原已修（2026-08-14），2026-08-21 设计变更见下**：旧语义=未确认输入按**原文上屏**结束
+    （`zhujincheng` 上屏为 zhujincheng），与关闭输入法（Ctrl+Space）统一走 `flush_session`。**2026-08-21 改回：焦点切换
+    不再打断会话**（用户设计原则：Esc/Enter/空格上屏或 Ctrl+Space 关闭前会话不因焦点切换断开；Alt+Tab 期间预编辑
+    保留、返回继续，语义同小狼毫）。`flush_session` 仅保留给 Ctrl+Space（apply_openclose）与 Deactivate。
   - **已知 bug（2026-08-11，已修）**：续接（选中间级词）后尾巴 commit 失败 `0x8000FFFF (E_UNEXPECTED)`。
     根因：选中间词走「EndComposition 上屏已选词 → 紧接 StartComposition 重建尾巴」，重建的 composition
     被 TSF 在应用（notepad 实测）的下一个 edit session 里终止（日志 `composition 终止通知`），而
@@ -115,6 +116,18 @@ M2（当前里程碑）：用户掌控排序——主动调权 + 用户词库/�
    迁移 shim/导出）、iuv-tsf（Activate 默认模式 + 标点判定）、iuv-daemon（config.rs 签名重构
    `save_config(&DaemonConfig)` + settings 常用页重排 + page_size 钳制 5..=9）、脚本模板、契约/文档同步。
    测试：iuv-core 迁移/默认 5 + daemon load/save/迁移/钳制 6 全绿。
+- [x] **Excel 首字母直接上屏修复（2026-08-21 已结案：设计变更定稿，待手测）**：Excel 单元格首键输入，
+  composition 落在**编辑栏** context，Excel 随即把 TSF 焦点切到**单元格编辑器**（同进程）——`OnSetFocus`
+  曾把这种内部焦点移动误判为 Alt+Tab 级切换而 `flush_session`，首字母原文上屏（日志实测：`n`/`c`/`m`
+  首键 `GetTextExt` 编辑栏宽矩形 + 紧跟 flush；直接进单元格窄矩形的 `i`/`e` 不丢）。**三版迭代**：①同线程
+  判定（`GetBase/GetActiveView/GetWnd`+线程比较）——实测对 Excel 不可靠（单元格编辑器可能无窗口/异线程）；
+  ②会话新生(<500ms)跳过 flush + 下一键重锚——首字母保住但**双份**（重锚在另一 context 建新 composition，
+  旧编辑栏 composition 被 Excel 终止后残留首字母；加 cancel 旧 composition 又触发 Excel 过渡把新 composition
+  也终止 → 会话降级）；③**定稿（只删不增）**：`OnSetFocus` **不再 flush**——焦点切换永不打断会话，仅隐藏
+  候选窗防悬浮其他应用，session/composition 原样保留（用户设计原则，语义同小狼毫：Alt+Tab 期间预编辑保留、
+  返回继续；Excel 首键后后续键对编辑栏 composition 继续 `set_text` 替换，无双份）。改动：iuv-tsf
+  text_service.rs（OnSetFocus 减为两行）、mode.rs/key_routing.rs（删 `reanchor_on_focus_change`/
+  `focus_on_same_thread`/`session_age_ms`/`reanchor_pending` 全部机制）。测试：工作区全绿（COM 胶水靠手测）。
 - [x] **自绘候选窗抑制改名单驱动（2026-08-20 已修，待手测）**：微信打字 `ceshi` 到第 4 键候选栏消失
   ——根因是 wow-ime 的 `ImmDetect` 按 GetTextExt 退化矩形（w/h≤2 连续 3 次）自动判 IMM 客户端并抑制
   自绘候选窗，微信编辑器对折叠 composition range 返回 2×1 薄光标（日志实测：首字母 14×16 真矩形、

@@ -541,24 +541,19 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
         Ok(())
     }
 
-    /// 焦点切换：未确认输入按**原文上屏**语义结束（同关闭输入法），再清理会话与候选窗。
-    /// 修复：旧实现只清内存态 → 系统终止 composition 时预编辑残留（Alt+Tab 遗留问题，
-    /// 2026-08-14 与 OPENCLOSE 关闭同根因一并修复）。
-    /// 已知遗留（2026-08-16，wow-ime）：全屏游戏（WoW 1.12）Alt+Tab 往返后焦点窗口的
-    /// 输入法关联会被系统重置（QQ 拼音实测同样——通病，非本输入法问题）——回来打字
-    /// 可能英文直通（托盘图标不刷新误导）；用户侧用 Win+Space 切回即可，不做程序干预。
+    /// 焦点切换（ITfThreadMgrEventSink）：**不打断会话**（2026-08-21 设计原则——用户未按
+    /// Esc/Enter/空格确认候选上屏前，会话不因焦点切换断开；修复 Excel 单元格编辑首键
+    /// 落在编辑栏后被误判为 Alt+Tab 级焦点切换而原文上屏的 bug）。
+    /// 仅隐藏候选窗/候选元素（避免悬浮到其他应用上方）；session/composition 原样保留，
+    /// 返回原应用后继续（Alt+Tab 期间预编辑保留，语义与小狼毫一致）。
+    /// 结束输入只由 Esc/Enter/空格（正常上屏）或 Ctrl+Space（apply_openclose 原文上屏）触发。
     fn OnSetFocus(
         &self,
         _pdimfocus: Ref<ITfDocumentMgr>,
         _pdimprevfocus: Ref<ITfDocumentMgr>,
     ) -> Result<()> {
-        if self.session.borrow().is_some() || self.composition.borrow().is_some() {
-            self.flush_session();
-            log_line("焦点切换：活动输入已原文上屏");
-        } else {
-            self.ui.borrow_mut().hide();
-            self.cand_elem.borrow_mut().end();
-        }
+        self.ui.borrow_mut().hide();
+        self.cand_elem.borrow_mut().end();
         Ok(())
     }
 
