@@ -82,10 +82,7 @@ fn load_engine() -> Option<Arc<Engine>> {
                     log_line(&format!(
                         "简繁转换器装配成功：{}（{} 词条）",
                         occ_path.display(),
-                        engine
-                            .script_converter()
-                            .map(|c| c.entry_count())
-                            .unwrap_or(0)
+                        engine.script_converter().map(|c| c.entry_count()).unwrap_or(0)
                     ));
                 }
                 Err(e) => {

@@ -5,8 +5,8 @@
 pub mod candwin;
 pub mod menu_window;
 pub use candwin::CandwinCandidateWindow;
-pub use iuv_ui::{effect_to_snapshot, CaretRect, UiSnapshot};
 pub use menu_window::MenuWindow;
+pub use iuv_ui::{effect_to_snapshot, CaretRect, UiSnapshot};
 
 /// 候选窗抽象。M4 起实现 = CandwinCandidateWindow（iuv-ui 渲染 + ULW 呈现），
 /// 见 `19-m4-cross-render.md`。COM 层零改动。

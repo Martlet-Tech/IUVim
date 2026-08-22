@@ -10,11 +10,11 @@ use std::rc::Rc;
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::TextServices::{
-    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
-    ITfEditSession, ITfEditSession_Impl, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_ES_READWRITE,
-    TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE,
+    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
+    ITfContextComposition, ITfEditSession, ITfEditSession_Impl, TF_ANCHOR_END,
+    TF_DEFAULT_SELECTION, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE,
 };
-use windows_core::{implement, ComObject, Interface, Result, BOOL};
+use windows_core::{implement, BOOL, ComObject, Interface, Result};
 
 use crate::log::log_line;
 use crate::ui::CaretRect;
@@ -177,22 +177,24 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
                     log_line(&format!("GetSelection 无 selection（fetched={fetched}）"));
                     return Err(windows::Win32::Foundation::E_FAIL.into());
                 }
-                let range = sel[0].range.as_ref().cloned().ok_or_else(|| {
-                    windows_core::Error::from_hresult(windows::Win32::Foundation::E_FAIL)
-                })?;
+                let range = sel[0]
+                    .range
+                    .as_ref()
+                    .cloned()
+                    .ok_or_else(|| windows_core::Error::from_hresult(windows::Win32::Foundation::E_FAIL))?;
                 // SAFETY: ITfContextComposition 为 ITfContext 的标准支持接口。
-                let context_comp: ITfContextComposition =
-                    trace_step("cast ITfContextComposition", || self.context.cast())?;
+                let context_comp: ITfContextComposition = trace_step("cast ITfContextComposition", || {
+                    self.context.cast()
+                })?;
                 // 仿 Weasel/SampleIME：psink 传真实 ITfCompositionSink（不能为 null）。
                 let sink = ComObject::new(CompositionSink {
                     comp: self.comp_slot.clone(),
                     terminated: self.terminated.clone(),
                 });
                 let sink: ITfCompositionSink = sink.to_interface();
-                let c = trace_step(
-                    &format!("StartComposition(ec={ec}, sink=Some)"),
-                    || unsafe { context_comp.StartComposition(ec, &range, &sink) },
-                )?;
+                let c = trace_step(&format!("StartComposition(ec={ec}, sink=Some)"), || unsafe {
+                    context_comp.StartComposition(ec, &range, &sink)
+                })?;
                 *self.started.borrow_mut() = Some(c.clone());
                 // 新建成功：清终止标志（旧 composition 的终止不影响新生命周期）。
                 self.terminated.set(false);
@@ -205,10 +207,9 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
         let wide_len = wide.len();
         let display: String = self.text.chars().take(32).collect();
         // SAFETY: SetText 替换整个 composition 文本（写入切片为 UTF-16 编码）。
-        trace_step(
-            &format!("range.SetText(ec={ec}, len={wide_len}, text={display:?})"),
-            || unsafe { range.SetText(ec, 0, &wide) },
-        )?;
+        trace_step(&format!("range.SetText(ec={ec}, len={wide_len}, text={display:?})"), || {
+            unsafe { range.SetText(ec, 0, &wide) }
+        })?;
         // 仿 Weasel：把光标 range 折叠到组合文本末尾，并把该 range 设为当前 selection，
         // 否则光标仍停在原 selection 处（组合文本开头）。
         // SAFETY: 均为标准 TSF 调用，ec 为当前读写 cookie。
@@ -219,16 +220,13 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
             range: ManuallyDrop::new(Some(range.clone())),
             style: TF_SELECTIONSTYLE::default(),
         }];
-        trace_step(
-            &format!("context.SetSelection(n={})", sel.len()),
-            || unsafe { self.context.SetSelection(ec, &sel) },
-        )?;
+        trace_step(&format!("context.SetSelection(n={})", sel.len()), || unsafe {
+            self.context.SetSelection(ec, &sel)
+        })?;
 
         // 量取光标矩形（composition 文本的尾端，屏幕坐标）。
         // SAFETY: GetActiveView 由 TSF 保证在 edit session 内可调用。
-        let view = match trace_step("context.GetActiveView", || unsafe {
-            self.context.GetActiveView()
-        }) {
+        let view = match trace_step("context.GetActiveView", || unsafe { self.context.GetActiveView() }) {
             Ok(v) => v,
             Err(e) => {
                 log_line(&format!("GetActiveView 失败：{e}，跳过光标量取"));
@@ -238,16 +236,13 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
         let mut rc = RECT::default();
         let mut clipped = BOOL(0);
         // SAFETY: GetTextExt 由 TSF 保证在 edit session 内可调用；输出缓冲在调用前初始化。
-        let ext = trace_step(&format!("view.GetTextExt(ec={ec})"), || unsafe {
-            view.GetTextExt(ec, &range, &mut rc, &mut clipped)
-        });
+        let ext = trace_step(
+            &format!("view.GetTextExt(ec={ec})"),
+            || unsafe { view.GetTextExt(ec, &range, &mut rc, &mut clipped) },
+        );
         log_line(&format!(
             "[caret] GetTextExt：rc=({},{},{},{}) clipped={} err={:?}",
-            rc.left,
-            rc.top,
-            rc.right,
-            rc.bottom,
-            clipped.0,
+            rc.left, rc.top, rc.right, rc.bottom, clipped.0,
             ext.as_ref().err().map(|e| e.code())
         ));
         if ext.is_ok() && !clipped.as_bool() {
@@ -302,10 +297,9 @@ impl ITfEditSession_Impl for EndSession_Impl {
         let range = trace_step("end: comp.GetRange", || unsafe { comp.GetRange() })?;
         let wide: Vec<u16> = self.text.encode_utf16().collect();
         // SAFETY: SetText 替换 composition 范围文本；空串 = 删除（cancel 语义）。
-        trace_step(
-            &format!("end: range.SetText(ec={ec}, len={})", wide.len()),
-            || unsafe { range.SetText(ec, 0, &wide) },
-        )?;
+        trace_step(&format!("end: range.SetText(ec={ec}, len={})", wide.len()), || {
+            unsafe { range.SetText(ec, 0, &wide) }
+        })?;
         // 显式把选区折叠到文本尾端并设为当前 selection——「composition 结束后光标
         // 放哪」TSF 未定义、由应用自定：Word 会恢复自己记录的选区锚点（composition
         // 起点）→ 光标落回新上屏文字前面。weasel `_InsertText` 与微软官方血统的
@@ -320,10 +314,9 @@ impl ITfEditSession_Impl for EndSession_Impl {
             range: ManuallyDrop::new(Some(range)),
             style: TF_SELECTIONSTYLE::default(),
         }];
-        trace_step(
-            &format!("end: context.SetSelection(n={})", sel.len()),
-            || unsafe { self.context.SetSelection(ec, &sel) },
-        )?;
+        trace_step(&format!("end: context.SetSelection(n={})", sel.len()), || unsafe {
+            self.context.SetSelection(ec, &sel)
+        })?;
         // SAFETY: EndComposition 需要写 cookie，当前 edit session 为读写。
         trace_step("end: comp.EndComposition", || unsafe {
             comp.EndComposition(ec)

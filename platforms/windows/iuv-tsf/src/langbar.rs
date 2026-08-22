@@ -25,22 +25,20 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::System::Variant::{VARIANT, VT_I4};
 use windows::Win32::UI::TextServices::{
-    ITfCompartment, ITfLangBarItemButton, ITfLangBarItemButton_Impl, ITfLangBarItemMgr,
-    ITfLangBarItemSink, ITfLangBarItem_Impl, ITfMenu, ITfSource, ITfSource_Impl, ITfThreadMgr,
-    TfLBIClick, GUID_LBI_INPUTMODE, TF_LANGBARITEMINFO, TF_LBI_CLK_LEFT, TF_LBI_CLK_RIGHT,
-    TF_LBI_ICON, TF_LBI_STATUS, TF_LBI_STATUS_HIDDEN, TF_LBI_STYLE_BTN_BUTTON,
-    TF_LBI_STYLE_SHOWNINTRAY,
+    GUID_LBI_INPUTMODE, ITfCompartment, ITfLangBarItemButton, ITfLangBarItemButton_Impl,
+    ITfLangBarItemMgr, ITfLangBarItemSink, ITfLangBarItem_Impl, ITfMenu, ITfSource,
+    ITfSource_Impl, ITfThreadMgr, TfLBIClick, TF_LANGBARITEMINFO, TF_LBI_CLK_LEFT,
+    TF_LBI_CLK_RIGHT, TF_LBI_ICON, TF_LBI_STATUS, TF_LBI_STATUS_HIDDEN,
+    TF_LBI_STYLE_BTN_BUTTON, TF_LBI_STYLE_SHOWNINTRAY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, LoadImageW, HICON, IMAGE_ICON, LR_SHARED, SM_CXSMICON, SM_CYSMICON,
 };
-use windows_core::{
-    implement, ComObject, IUnknown, Interface, Ref, Result, BOOL, BSTR, GUID, PCWSTR,
-};
+use windows_core::{implement, BSTR, BOOL, ComObject, GUID, Interface, PCWSTR, Ref, Result, IUnknown};
 
 use crate::log::log_line;
-use iuv_ui::{MenuEntry, Theme};
 use iuv_win::Request;
+use iuv_ui::{MenuEntry, Theme};
 
 /// 「关于」对话框（自绘菜单与 InitMenu 菜单共用）。
 fn show_about() {
@@ -104,9 +102,17 @@ fn load_icon(id: u32) -> HICON {
     let size = unsafe { GetSystemMetrics(SM_CXSMICON) };
     let cy = unsafe { GetSystemMetrics(SM_CYSMICON) };
     // SAFETY: 标准资源加载；hinst/name 在本调用期间有效。
-    let handle: HANDLE =
-        unsafe { LoadImageW(Some(hinst.into()), name, IMAGE_ICON, size, cy, LR_SHARED) }
-            .unwrap_or_default();
+    let handle: HANDLE = unsafe {
+        LoadImageW(
+            Some(hinst.into()),
+            name,
+            IMAGE_ICON,
+            size,
+            cy,
+            LR_SHARED,
+        )
+    }
+    .unwrap_or_default();
     if handle.0.is_null() {
         log_line(&format!("语言栏图标加载失败：id={id}"));
     }
@@ -443,10 +449,7 @@ impl ITfSource_Impl for LangBarItemButton_Impl {
 }
 
 /// 把按钮项添加到线程语言栏（Activate 时调用；失败仅记日志，不影响输入法主体）。
-pub(crate) fn add_to_lang_bar(
-    thread_mgr: &ITfThreadMgr,
-    com: &ComObject<LangBarItemButton>,
-) -> Result<()> {
+pub(crate) fn add_to_lang_bar(thread_mgr: &ITfThreadMgr, com: &ComObject<LangBarItemButton>) -> Result<()> {
     // SAFETY: ITfLangBarItemMgr 由 ITfThreadMgr QI 得到（MSDN 标准做法，同 Weasel）。
     let mgr: ITfLangBarItemMgr = thread_mgr.cast()?;
     let item: ITfLangBarItemButton = com.to_interface();
@@ -459,10 +462,7 @@ pub(crate) fn add_to_lang_bar(
 }
 
 /// 从线程语言栏移除按钮项（Deactivate 时调用）。
-pub(crate) fn remove_from_lang_bar(
-    thread_mgr: &ITfThreadMgr,
-    com: &ComObject<LangBarItemButton>,
-) -> Result<()> {
+pub(crate) fn remove_from_lang_bar(thread_mgr: &ITfThreadMgr, com: &ComObject<LangBarItemButton>) -> Result<()> {
     // SAFETY: 同上；RemoveItem 与 AddItem 配对。
     let mgr: ITfLangBarItemMgr = thread_mgr.cast()?;
     let item: ITfLangBarItemButton = com.to_interface();
@@ -484,14 +484,8 @@ mod tests {
         let info = build_info();
         assert_eq!(info.clsidService, crate::registration::clsid());
         assert_eq!(info.guidItem, GUID_LBI_INPUTMODE);
-        assert_eq!(
-            info.dwStyle & TF_LBI_STYLE_BTN_BUTTON,
-            TF_LBI_STYLE_BTN_BUTTON
-        );
-        assert_eq!(
-            info.dwStyle & TF_LBI_STYLE_SHOWNINTRAY,
-            TF_LBI_STYLE_SHOWNINTRAY
-        );
+        assert_eq!(info.dwStyle & TF_LBI_STYLE_BTN_BUTTON, TF_LBI_STYLE_BTN_BUTTON);
+        assert_eq!(info.dwStyle & TF_LBI_STYLE_SHOWNINTRAY, TF_LBI_STYLE_SHOWNINTRAY);
     }
 
     #[test]

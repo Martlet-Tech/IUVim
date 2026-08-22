@@ -8,8 +8,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::TextServices::ITfContext;
 
-use crate::com::engine_host::engine;
 use crate::composition::Composition;
+use crate::com::engine_host::engine;
 use crate::log::{self, log_line};
 use crate::session_bridge::{caps_passthrough, is_passthrough_app, map_key};
 
@@ -38,9 +38,7 @@ impl TextService {
     /// OnKeyDown 放，字母会被静默吞掉（实测 2026-08-19：Caps 直通失效）。
     fn route_key(&self, vk: u16) -> KeyAction {
         // 透明模式：全部放行。
-        let Some(engine) = engine() else {
-            return KeyAction::Pass;
-        };
+        let Some(engine) = engine() else { return KeyAction::Pass };
         // M6：daemon 共享段轮询（低成本：读 u32 版本；用户库版本/配置纪元变化 → 即时生效；
         // 离线→在线翻转重注册）。daemon_poll_tick 唯一触发点在按键路径。
         self.daemon_poll_tick();
@@ -68,8 +66,7 @@ impl TextService {
         }
 
         // 中文标点（会话外直接上屏全角）：判定与 test_key_down 对称。
-        if let Some(punct) =
-            self.chinese_punct_pending(char_code(vk), shift, ctrl, alt, session_active)
+        if let Some(punct) = self.chinese_punct_pending(char_code(vk), shift, ctrl, alt, session_active)
         {
             return KeyAction::CommitText(punct);
         }
@@ -81,9 +78,7 @@ impl TextService {
 
         let caps = capslock_on();
         let key = map_key(vk, char_code(vk), shift, caps, ctrl, alt);
-        let Some(key) = key else {
-            return KeyAction::Pass;
-        };
+        let Some(key) = key else { return KeyAction::Pass };
         if self.session.borrow().is_none() {
             // 开启新会话：仅字母键；CapsLock 生效时字母放行直通（仿微软：Caps = 英文模式，
             // 不建会话；会话内 Caps 字母照常进序列，避免 composition 残留错乱）。
@@ -103,12 +98,7 @@ impl TextService {
     }
 
     /// OnKeyDown 完整处理：映射 → 会话推进 → 应用 Effect。
-    pub(crate) fn handle_key_down(
-        &self,
-        pic: &ITfContext,
-        wparam: WPARAM,
-        _lparam: LPARAM,
-    ) -> bool {
+    pub(crate) fn handle_key_down(&self, pic: &ITfContext, wparam: WPARAM, _lparam: LPARAM) -> bool {
         let vk = wparam.0 as u16;
         // M6：远端写后端在 Activate 注册；引擎后台加载未完成则此处补注册（幂等，无副作用）。
         // 必须先于 route_key 的 daemon 轮询（poll 回调可能重载引擎配置/重注册实例）。
@@ -140,7 +130,10 @@ impl TextService {
                 true
             }
             KeyAction::SessionKey(key) => {
-                log_line(&format!("[key] 按键：{}（会话内）", key.name()));
+                log_line(&format!(
+                    "[key] 按键：{}（会话内）",
+                    key.name()
+                ));
                 let effect = self
                     .session
                     .borrow_mut()

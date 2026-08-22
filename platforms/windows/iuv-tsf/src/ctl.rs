@@ -21,13 +21,13 @@ use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::HBRUSH;
+use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{GetCurrentThreadId, OpenThread, THREAD_ALL_ACCESS};
-use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, PostMessageW,
-    RegisterClassExW, SetWindowLongPtrW, GWLP_USERDATA, HWND_MESSAGE, WM_APP, WNDCLASSEXW,
-    WNDCLASS_STYLES, WS_POPUP,
+    RegisterClassExW, SetWindowLongPtrW, GWLP_USERDATA, HWND_MESSAGE, WM_APP, WNDCLASS_STYLES,
+    WNDCLASSEXW, WS_POPUP,
 };
 
 use crate::log::log_line;
@@ -240,7 +240,11 @@ fn accept_thread(
 }
 
 /// 跨线程分发：写待应用命令 → PostMessage 唤醒 TSF 线程 → 等 TSF 应用结果（超时兜底）。
-fn dispatch_ctl_cmd(hwnd: HWND, pending: &Arc<Mutex<Option<CtlJob>>>, cmd: CtlCmd) -> CtlResult {
+fn dispatch_ctl_cmd(
+    hwnd: HWND,
+    pending: &Arc<Mutex<Option<CtlJob>>>,
+    cmd: CtlCmd,
+) -> CtlResult {
     let (tx, rx) = mpsc::sync_channel(1);
     let job = CtlJob { cmd, resp: tx };
     *pending.lock().unwrap_or_else(|p| p.into_inner()) = Some(job);

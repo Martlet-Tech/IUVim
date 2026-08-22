@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use iuv_core::Session;
 
-use crate::com::engine_host::engine;
 use crate::composition::Composition;
+use crate::com::engine_host::engine;
 use crate::log::{self, log_line};
 use crate::session_bridge::{apply_effect, is_passthrough_app};
 use crate::ui::{CandidateUi, CandwinCandidateWindow, CaretRect};
@@ -117,14 +117,8 @@ mod tests {
         // 空名单 = 恒自绘（微信/notepad/WinTerm 等主流应用不误伤）
         assert!(!should_suppress_candidate_window(&[], "weixin.exe"));
         // 命中名单（大小写不敏感精确匹配）= 抑制（WoW 游戏自绘候选栏）
-        assert!(should_suppress_candidate_window(
-            &["wow.exe".into()],
-            "WoW.exe"
-        ));
+        assert!(should_suppress_candidate_window(&["wow.exe".into()], "WoW.exe"));
         // 未命中名单 = 恒自绘
-        assert!(!should_suppress_candidate_window(
-            &["wow.exe".into()],
-            "weixin.exe"
-        ));
+        assert!(!should_suppress_candidate_window(&["wow.exe".into()], "weixin.exe"));
     }
 }

@@ -31,7 +31,7 @@ use iuv_ui::{hit_test, render_candidate, update_position, TextRenderer, Theme};
 use iuv_win::LayeredWindow;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, SetWindowPos, ShowWindow, SystemParametersInfoW, HTCLIENT, HTTRANSPARENT,
     MA_NOACTIVATE, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA,
@@ -199,8 +199,7 @@ impl CandwinCandidateWindow {
     /// ULW 呈现（共享模块 ulw.rs：DIB 重建 + 像素直拷 + UpdateLayeredWindow
     /// 一次定位/定尺寸/per-pixel alpha 合成）。失败静默（记日志，不 panic）。
     fn present(&mut self, surf: &iuv_ui::Surface, x: i32, y: i32, w: i32, h: i32) {
-        self.ulw
-            .upload(self.layered.hwnd, surf, x, y, w, h, "[candwin]");
+        self.ulw.upload(self.layered.hwnd, surf, x, y, w, h, "[candwin]");
     }
 }
 
@@ -466,9 +465,7 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_MOUSEMOVE => {
             let (x, y) = LayeredWindow::client_pos(lparam);
-            if let Some(wnd) =
-                unsafe { LayeredWindow::get_self_mut::<CandwinCandidateWindow>(hwnd) }
-            {
+            if let Some(wnd) = unsafe { LayeredWindow::get_self_mut::<CandwinCandidateWindow>(hwnd) } {
                 // TrackMouseEvent 重挂 WM_MOUSELEAVE（离开窗口清除悬停高亮）。
                 // SAFETY: hwnd 由消息循环保证有效；单次调用无副作用。
                 let mut tme = TRACKMOUSEEVENT {
@@ -478,7 +475,8 @@ unsafe extern "system" fn wnd_proc(
                     ..Default::default()
                 };
                 let _ = unsafe { TrackMouseEvent(&mut tme) };
-                let row = hit_test(&wnd.rows, x, y).filter(|r| *r < wnd.snap.candidates.len());
+                let row =
+                    hit_test(&wnd.rows, x, y).filter(|r| *r < wnd.snap.candidates.len());
                 if row != wnd.hover_row {
                     // 悬停行变化（含落空/离开候选区）→ 更新 + 原位重绘悬停高亮
                     wnd.hover_row = row;
@@ -490,9 +488,7 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_MOUSELEAVE => {
             // 鼠标离开窗口：清除悬停高亮（命中落空同路径）。
-            if let Some(wnd) =
-                unsafe { LayeredWindow::get_self_mut::<CandwinCandidateWindow>(hwnd) }
-            {
+            if let Some(wnd) = unsafe { LayeredWindow::get_self_mut::<CandwinCandidateWindow>(hwnd) } {
                 if wnd.hover_row.take().is_some() {
                     // SAFETY: 悬停清除 → ULW 原位重绘
                     wnd.repaint();

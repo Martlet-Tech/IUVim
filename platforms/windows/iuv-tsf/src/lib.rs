@@ -15,12 +15,12 @@ pub mod ui_element;
 
 pub(crate) mod com;
 
-pub use ui::{effect_to_snapshot, CandidateUi, CaretRect, UiSnapshot};
+pub use ui::{effect_to_snapshot, CaretRect, CandidateUi, UiSnapshot};
 
 use std::ffi::c_void;
 
 use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, S_FALSE, S_OK};
-use windows_core::{Interface, GUID, HRESULT};
+use windows_core::{GUID, HRESULT, Interface};
 
 /// DllGetClassObject：文本服务的 class factory（契约 13 任务书 §3.2）。
 ///
