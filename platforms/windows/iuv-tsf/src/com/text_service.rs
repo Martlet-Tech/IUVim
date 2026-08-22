@@ -18,12 +18,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use iuv_core::{Config, ImeState, InitialMode, Key, PunctMode, ScriptMode, Session, WidthMode};
 use iuv_win::{CtlCmd, CtlResult};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
-use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_InputProcessorProfiles, ITfActiveLanguageProfileNotifySink,
-    ITfActiveLanguageProfileNotifySink_Impl, ITfCompartment, ITfCompartmentEventSink,
-    ITfCompartmentEventSink_Impl, ITfCompartmentMgr, ITfContext, ITfDocumentMgr,
-    ITfInputProcessorProfiles, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource,
+    ITfCompartment, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr,
+    ITfContext, ITfDocumentMgr, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource,
     ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
     ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
     ITfThreadMgrEventSink_Impl, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
@@ -71,8 +68,7 @@ where
     ITfKeyEventSink,
     ITfThreadMgrEventSink,
     ITfCompartmentEventSink,
-    ITfThreadFocusSink,
-    ITfActiveLanguageProfileNotifySink
+    ITfThreadFocusSink
 )]
 pub(crate) struct TextService {
     /// ITfThreadMgr（Activate 传入，Deactivate 用）。
@@ -87,9 +83,6 @@ pub(crate) struct TextService {
     compartment: RefCell<Option<(ITfCompartment, u32)>>,
     /// 线程焦点 sink cookie（ITfThreadFocusSink，维度②应用切出即隐的官方信号）。
     thread_focus_cookie: Cell<u32>,
-    /// 输入法 profile 激活通知（ITfInputProcessorProfilesSink，维度①输入法切至/切出
-    /// 的官方信号——weasel 语言栏显隐同款）+ 对象与反注册 cookie。
-    profiles: RefCell<Option<(ITfInputProcessorProfiles, u32)>>,
     /// 活动会话；None = 无会话（字母键将开启新会话）。
     /// Rc 共享：候选窗点击/hover 回调（同线程）经克隆访问。
     pub(crate) session: Rc<RefCell<Option<Session>>>,
@@ -174,7 +167,6 @@ impl TextService {
             event_cookie: Cell::new(0),
             compartment: RefCell::new(None),
             thread_focus_cookie: Cell::new(0),
-            profiles: RefCell::new(None),
             session,
             composition,
             ui: ui_rc,
@@ -410,42 +402,6 @@ impl TextService_Impl {
             )),
         }
 
-        // 维度①：输入法 profile 激活通知（ITfActiveLanguageProfileNotifySink::OnActivated
-        // 带自家 CLSID 与激活标志——weasel 语言栏显隐同款全局信号，与窗口无关）。
-        // 全链路非致命 + 分步打点：任一步失败记 HRESULT 后降级，主体功能不受影响。
-        let mount_profiles = || -> Result<(ITfInputProcessorProfiles, u32)> {
-            let profiles_sink: ITfActiveLanguageProfileNotifySink =
-                self.to_object().to_interface();
-            // SAFETY: CoCreateInstance 由系统解析注册表创建 TSF 对象（registration.rs 同款）。
-            let profiles: ITfInputProcessorProfiles = unsafe {
-                CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
-            }?;
-            log_line("[profiles] InputProcessorProfiles 创建成功");
-            // advise 路径：QI ITfSource 再挂 ActiveLanguageProfileNotifySink。
-            // SAFETY: 标准 COM QI；不支持则整体降级（记 HRESULT 观测哪步死）。
-            let psrc: ITfSource = profiles.cast()?;
-            log_line("[profiles] QI ITfSource 成功");
-            // SAFETY: 标准 TSF advise；cookie 记录用于 Deactivate 反注册。
-            let pcookie = unsafe {
-                psrc.AdviseSink(
-                    &<ITfActiveLanguageProfileNotifySink as Interface>::IID,
-                    &profiles_sink,
-                )?
-            };
-            Ok((profiles, pcookie))
-        };
-        match mount_profiles() {
-            Ok(pair) => {
-                *self.profiles.borrow_mut() = Some(pair);
-                log_line(
-                    "[focus/profiles] 探测 sink 已挂载（ThreadFocus + ActiveLanguageProfileNotifySink）",
-                );
-            }
-            Err(e) => log_line(&format!(
-                "[profiles] ActiveLanguageProfileNotifySink 挂载失败：{e:?}（维度①信号缺失，主体不受影响）"
-            )),
-        }
-
         // 后台异步加载引擎（词库 17MB/65 万词条）：切到输入法即开始，
         // 首次按键不再同步加载卡顿；加载完成前按键透明放行。
         start_engine_load();
@@ -550,13 +506,6 @@ impl TextService_Impl {
             }
             self.thread_focus_cookie.set(0);
         }
-        // 卸载输入法 profile 激活通知（维度①）。
-        if let Some((profiles, pcookie)) = self.profiles.borrow_mut().take() {
-            if let Ok(src) = profiles.cast::<ITfSource>() {
-                // SAFETY: 标准 TSF unadvise。
-                let _ = unsafe { src.UnadviseSink(pcookie) };
-            }
-        }
 
         if let Some(tm) = self.thread_mgr.borrow().as_ref() {
             // SAFETY: 标准 TSF unadvise 调用。
@@ -606,34 +555,6 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
         if let Some(client) = self.daemon.borrow().as_ref() {
             let (pid, tid) = self.instance_id();
             client.focus_lost(pid, tid);
-        }
-        Ok(())
-    }
-}
-
-impl ITfActiveLanguageProfileNotifySink_Impl for TextService_Impl {
-    fn OnActivated(
-        &self,
-        clsid: *const windows_core::GUID,
-        _guidprofile: *const windows_core::GUID,
-        factivated: windows_core::BOOL,
-    ) -> Result<()> {
-        // 只关心自家 CLSID 的激活通知（weasel 同款过滤）；空指针防御。
-        let ours = !clsid.is_null() && unsafe { *clsid } == crate::registration::clsid();
-        log_line(&format!(
-            "[profiles] OnActivated ours={ours} fActivated={}",
-            factivated.as_bool()
-        ));
-        if !ours {
-            return Ok(());
-        }
-        // 维度①：切走（false）→ 失焦上报立即隐藏；切入（true）→ TIP Activate 链路重显
-        // （此处不重复发激活，避免与既有链路双发）。
-        if !factivated.as_bool() {
-            if let Some(client) = self.daemon.borrow().as_ref() {
-                let (pid, tid) = self.instance_id();
-                client.focus_lost(pid, tid);
-            }
         }
         Ok(())
     }
