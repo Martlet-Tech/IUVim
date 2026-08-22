@@ -181,9 +181,33 @@ if (-not (Test-Path $configPath)) {
   },
   // 前缀联想（高级）：false = 候选仅精确匹配（默认）/ true = 追加前缀长词
   "candidate_prefix": false,
+  // 按键直通进程（高级）：近五年 3A 单机大作——全程无中文输入需求，整进程隐身换零按键干扰。
+  // 与 daemon config.rs DEFAULT_PASSTHROUGH_APPS 保持同步。
+  "passthrough_apps": [
+    "Cyberpunk2077.exe",
+    "b1-Win64-Shipping.exe",
+    "b1.exe",
+    "eldenring.exe",
+    "bg3.exe",
+    "RDR2.exe",
+    "MonsterHunterWilds.exe",
+    "Starfield.exe"
+  ],
   // 候选渲染自持进程（高级）：这些 app 自己绘制候选栏（如 WoW 游戏内候选框）→ iuv 不绘制
-  // 自绘候选窗。默认预置 wow.exe（大小写不敏感精确匹配）；其他 app 用户自行追加。
-  "candidate_owner_apps": ["wow.exe"],
+  // 自绘候选窗，数据经候选 UI 元素供其拉取（要打中文的游戏用本名单而非按键直通）。
+  // 与 daemon config.rs DEFAULT_CANDIDATE_OWNER_APPS 保持同步；设置页「恢复默认名单」同源。
+  "candidate_owner_apps": [
+    "wow.exe",
+    "WowClassic.exe",
+    "Diablo IV.exe",
+    "Diablo III64.exe",
+    "League of Legends.exe",
+    "TslGame.exe",
+    "Gw2-64.exe",
+    "JX3ClientX64.exe",
+    "JX3Client.exe",
+    "crossfire.exe"
+  ],
   // 新 TSF 实例初始状态（2026-08-19 起，替换旧顶层 english_punctuation）：
   // mode = 中文/英文、width = 半角/全角（仅存默认值）、script = 简体/繁体（仅存默认值）、
   // punct = 中文标点/英文标点（中文状态按标点键直通英文形）

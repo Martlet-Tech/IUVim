@@ -488,7 +488,7 @@ impl SettingsApp {
         }
     }
 
-    /// 高级：按键直通名单 + 候选自绘应用。
+    /// 高级：按键直通名单 + 候选自绘应用（各带「恢复默认名单」回填按钮）。
     fn advanced_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("高级");
         ui.add_space(4.0);
@@ -497,9 +497,15 @@ impl SettingsApp {
             egui::TextEdit::multiline(&mut self.passthrough)
                 .desired_rows(8)
                 .desired_width(500.0)
-                .hint_text("例如 notepad.exe"),
+                .hint_text("例如 Cyberpunk2077.exe"),
         );
-        ui.small("命中进程 TSF 层全部按键放行（不建会话、无候选窗/预编辑）。");
+        ui.small("命中进程 TSF 层全部按键放行（不建会话、无候选窗/预编辑）——该进程内无法输中文。");
+        ui.horizontal(|ui| {
+            if ui.button("恢复默认名单").clicked() {
+                self.passthrough = crate::config::DEFAULT_PASSTHROUGH_APPS.join("\n");
+            }
+            ui.small("（仅回填编辑框，仍需「确定/应用」落盘；默认 = 近五年 3A 单机大作）");
+        });
         ui.add_space(10.0);
         ui.label("候选自绘应用（每行一个 exe 名，命中则 iuv 不绘制候选窗，由应用自绘）：");
         ui.add(
@@ -508,7 +514,14 @@ impl SettingsApp {
                 .desired_width(500.0)
                 .hint_text("例如 wow.exe"),
         );
-        ui.small("命中进程 iuv 抑制自绘候选窗（游戏内自绘候选栏场景）；默认预置 wow.exe，其他应用自行添加。");
+        ui.small("命中进程 iuv 抑制自绘候选窗（游戏内自绘候选栏场景）；要打中文的游戏用本名单而非按键直通。");
+        ui.horizontal(|ui| {
+            if ui.button("恢复默认名单").clicked() {
+                self.candidate_owner =
+                    crate::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
+            }
+            ui.small("（仅回填编辑框，仍需「确定/应用」落盘；默认 = 预置知名游戏）");
+        });
     }
 
     /// 开发者：清除日志 + 日志模块开关（仅 dev 构建）。

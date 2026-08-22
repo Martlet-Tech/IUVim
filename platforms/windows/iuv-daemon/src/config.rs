@@ -5,6 +5,39 @@
 //! 字段格式与 iuv-core 对齐：`"theme": "light"|"dark"`、`"initial_state": {...}`、
 //! `"passthrough_apps": ["a.exe", ...]`、`"candidate_owner_apps": ["wow.exe", ...]`。
 
+/// 按键直通默认名单：近五年卖爆级 **3A 单机大作**（全程无中文输入需求，整进程隐身
+/// 换零按键干扰——Raw Input 与 TSF 双通道并行接收同一按键的游戏，见
+/// knowledge/tsf-interaction.md 应用责任小节）。设置页「恢复默认」按钮的回填源。
+/// 同步责任：install.ps1 / dev-deploy.ps1 的 config 模板数组须与此保持一致。
+pub const DEFAULT_PASSTHROUGH_APPS: &[&str] = &[
+    "Cyberpunk2077.exe",         // 赛博朋克2077
+    "b1-Win64-Shipping.exe",     // 黑神话：悟空（游戏本体）
+    "b1.exe",                    // 黑神话：悟空（启动器）
+    "eldenring.exe",             // 艾尔登法环
+    "bg3.exe",                   // 博德之门3
+    "RDR2.exe",                  // 荒野大镖客2
+    "MonsterHunterWilds.exe",    // 怪物猎人：荒野
+    "Starfield.exe",             // 星空
+];
+
+/// 候选自绘抑制默认名单：预置**要在游戏内打中文**的知名游戏（它们自绘候选栏，
+/// iuv 需抑制自绘避免双框；数据经 ITfCandidateListUIElement 供游戏拉取）。
+/// 与 passthrough 的分工：要打中文 → 本名单（保留输入）；纯单机 → passthrough。
+/// 实测依据：wow pbshow=true 但桥转数据（2026-08-16/22 两轮）、暗黑4 pbshow=false
+/// 自带候选框（knowledge/tsf-interaction.md）。同步责任同上。
+pub const DEFAULT_CANDIDATE_OWNER_APPS: &[&str] = &[
+    "wow.exe",                  // 魔兽世界
+    "WowClassic.exe",           // 魔兽怀旧服
+    "Diablo IV.exe",            // 暗黑破坏神4
+    "Diablo III64.exe",         // 暗黑破坏神3
+    "League of Legends.exe",    // 英雄联盟（游戏内进程）
+    "TslGame.exe",              // 绝地求生
+    "Gw2-64.exe",               // 激战2
+    "JX3ClientX64.exe",         // 剑网3重制版
+    "JX3Client.exe",            // 剑网3老客户端
+    "crossfire.exe",            // 穿越火线经典区
+];
+
 use std::io;
 use std::path::PathBuf;
 
@@ -383,5 +416,29 @@ mod tests {
         assert!(cfg.disabled_log_modules.is_empty(), "缺省字段默认全记录");
         let _ = std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 默认名单常量契约（设置页「恢复默认名单」与脚本模板的回填/生成源）：
+    /// 非空、ASCII exe 名——防手滑清空或混入非法条目。
+    #[test]
+    fn default_app_lists_contract() {
+        // 实测锚点：WoW 双画 / 2077 用户实测，防手滑清空
+        assert!(DEFAULT_CANDIDATE_OWNER_APPS.contains(&"wow.exe"));
+        assert!(DEFAULT_PASSTHROUGH_APPS.contains(&"Cyberpunk2077.exe"));
+        for (name, list) in [
+            ("候选自绘", &DEFAULT_CANDIDATE_OWNER_APPS[..]),
+            ("按键直通", &DEFAULT_PASSTHROUGH_APPS[..]),
+        ] {
+            assert!(!list.is_empty(), "{name}默认名单不应为空");
+            assert!(
+                list.iter()
+                    .all(|s| s.ends_with(".exe") && s.chars().all(|c| c.is_ascii())),
+                "{name}名单须为 ASCII .exe 名：{list:?}"
+            );
+            assert!(
+                list.iter().all(|s| !s.trim().is_empty()),
+                "{name}名单不得含空条目"
+            );
+        }
     }
 }
