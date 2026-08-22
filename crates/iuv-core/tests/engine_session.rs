@@ -2589,3 +2589,71 @@ fn traditional_no_converter_degraded() {
     let e = s.on_key(Key::Space);
     assert_eq!(e.end, Some(SessionEnd::Commit("你好".into())));
 }
+
+// ===== 会话内符号字面尾巴（issue「d冒号表现不一致」） =====
+
+#[test]
+fn colon_enters_literal_tail_and_enter_commits_verbatim() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    s.on_key(Key::Char('d'));
+    s.on_key(Key::Char(':'));
+    let e = s.effect();
+    // 字面态：预编辑显示 拼音+尾巴，无汉字候选（对齐搜狗）
+    assert_eq!(e.composition, "d:");
+    assert!(e.reading.is_empty());
+    assert!(e.candidates.is_empty());
+    // Enter 原样上屏
+    match s.on_key(Key::Enter).end {
+        Some(SessionEnd::Commit(text)) => assert_eq!(text, "d:"),
+        other => panic!("期望提交 d:，实际 {other:?}"),
+    }
+}
+
+#[test]
+fn literal_backspace_restores_pinyin_candidates() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    s.on_key(Key::Char('d'));
+    s.on_key(Key::Char(':'));
+    // Backspace 删 ':' → 回拼音态，候选恢复
+    let e = s.on_key(Key::Backspace);
+    assert_eq!(e.composition, "d");
+    assert!(!e.candidates.is_empty());
+    match s.on_key(Key::Space).end {
+        Some(SessionEnd::Commit(text)) => assert_eq!(text, "的"),
+        other => panic!("期望回拼音态后 Space 提交 的，实际 {other:?}"),
+    }
+}
+
+#[test]
+fn literal_mode_locks_following_keys_until_cleared() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for k in [Key::Char('d'), Key::Char(':'), Key::Char('\\'), Key::Char('t')] {
+        s.on_key(k);
+    }
+    assert_eq!(s.effect().composition, "d:\\t");
+    // 字面锁定：数字/字母照常追加，不选词不进拼音
+    s.on_key(Key::Digit(2));
+    s.on_key(Key::Char('x'));
+    assert_eq!(s.effect().composition, "d:\\t2x");
+    // Enter 原样提交
+    match s.on_key(Key::Enter).end {
+        Some(SessionEnd::Commit(text)) => assert_eq!(text, "d:\\t2x"),
+        other => panic!("期望字面整体原样提交，实际 {other:?}"),
+    }
+}
+
+#[test]
+fn literal_esc_cancels_whole_session() {
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for k in [Key::Char('d'), Key::Char(':')] {
+        s.on_key(k);
+    }
+    match s.on_key(Key::Esc).end {
+        Some(SessionEnd::Cancel) => {}
+        other => panic!("期望字面态 Esc 取消会话，实际 {other:?}"),
+    }
+}

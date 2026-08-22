@@ -11,6 +11,10 @@ pub struct Session {
     /// 与引擎配置解耦：进程级 Engine 单例共享多实例，运行时态必须 per-实例。
     runtime: Arc<Mutex<ImeState>>,
     raw: String,
+    /// 字面尾巴（issue「d冒号表现不一致」）：会话内符号键触发进入，其后一切按键按
+    /// 文本输入语义追加至此——预编辑显示 拼音+尾巴、提交原样上屏（对齐搜狗）。
+    /// Backspace 逐字删除、删空自动回拼音态（on_key 顶部唯一锁定块处理）。
+    tail: String,
     seg: Vec<String>,
     /// 已确认选词栈：(文本, 词条 code)——选中间级词入栈（悬空，未上屏），退格回退栈顶
     picked: Vec<(String, String)>,
@@ -37,6 +41,7 @@ impl Session {
             engine,
             runtime,
             raw: String::new(),
+            tail: String::new(),
             seg: Vec::new(),
             picked: Vec::new(),
             all: Vec::new(),
@@ -53,6 +58,25 @@ impl Session {
                 end: Some(SessionEnd::Cancel),
                 ..Effect::default()
             };
+        }
+        // 字面模式锁定（tail 非空）：唯一的新状态处理点——一切按键按"文本输入"
+        // 语义处理，Backspace 逐字删除、删空自动回拼音态（tail 复位后走下方
+        // 常规臂），无任何散落判断。翻页/箭头/调权/隐藏字面态无候选可作用，
+        // 消费但忽略。
+        if !self.tail.is_empty() {
+            match key {
+                Key::Char(c) | Key::ShiftChar(c) => self.tail.push(c),
+                Key::Digit(n) => self.tail.push((b'0' + n) as char),
+                Key::Space => self.tail.push(' '),
+                Key::Backspace => {
+                    self.tail.pop();
+                }
+                Key::Enter => self.end = Some(SessionEnd::Commit(self.all_text())),
+                // 字面意图下提交半个词很怪：Esc 取消整个会话
+                Key::Esc => self.end = Some(SessionEnd::Cancel),
+                _ => {}
+            }
+            return self.effect();
         }
         match key {
             Key::Char(c) if c.is_ascii_lowercase() || c == '\'' => {
@@ -179,7 +203,12 @@ impl Session {
                     }
                 }
             }
-            Key::Digit(_) | Key::Char(_) | Key::ShiftChar(_) => {}
+            // 其余可打印符号键（未被 keymap 占用——占用键已在桥层重映射为翻页等）：
+            // 进入字面尾巴。预编辑显示 拼音+尾巴、提交原样上屏（issue「d冒号表现不一致」：
+            // 旧实现放行给应用，Word/记事本/Excel 插入位置各异 → :d / d: / 的:）。
+            // TODO(用户自定义按键映射)：落地时收编集 = 可打印符号 − 用户已定义功能键。
+            Key::Char(c) => self.tail.push(c),
+            Key::Digit(_) | Key::ShiftChar(_) => {}
         }
         self.effect()
     }
@@ -239,12 +268,13 @@ impl Session {
             .collect::<String>()
     }
 
-    /// 当前全部待上屏文本：picked 拼接 + 未消费拼音 raw。
+    /// 当前全部待上屏文本：picked 拼接 + 未消费拼音 raw + 字面尾巴。
     /// 输出前套宽度转换（全角模式原文上屏转全角，`nihao` → `ｎｉｈａｏ`）——
-    /// Enter/无候选空格/flush（pending_text）均走此路径，一处覆盖。
+    /// Enter/无候选空格/pending_text（flush）均走此路径，一处覆盖。
     fn all_text(&self) -> String {
         let mut text = self.picked_text();
         text.push_str(&self.raw);
+        text.push_str(&self.tail);
         self.to_output(text)
     }
 
@@ -365,6 +395,32 @@ impl Session {
 
     /// 不交按键取当前快照（REPL/测试用）。
     pub fn effect(&self) -> Effect {
+        // 字面模式：预编辑 = 拼音 + 字面尾巴，无汉字候选（对齐搜狗"汉字候选消失"）——
+        // 快照空 → 桥端走现成的「快照为空 hide」分支收起候选窗，内联预编辑由应用
+        // 渲染（d:）；游戏桥同源生效。尾巴恒原样拼接（不参与简繁转换，路径
+        // d:\tools 等场景按字面输出）。
+        let literal_mode = !self.tail.is_empty();
+        if literal_mode {
+            return Effect {
+                composition: self.convert_script(&format!(
+                    "{}{}{}",
+                    self.picked_text(),
+                    self.raw,
+                    self.tail
+                )),
+                reading: String::new(),
+                candidates: Vec::new(),
+                all_candidates: Vec::new(),
+                selected: 0,
+                page: PageInfo {
+                    page: 0,
+                    page_count: 0,
+                    page_size: self.page_size(),
+                    total: 0,
+                },
+                end: self.end.clone(),
+            };
+        }
         let page_cands = self.page_candidates().to_vec();
         // 混合预编辑（悬空显示）：已选词汉字 + 未选部分拼音分段。
         // 如选"床前"后：`床前ming'yue'guang`；commit 时由 end.text 全量替换上屏。
@@ -387,11 +443,6 @@ impl Session {
             s.push_str(&tail_preview);
             s
         };
-        let selected = if page_cands.is_empty() {
-            0
-        } else {
-            self.selected
-        };
         // 显示边界简→繁（31-script-traditional.md）：composition/reading（预编辑，含
         // picked 汉字 + 拼音尾巴）与候选文本统一转换；内部 self.all/picked 恒简体
         // （commit/自造词/调权/屏蔽键不变）。原文兜底候选（纯拼音 window 等）转换
@@ -402,7 +453,7 @@ impl Session {
             reading: preview_disp,
             candidates: page_cands.iter().map(|c| self.convert_candidate(c)).collect(),
             all_candidates: self.all.iter().map(|c| self.convert_candidate(c)).collect(),
-            selected,
+            selected: self.selected,
             page: PageInfo {
                 page: self.page,
                 page_count: self.page_count(),

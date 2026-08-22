@@ -53,6 +53,16 @@ pub fn map_key(
     const VK_OEM_7: u16 = 0xDE; // 引号键（无 Shift = '）
     const VK_OEM_COMMA: u16 = 0xBC; // 逗号键（无 Shift = ,）
     const VK_OEM_PERIOD: u16 = 0xBE; // 句号键（无 Shift = .）
+    // 其余 OEM 标点键（会话内作字面尾巴，见 session.rs tail；会话外行为不变——
+    // 中文标点/全角判定在 route_key 更前，命中即被吃，未命中原样放行）。
+    const VK_OEM_1: u16 = 0xBA; // ; :
+    const VK_OEM_PLUS: u16 = 0xBB; // = +
+    const VK_OEM_MINUS: u16 = 0xBD; // - _
+    const VK_OEM_2: u16 = 0xBF; // / ?
+    const VK_OEM_3: u16 = 0xC0; // ` ~
+    const VK_OEM_4: u16 = 0xDB; // [ {
+    const VK_OEM_5: u16 = 0xDC; // \ |
+    const VK_OEM_6: u16 = 0xDD; // ] }
 
     match vk {
         VK_BACK => Some(Key::Backspace),
@@ -89,6 +99,15 @@ pub fn map_key(
         // 逗号/句号：无 Shift 时映射为标点键（会话内由 apply_keymap 翻页；会话外放行打标点）。
         VK_OEM_COMMA if !with_shift && char_code == 0x2C => Some(Key::Char(',')),
         VK_OEM_PERIOD if !with_shift && char_code == 0x2E => Some(Key::Char('.')),
+        // 其余 OEM 标点键 → 实际字符（char_code 为无 Shift 基准，Shift 形态经
+        // shifted_punct 推导）。死键（char_code=0）放行。
+        // TODO(用户自定义按键映射)：落地时字面收编集 = 可打印符号 − 用户已定义功能键。
+        VK_OEM_1 | VK_OEM_PLUS | VK_OEM_MINUS | VK_OEM_2 | VK_OEM_3 | VK_OEM_4 | VK_OEM_5
+        | VK_OEM_6
+            if char_code != 0 =>
+        {
+            Some(Key::Char(shifted_punct(char_code as u8 as char, with_shift)))
+        }
         _ => None,
     }
 }
@@ -664,4 +683,28 @@ mod tests {
             Some("．".into())
         );
     }
+}
+
+#[test]
+fn map_key_oem_literal_tail_keys() {
+    // 冒号 = Shift + OEM_1（US 布局 ; 键）；无 Shift 是分号
+    assert_eq!(
+        map_key(0xBA, 0x3B, true, false, false, false),
+        Some(Key::Char(':'))
+    );
+    assert_eq!(
+        map_key(0xBA, 0x3B, false, false, false, false),
+        Some(Key::Char(';'))
+    );
+    // 路径反斜杠 / 问号
+    assert_eq!(
+        map_key(0xDC, 0x5C, false, false, false, false),
+        Some(Key::Char('\\'))
+    );
+    assert_eq!(
+        map_key(0xBF, 0x2F, true, false, false, false),
+        Some(Key::Char('?'))
+    );
+    // 死键（MapVirtualKeyW 返回 0）放行
+    assert_eq!(map_key(0xBA, 0, true, false, false, false), None);
 }
