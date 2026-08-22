@@ -13,42 +13,38 @@ use super::text_service::TextService;
 
 impl TextService {
     /// M6 daemon 轮询（route_key 按键路径唯一触发点）：共享段版本/纪元检测
-    /// （用户库/配置热载）+ 离线→在线翻转重注册（§4.4 自愈）。
+    /// （用户库/配置热载）+ 离线→在线翻转重发激活（§4.4 自愈）。
     /// 成本 = 读两个 u32 原子量；引擎未就绪/daemon 客户端缺失时静默跳过。
     /// 2026-08-21 决策：**不挂轮询定时器**——daemon 异常重启的自愈靠事件驱动
-    /// （Activate 重发 Register + 本函数按键路径），零交互盲区以注销/重启规避
+    /// （Activate 重发激活 + 本函数按键路径），零交互盲区以注销/重启规避
     /// （正式使用不重启 daemon；对齐小狼毫纯事件驱动架构）。
     pub(crate) fn daemon_poll_tick(&self) {
         let Some(engine) = engine() else { return };
         if let Some(client) = self.daemon.borrow().as_ref() {
-            client.poll(&engine, |engine| self.apply_config_hot_reload(engine), || {
-                self.register_instance()
-            });
+            client.poll(
+                &engine,
+                |engine| self.apply_config_hot_reload(engine),
+                || self.signal_focus_gained(),
+            );
         }
     }
 
-    /// 向 daemon 注册实例 + 通知 active（Activate 时；passthrough 进程不注册，iuv 完全透明）。
-    /// **每次 Activate 都发 Register**（daemon 侧 `instances.insert` 幂等覆盖）：daemon 重启
-    /// 清空实例表后，焦点切回任意 iuv 应用即自愈重建（§4.4），无需等按键触发的 poll——
-    /// 旧实现的 registered 门导致重启后只发 Active（被 daemon 对未知实例丢弃），工具栏
-    /// 「显示/隐藏」点了没反应，直到打字才恢复（2026-08-21 日志实测修复）。
-    /// Register 失败 = daemon 离线（静默；poll 在线翻转 / 下次 Activate 重试，§4.4）。
-    pub(crate) fn register_instance(&self) {
+    /// 激活上报（40-toolbar-show-hide-governance.md 纯信号模型）：实例获得焦点 /
+    /// TIP 激活 / daemon 上线翻转——「激活 + 当前四态」经信号通道发 daemon，
+    /// 由其绑定并渲染工具栏。passthrough 进程不上报（iuv 完全透明）。
+    pub(crate) fn signal_focus_gained(&self) {
         let cfg = iuv_core::Config::load();
         let passthrough = !cfg.passthrough_apps.is_empty()
             && is_passthrough_app(&log::module_name(), &cfg.passthrough_apps);
         if passthrough {
-            log_line("[toolbar] passthrough 进程：不注册工具栏实例（iuv 完全透明）");
+            log_line("[toolbar] passthrough 进程：不上报工具栏信号（iuv 完全透明）");
             return;
         }
         let Some(client) = self.daemon.borrow().as_ref().cloned() else {
             return;
         };
         let (pid, tid) = self.instance_id();
-        if client.register(pid, tid, self.runtime_snapshot()) {
-            log_line(&format!("[toolbar] 实例注册（{pid}:{tid}）"));
-        }
-        client.set_active(pid, tid, true);
+        client.focus_gained(pid, tid, self.runtime_snapshot());
     }
 
     /// M6 配置热载（config_epoch 变化触发，DaemonClient::poll 回调）：

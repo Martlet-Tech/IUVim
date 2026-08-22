@@ -11,8 +11,8 @@
 
 use std::mem::size_of;
 
-use iuv_ui::{menu_hit_test, render_menu, MenuEntry, TextRenderer, Theme};
 use iuv_ui::layout::Rect;
+use iuv_ui::{menu_hit_test, render_menu, MenuEntry, TextRenderer, Theme};
 use iuv_win::LayeredWindow;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -21,9 +21,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, SetForegroundWindow, ShowWindow, SW_HIDE, SW_SHOW,
-    WM_ACTIVATE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT,
-    WM_RBUTTONDOWN, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WA_INACTIVE,
+    GetWindowRect, SetForegroundWindow, ShowWindow, SW_HIDE, SW_SHOW, WA_INACTIVE, WM_ACTIVATE,
+    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
 const CLASS_NAME: PCWSTR = w!("IuvMenuWindow");
@@ -47,11 +47,7 @@ pub struct MenuWindow {
 }
 
 impl MenuWindow {
-    pub fn new(
-        theme: Theme,
-        items: Vec<MenuEntry>,
-        on_select: Option<Box<dyn Fn(u16)>>,
-    ) -> Self {
+    pub fn new(theme: Theme, items: Vec<MenuEntry>, on_select: Option<Box<dyn Fn(u16)>>) -> Self {
         MenuWindow {
             layered: iuv_win::LayeredWindow::new(),
             items,
@@ -167,8 +163,7 @@ impl MenuWindow {
             bottom: 32767,
         };
         // SAFETY: MonitorFromPoint 纯查询；GetMonitorInfoW 输出缓冲已初始化。
-        let monitor =
-            unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST) };
+        let monitor = unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST) };
         let mut info = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as u32,
             ..Default::default()
@@ -176,14 +171,23 @@ impl MenuWindow {
         if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
             area = info.rcWork;
         }
-        let x = if x + w > area.right { area.right - w } else { x };
-        let y = if y + h > area.bottom { area.bottom - h } else { y };
+        let x = if x + w > area.right {
+            area.right - w
+        } else {
+            x
+        };
+        let y = if y + h > area.bottom {
+            area.bottom - h
+        } else {
+            y
+        };
         (x.max(area.left), y.max(area.top))
     }
 
     /// ULW 呈现（共享模块 ulw.rs）。失败静默（记日志，不 panic）。
     fn present(&mut self, surf: &iuv_ui::Surface, x: i32, y: i32, w: i32, h: i32) {
-        self.ulw.upload(self.layered.hwnd, surf, x, y, w, h, "[menuwin]");
+        self.ulw
+            .upload(self.layered.hwnd, surf, x, y, w, h, "[menuwin]");
     }
 }
 

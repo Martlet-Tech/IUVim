@@ -1,6 +1,7 @@
 //! 工具条主窗口（§6；P2.6 自 toolbar.rs 拆出）：渲染/交互/拖拽/看板判定。
 //! 仅工具条线程触碰；wnd_proc 经 GWLP_USERDATA 取回本结构。
 
+use std::collections::VecDeque;
 use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
@@ -18,29 +19,30 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, DestroyWindow, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
-    GetWindowThreadProcessId, LoadCursorW, SetCursor, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, GWLP_USERDATA,
-    HTCLIENT, HTTRANSPARENT, IDC_ARROW, IDC_HAND, MA_NOACTIVATE, WM_DESTROY, WM_ERASEBKGND,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
-    WM_SETCURSOR, WM_TIMER,
+    DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect, LoadCursorW, SetCursor,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSIZE,
+    SWP_NOZORDER, SW_HIDE, SW_SHOWNA, GWLP_USERDATA, HTCLIENT, HTTRANSPARENT, IDC_ARROW, IDC_HAND,
+    MA_NOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
+    WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
 };
 
 use super::prefs::{save_pref, ToolbarPref};
 use super::tooltip::TooltipWindow;
 use super::{
     button_tooltip, clamp_to_work, client_pos, create_window, cursor_screen, current_theme,
-    default_pos, in_rounded_rect, Shared, CLASS_BAR, WM_APP_REFRESH, WM_MOUSELEAVE,
+    default_pos, in_rounded_rect, BarEvent, Shared, ToolbarInstance, CLASS_BAR, WM_APP_REFRESH,
+    WM_MOUSELEAVE,
 };
 use crate::log;
 use crate::state::DaemonState;
-
 /// 工具条窗口（仅工具条线程触碰；wnd_proc 经 GWLP_USERDATA 取回）。
 pub(super) struct ToolbarWindow {
     pub(super) hwnd: HWND,
     shared: Arc<Mutex<Shared>>,
     state: Arc<DaemonState>,
     icons: Arc<ToolbarIcons>,
+    /// FIFO 事件队列（信号线程/管道线程 push、本线程 drain；显隐决策唯一入口）。
+    pending: Arc<Mutex<VecDeque<BarEvent>>>,
     theme: Theme,
     text: Option<TextRenderer>,
     ulw: UlwSurface,
@@ -59,6 +61,7 @@ impl ToolbarWindow {
         shared: Arc<Mutex<Shared>>,
         state: Arc<DaemonState>,
         icons: Arc<ToolbarIcons>,
+        pending: Arc<Mutex<VecDeque<BarEvent>>>,
     ) -> ToolbarWindow {
         let hwnd = create_window(CLASS_BAR);
         let theme = current_theme(&state);
@@ -68,6 +71,7 @@ impl ToolbarWindow {
             shared,
             state,
             icons,
+            pending,
             theme,
             text: None,
             ulw: UlwSurface::new(),
@@ -104,7 +108,8 @@ impl ToolbarWindow {
         }
     }
 
-    /// reconcile（WM_APP_REFRESH / WM_TIMER 共用）：前台看板判定 + 主题热刷新 + 显隐/重绘。
+    /// reconcile（WM_APP_REFRESH）：主题热刷新 + drain FIFO（逐条同步执行显隐动作）
+    /// + 按最终态重绘。拖拽中零重绘（只由 drag_move 移动窗口）。
     fn reconcile(&mut self) {
         // 主题热刷新（设置页保存后经 state.config 更新；读内存快照，零磁盘 I/O）。
         let t = current_theme(&self.state);
@@ -113,54 +118,110 @@ impl ToolbarWindow {
             self.tip.set_theme(t);
             log::log_line(&format!("[toolbar] 主题热刷新：{}", self.theme.name));
         }
-        self.poll_foreground();
-        // 拖拽中零重绘：只由 drag_move 的 SetWindowPos 移动，避免 250ms 定时器整帧重渲/重传
-        // 与拖拽争抢 → 闪烁。状态变化（StateSync）在拖拽结束后下一帧自然刷新。
+        self.drain_requests();
         if self.visible && self.drag_offset.is_none() {
             self.repaint();
         }
     }
 
-    /// 前台看板判定（§6.2，2026-08-21 用户简化语义）：**全局显隐偏好决定显隐**——
-    /// 只要有任一活动实例（= iuv 在某处持有输入焦点）且偏好为显示即显示；不再要求
-    /// 前台窗口 pid:tid 精确命中实例表（时序脆弱：daemon 重启窗口期/焦点切换瞬间误隐藏）。
-    /// 渲染态优先级：前台命中实例 > 最近激活实例 > 默认四态。
-    fn poll_foreground(&mut self) {
-        // SAFETY: GetForegroundWindow 纯查询；GetWindowThreadProcessId 输出 pid。
-        let fg = unsafe { GetForegroundWindow() };
-        let mut pid = 0u32;
-        let tid = unsafe { GetWindowThreadProcessId(fg, Some(&mut pid)) };
-        let (focused, visible) = {
-            let sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-            // 前台命中 active 实例优先；否则取最近激活的 active 实例。
-            let chosen = sh
-                .instances
-                .get(&(pid, tid))
-                .filter(|i| i.active)
-                .map(|_| (pid, tid))
-                .or_else(|| {
-                    sh.instances
-                        .iter()
-                        .filter(|(_, i)| i.active)
-                        .max_by_key(|(_, i)| i.seq)
-                        .map(|(k, _)| *k)
-                });
-            let visible = sh.visible;
-            drop(sh);
-            let mut sh2 = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-            sh2.focused = chosen;
-            (chosen, visible)
-        };
-        if focused.is_some() && visible {
-            // 已可见：**不重定位**（交由 reconcile 的 repaint 按当前窗口矩形刷新）——
-            // 否则每次 250ms 定时器都把窗口拉回 shared.pos（拖拽前旧位置），拖拽中被
-            // SetWindowPos 移走后 250ms 又弹回原位 → 闪烁（2026-08-21 实测拖拽闪烁）。
-            // 仅在 hidden→shown 转变时 show() 定位一次。
-            if !self.visible {
-                self.show();
+    /// FIFO 串行消费：pop → 同步执行该事件的显隐动作 → 再取下一条（不丢不弃，
+    /// 动作各自耗时天然串行；40-toolbar-show-hide-governance.md 纯信号模型）。
+    fn drain_requests(&mut self) {
+        loop {
+            let ev = {
+                let mut q = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+                match q.pop_front() {
+                    Some(e) => e,
+                    None => break,
+                }
+            };
+            self.apply_event(ev);
+        }
+    }
+
+    /// 单条事件应用（纯信号判定，零前台查询——TSF 线程焦点信号即真相源）：
+    /// - `FocusGained`：绑定该实例并立即显示（已可见 → 仅重绘换内容）
+    /// - `FocusLost`：绑定者本人 → 解绑并立即隐藏；他人 → 仅改表
+    fn apply_event(&mut self, ev: BarEvent) {
+        match ev {
+            BarEvent::FocusGained { pid, tid, state } => {
+                let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                // 防御性 upsert：未知实例直接建表（信号即注册——「有一个」语义）。
+                sh.instances.insert(
+                    (pid, tid),
+                    ToolbarInstance { state, active: true },
+                );
+                let was_bound = sh.focused == Some((pid, tid));
+                sh.focused = Some((pid, tid));
+                drop(sh);
+                log::log_line(&format!("[toolbar] 激活（{pid}:{tid}）"));
+                if !self.visible {
+                    log::log_line(&format!(
+                        "[toolbar] 工具条 → 显示（绑定 {pid}:{tid}）"
+                    ));
+                    self.show();
+                } else if !was_bound && self.drag_offset.is_none() {
+                    self.repaint();
+                }
             }
-        } else if self.visible {
-            self.hide();
+            BarEvent::FocusLost { pid, tid } => {
+                let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(i) = sh.instances.get_mut(&(pid, tid)) {
+                    i.active = false;
+                }
+                let was_bound = sh.focused == Some((pid, tid));
+                if was_bound {
+                    sh.focused = None;
+                }
+                drop(sh);
+                log::log_line(&format!("[toolbar] 失焦（{pid}:{tid}）"));
+                if was_bound && self.visible {
+                    log::log_line(&format!(
+                        "[toolbar] 工具条 → 隐藏（解绑 {pid}:{tid}）"
+                    ));
+                    self.hide();
+                }
+            }
+            BarEvent::StateChanged { pid, tid, state } => {
+                let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(i) = sh.instances.get_mut(&(pid, tid)) {
+                    i.state = state;
+                }
+                let bound = sh.focused == Some((pid, tid));
+                drop(sh);
+                // 绑定实例四态变化且可见 → 重绘换内容（拖拽中留给 reconcile 收尾帧）。
+                if bound && self.visible && self.drag_offset.is_none() {
+                    self.repaint();
+                }
+            }
+            BarEvent::ToggleVisible => {
+                let visible = {
+                    let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                    sh.visible = !sh.visible;
+                    sh.visible
+                };
+                log::log_line(&format!("[toolbar] 全局显隐偏好 → {visible}"));
+                save_pref(&ToolbarPref {
+                    visible,
+                    pos: self.shared.lock().unwrap_or_else(|p| p.into_inner()).pos,
+                });
+                if !visible {
+                    if self.visible {
+                        self.hide();
+                    }
+                } else {
+                    // 重开偏好：绑定实例仍活跃 → 立即恢复显示。
+                    let bound_active = {
+                        let sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                        sh.focused
+                            .map_or(false, |f| sh.instances.get(&f).map_or(false, |i| i.active))
+                    };
+                    if bound_active && !self.visible {
+                        log::log_line("[toolbar] 工具条 → 显示（偏好重开，绑定实例活跃）");
+                        self.show();
+                    }
+                }
+            }
         }
     }
 
@@ -433,13 +494,8 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_TIMER => {
-            if let Some(w) = get_bar_mut(hwnd) {
-                w.reconcile();
-            }
-            LRESULT(0)
-        }
         WM_APP_REFRESH => {
+            // FIFO 有新消息：drain 串行执行显隐动作。
             if let Some(w) = get_bar_mut(hwnd) {
                 w.reconcile();
             }

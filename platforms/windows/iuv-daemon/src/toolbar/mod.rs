@@ -8,9 +8,13 @@
 //! reconcile。窗口必须由创建线程使用（Win32 纪律），全部 ToolbarWindow 状态只在该线程
 //! 触碰；跨线程经 `Arc<Mutex<Shared>>` + `PostMessage`。
 //!
-//! 前台看板判定（§6.2）：定时器 ~250ms `GetForegroundWindow` + `GetWindowThreadProcessId`
-//! → 前台 pid:tid 命中「active 实例」→ focused = 该实例、渲染其四态；否则隐藏。轮询
-//! 兜底天然覆盖切 app/切输入法/实例死亡/失焦时序竞态；TSF `Active` 通知用于即时性。
+//! 显隐治理（40-toolbar-show-hide-governance.md 纯信号模型定稿）：管道线程只把
+//! Request **入 FIFO**（不丢不弃）+ PostMessage 唤醒；工具条线程 drain 串行消费，
+//! 每条消息同步执行完显/隐动作再取下一条。判定零前台查询——TSF 线程焦点信号
+//! 即真相源：`Active(true)`（SetThreadFocus/Register 链）= 绑定该实例并立即显示，
+//! `Active(false)`（KillThreadFocus/OPENCLOSE 关）= 绑定者本人则立即隐藏。
+//! 消息时序颠倒自收敛（[B真,A假] 与 [A假,B真] 终态一致）。无定时器、无前台查询、
+//! 无兜底（2026-08-22 用户裁决：好使就是好使，不好使就是没改对地方）。
 //!
 //! 持久化（§6.3）：独立 `toolbar.json`（`%LOCALAPPDATA%\iuv\`，显示偏好 + 位置），
 //! 写盘复用「临时文件 + rename 原子替换」，失败不阻断（内存态已生效）。首次无位置 →
@@ -27,18 +31,17 @@ mod prefs;
 mod tooltip;
 mod window;
 
-use self::prefs::{load_pref, save_pref, ToolbarPref};
+use self::prefs::load_pref;
 use self::tooltip::tip_wnd_proc;
 use self::window::{bar_wnd_proc, ToolbarWindow};
 
-use std::collections::HashMap;
-use std::mem::size_of;
+use std::collections::{HashMap, VecDeque};use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use iuv_core::ImeState;
-use iuv_win::Request;
+use iuv_win::{Request, ToolbarSignal};
 use iuv_ui::{theme_dark, theme_light, Theme, ToolbarIcons};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -47,7 +50,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW, PostMessageW,
-    PostThreadMessageW, RegisterClassExW, SetTimer, SetWindowLongPtrW, TranslateMessage, WM_APP,
+    PostThreadMessageW, RegisterClassExW, SetWindowLongPtrW, TranslateMessage, WM_APP,
     WM_QUIT, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, IDC_ARROW, MSG, WNDCLASSEXW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
@@ -57,12 +60,8 @@ const WM_MOUSELEAVE: u32 = 675;
 use crate::state::DaemonState;
 use crate::log;
 
-/// 前台看板轮询间隔（毫秒，§6.2）。
-const TOOLBAR_POLL_MS: u32 = 250;
-/// 私有消息：共享态变化 → 唤醒 reconcile（管道线程 PostMessage）。
+/// 私有消息：FIFO 有新请求 → 唤醒工具条线程 drain（管道线程 PostMessage）。
 const WM_APP_REFRESH: u32 = WM_APP + 41;
-/// 定时器 id。
-const ID_TIMER: usize = 1;
 
 const CLASS_BAR: PCWSTR = w!("IuvToolbarWindow");
 const CLASS_TIP: PCWSTR = w!("IuvTooltipWindow");
@@ -75,29 +74,40 @@ const DEFAULT_MARGIN: i32 = 12;
 struct ToolbarInstance {
     state: ImeState,
     active: bool,
-    /// 最近一次 Active{true} 的单调序号（Shared::next_seq 分配）；前台窗口未命中
-    /// 实例表时，看板选「最近激活」实例渲染其四态（2026-08-21 显示判定放宽）。
-    seq: u64,
 }
 
-/// 工具栏共享状态（管道线程写、工具条线程读；Mutex 串行）。
+/// 工具栏共享状态（工具条线程独占写——管道线程只入队；Mutex 仅为跨线程读兜底）。
 #[derive(Default)]
 struct Shared {
     /// 实例表 `{pid:tid → {state, active}}`（§6.1）。
     instances: HashMap<(u32, u32), ToolbarInstance>,
-    /// 当前前台 iuv 实例（看板判定结果）。
+    /// 当前绑定实例（最近一条 `Active{true}` 的 pid:tid；看板渲染其四态）。
     focused: Option<(u32, u32)>,
     /// 全局显示偏好（语言栏菜单开关；持久化）。
     visible: bool,
     /// 记忆位置（拖动后写；持久化；None = 首次默认主屏右下角）。
     pos: Option<(i32, i32)>,
-    /// Active{true} 单调序号源（「最近激活实例」判定）。
-    next_seq: u64,
 }
 
-/// 工具栏宿主（daemon 主线程持有；工具条线程共享共享态 + 唤醒句柄）。
+/// 工具条事件（FIFO 载荷）：信号通道三消息 + 语言栏菜单开关。
+/// FocusGained/FocusLost/StateChanged 来自信号管道；ToggleVisible 来自数据面
+/// 语言栏右键菜单（Request::ToggleToolbar）。单队列保证全局顺序。
+pub(super) enum BarEvent {
+    /// 激活：绑定该实例并显示（渲染其四态）。
+    FocusGained { pid: u32, tid: u32, state: ImeState },
+    /// 失焦：绑定者本人 → 解绑并隐藏；他人 → 仅改表。
+    FocusLost { pid: u32, tid: u32 },
+    /// 态变更：更新四态（可见且绑定 → 重绘）。
+    StateChanged { pid: u32, tid: u32, state: ImeState },
+    /// 全局显隐偏好切换（语言栏菜单）。
+    ToggleVisible,
+}
+
+/// 工具栏宿主（daemon 主线程持有；信号线程/管道线程经它入队，工具条线程 drain 消费）。
 pub struct ToolbarHost {
     shared: Arc<Mutex<Shared>>,
+    /// FIFO 事件队列（信号线程/管道线程 push、工具条线程 pop；串行消费不丢不弃）。
+    pending: Arc<Mutex<VecDeque<BarEvent>>>,
     /// 工具条窗口句柄（工具条线程创建后注册；供 PostMessage 唤醒）。
     hwnd: AtomicUsize,
     /// 工具条线程 id（退出时 PostThreadMessage WM_QUIT）。
@@ -116,16 +126,18 @@ impl ToolbarHost {
         let icons = Arc::new(crate::toolbar_icons::load_icons());
         let host = Arc::new(ToolbarHost {
             shared: shared.clone(),
+            pending: Arc::new(Mutex::new(VecDeque::new())),
             hwnd: AtomicUsize::new(0),
             thread_id: AtomicU32::new(0),
         });
         let t_shared = shared.clone();
         let t_state = state.clone();
         let t_icons = icons.clone();
+        let t_pending = host.pending.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("iuv-toolbar".to_string())
-            .spawn(move || toolbar_thread_main(t_shared, t_state, t_icons, tx));
+            .spawn(move || toolbar_thread_main(t_shared, t_state, t_icons, t_pending, tx));
         let _spawned = match spawned {
             Ok(_h) => {
                 log::log_line("[toolbar] 工具条线程已启动");
@@ -151,74 +163,45 @@ impl ToolbarHost {
             .visible
     }
 
-    /// 处理工具栏相关管道请求（Register/StateSync/Active/Unregister/ToggleToolbar）。
-    /// 返回 true = 本请求已消费（调用方不再按用户库写请求处理）。
-    pub fn handle_request(&self, req: &Request) -> bool {    match req {
-            Request::Register { pid, tid, state } => {
-                let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                sh.instances.insert(
-                    (*pid, *tid),
-                    ToolbarInstance {
-                        state: *state,
-                        active: false,
-                        seq: 0,
-                    },
-                );
-                drop(sh);
-                log::log_line(&format!("[toolbar] 实例注册（{pid}:{tid}）"));
-                self.wake();
-                true
-            }
-            Request::StateSync { pid, tid, state } => {
-                let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                if let Some(i) = sh.instances.get_mut(&(*pid, *tid)) {
-                    i.state = *state;
-                }
-                drop(sh);
-                self.wake();
-                true
-            }
-            Request::Active { pid, tid, active } => {
-                let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                // 记录激活顺序（前台未命中时看板选最近激活实例渲染）。
-                let seq = if *active {
-                    sh.next_seq += 1;
-                    sh.next_seq
-                } else {
-                    0
-                };
-                if let Some(i) = sh.instances.get_mut(&(*pid, *tid)) {
-                    i.active = *active;
-                    i.seq = seq;
-                }
-                drop(sh);
-                self.wake();
-                true
-            }
-            Request::Unregister { pid, tid } => {
-                let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                sh.instances.remove(&(*pid, *tid));
-                drop(sh);
-                log::log_line(&format!("[toolbar] 实例注销（{pid}:{tid}）"));
-                self.wake();
-                true
-            }
-            Request::ToggleToolbar => {
-                let visible = {
-                    let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                    sh.visible = !sh.visible;
-                    sh.visible
-                };
-                log::log_line(&format!("[toolbar] 全局显隐偏好 → {visible}"));
-                save_pref(&ToolbarPref {
-                    visible,
-                    pos: self.shared.lock().unwrap_or_else(|p| p.into_inner()).pos,
-                });
-                self.wake();
-                true
-            }
-            _ => false,
+    /// 处理数据面管道请求：仅语言栏菜单开关（Request::ToggleToolbar）入队。
+    /// 其余工具条类 Request（Register/Active/…）已由信号通道取代——一律不消费
+    /// （返回 false 交调用方按未知请求处理；TSF 侧同版本起不再发送）。
+    pub fn handle_request(&self, req: &Request) -> bool {
+        if !matches!(req, Request::ToggleToolbar) {
+            return false;
         }
+        self.enqueue(BarEvent::ToggleVisible);
+        true
+    }
+
+    /// 处理信号通道消息（激活/失焦/态变更）→ 入 FIFO。
+    pub fn handle_signal(&self, sig: &ToolbarSignal) {
+        let ev = match sig {
+            ToolbarSignal::FocusGained { pid, tid, state } => BarEvent::FocusGained {
+                pid: *pid,
+                tid: *tid,
+                state: *state,
+            },
+            ToolbarSignal::FocusLost { pid, tid } => BarEvent::FocusLost {
+                pid: *pid,
+                tid: *tid,
+            },
+            ToolbarSignal::StateChanged { pid, tid, state } => BarEvent::StateChanged {
+                pid: *pid,
+                tid: *tid,
+                state: *state,
+            },
+        };
+        self.enqueue(ev);
+    }
+
+    /// 入队 + 唤醒工具条线程 drain。
+    fn enqueue(&self, ev: BarEvent) {
+        {
+            let mut q = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+            q.push_back(ev);
+        }
+        self.wake();
     }
 
     /// 唤醒工具条线程 reconcile（共享态变化后；窗口未就绪 → 静默）。
@@ -248,17 +231,16 @@ fn toolbar_thread_main(
     shared: Arc<Mutex<Shared>>,
     state: Arc<DaemonState>,
     icons: Arc<ToolbarIcons>,
+    pending: Arc<Mutex<VecDeque<BarEvent>>>,
     tx: std::sync::mpsc::Sender<(usize, u32)>,
 ) {
     register_bar_class();
     register_tip_class();
-    let win = Box::new(ToolbarWindow::new(shared, state, icons));
+    let win = Box::new(ToolbarWindow::new(shared, state, icons, pending));
     if win.hwnd.is_invalid() {
         log::log_line("[toolbar] 建窗失败，工具条线程退出");
         return;
     }
-    // SAFETY: 定时器回调 id = ID_TIMER（消息循环内 wnd_proc 消费）。
-    unsafe { SetTimer(Some(win.hwnd), ID_TIMER, TOOLBAR_POLL_MS, None) };
     let hwnd = win.hwnd;
     // SAFETY: win 为 Box（地址稳定），线程存活期间有效；wnd_proc 经 GWLP_USERDATA 取回。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*win as *const ToolbarWindow as isize) };

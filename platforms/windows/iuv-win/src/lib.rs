@@ -21,7 +21,7 @@ pub mod ulw;
 
 pub use ipc::{
     ctl_pipe_name, CtlClient, CtlCmd, CtlResult, CtlServer, PipeClient, PipeServer, Request,
-    Response,
+    Response, SignalClient, SignalServer, ToolbarSignal,
 };
 pub use popup::LayeredWindow;
 pub use shm::{ShmReader, ShmWriter};

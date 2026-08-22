@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use iuv_data::UserDict;
-use iuv_win::{PipeServer, Request, Response, ShmWriter};
+use iuv_win::{PipeServer, Request, Response, ShmWriter, SignalServer};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
@@ -117,6 +117,7 @@ fn run() -> i32 {
 
     // ---- 6. 管道监听线程（写请求应用 + publish + 立即写盘）----
     spawn_pipe_thread(state.clone(), toolbar.clone());
+    spawn_signal_pipe_thread(toolbar.clone());
 
     // ---- 7. 主线程：命令轮询 + eframe 设置窗（winit 事件循环必须在主线程）----
     log::log_line("[main] 就绪，主线程进入命令轮询循环（后台常驻，无托盘图标）");
@@ -205,6 +206,40 @@ fn spawn_pipe_thread(state: Arc<DaemonState>, toolbar: Arc<ToolbarHost>) {
     match spawned {
         Ok(_) => log::log_line("[pipe] 管道监听线程已启动"),
         Err(e) => log::log_line(&format!("[pipe] 启动监听线程失败: {e}")),
+    }
+}
+
+/// 工具条信号通道（40-toolbar-show-hide-governance.md）：专用管道 accept 循环 +
+/// thread-per-connection——每连接独立线程循环读帧喂工具条 FIFO，连接间互不阻塞
+/// （数据面单线程串行 serve 的争用问题在此结构性消除）。
+fn spawn_signal_pipe_thread(toolbar: Arc<ToolbarHost>) {
+    let spawned = std::thread::Builder::new()
+        .name("iuv-signal".to_string())
+        .spawn(move || loop {
+            match SignalServer::accept() {
+                Ok(server) => {
+                    let toolbar = toolbar.clone();
+                    let worker = std::thread::Builder::new()
+                        .name("iuv-signal-conn".to_string())
+                        .spawn(move || loop {
+                            match server.recv() {
+                                Ok(sig) => toolbar.handle_signal(&sig),
+                                Err(_) => break, // 对端断开 / 帧错 → 结束本连接线程
+                            }
+                        });
+                    if let Err(e) = worker {
+                        log::log_line(&format!("[signal] 连接线程启动失败: {e}"));
+                    }
+                }
+                Err(e) => {
+                    log::log_line(&format!("[signal] accept 失败（200ms 后重试）: {e}"));
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+        });
+    match spawned {
+        Ok(_) => log::log_line("[signal] 信号通道监听线程已启动"),
+        Err(e) => log::log_line(&format!("[signal] 启动监听线程失败: {e}")),
     }
 }
 

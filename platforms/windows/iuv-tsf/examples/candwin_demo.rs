@@ -70,7 +70,9 @@ fn pump_messages() -> bool {
 }
 
 fn main() {
-    println!("IUV 输入法 候选窗演示（iuv-ui + ULW）—— 按 Esc 退出（建议同时打开记事本观察不抢焦点）");
+    println!(
+        "IUV 输入法 候选窗演示（iuv-ui + ULW）—— 按 Esc 退出（建议同时打开记事本观察不抢焦点）"
+    );
     // 浅色 + 深色两窗并排演示：验证主题差异。
     let mut light = CandwinCandidateWindow::new(iuv_ui::theme_light());
     let mut dark = CandwinCandidateWindow::new(iuv_ui::theme_dark());

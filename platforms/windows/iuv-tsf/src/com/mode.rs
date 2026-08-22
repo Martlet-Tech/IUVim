@@ -25,10 +25,10 @@ impl TextService {
             let effect = sess.effect();
             self.dispatch(&effect);
         }
-        // 上报 daemon 看板（§4.1 StateSync）。
+        // 上报 daemon 看板（信号通道：态变更）。
         if let Some(client) = self.daemon.borrow().as_ref() {
             let (pid, tid) = self.instance_id();
-            client.state_sync(pid, tid, self.runtime_snapshot());
+            client.state_changed(pid, tid, self.runtime_snapshot());
         }
     }
 
@@ -63,10 +63,10 @@ impl TextService {
         if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
             langbar::refresh_lang_bar(lang_bar);
         }
-        // 工具栏看板同步（中英钮真相源 OnChange → StateSync）。
+        // 工具栏看板同步（中英钮真相源 OnChange → 态变更上报）。
         if let Some(client) = self.daemon.borrow().as_ref() {
             let (pid, tid) = self.instance_id();
-            client.state_sync(pid, tid, self.runtime_snapshot());
+            client.state_changed(pid, tid, self.runtime_snapshot());
         }
         // 关闭输入法：未确认输入按**原文上屏**语义结束（见 flush_session）。
         if !open && (self.session.borrow().is_some() || self.composition.borrow().is_some()) {
@@ -116,7 +116,11 @@ impl TextService {
         alt: bool,
         session_active: bool,
     ) -> Option<String> {
-        if self.english_mode.load(std::sync::atomic::Ordering::SeqCst) || session_active || ctrl || alt {
+        if self.english_mode.load(std::sync::atomic::Ordering::SeqCst)
+            || session_active
+            || ctrl
+            || alt
+        {
             return None;
         }
         let runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());

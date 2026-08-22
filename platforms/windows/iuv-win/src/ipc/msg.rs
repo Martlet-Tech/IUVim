@@ -60,6 +60,20 @@ pub enum Response {
     ToolbarVisible { visible: bool },
 }
 
+/// 工具条信号通道载荷（40-toolbar-show-hide-governance.md 纯信号模型定稿）：
+/// 专用管道 `iuv-toolbar-signal`，与数据面（用户库写）物理隔离。
+/// 三消息 = 显隐决策唯一输入；TSF 实例获得焦点发 FocusGained、失去焦点发
+/// FocusLost、运行中四态变化发 StateChanged。pid/tid 仅作日志观察点。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolbarSignal {
+    /// 激活：「有一个实例持有者获得了焦点」+ 当前四态（供 daemon 渲染新工具栏）。
+    FocusGained { pid: u32, tid: u32, state: ImeState },
+    /// 失焦：「有一个实例持有者宣布了自己失焦」。
+    FocusLost { pid: u32, tid: u32 },
+    /// 态变更：会话中途四态变化（工具栏按钮/系统级切换后实例自报新态）。
+    StateChanged { pid: u32, tid: u32, state: ImeState },
+}
+
 // ===== 32-status-toolbar.md 工具栏四态 + 反向控制通道 =====
 
 // 四态在消息里直接用 iuv-core `ImeState`（全仓唯一表示；线编码 = `[u8;4]`，

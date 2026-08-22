@@ -45,9 +45,9 @@ use super::msg::{Request, Response};
 /// 管道名（单用户桌面足够；多用户 SID 隔离在 M7 安装器范畴）。
 const PIPE_NAME: &str = r"\\.\pipe\iuv-userdict";
 /// 单帧最大字节数（消息模式 ReadFile 缓冲；用户库条目小，64KB 充裕）。
-const PIPE_FRAME_MAX: usize = 64 * 1024;
+pub(super) const PIPE_FRAME_MAX: usize = 64 * 1024;
 /// 连接超时（WaitNamedPipeW，毫秒；超时视为 daemon 不在线）。
-const PIPE_CONNECT_TIMEOUT_MS: u32 = 1500;
+pub(super) const PIPE_CONNECT_TIMEOUT_MS: u32 = 1500;
 
 /// 命名管道底层原语（PipeClient/PipeServer 与 `ctl.rs` 的 CtlServer/CtlClient 共用）。
 pub(super) mod imp {

@@ -17,9 +17,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use iuv_core::{Engine, ImeState, UserMutation, UserRemote};
-use iuv_win::{PipeClient, Request, Response, ShmReader};
+use iuv_win::{
+    PipeClient, Request, Response, ShmReader, SignalClient, ToolbarSignal,
+};
 use windows::Win32::System::Threading::{
-    CreateProcessW, STARTUPINFOW, PROCESS_INFORMATION, CREATE_NO_WINDOW,
+    CreateProcessW, CREATE_NO_WINDOW, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
 use crate::log::log_line;
@@ -37,6 +39,10 @@ pub struct DaemonClient {
     /// （实测 0x800700E9 ERROR_PIPE_BROKEN，靠重连自愈但多一次失败往返）。
     /// 失败/断开 → 清缓存，下次新建。
     pipe: Mutex<Option<PipeClient>>,
+    /// 工具条信号通道连接（惰性：首次 `send_signal` 时 connect；写失败弃缓存，
+    /// 下次发送前重连——持久连接的自然生命周期，非兜底机制）。
+    /// 与数据面 `pipe` 物理隔离：控制面零争用，焦点风暴下消息不丢。
+    signal: Mutex<Option<SignalClient>>,
     /// 共享段只读映射（惰性打开：daemon 未建段 → None = 离线信号）。
     shm: Mutex<Option<ShmReader>>,
     /// 已消费的用户库版本（version 变化 → 重解析段注入引擎）。
@@ -63,6 +69,7 @@ impl DaemonClient {
     pub fn new(user_path: PathBuf) -> Self {
         DaemonClient {
             pipe: Mutex::new(None),
+            signal: Mutex::new(None),
             shm: Mutex::new(None),
             last_version: Mutex::new(0),
             last_epoch: Mutex::new(0),
@@ -93,7 +100,11 @@ impl DaemonClient {
             return false;
         };
         // 4. 拉起（异步，不等待；CREATE_NO_WINDOW 后台无控制台）。
-        let mut cmd: Vec<u16> = exe.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+        let mut cmd: Vec<u16> = exe
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
         // SAFETY: STARTUPINFOW/PROCESS_INFORMATION 全程存活；cmdline 可写缓冲（系统可改）。
         let mut si = STARTUPINFOW::default();
         si.cb = size_of::<STARTUPINFOW>() as u32;
@@ -187,7 +198,9 @@ impl DaemonClient {
             if let Some(user) = read {
                 engine.set_user_dict(Arc::new(user));
                 *self.last_version.lock().unwrap_or_else(|e| e.into_inner()) = version;
-                log_line(&format!("[daemon] 用户库版本 {version}：注入引擎（共享段只读引用）"));
+                log_line(&format!(
+                    "[daemon] 用户库版本 {version}：注入引擎（共享段只读引用）"
+                ));
                 changed = true;
             }
             // 读失败/未写入：last_version 不更新（daemon 写好后新 version 再触发）。
@@ -233,7 +246,9 @@ impl DaemonClient {
                     true
                 } else {
                     if let Response::Err { msg } = &resp {
-                        log_line(&format!("[daemon] 写请求被守护进程拒绝（降级本地写盘）：{msg}"));
+                        log_line(&format!(
+                            "[daemon] 写请求被守护进程拒绝（降级本地写盘）：{msg}"
+                        ));
                     }
                     false
                 }
@@ -334,25 +349,46 @@ impl DaemonClient {
 
     // ===== 32-status-toolbar.md §4.1 TSF→daemon 上报（Register/StateSync/Active/Unregister） =====
 
-    /// Activate 注册 + 上报初始四态（失败 = daemon 离线，静默——在线翻转后 poll 重注册）。
-    pub fn register(&self, pid: u32, tid: u32, state: ImeState) -> bool {
-        self.send_request(&Request::Register { pid, tid, state })
-            .is_some()
+    // ===== 工具条信号通道（40-toolbar-show-hide-governance.md 纯信号模型）=====
+    //
+    // 三消息走专用管道 `iuv-toolbar-signal`（与数据面物理隔离）：激活(+四态)/失焦/
+    // 态变更。发送失败仅弃缓存连接（下次发送前重连）；daemon 重启后任意焦点事件
+    // 自然重建一切——零恢复机制。
+
+    /// 激活上报：实例获得焦点 + 当前四态（daemon 绑定并渲染工具栏）。
+    pub fn focus_gained(&self, pid: u32, tid: u32, state: ImeState) {
+        self.send_signal(&ToolbarSignal::FocusGained { pid, tid, state });
     }
 
-    /// 运行时四态变化上报（OPENCLOSE OnChange / CtlCmd::Set* 应用成功后）。
-    pub fn state_sync(&self, pid: u32, tid: u32, state: ImeState) {
-        let _ = self.send_request(&Request::StateSync { pid, tid, state });
+    /// 失焦上报：实例失去焦点（daemon 解绑并隐藏工具栏）。
+    pub fn focus_lost(&self, pid: u32, tid: u32) {
+        self.send_signal(&ToolbarSignal::FocusLost { pid, tid });
     }
 
-    /// Activate/Deactivate 通知（daemon 判「iuv 被选中」）。
-    pub fn set_active(&self, pid: u32, tid: u32, active: bool) {
-        let _ = self.send_request(&Request::Active { pid, tid, active });
+    /// 态变更上报：会话中途四态变化（daemon 刷新绑定实例图标）。
+    pub fn state_changed(&self, pid: u32, tid: u32, state: ImeState) {
+        self.send_signal(&ToolbarSignal::StateChanged { pid, tid, state });
     }
 
-    /// 实例 Drop 注销（从 daemon 实例表移除）。
-    pub fn unregister(&self, pid: u32, tid: u32) {
-        let _ = self.send_request(&Request::Unregister { pid, tid });
+    /// 发送信号（连接缓存复用；未连/断开 → 先重连一次；仍失败 → 记日志放弃，
+    /// 下次焦点事件自然补上终态）。
+    fn send_signal(&self, sig: &ToolbarSignal) {
+        let mut g = self.signal.lock().unwrap_or_else(|e| e.into_inner());
+        if g.is_none() {
+            match SignalClient::connect() {
+                Ok(c) => *g = Some(c),
+                Err(e) => {
+                    log_line(&format!("[signal] 连接失败（daemon 不在线）：{e}"));
+                    return;
+                }
+            }
+        }
+        if let Some(c) = g.as_ref() {
+            if let Err(e) = c.send(sig) {
+                *g = None;
+                log_line(&format!("[signal] 发送失败（弃缓存，下次重连）：{e}"));
+            }
+        }
     }
 }
 
@@ -435,7 +471,9 @@ fn daemon_exe_path() -> Option<std::ffi::OsString> {
     if dll.is_empty() {
         return None;
     }
-    let exe = std::path::PathBuf::from(&dll).parent()?.join("iuv-daemon.exe");
+    let exe = std::path::PathBuf::from(&dll)
+        .parent()?
+        .join("iuv-daemon.exe");
     if exe.is_file() {
         Some(exe.into_os_string())
     } else {
@@ -456,14 +494,8 @@ mod tests {
         // 静态 LAST_ATTEMPT 可能被其他测试污染——用大时间差保证首次必然放行。
         let t0 = now_unix_secs().saturating_add(1_000_000);
         assert!(launch_cooldown_ok_at(t0), "首次尝试放行");
-        assert!(
-            !launch_cooldown_ok_at(t0 + 10),
-            "10s 内冷却：拒绝"
-        );
-        assert!(
-            !launch_cooldown_ok_at(t0 + 59),
-            "59s 内冷却：拒绝"
-        );
+        assert!(!launch_cooldown_ok_at(t0 + 10), "10s 内冷却：拒绝");
+        assert!(!launch_cooldown_ok_at(t0 + 59), "59s 内冷却：拒绝");
         assert!(launch_cooldown_ok_at(t0 + 61), "期满放行");
     }
 
@@ -572,24 +604,36 @@ mod tests {
         let client = DaemonClient::new(std::env::temp_dir().join("poll-epoch.imedic"));
         // 首 poll：容忍段上既有纪元（可能 >0），记录已触发次数基线
         let fired = std::sync::atomic::AtomicUsize::new(0);
-        client.poll(&engine, |_| {
-            fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }, || {});
+        client.poll(
+            &engine,
+            |_| {
+                fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+            || {},
+        );
         let base = fired.load(std::sync::atomic::Ordering::SeqCst);
         // bump 一次 → 触发一次
         w.bump_config_epoch();
-        client.poll(&engine, |_| {
-            fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }, || {});
+        client.poll(
+            &engine,
+            |_| {
+                fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+            || {},
+        );
         assert_eq!(
             fired.load(std::sync::atomic::Ordering::SeqCst),
             base + 1,
             "纪元变化触发一次"
         );
         // 同纪元再 poll → 不触发
-        client.poll(&engine, |_| {
-            fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }, || {});
+        client.poll(
+            &engine,
+            |_| {
+                fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+            || {},
+        );
         assert_eq!(
             fired.load(std::sync::atomic::Ordering::SeqCst),
             base + 1,

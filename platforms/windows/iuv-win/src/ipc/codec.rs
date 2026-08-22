@@ -15,6 +15,12 @@
 //!     0x0C Unregister : u32 pid u32 tid
 //!     0x0D GetToolbarVisible : （无载荷）
 //!
+//! ToolbarSignal（信号通道专用，独立管道）:
+//!   u8 tag
+//!     0x21 FocusGained  : u32 pid u32 tid 4×u8（ImeState）
+//!     0x22 FocusLost    : u32 pid u32 tid
+//!     0x23 StateChanged : u32 pid u32 tid 4×u8（ImeState）
+//!
 //! Response:
 //!   u8 tag
 //!     0x01 Ok  : u32 version   （应用后的用户库段 version；Ping 时为当前 version）
@@ -41,7 +47,7 @@ use std::io;
 
 use iuv_core::ImeState;
 
-use super::msg::{CtlCmd, CtlResult, Request, Response};
+use super::msg::{CtlCmd, CtlResult, Request, Response, ToolbarSignal};
 
 /// 编码失败（解码非法字节 / 越界）。
 pub(crate) fn bad(msg: &str) -> io::Error {
@@ -376,6 +382,63 @@ pub(crate) fn decode_ctl_result(payload: &[u8]) -> io::Result<CtlResult> {
         }
         t => Err(bad(&format!("未知 CtlResult tag 0x{t:02X}"))),
     }
+}
+
+// ===== 工具条信号通道（独立管道；帧格式同 to_frame/parse_frame）=====
+
+/// ToolbarSignal → 载荷字节（不含帧前缀）。
+pub(crate) fn encode_signal(sig: &ToolbarSignal) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16);
+    match sig {
+        ToolbarSignal::FocusGained { pid, tid, state } => {
+            out.push(0x21);
+            out.extend_from_slice(&pid.to_le_bytes());
+            out.extend_from_slice(&tid.to_le_bytes());
+            put_toolbar_state(&mut out, state);
+        }
+        ToolbarSignal::FocusLost { pid, tid } => {
+            out.push(0x22);
+            out.extend_from_slice(&pid.to_le_bytes());
+            out.extend_from_slice(&tid.to_le_bytes());
+        }
+        ToolbarSignal::StateChanged { pid, tid, state } => {
+            out.push(0x23);
+            out.extend_from_slice(&pid.to_le_bytes());
+            out.extend_from_slice(&tid.to_le_bytes());
+            put_toolbar_state(&mut out, state);
+        }
+    }
+    out
+}
+
+/// 载荷字节 → ToolbarSignal（未知 tag / 越界 → `Err`）。
+pub(crate) fn decode_signal(payload: &[u8]) -> io::Result<ToolbarSignal> {
+    let mut r = Reader::new(payload);
+    let tag = r.u8()?;
+    let sig = match tag {
+        0x21 => {
+            let pid = r.u32()?;
+            let tid = r.u32()?;
+            let state = r.toolbar_state()?;
+            r.finish()?;
+            ToolbarSignal::FocusGained { pid, tid, state }
+        }
+        0x22 => {
+            let pid = r.u32()?;
+            let tid = r.u32()?;
+            r.finish()?;
+            ToolbarSignal::FocusLost { pid, tid }
+        }
+        0x23 => {
+            let pid = r.u32()?;
+            let tid = r.u32()?;
+            let state = r.toolbar_state()?;
+            r.finish()?;
+            ToolbarSignal::StateChanged { pid, tid, state }
+        }
+        t => return Err(bad(&format!("未知 ToolbarSignal tag 0x{t:02X}"))),
+    };
+    Ok(sig)
 }
 
 /// 前缀长度 + 二进制读取器（边界严格，越界即 Err）。

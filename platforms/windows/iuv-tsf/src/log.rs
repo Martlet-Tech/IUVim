@@ -52,7 +52,11 @@ pub fn log_line(msg: &str) {
         .unwrap_or_default();
     let secs = now.as_secs();
     let millis = now.subsec_millis();
-    let line = format!("[{secs}.{millis:03}] pid={} {} {msg}\n", process_id(), module_name());
+    let line = format!(
+        "[{secs}.{millis:03}] pid={} {} {msg}\n",
+        process_id(),
+        module_name()
+    );
     if let Some(path) = log_path() {
         let _ = OpenOptions::new()
             .create(true)

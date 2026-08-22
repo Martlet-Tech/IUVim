@@ -18,12 +18,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 use iuv_core::{Config, ImeState, InitialMode, Key, PunctMode, ScriptMode, Session, WidthMode};
 use iuv_win::{CtlCmd, CtlResult};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::TextServices::{
-    ITfCompartment, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr,
-    ITfContext, ITfDocumentMgr, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource,
+    CLSID_TF_InputProcessorProfiles, ITfActiveLanguageProfileNotifySink,
+    ITfActiveLanguageProfileNotifySink_Impl, ITfCompartment, ITfCompartmentEventSink,
+    ITfCompartmentEventSink_Impl, ITfCompartmentMgr, ITfContext, ITfDocumentMgr,
+    ITfInputProcessorProfiles, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource,
     ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
-    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
-    GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+    ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
+    ITfThreadMgrEventSink_Impl, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, BOOL};
 
@@ -67,7 +70,9 @@ where
     ITfTextInputProcessorEx,
     ITfKeyEventSink,
     ITfThreadMgrEventSink,
-    ITfCompartmentEventSink
+    ITfCompartmentEventSink,
+    ITfThreadFocusSink,
+    ITfActiveLanguageProfileNotifySink
 )]
 pub(crate) struct TextService {
     /// ITfThreadMgr（Activate 传入，Deactivate 用）。
@@ -80,6 +85,11 @@ pub(crate) struct TextService {
     /// 经 ITfSource::AdviseSink 挂 ITfCompartmentEventSink）+ cookie。
     /// Step1 仅监听记日志，验证系统热键确实翻转第三方 TIP 的 compartment。
     compartment: RefCell<Option<(ITfCompartment, u32)>>,
+    /// 线程焦点 sink cookie（ITfThreadFocusSink，维度②应用切出即隐的官方信号）。
+    thread_focus_cookie: Cell<u32>,
+    /// 输入法 profile 激活通知（ITfInputProcessorProfilesSink，维度①输入法切至/切出
+    /// 的官方信号——weasel 语言栏显隐同款）+ 对象与反注册 cookie。
+    profiles: RefCell<Option<(ITfInputProcessorProfiles, u32)>>,
     /// 活动会话；None = 无会话（字母键将开启新会话）。
     /// Rc 共享：候选窗点击/hover 回调（同线程）经克隆访问。
     pub(crate) session: Rc<RefCell<Option<Session>>>,
@@ -142,25 +152,29 @@ impl TextService {
             let u = ui_rc.clone();
             let ca = caret.clone();
             let ce = cand_elem.clone();
-            ui_rc.borrow_mut().set_on_click(Some(Box::new(move |row: usize| {
-                // Digit 键位上限 1-9（row 0-8）；超限忽略（page_size 配置极端时防御）。
-                if row >= 9 {
-                    return;
-                }
-                let effect: Option<iuv_core::Effect> = s
-                    .borrow_mut()
-                    .as_mut()
-                    .map(|sess: &mut Session| sess.on_key(Key::Digit((row + 1) as u8)));
-                if let Some(e) = effect {
-                    dispatch_effect(&s, &c, &u, &ca, &ce, &e);
-                }
-            })));
+            ui_rc
+                .borrow_mut()
+                .set_on_click(Some(Box::new(move |row: usize| {
+                    // Digit 键位上限 1-9（row 0-8）；超限忽略（page_size 配置极端时防御）。
+                    if row >= 9 {
+                        return;
+                    }
+                    let effect: Option<iuv_core::Effect> = s
+                        .borrow_mut()
+                        .as_mut()
+                        .map(|sess: &mut Session| sess.on_key(Key::Digit((row + 1) as u8)));
+                    if let Some(e) = effect {
+                        dispatch_effect(&s, &c, &u, &ca, &ce, &e);
+                    }
+                })));
         }
         TextService {
             thread_mgr: RefCell::new(None),
             client_id: Cell::new(0),
             event_cookie: Cell::new(0),
             compartment: RefCell::new(None),
+            thread_focus_cookie: Cell::new(0),
+            profiles: RefCell::new(None),
             session,
             composition,
             ui: ui_rc,
@@ -200,9 +214,7 @@ impl TextService {
         let (pid, tid) = self.instance_id();
         *self.ctl.borrow_mut() = Some(CtlEndpoint::new(hwnd, svc));
         let mut slot = self.ctl.borrow_mut();
-        slot.as_mut()
-            .map(|ep| ep.attach(pid, tid))
-            .unwrap_or(false);
+        slot.as_mut().map(|ep| ep.attach(pid, tid)).unwrap_or(false);
     }
 
     /// 停反向控制端点（Deactivate：Drop 兜底清理，此处显式调以尽快释放窗口/线程）。
@@ -285,10 +297,11 @@ impl Drop for TextService {
         // 先停反向控制端点（accept 线程 join + 隐藏窗销毁），再注销——避免 Drop 期间
         // 字段仍存活时 wndproc 并发访问（TSF 线程 Drop 内不泵消息，但防御性先停干净）。
         self.stop_ctl_endpoint();
-        // 32-toolbar §4.1：实例 Drop 注销（daemon 从实例表移除，看板失联清理）。
+        // 32-toolbar §4.1：实例 Drop = 失焦上报（daemon 解绑清理；纯信号模型下
+        // 「注销」由「失焦」承担）。
         if let Some(client) = self.daemon.borrow().as_ref() {
             let (pid, tid) = self.instance_id();
-            client.unregister(pid, tid);
+            client.focus_lost(pid, tid);
         }
     }
 }
@@ -350,8 +363,8 @@ impl TextService_Impl {
                             // 若 Activate 在「切走输入法再切回」时重触发且强行写默认，会把用户
                             // 在该窗口改过的中英重置回 config（违反 §2.4 per-实例保留语义）。
                             // 运行时值随实例存活（runtime 字段，本线程此前的设置天然保留）。
-                            let default_open = Config::load().initial_state.mode
-                                == iuv_core::InitialMode::Chinese;
+                            let default_open =
+                                Config::load().initial_state.mode == iuv_core::InitialMode::Chinese;
                             match langbar::read_openclose(&comp) {
                                 None => {
                                     if let Err(e) =
@@ -383,6 +396,54 @@ impl TextService_Impl {
                 )),
             },
             Err(_) => log_line("OPENCLOSE compartment 监听注册失败（QI 不到 ITfCompartmentMgr）"),
+        }
+        // 维度②：线程焦点 sink（ITfThreadFocusSink）——应用切出 = OnKillThreadFocus
+        // 即时隐藏信号（对齐搜狗"焦点离开瞬间消失"）；切入 = OnSetThreadFocus，
+        // 重显由随后的 TIP Activate/Register 链路驱动。经 ITfThreadMgr 的 ITfSource。
+        // 非致命：失败只记日志降级（activate 后续步骤必须继续，否则图标/注册全灭）。
+        let focus_sink: ITfThreadFocusSink = self.to_object().to_interface();
+        // SAFETY: 标准 TSF advise；sink 在本对象生命周期内有效，Deactivate 时 Unadvise。
+        match unsafe { source.AdviseSink(&<ITfThreadFocusSink as Interface>::IID, &focus_sink) } {
+            Ok(fcookie) => self.thread_focus_cookie.set(fcookie),
+            Err(e) => log_line(&format!(
+                "[focus] ThreadFocusSink advise 失败：{e:?}（维度②信号缺失，主体不受影响）"
+            )),
+        }
+
+        // 维度①：输入法 profile 激活通知（ITfActiveLanguageProfileNotifySink::OnActivated
+        // 带自家 CLSID 与激活标志——weasel 语言栏显隐同款全局信号，与窗口无关）。
+        // 全链路非致命 + 分步打点：任一步失败记 HRESULT 后降级，主体功能不受影响。
+        let mount_profiles = || -> Result<(ITfInputProcessorProfiles, u32)> {
+            let profiles_sink: ITfActiveLanguageProfileNotifySink =
+                self.to_object().to_interface();
+            // SAFETY: CoCreateInstance 由系统解析注册表创建 TSF 对象（registration.rs 同款）。
+            let profiles: ITfInputProcessorProfiles = unsafe {
+                CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
+            }?;
+            log_line("[profiles] InputProcessorProfiles 创建成功");
+            // advise 路径：QI ITfSource 再挂 ActiveLanguageProfileNotifySink。
+            // SAFETY: 标准 COM QI；不支持则整体降级（记 HRESULT 观测哪步死）。
+            let psrc: ITfSource = profiles.cast()?;
+            log_line("[profiles] QI ITfSource 成功");
+            // SAFETY: 标准 TSF advise；cookie 记录用于 Deactivate 反注册。
+            let pcookie = unsafe {
+                psrc.AdviseSink(
+                    &<ITfActiveLanguageProfileNotifySink as Interface>::IID,
+                    &profiles_sink,
+                )?
+            };
+            Ok((profiles, pcookie))
+        };
+        match mount_profiles() {
+            Ok(pair) => {
+                *self.profiles.borrow_mut() = Some(pair);
+                log_line(
+                    "[focus/profiles] 探测 sink 已挂载（ThreadFocus + ActiveLanguageProfileNotifySink）",
+                );
+            }
+            Err(e) => log_line(&format!(
+                "[profiles] ActiveLanguageProfileNotifySink 挂载失败：{e:?}（维度①信号缺失，主体不受影响）"
+            )),
         }
 
         // 后台异步加载引擎（词库 17MB/65 万词条）：切到输入法即开始，
@@ -427,8 +488,8 @@ impl TextService_Impl {
             Err(e) => log_line(&format!("语言栏图标挂载失败：{e:?}（不影响输入法）")),
         }
 
-        // 32-toolbar：向 daemon 注册实例（四态上报 + Active 通知；passthrough 进程不注册）。
-        self.register_instance();
+        // 32-toolbar：激活上报（四态经信号通道发 daemon；passthrough 进程不上报）。
+        self.signal_focus_gained();
 
         // 32-toolbar：启动反向控制端点（accept 线程 + 隐藏消息窗；§4.2/§4.3）。
         self.start_ctl_endpoint();
@@ -452,13 +513,12 @@ impl TextService_Impl {
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
 
-        // 32-toolbar：停反向控制端点（accept 线程 + 隐藏窗）+ Active=false 通知
-        // （daemon 判「iuv 未被选中」→ 看板隐藏）。Register 幂等——同一实例
-        // 再 Activate 会重发（daemon 重启自愈，见 register_instance）。
+        // 32-toolbar：停反向控制端点（accept 线程 + 隐藏窗）+ 失焦上报
+        // （daemon 解绑 → 工具条隐藏）。同一实例再 Activate 会重发激活。
         self.stop_ctl_endpoint();
         if let Some(client) = self.daemon.borrow().as_ref() {
             let (pid, tid) = self.instance_id();
-            client.set_active(pid, tid, false);
+            client.focus_lost(pid, tid);
         }
 
         // 卸载语言栏"中/英"图标（失败仅记日志）。
@@ -477,6 +537,24 @@ impl TextService_Impl {
                 if let Err(e) = unsafe { src.UnadviseSink(cookie) } {
                     log_line(&format!("OPENCLOSE compartment UnadviseSink 失败：{e:?}"));
                 }
+            }
+        }
+
+        // 卸载线程焦点 sink（维度②）。
+        if self.thread_focus_cookie.get() != 0 {
+            if let Some(tm) = self.thread_mgr.borrow().as_ref() {
+                if let Ok(src) = tm.cast::<ITfSource>() {
+                    // SAFETY: 标准 TSF unadvise 调用。
+                    let _ = unsafe { src.UnadviseSink(self.thread_focus_cookie.get()) };
+                }
+            }
+            self.thread_focus_cookie.set(0);
+        }
+        // 卸载输入法 profile 激活通知（维度①）。
+        if let Some((profiles, pcookie)) = self.profiles.borrow_mut().take() {
+            if let Ok(src) = profiles.cast::<ITfSource>() {
+                // SAFETY: 标准 TSF unadvise。
+                let _ = unsafe { src.UnadviseSink(pcookie) };
             }
         }
 
@@ -503,6 +581,61 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             self.deactivate();
             Ok(())
         })
+    }
+}
+
+// ---- ITfThreadFocusSink / ITfInputProcessorProfilesSink ----
+// 显隐治理信号（40-toolbar-show-hide-governance.md 三维模型；weasel 同款实践）。
+// 回调点位全部打 log 留验证。
+
+impl ITfThreadFocusSink_Impl for TextService_Impl {
+    fn OnSetThreadFocus(&self) -> Result<()> {
+        // 维度③：应用切入 → 「激活 + 四态」上报，daemon 绑定并立即重显工具栏
+        // （Alt+Tab 回已激活应用必须靠此信号重显——log 实锤的「隐藏后永不重现」根因）。
+        log_line("[focus] OnSetThreadFocus（线程焦点获得 → 激活上报）");
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            let (pid, tid) = self.instance_id();
+            client.focus_gained(pid, tid, self.runtime_snapshot());
+        }
+        Ok(())
+    }
+
+    fn OnKillThreadFocus(&self) -> Result<()> {
+        // 维度②：应用切出 → 失焦上报，daemon 立即隐藏（对齐搜狗"焦点离开瞬间消失"）。
+        log_line("[focus] OnKillThreadFocus（应用切出 → 失焦上报）");
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            let (pid, tid) = self.instance_id();
+            client.focus_lost(pid, tid);
+        }
+        Ok(())
+    }
+}
+
+impl ITfActiveLanguageProfileNotifySink_Impl for TextService_Impl {
+    fn OnActivated(
+        &self,
+        clsid: *const windows_core::GUID,
+        _guidprofile: *const windows_core::GUID,
+        factivated: windows_core::BOOL,
+    ) -> Result<()> {
+        // 只关心自家 CLSID 的激活通知（weasel 同款过滤）；空指针防御。
+        let ours = !clsid.is_null() && unsafe { *clsid } == crate::registration::clsid();
+        log_line(&format!(
+            "[profiles] OnActivated ours={ours} fActivated={}",
+            factivated.as_bool()
+        ));
+        if !ours {
+            return Ok(());
+        }
+        // 维度①：切走（false）→ 失焦上报立即隐藏；切入（true）→ TIP Activate 链路重显
+        // （此处不重复发激活，避免与既有链路双发）。
+        if !factivated.as_bool() {
+            if let Some(client) = self.daemon.borrow().as_ref() {
+                let (pid, tid) = self.instance_id();
+                client.focus_lost(pid, tid);
+            }
+        }
+        Ok(())
     }
 }
 
