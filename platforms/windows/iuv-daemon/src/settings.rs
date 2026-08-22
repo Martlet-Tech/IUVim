@@ -135,6 +135,23 @@ pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
             Box::new(move |cc| {
                 install_cjk_font(&cc.egui_ctx);
                 center_window_on_screen();
+                // 视觉基调：圆角 6px、呼吸间距、选中色对齐候选窗高亮蓝 #0078D7（产品一致感）。
+                cc.egui_ctx.all_styles_mut(|style| {
+                    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+                    for w in [
+                        &mut style.visuals.widgets.noninteractive,
+                        &mut style.visuals.widgets.inactive,
+                        &mut style.visuals.widgets.hovered,
+                        &mut style.visuals.widgets.active,
+                        &mut style.visuals.widgets.open,
+                    ] {
+                        w.corner_radius = 6.into();
+                    }
+                    style.visuals.selection.bg_fill =
+                        egui::Color32::from_rgb(0x00, 0x78, 0xD7);
+                    style.visuals.selection.stroke =
+                        egui::Stroke::new(1.0, egui::Color32::WHITE);
+                });
                 Ok(Box::new(SettingsApp::new(state)))
             }),
         )
@@ -283,6 +300,21 @@ struct SettingsApp {
     status: String,
 }
 
+/// 卡片式分组容器（设置页视觉基调）：圆角描边 + 微底色 + 内边距，
+/// 组间留白由调用方统一 `add_space(10)`。内容自动占满可用宽度。
+fn card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .corner_radius(6)
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add_contents(ui)
+        })
+        .inner
+}
+
 impl SettingsApp {
     fn new(state: Arc<DaemonState>) -> Self {
         let cfg = state.config.lock().unwrap_or_else(|p| p.into_inner()).clone();
@@ -310,7 +342,7 @@ impl SettingsApp {
         ui.horizontal(|ui| {
             for tab in tabs() {
                 let selected = tab == self.tab;
-                let label = egui::RichText::new(tab.title()).size(20.0);
+                let label = egui::RichText::new(tab.title()).size(17.0);
                 if ui.selectable_label(selected, label).clicked() {
                     self.tab = tab;
                     self.status.clear();
@@ -360,53 +392,72 @@ impl SettingsApp {
             Tab::Common => {
                 ui.heading("常用");
                 ui.add_space(4.0);
-                ui.label("新 TSF 实例初始状态");
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    ui.label("模式");
-                    ui.radio_value(&mut self.initial.mode, iuv_core::InitialMode::Chinese, "中文");
-                    ui.radio_value(&mut self.initial.mode, iuv_core::InitialMode::English, "英文");
-                });
-                let mut punct_en = self.initial.punct == iuv_core::PunctMode::English;
-                if ui.checkbox(&mut punct_en, "中文状态使用英文标点").changed() {
-                    self.initial.punct = if punct_en {
-                        iuv_core::PunctMode::English
-                    } else {
-                        iuv_core::PunctMode::Chinese
-                    };
-                }
-                ui.horizontal(|ui| {
-                    ui.label("宽度");
-                    ui.radio_value(&mut self.initial.width, iuv_core::WidthMode::Half, "半角");
-                    ui.radio_value(&mut self.initial.width, iuv_core::WidthMode::Full, "全角");
-                });
-                ui.horizontal(|ui| {
-                    ui.label("字形");
-                    ui.radio_value(
-                        &mut self.initial.script,
-                        iuv_core::ScriptMode::Simplified,
-                        "简体",
-                    );
-                    ui.radio_value(
-                        &mut self.initial.script,
-                        iuv_core::ScriptMode::Traditional,
-                        "繁体",
-                    );
-                });
-                ui.small("「初始状态」定义切换/新开软件时输入法的默认态：模式（中/英）、标点、半角/全角与简体/繁体均已生效；");
-                ui.small("繁体 = 简体词库 + 运行时简→繁转换（s2t 通用繁体，数据文件 iuv.opencc 缺失时降级简体）。");
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(4.0);
-                ui.label("每页候选数量");
-                egui::ComboBox::from_id_salt("page_size")
-                    .selected_text(self.page_size.to_string())
-                    .show_ui(ui, |ui| {
-                        for n in [5usize, 6, 7, 8, 9] {
-                            ui.selectable_value(&mut self.page_size, n, n.to_string());
-                        }
+                card(ui, |ui| {
+                    ui.strong("新 TSF 实例初始状态");
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label("模式");
+                        ui.radio_value(
+                            &mut self.initial.mode,
+                            iuv_core::InitialMode::Chinese,
+                            "中文",
+                        );
+                        ui.radio_value(
+                            &mut self.initial.mode,
+                            iuv_core::InitialMode::English,
+                            "英文",
+                        );
                     });
-                ui.small("建议 ≤9 保证数字键可全选当前页。");
+                    let mut punct_en = self.initial.punct == iuv_core::PunctMode::English;
+                    if ui.checkbox(&mut punct_en, "中文状态使用英文标点").changed() {
+                        self.initial.punct = if punct_en {
+                            iuv_core::PunctMode::English
+                        } else {
+                            iuv_core::PunctMode::Chinese
+                        };
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("宽度");
+                        ui.radio_value(
+                            &mut self.initial.width,
+                            iuv_core::WidthMode::Half,
+                            "半角",
+                        );
+                        ui.radio_value(
+                            &mut self.initial.width,
+                            iuv_core::WidthMode::Full,
+                            "全角",
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("字形");
+                        ui.radio_value(
+                            &mut self.initial.script,
+                            iuv_core::ScriptMode::Simplified,
+                            "简体",
+                        );
+                        ui.radio_value(
+                            &mut self.initial.script,
+                            iuv_core::ScriptMode::Traditional,
+                            "繁体",
+                        );
+                    });
+                    ui.small("「初始状态」定义切换/新开软件时输入法的默认态：模式（中/英）、标点、半角/全角与简体/繁体均已生效；");
+                    ui.small("繁体 = 简体词库 + 运行时简→繁转换（s2t 通用繁体，数据文件 iuv.opencc 缺失时降级简体）。");
+                });
+                ui.add_space(10.0);
+                card(ui, |ui| {
+                    ui.strong("每页候选数量");
+                    ui.add_space(2.0);
+                    egui::ComboBox::from_id_salt("page_size")
+                        .selected_text(self.page_size.to_string())
+                        .show_ui(ui, |ui| {
+                            for n in [5usize, 6, 7, 8, 9] {
+                                ui.selectable_value(&mut self.page_size, n, n.to_string());
+                            }
+                        });
+                    ui.small("建议 ≤9 保证数字键可全选当前页。");
+                });
             }
             Tab::Keymap => self.keymap_tab(ui),
             Tab::Appearance => self.appearance_tab(ui),
@@ -421,11 +472,13 @@ impl SettingsApp {
     fn keymap_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("按键");
         ui.add_space(4.0);
-        ui.add_enabled_ui(false, |ui| {
-            ui.label("键位自定义（M7 开放）");
-            let _ = ui.button("翻页键…");
-            let _ = ui.button("候选移动键…");
-            ui.small("（规划中）");
+        card(ui, |ui| {
+            ui.add_enabled_ui(false, |ui| {
+                ui.label("键位自定义（M7 开放）");
+                let _ = ui.button("翻页键…");
+                let _ = ui.button("候选移动键…");
+                ui.small("（规划中）");
+            });
         });
     }
 
@@ -433,94 +486,124 @@ impl SettingsApp {
     fn appearance_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("外观");
         ui.add_space(4.0);
-        ui.label("候选窗主题");
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut self.theme, "light".to_string(), "浅色");
-            ui.radio_value(&mut self.theme, "dark".to_string(), "深色");
+        card(ui, |ui| {
+            ui.strong("候选窗主题");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut self.theme, "light".to_string(), "浅色");
+                ui.radio_value(&mut self.theme, "dark".to_string(), "深色");
+            });
         });
-        ui.add_space(8.0);
-        ui.label("候选窗布局");
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut self.orientation, "vertical".to_string(), "竖排（一列）");
-            ui.radio_value(&mut self.orientation, "horizontal".to_string(), "横排（单行）");
+        ui.add_space(10.0);
+        card(ui, |ui| {
+            ui.strong("候选窗布局");
+            ui.horizontal(|ui| {
+                ui.radio_value(
+                    &mut self.orientation,
+                    "vertical".to_string(),
+                    "竖排（一列）",
+                );
+                ui.radio_value(
+                    &mut self.orientation,
+                    "horizontal".to_string(),
+                    "横排（单行）",
+                );
+            });
+            ui.small("更改在点击「确定」或「应用」后生效。");
         });
-        ui.small("更改在点击「确定」或「应用」后生效。");
     }
 
     /// 词库：用户库列表 + 清除全部（暂挂到确定/应用）。
     fn dict_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("用户库管理");
         ui.add_space(4.0);
-        let (cover, block, lines) = self.user_dict_snapshot();
-        ui.label(format!("覆盖/自造词 {cover} 条 · 屏蔽 {block} 条"));
-        if cover + block > 0 {
-            egui::ScrollArea::vertical()
-                .max_height(420.0)
-                .show(ui, |ui| {
-                    for line in &lines {
-                        ui.monospace(line);
+        card(ui, |ui| {
+            let (cover, block, lines) = self.user_dict_snapshot();
+            ui.label(format!("覆盖/自造词 {cover} 条 · 屏蔽 {block} 条"));
+            if cover + block > 0 {
+                egui::ScrollArea::vertical()
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        for line in &lines {
+                            ui.monospace(line);
+                        }
+                    });
+            } else {
+                ui.small("（空用户库）");
+            }
+            ui.add_space(8.0);
+            if self.pending_clear {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xC0, 0x80, 0x00),
+                    "已标记清除：点「确定」或「应用」后生效；点「取消」放弃。",
+                );
+            }
+            if self.confirm_clear {
+                ui.horizontal(|ui| {
+                    ui.label("确认清除全部用户库？");
+                    if ui.button("确认清除").clicked() {
+                        self.pending_clear = true;
+                        self.confirm_clear = false;
+                        self.status = "已标记清除全部用户库（确定/应用后生效）".into();
+                    }
+                    if ui.button("取消").clicked() {
+                        self.confirm_clear = false;
                     }
                 });
-        } else {
-            ui.small("（空用户库）");
-        }
-        ui.add_space(8.0);
-        if self.pending_clear {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xC0, 0x80, 0x00),
-                "已标记清除：点「确定」或「应用」后生效；点「取消」放弃。",
-            );
-        }
-        if self.confirm_clear {
-            ui.horizontal(|ui| {
-                ui.label("确认清除全部用户库？");
-                if ui.button("确认清除").clicked() {
-                    self.pending_clear = true;
-                    self.confirm_clear = false;
-                    self.status = "已标记清除全部用户库（确定/应用后生效）".into();
-                }
-                if ui.button("取消").clicked() {
-                    self.confirm_clear = false;
-                }
-            });
-        } else if ui.button("清除全部").clicked() {
-            self.confirm_clear = true;
-        }
+            } else if ui.button("清除全部").clicked() {
+                self.confirm_clear = true;
+            }
+        });
     }
 
-    /// 高级：按键直通名单 + 候选自绘应用（各带「恢复默认名单」回填按钮）。
+    /// 高级：按键直通名单 + 候选自绘应用（左右双卡片，各带「恢复默认」回填按钮）。
     fn advanced_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("高级");
         ui.add_space(4.0);
-        ui.label("按键直通应用（每行一个 exe 名，游戏场景输入法透明）：");
-        ui.add(
-            egui::TextEdit::multiline(&mut self.passthrough)
-                .desired_rows(8)
-                .desired_width(500.0)
-                .hint_text("例如 Cyberpunk2077.exe"),
-        );
-        ui.small("命中进程 TSF 层全部按键放行（不建会话、无候选窗/预编辑）——该进程内无法输中文。");
-        ui.horizontal(|ui| {
-            if ui.button("恢复默认名单").clicked() {
-                self.passthrough = crate::config::DEFAULT_PASSTHROUGH_APPS.join("\n");
-            }
-            ui.small("（仅回填编辑框，仍需「确定/应用」落盘；默认 = 近五年 3A 单机大作）");
-        });
-        ui.add_space(10.0);
-        ui.label("候选自绘应用（每行一个 exe 名，命中则 iuv 不绘制候选窗，由应用自绘）：");
-        ui.add(
-            egui::TextEdit::multiline(&mut self.candidate_owner)
-                .desired_rows(8)
-                .desired_width(500.0)
-                .hint_text("例如 wow.exe"),
-        );
-        ui.small("命中进程 iuv 抑制自绘候选窗（游戏内自绘候选栏场景）；要打中文的游戏用本名单而非按键直通。");
-        ui.horizontal(|ui| {
-            if ui.button("恢复默认名单").clicked() {
-                self.candidate_owner =
-                    crate::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
-            }
-            ui.small("（仅回填编辑框，仍需「确定/应用」落盘；默认 = 预置知名游戏）");
+        ui.columns(2, |cols| {
+            // 左：按键直通（纯单机游戏整进程隐身——该进程内无法输中文）
+            card(&mut cols[0], |ui| {
+                ui.strong("按键直通应用");
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .max_height(170.0)
+                    .id_salt("passthrough_scroll")
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.passthrough)
+                                .desired_width(ui.available_width())
+                                .hint_text("例如 Cyberpunk2077.exe"),
+                        );
+                    });
+                ui.small("命中进程全部按键放行（不建会话、无候选窗）——该进程内无法输中文。");
+                ui.add_space(2.0);
+                if ui.button("恢复默认名单").clicked() {
+                    self.passthrough =
+                        crate::config::DEFAULT_PASSTHROUGH_APPS.join("\n");
+                }
+                ui.small("默认 = 近五年 3A 单机大作");
+            });
+            // 右：候选自绘（要打中文的游戏——只让出候选窗绘制权）
+            card(&mut cols[1], |ui| {
+                ui.strong("候选自绘应用");
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .max_height(170.0)
+                    .id_salt("candidate_owner_scroll")
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.candidate_owner)
+                                .desired_width(ui.available_width())
+                                .hint_text("例如 wow.exe"),
+                        );
+                    });
+                ui.small("命中进程 iuv 不绘制候选窗（游戏自带候选栏场景），数据仍供其拉取。");
+                ui.add_space(2.0);
+                if ui.button("恢复默认名单").clicked() {
+                    self.candidate_owner =
+                        crate::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
+                }
+                ui.small("默认 = 预置知名游戏");
+            });
         });
     }
 
@@ -529,45 +612,48 @@ impl SettingsApp {
     fn dev_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("开发者");
         ui.add_space(4.0);
-        ui.label("清除 %TEMP% 下的 iuv 日志（daemon / tsf / script / cleanup）：");
-        ui.add_space(4.0);
-        if ui.button("清除日志").clicked() {
-            self.log_clear = Some(crate::log::clear_logs());
-        }
-        if let Some((ok, fail)) = self.log_clear {
+        card(ui, |ui| {
+            ui.label("清除 %TEMP% 下的 iuv 日志（daemon / tsf / script / cleanup）：");
             ui.add_space(4.0);
-            if fail == 0 {
-                ui.colored_label(
-                    egui::Color32::from_rgb(0x20, 0x80, 0x40),
-                    format!("已清除 {ok} 个日志文件"),
-                );
-            } else {
-                ui.colored_label(
-                    egui::Color32::from_rgb(0xC0, 0x80, 0x00),
-                    format!("已清除 {ok} 个；{fail} 个被占用（进程正在写入）"),
-                );
+            if ui.button("清除日志").clicked() {
+                self.log_clear = Some(crate::log::clear_logs());
             }
-        }
+            if let Some((ok, fail)) = self.log_clear {
+                ui.add_space(4.0);
+                if fail == 0 {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0x20, 0x80, 0x40),
+                        format!("已清除 {ok} 个日志文件"),
+                    );
+                } else {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xC0, 0x80, 0x00),
+                        format!("已清除 {ok} 个；{fail} 个被占用（进程正在写入）"),
+                    );
+                }
+            }
 
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(4.0);
-        ui.label("日志模块（勾选 = 记录该模块；改动点「确定/应用」生效并热载）");
-        ui.add_space(4.0);
-        egui::ScrollArea::vertical()
-            .max_height(300.0)
-            .show(ui, |ui| {
-                for (tag, desc) in LOG_MODULES {
-                    let mut enabled = !self.disabled_log.iter().any(|m| m == tag);
-                    if ui.checkbox(&mut enabled, format!("{tag} — {desc}")).changed() {
-                        if enabled {
-                            self.disabled_log.retain(|m| m != tag);
-                        } else if !self.disabled_log.iter().any(|m| m == tag) {
-                            self.disabled_log.push((*tag).to_string());
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label("日志模块（勾选 = 记录该模块；改动点「确定/应用」生效并热载）");
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical()
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    for (tag, desc) in LOG_MODULES {
+                        let mut enabled =
+                            !self.disabled_log.iter().any(|m| m == tag);
+                        if ui.checkbox(&mut enabled, format!("{tag} — {desc}")).changed() {
+                            if enabled {
+                                self.disabled_log.retain(|m| m != tag);
+                            } else if !self.disabled_log.iter().any(|m| m == tag) {
+                                self.disabled_log.push((*tag).to_string());
+                            }
                         }
                     }
-                }
-            });
+                });
+        });
     }
 
     /// 用户库列表 + 清除全部。
