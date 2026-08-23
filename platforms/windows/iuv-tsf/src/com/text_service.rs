@@ -702,14 +702,21 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
         pdimfocus: Ref<ITfDocumentMgr>,
         _pdimprevfocus: Ref<ITfDocumentMgr>,
     ) -> Result<()> {
-        self.ui.borrow_mut().hide();
-        self.cand_elem.borrow_mut().end();
-        // 布局跟随（候选窗随宿主拖拽/缩放/滚动平移）：焦点文档就绪即挂
-        // ITfTextLayoutSink（小狼毫同款挂载点；幂等，同 context 跳过）。
-        if let Ok(ctx) = unsafe { pdimfocus.unwrap().GetTop() } {
-            self.advise_layout(&ctx);
-        }
-        Ok(())
+        guard(|| {
+            self.ui.borrow_mut().hide();
+            self.cand_elem.borrow_mut().end();
+            // 布局跟随（候选窗随宿主拖拽/缩放/滚动平移）：焦点文档就绪即挂
+            // ITfTextLayoutSink（小狼毫同款挂载点；幂等，同 context 跳过）。
+            // 焦点可落空文档（pdimfocus=null，小狼毫 _InitTextEditSink 同款显式判空）
+            // ——unwrap 会 panic 且穿透 extern "system" 回调 = 宿主进程 abort
+            // （0xC0000409，2026-08-23 记事本连崩根因），必须 as_ref() 判空。
+            if let Some(dim) = pdimfocus.as_ref() {
+                if let Ok(ctx) = unsafe { dim.GetTop() } {
+                    self.advise_layout(&ctx);
+                }
+            }
+            Ok(())
+        })
     }
 
     fn OnPushContext(&self, _pic: Ref<ITfContext>) -> Result<()> {

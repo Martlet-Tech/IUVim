@@ -279,5 +279,24 @@
   OnChange 统一响应；语言栏点击归一写 compartment；Shift 切换已移除；**激活初值 = config `initial_state.mode`**，
   中文默认 = 激活即打开）。前置条件：用户在
   高级键设置把"输入法/非输入法切换"设为 Ctrl+Space（"切换输入语言"热键让位，Win+Space 仍可用）。
-  已知遗留（已修 2026-08-14）：有活动候选时按热键关闭，未确认输入按原文上屏（原 bug：
-  只清内存态不终止 composition → 带撇号分节预览残留；Alt+Tab 同根因一并修复）。
+   已知遗留（已修 2026-08-14）：有活动候选时按热键关闭，未确认输入按原文上屏（原 bug：
+   只清内存态不终止 composition → 带撇号分节预览残留；Alt+Tab 同根因一并修复）。
+- [x] **候选窗跟随宿主布局变化（2026-08-23，手测通过）**：打字出候选后拖拽标题栏/滚轮/缩放，
+  候选窗钉死旧屏幕坐标不跟随。根因：光标量取只发生在按键驱动的 SetTextSession edit session 内，
+  无键事件即无人重查 GetTextExt。方案 = TSF 官方 **ITfTextLayoutSink** 事件驱动跟随（小狼毫同款
+  机制、零定时器）：`OnSetFocus` 焦点文档就绪即挂 sink 到 top context（幂等：同 context 指针
+  比对跳过；null focus 判空跳过）；`OnLayoutChange` 守卫（组词槽非空 + 同 context）→
+  `Composition::query_caret` 只读会话（TF_ES_SYNC|READ，尾端锚点与打字路径一致；文档锁定/
+  clipped/全零矩形一律 None 保持原位）→ `caret.set` + `ui.move_to` 平移（隐藏态自带 no-op，
+  不复活窗口，符合「焦点切换不打断会话」）。**v2 改动面缩减**：sink 直挂 TextService 第 6 接口 +
+  挂载点移 OnSetFocus（对比首版独立 LayoutSink COM 对象 5 文件 ~230 行 → 2 文件 +180 行）。
+  **崩溃修复（同日，v2 首部署实测）**：`pdimfocus.unwrap()`——Ref::unwrap 对 null panic 且穿透
+  extern "system" 回调 = 宿主进程 fail-fast abort（0xC0000409；WER 实锤故障模块 iuv_tsf.dll
+  固定偏移，每开一个记事本数秒内连崩 7 次）；TSF OnSetFocus 会传 NULL document mgr（小狼毫
+  `_InitTextEditSink` 开头 `if (pDocMgr == NULL) return TRUE;` 实证）。修复 = `as_ref()` 判空 +
+  OnSetFocus 整体套 guard()（红线「iuv-tsf 绝不 panic 到宿主进程」，其余 sink 回调本都有 guard）。
+  DPI 说明：候选窗 ULW 与 GetTextExt 同在宿主进程内同一坐标系，天然免疫小狼毫跨进程渲染的
+  坐标缩放病（用户实测无轨迹放大感）。改动：iuv-tsf text_service.rs（字段/advise/unadvise/
+  follow_layout/OnLayoutChange/OnSetFocus 判空）、composition.rs（query_caret + RepositionSession
+  只读量取会话）。测试：工作区全绿（313）；手测 notepad 拖拽/滚轮/缩放平滑跟随、Alt+Tab 往返
+  与 Excel 多 context 回归正常；事件日志部署后零崩溃，日志 `[follow]` 逐条跟随实锤。
