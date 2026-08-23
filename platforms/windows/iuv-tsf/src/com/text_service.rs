@@ -20,10 +20,11 @@ use iuv_win::{CtlCmd, CtlResult};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{
     ITfCompartment, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr,
-    ITfContext, ITfDocumentMgr, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfSource,
+    ITfContext, ITfContextView, ITfDocumentMgr, ITfKeyEventSink, ITfKeyEventSink_Impl,
+    ITfKeystrokeMgr, ITfSource, ITfTextLayoutSink, ITfTextLayoutSink_Impl,
     ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
     ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
-    ITfThreadMgrEventSink_Impl, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+    ITfThreadMgrEventSink_Impl, TfLayoutCode, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, BOOL};
 
@@ -68,7 +69,8 @@ where
     ITfKeyEventSink,
     ITfThreadMgrEventSink,
     ITfCompartmentEventSink,
-    ITfThreadFocusSink
+    ITfThreadFocusSink,
+    ITfTextLayoutSink
 )]
 pub(crate) struct TextService {
     /// ITfThreadMgr（Activate 传入，Deactivate 用）。
@@ -81,6 +83,10 @@ pub(crate) struct TextService {
     /// 经 ITfSource::AdviseSink 挂 ITfCompartmentEventSink）+ cookie。
     /// Step1 仅监听记日志，验证系统热键确实翻转第三方 TIP 的 compartment。
     compartment: RefCell<Option<(ITfCompartment, u32)>>,
+    /// 布局跟随 sink advise 记录（ITfTextLayoutSink 挂载的 context + cookie）：
+    /// 宿主窗口拖拽/缩放/滚动 → OnLayoutChange 重查光标平移候选窗。
+    /// 焦点文档就绪时挂载（OnSetFocus），Deactivate 卸载。
+    layout_sink: RefCell<Option<(ITfContext, u32)>>,
     /// 线程焦点 sink cookie（ITfThreadFocusSink，维度②应用切出即隐的官方信号）。
     thread_focus_cookie: Cell<u32>,
     /// 活动会话；None = 无会话（字母键将开启新会话）。
@@ -166,6 +172,7 @@ impl TextService {
             client_id: Cell::new(0),
             event_cookie: Cell::new(0),
             compartment: RefCell::new(None),
+            layout_sink: RefCell::new(None),
             thread_focus_cookie: Cell::new(0),
             session,
             composition,
@@ -486,6 +493,9 @@ impl TextService_Impl {
             }
         }
 
+        // 卸载布局跟随 sink（候选窗跟随）。
+        self.unadvise_layout();
+
         // 卸载 OPENCLOSE compartment 监听。
         if let Some((comp, cookie)) = self.compartment.borrow_mut().take() {
             // SAFETY: 标准 TSF unadvise 调用，cookie 为注册返回值。
@@ -517,6 +527,72 @@ impl TextService_Impl {
             }
         }
         log_line("Deactivate：已清理");
+    }
+
+    // ---- 布局跟随（ITfTextLayoutSink）：候选窗随宿主视图移动/缩放/滚动平移 ----
+
+    /// 焦点文档就绪时挂布局 sink。幂等：同 context 直接跳过；换 context 先卸旧挂新。
+    /// 失败仅记日志（跟随缺失不影响输入主体）。
+    fn advise_layout(&self, pic: &ITfContext) {
+        if let Some((ctx, _)) = self.layout_sink.borrow().as_ref() {
+            if std::ptr::eq(ctx.as_raw(), pic.as_raw()) {
+                return;
+            }
+        }
+        self.unadvise_layout();
+        let source: ITfSource = match pic.cast() {
+            Ok(s) => s,
+            Err(e) => {
+                log_line(&format!("[follow] ITfSource QI 失败：{e:?}（无跟随）"));
+                return;
+            }
+        };
+        let sink: ITfTextLayoutSink = self.to_object().to_interface();
+        // SAFETY: 标准 TSF advise；sink 为本 COM 对象自身，deactivate 卸载。
+        match unsafe { source.AdviseSink(&<ITfTextLayoutSink as Interface>::IID, &sink) } {
+            Ok(cookie) => *self.layout_sink.borrow_mut() = Some((pic.clone(), cookie)),
+            Err(e) => log_line(&format!("[follow] AdviseSink 失败：{e:?}（无跟随）")),
+        }
+    }
+
+    /// 卸载布局 sink（Deactivate；绝不在 OnLayoutChange 回调内调用）。
+    fn unadvise_layout(&self) {
+        if let Some((ctx, cookie)) = self.layout_sink.borrow_mut().take() {
+            if let Ok(src) = ctx.cast::<ITfSource>() {
+                // SAFETY: 标准 TSF unadvise，cookie 为注册返回值。
+                let _ = unsafe { src.UnadviseSink(cookie) };
+            }
+        }
+    }
+
+    /// 布局变化处理：仅组词中响应（槽空/异 context 秒退）；只读会话重查光标 →
+    /// 更新共享 caret（跳变检测基线连续）→ move_to 平移（隐藏态 no-op 不复活窗口）。
+    fn follow_layout(&self, pic: &ITfContext) {
+        let rect = {
+            let slot = self.composition.borrow();
+            let Some(comp) = slot.as_ref() else {
+                return;
+            };
+            // 异 context（如 Excel 编辑栏↔单元格切换后的旧会话）不跟；
+            // 外部终止无需判 terminated：内部 comp 槽已被清空，query_caret 兜底 None。
+            if !std::ptr::eq(comp.context().as_raw(), pic.as_raw()) {
+                return;
+            }
+            comp.query_caret()
+        };
+        let Some(rect) = rect else {
+            return; // 文档锁定/clipped/全零矩形：保持原位
+        };
+        self.caret.set(rect);
+        // try_borrow_mut：回调可能嵌在按键路径 ui 更新中途同步触发，
+        // 抢不到借用即跳过（下一次布局事件自然补上）。
+        if let Ok(mut w) = self.ui.try_borrow_mut() {
+            w.move_to(rect);
+        }
+        log_line(&format!(
+            "[follow] 布局变化跟随：caret=({},{},{},{})",
+            rect.x, rect.y, rect.w, rect.h
+        ));
     }
 }
 
@@ -623,11 +699,16 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
     /// 结束输入只由 Esc/Enter/空格（正常上屏）或 Ctrl+Space（apply_openclose 原文上屏）触发。
     fn OnSetFocus(
         &self,
-        _pdimfocus: Ref<ITfDocumentMgr>,
+        pdimfocus: Ref<ITfDocumentMgr>,
         _pdimprevfocus: Ref<ITfDocumentMgr>,
     ) -> Result<()> {
         self.ui.borrow_mut().hide();
         self.cand_elem.borrow_mut().end();
+        // 布局跟随（候选窗随宿主拖拽/缩放/滚动平移）：焦点文档就绪即挂
+        // ITfTextLayoutSink（小狼毫同款挂载点；幂等，同 context 跳过）。
+        if let Ok(ctx) = unsafe { pdimfocus.unwrap().GetTop() } {
+            self.advise_layout(&ctx);
+        }
         Ok(())
     }
 
@@ -657,6 +738,25 @@ impl ITfCompartmentEventSink_Impl for TextService_Impl {
             };
             // 未设置（VT_EMPTY）视为打开（中文），保持默认行为。
             self.apply_openclose(langbar::read_openclose(&comp).unwrap_or(true));
+            Ok(())
+        })
+    }
+}
+
+// ---- ITfTextLayoutSink ----
+
+impl ITfTextLayoutSink_Impl for TextService_Impl {
+    /// 宿主文本视图布局变化（拖拽标题栏/缩放/滚动）：组词中则重查光标平移候选窗。
+    /// lcode 不细分——composing 守卫已挡掉非会话期噪音，每次只是一次微秒级只读量取。
+    fn OnLayoutChange(
+        &self,
+        pic: Ref<ITfContext>,
+        _lcode: TfLayoutCode,
+        _pview: Ref<ITfContextView>,
+    ) -> Result<()> {
+        guard(|| {
+            // SAFETY: pic 由 TSF 保证非空有效（回调参数约定），同 Activate 模式。
+            self.follow_layout(pic.unwrap());
             Ok(())
         })
     }

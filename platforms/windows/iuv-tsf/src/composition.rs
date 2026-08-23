@@ -12,7 +12,8 @@ use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
     ITfContextComposition, ITfEditSession, ITfEditSession_Impl, TF_ANCHOR_END,
-    TF_DEFAULT_SELECTION, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE,
+    TF_DEFAULT_SELECTION, TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION,
+    TF_SELECTIONSTYLE,
 };
 use windows_core::{implement, BOOL, ComObject, Interface, Result};
 
@@ -46,6 +47,11 @@ impl Composition {
     /// 是否曾被外部终止（sink 置位）：调用方应丢弃会话降级（丢弃后重建 Composition 对象）。
     pub fn terminated(&self) -> bool {
         self.terminated.get()
+    }
+
+    /// 组合所在 context（布局跟随 sink 比对事件来源用）。
+    pub(crate) fn context(&self) -> &ITfContext {
+        &self.context
     }
 
     /// 更新预编辑文本为 `text`（必要时先 StartComposition）。
@@ -113,6 +119,30 @@ impl Composition {
         }
         // SAFETY: HRESULT 值类型，ok() 把失败码转为 Error。
         inner.ok()
+    }
+
+    /// 只读量取当前光标矩形（屏幕坐标；composition 尾端锚点，与打字路径一致）。
+    /// 布局跟随用：宿主窗口拖拽/缩放/滚动后重定位候选窗。
+    /// 失败（文档锁定/无 view/clipped/全零矩形）一律 None，调用方保持原位。
+    /// SYNC|READ：回调不在编辑锁内时同步完成；被锁即失败——正好跳过打字路径
+    /// 自身触发布局变化时的重复量取。
+    pub(crate) fn query_caret(&self) -> Option<CaretRect> {
+        let comp = self.comp.borrow().clone()?;
+        let session = RepositionSession {
+            context: self.context.clone(),
+            comp,
+            caret: RefCell::new(None),
+        };
+        let com = ComObject::new(session);
+        let sess: ITfEditSession = com.to_interface();
+        // SAFETY: RequestEditSession 是标准 TSF 调用；sess 在本调用期间存活。
+        if unsafe { self.context.RequestEditSession(self.client_id, &sess, TF_ES_SYNC | TF_ES_READ) }
+            .is_err()
+        {
+            return None;
+        }
+        let caret = *com.caret.borrow();
+        caret
     }
 }
 
@@ -275,6 +305,51 @@ fn trace_step<T>(name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
             log_line(&format!("do_edit_session: {name} 失败：{e:?}"));
             Err(e)
         }
+    }
+}
+
+/// 同步只读 edit session：量取 composition 尾端光标矩形（屏幕坐标）。
+/// 只读不写：布局跟随路径（query_caret）专用，绝不扰动应用文档。
+#[implement(ITfEditSession)]
+struct RepositionSession {
+    context: ITfContext,
+    comp: ITfComposition,
+    /// 输出：光标矩形（None = 量取失败/clipped/文本不可见）。
+    caret: RefCell<Option<CaretRect>>,
+}
+
+impl ITfEditSession_Impl for RepositionSession_Impl {
+    fn DoEditSession(&self, ec: u32) -> Result<()> {
+        // SAFETY: GetRange 返回本 composition 的有效范围，调用期间存活。
+        let range = trace_step("reposition: comp.GetRange", || unsafe {
+            self.comp.GetRange()
+        })?;
+        // 与 SetTextSession 打字路径同锚点：尾端折叠（候选窗跟预编辑尾端）。
+        // SAFETY: 标准 TSF 调用，ec 为当前只读 cookie。
+        trace_step("reposition: range.Collapse(TF_ANCHOR_END)", || unsafe {
+            range.Collapse(ec, TF_ANCHOR_END)
+        })?;
+        // SAFETY: GetActiveView 由 TSF 保证在 edit session 内可调用。
+        let view = trace_step("reposition: context.GetActiveView", || unsafe {
+            self.context.GetActiveView()
+        })?;
+        let mut rc = RECT::default();
+        let mut clipped = BOOL(0);
+        // SAFETY: GetTextExt 由 TSF 保证在 edit session 内可调用；输出缓冲先初始化。
+        trace_step("reposition: view.GetTextExt(ec)", || unsafe {
+            view.GetTextExt(ec, &range, &mut rc, &mut clipped)
+        })?;
+        if clipped.as_bool() || (rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0) {
+            // MSDN：clipped 或全零 = 文本不可见（如最小化）：保持原位。
+            return Ok(());
+        }
+        *self.caret.borrow_mut() = Some(CaretRect {
+            x: rc.left,
+            y: rc.top,
+            w: rc.right - rc.left,
+            h: rc.bottom - rc.top,
+        });
+        Ok(())
     }
 }
 
