@@ -140,7 +140,7 @@ impl ToolbarWindow {
     }
 
     /// 单条事件应用（纯信号判定，零前台查询——TSF 线程焦点信号即真相源）：
-    /// - `FocusGained`：绑定该实例并立即显示（已可见 → 仅重绘换内容）
+    /// - `FocusGained`：绑定该实例并立即显示（偏好关闭 → 仅绑定；已可见 → 仅重绘换内容）
     /// - `FocusLost`：绑定者本人 → 解绑并立即隐藏；他人 → 仅改表
     fn apply_event(&mut self, ev: BarEvent) {
         match ev {
@@ -152,10 +152,15 @@ impl ToolbarWindow {
                     ToolbarInstance { state, active: true },
                 );
                 let was_bound = sh.focused == Some((pid, tid));
+                let pref_visible = sh.visible;
                 sh.focused = Some((pid, tid));
                 drop(sh);
                 log::log_line(&format!("[toolbar] 激活（{pid}:{tid}）"));
-                if !self.visible {
+                if !pref_visible {
+                    // 偏好关闭：只绑定实例不显示（§32「切回 iuv → 按偏好重新显示」；
+                    // 重开走 ToggleVisible 分支的绑定活跃恢复）。
+                    log::log_line("[toolbar] 工具条 → 保持隐藏（偏好关闭，仅绑定）");
+                } else if !self.visible {
                     log::log_line(&format!(
                         "[toolbar] 工具条 → 显示（绑定 {pid}:{tid}）"
                     ));

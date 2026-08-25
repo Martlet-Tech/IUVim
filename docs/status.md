@@ -299,4 +299,15 @@
   坐标缩放病（用户实测无轨迹放大感）。改动：iuv-tsf text_service.rs（字段/advise/unadvise/
   follow_layout/OnLayoutChange/OnSetFocus 判空）、composition.rs（query_caret + RepositionSession
   只读量取会话）。测试：工作区全绿（313）；手测 notepad 拖拽/滚轮/缩放平滑跟随、Alt+Tab 往返
-  与 Excel 多 context 回归正常；事件日志部署后零崩溃，日志 `[follow]` 逐条跟随实锤。
+   与 Excel 多 context 回归正常；事件日志部署后零崩溃，日志 `[follow]` 逐条跟随实锤。
+- [ ] **隐藏工具栏后切应用复活（2026-08-25，代码修复，未验收不入库）**：
+  用户在资源管理器语言栏菜单「隐藏工具栏」（`sh.visible=false` 已写盘 toolbar.json）→
+  切到浏览器工具条又显示。根因：daemon `apply_event` 的 FocusGained 分支只看 OS 窗口运行时
+  标志 `self.visible`、从不查全局偏好 `sh.visible` → 浏览器线程 `OnSetThreadFocus` 发信号即
+  无条件 `show()`；违反 §32 原始规格「切回 iuv → 按偏好重新显示」。修复 = drop 锁前捕获
+  `pref_visible` 作显示前置条件：偏好关闭仅 upsert 绑定实例不显示（日志「保持隐藏（偏好关闭，
+  仅绑定）」）；重开走 ToggleVisible 既有「绑定活跃→立即恢复」分支闭环。全仓 `show()` 仅
+  两处调用（FocusGained 已守卫 / ToggleVisible 重开天然偏好=true），无其他旁路。
+  改动仅 iuv-daemon toolbar/window.rs（apply_event + 注释）。测试：iuv-daemon 全绿（10）；
+  手测清单：资源管理器隐藏→切浏览器保持隐藏、切回仍隐藏、菜单重开立即恢复（位置/四态正确）、
+  正常焦点跟随显隐回归、daemon 重启后偏好生效。
