@@ -186,13 +186,17 @@ impl ImeEngine for RimeEngine {
         if graph.edges.is_empty() || graph.farthest == 0 {
             return self.fallback_translation(pending, &seg);
         }
-        // 音节边界起点集（重排切分的累计字节偏移）：非边界起点只产垃圾桶
+        // 音节边界起点集：**图推导**——所有 Normal 边的终点 ∪ {0}。
+        // （旧实现按无撇号长度累加，续接态 raw 带 `'` 时与含撇号坐标系错位，
+        // 多起点全丢 → 句通道静默失效 + 中段词消失，2026-08-26 实测根因。）
         let mut origins = std::collections::BTreeSet::new();
         origins.insert(0);
-        let mut off = 0usize;
-        for s in seg.iter().filter(|s| !s.is_empty()) {
-            off += s.len();
-            origins.insert(off);
+        for (_, to_map) in graph.edges.iter() {
+            for (to, sps) in to_map {
+                if sps.iter().any(|sp| sp.spelling_type == syllabifier::SpellingType::Normal) {
+                    origins.insert(*to);
+                }
+            }
         }
         let buckets = translator::collect_buckets(
             &self.dict,
@@ -208,16 +212,40 @@ impl ImeEngine for RimeEngine {
         //    类内消耗终点降序，桶内已按精确优先 + 权重降序。——
         // seg_len 按字节跨度映射到贪心分段数（librime end_pos 语义：候选消费 =
         // 其图终点覆盖的段数；简拼边值长≠字节跨度的错位由此归位）。
+        // seg_len 映射的边界表：**扫描 raw 实际字节**（每段后跳过一个 `'`），
+        // 与图顶点坐标系一致。旧实现按无撇号长度累加，续接态（raw 带 `'`）错位吞段
+        // （2026-08-26 实测：degua 逐词上屏丢 xi 的根因之一）。
         let mut cum = vec![0usize];
-        for s in seg.iter().filter(|s| !s.is_empty()) {
-            let last = *cum.last().unwrap_or(&0);
-            cum.push(last + s.len());
+        {
+            let bytes = lower.as_bytes();
+            let mut pos = 0usize;
+            let mut ok = true;
+            for s in seg.iter().filter(|s| !s.is_empty()) {
+                if lower[pos..].starts_with(s.as_str()) {
+                    pos += s.len();
+                    if pos < bytes.len() && bytes[pos] == b'\'' {
+                        pos += 1;
+                    }
+                    cum.push(pos);
+                } else {
+                    // 段与 raw 失配（大写保形等）→ 退回朴素长度累加
+                    let mut acc = 0usize;
+                    for t in seg.iter().filter(|t| !t.is_empty()) {
+                        acc += t.len();
+                        cum.push(acc);
+                    }
+                    ok = false;
+                    break;
+                }
+            }
+            let _ = ok;
         }
+        let n_seg_cum = cum.len() - 1;
         let consumed_parts = |end_byte: usize| -> usize {
             cum.iter()
                 .rposition(|&c| c <= end_byte)
                 .unwrap_or(0)
-                .min(n_seg.max(1))
+                .min(n_seg_cum.max(1))
         };
 
         let mut cands: Vec<crate::Candidate> = Vec::new();
