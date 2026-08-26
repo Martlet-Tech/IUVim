@@ -228,3 +228,25 @@ TSF 契约、候选窗渲染、设置页。
 - **终点范围**：做到 Step 3 双引擎并存（Config 可切、会话已切分段确认、对拍报告完成）；
   classic 引擎保留不删，删除等管理员确认。
 - **资源位置**：librime 与小狼毫源码在 `D:\Downloads\input\{librime,weasel}`（只读参考）。
+
+## 13. 对拍分歧裁决记录（Step 2 实施中逐项落档）
+
+| # | 分歧 | 裁决 | 依据 |
+|---|---|---|---|
+| 1 | librime 的 Segmentation/Context 段状态机与 ImeEngine「单活动段」接缝的关系 | **状态机不移植**，段生命周期归会话层（Step 3 分段确认模型） | navigator.cc 规格实证：打字期恒单段覆盖重译，多段仅在选字后出现；与 librime engine/translators 分层同构 |
+| 2 | rime 简拼经拼写代数 vs iuv 构建期简拼键 | 简拼边携带**两族拼写**：该字母开头的全部音节（混拼展开 ni+hao→ni'hao）+ 字母串自身（命中压缩式简拼键 nhm/nhmsx）；查询时全字母路径用 concat 键、纯音节路径用 join' 键 | 白霜词库实测：简拼键为压缩式（exact("n'h'm")空、prefix("nhm")命中） |
+| 3 | 中途简拼垃圾路径（nihao → 你会(ni'hui) 类）污染候选 | 顶点存在 Normal 出边时**只走 Normal/Completion**；简拼仅在无正常出边时启用（简拼=兜底的语言学事实） | classic 用户预期（微软对齐资产保序）；组合爆炸随之消失 |
+| 4 | 词候选流跨类别排序 | 类 2（尾前缀补全，恒全跨度）置顶 → 类 0（纯全拼）→ 类 1（含简拼）沉底；类内终点降序。桶内同词多路径合并时类别取「含补全则 2，否则更纯者」 | classic 2b 整句置顶 + rime end-desc 铁律双重对齐 |
+| 5 | 简拼边值长≠字节跨度的消费错位（你会@end3 却带 seg_len=2） | seg_len 改按**字节跨度映射贪心分段数**（librime end_pos 语义）；预测匹配恒 999 全消费 | 消除部分消费错位 panic 风险 |
+| 6 | 路径枚举预算 | 每起点独立 1024 + 全局 16384 硬顶（真词库下全局预算会被首起点简拼子树烧穿——实测教训） | 性能护栏 |
+| 7 | **【待管理员复核】shigechengy 整句质量**：classic=是个成员（2b 尾音节展开+yuan 长音节），rime=是个车那个月（poet 在补全桶上的 DP 选择偏差） | 功能正常（Sentence 置顶+词条完整），质量分歧挂起至打分校准阶段（§9 Step4 范畴） | 结构里程碑不被校准阻塞 |
+
+## 14. Step 2 交付清单（2026-08-26）
+
+- `src/rime/syllabifier.rs`：音节图（Normal/Abbreviation 双族拼写/Completion 三类边、剪枝）
+- `src/rime/poet.rs`：arena 版组句（DP+Beam 双策略、单词解排除、左结合备查、MakeSentences 多句衰减）
+- `src/rime/translator.rs`：桶收集（三态键形查询）+ 整句闸门 + 分类词流
+- `src/rime/mod.rs`：RimeEngine 装配（Arc<Dict> 与 classic 共享）+ prefix_chars 政策 + preedit 五规则共用
+- `api.rs` preview_rules 抽取（classic/rime 共用）；Session::over 挂任意核心；Engine::shared_dict
+- REPL `--engine classic|rime` 开关（batch 输出增 score 列）
+- 测试：rime 行为测试 10 项（词优先/歧义桶/混拼/尾补全/屏蔽/preedit/部分消费/简拼键/严格前缀等），workspace 326 绿

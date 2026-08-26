@@ -1,12 +1,14 @@
 //! 会话状态机。契约 01-contract.md §4 session.rs / §4.1 按键行为。
 
-use crate::api::ImeEngine;
 use crate::{fullwidth_text, Candidate, Effect, Engine, ImeState, Key, PageInfo, ScriptMode, SessionEnd};
 use std::sync::{Arc, Mutex};
 
 /// 一次输入会话。TSF/REPL 创建后逐键喂入。
 pub struct Session {
+    /// 资源引擎（调权/隐藏/自造词/配置/简繁等资源操作）。
     engine: Arc<Engine>,
+    /// 候选生成核心（ImeEngine 接缝，39-rime-pipeline.md）：classic 或 rime。
+    ime: Arc<dyn crate::api::ImeEngine>,
     /// 实例运行时四态（32-status-toolbar.md §5.1）：**live 读**——工具栏点简繁等
     /// 切换后 `effect()`/`to_output` 立即读取新值，当前候选/预编辑马上重渲，不重建会话。
     /// 与引擎配置解耦：进程级 Engine 单例共享多实例，运行时态必须 per-实例。
@@ -38,8 +40,20 @@ impl Session {
         engine: Arc<Engine>,
         runtime: Arc<Mutex<ImeState>>,
     ) -> Session {
+        let ime = engine.clone() as Arc<dyn crate::api::ImeEngine>;
+        Session::over(engine, ime, runtime)
+    }
+
+    /// 挂自定义候选核心开会话（39-rime-pipeline.md Step2：rime 核心经此接入；
+    /// 资源操作仍走 classic Engine——共享同一 Dict 实例）。
+    pub fn over(
+        engine: Arc<Engine>,
+        ime: Arc<dyn crate::api::ImeEngine>,
+        runtime: Arc<Mutex<ImeState>>,
+    ) -> Session {
         Session {
             engine,
+            ime,
             runtime,
             raw: String::new(),
             tail: String::new(),
@@ -331,7 +345,7 @@ impl Session {
         let preceding = self.picked_text();
         let ctx = crate::api::EngineCtx { preceding_text: &preceding };
         let tr = self
-            .engine
+            .ime
             .translate(&ctx, &crate::api::PendingInput { raw: &self.raw });
         self.seg = tr
             .segmentation
@@ -435,7 +449,7 @@ impl Session {
         // 强制撇号/兜底/简拼各归其规则；会话层只拼已确认前文。
         let preceding = self.picked_text();
         let ctx = crate::api::EngineCtx { preceding_text: &preceding };
-        let tail_preview = self.engine.preedit(
+        let tail_preview = self.ime.preedit(
             &ctx,
             &crate::api::PendingInput { raw: &self.raw },
             if page_cands.is_empty() {

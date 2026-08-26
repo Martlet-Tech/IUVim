@@ -401,12 +401,7 @@ impl ImeEngine for Engine {
         }
     }
 
-    /// 预编辑显示（五条规则自 session::candidate_preview 收编，判定顺序不变）：
-    /// 1. 用户强制撇号（raw 含 `'`）恒输入切分，不跟随候选；
-    /// 2. 原文兜底（text == 输入去撇号）：原样 plain 不分节；
-    /// 3. 消费段不完整（简拼 jisb/nh、前缀档）：输入切分；
-    /// 4. 消费段完整 且 候选 code（去撇号）== 输入：跟随候选切分（jian+吉安 → ji'an）；
-    /// 5. 其余（单字等 code≠输入）：输入切分。
+    /// 预编辑显示：五规则共享实现（api::preview_rules），seg = 方案重排后首段。
     fn preedit(
         &self,
         _ctx: &EngineCtx,
@@ -416,34 +411,13 @@ impl ImeEngine for Engine {
         let plans = self.schema.segment(pending.raw);
         let plans = self.rank_plans(plans);
         let seg = plans.first().cloned().unwrap_or_default();
-
-        let Some(c) = selected else {
-            return self.schema.display(&seg);
-        };
-        if pending.raw.contains('\'') {
-            return self.schema.display(&seg);
-        }
-        let plain = crate::strip_apostrophes(pending.raw);
-        if c.text == plain {
-            return plain;
-        }
-        let consumed = c.seg_len.max(1).min(seg.len());
-        let consumed_full = seg[..consumed]
-            .iter()
-            .all(|s| !s.is_empty() && self.is_syllable(s));
-        if !consumed_full {
-            return self.schema.display(&seg);
-        }
-        let code_plain = crate::strip_apostrophes(&c.code);
-        if code_plain == plain {
-            let mut s = c.code.clone();
-            if consumed < seg.len() {
-                s.push('\'');
-                s.push_str(&self.schema.display(&seg[consumed..]));
-            }
-            return s;
-        }
-        self.schema.display(&seg)
+        crate::api::preview_rules(
+            pending.raw,
+            &seg,
+            &|s| self.is_syllable(s),
+            &|s| self.schema.display(s),
+            selected,
+        )
     }
 }
 

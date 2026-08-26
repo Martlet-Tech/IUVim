@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex};
 
 /// 引擎：进程级单例，跨线程共享。
 pub struct Engine {
-    pub(crate) dict: Dict,
+    /// 词库（Arc：classic/rime 双核心共享同一实例——M2 用户库写入对两者同时可见，
+    /// 39-rime-pipeline.md §Step2）。
+    pub(crate) dict: Arc<Dict>,
     /// 配置（Mutex：M6 设置页热载 engine.set_config 需要 &self 内部可变）。
     pub(crate) config: Mutex<Config>,
     pub(crate) schema: Box<dyn InputSchema>,
@@ -54,7 +56,7 @@ impl Engine {
     ) -> Arc<Engine> {
         let page_size = config.page_size.max(1) as u32;
         Arc::new(Engine {
-            dict,
+            dict: Arc::new(dict),
             config: Mutex::new(config),
             schema,
             lm,
@@ -122,6 +124,12 @@ impl Engine {
 
     pub(crate) fn is_syllable_prefix(&self, s: &str) -> bool {
         self.dict.syllables().iter().any(|syl| syl.starts_with(s))
+    }
+
+    /// 词库共享句柄（39-rime-pipeline.md：RimeEngine 与 classic 共享同一 Dict，
+    /// 保证用户库调权/屏蔽跨核心一致）。
+    pub fn shared_dict(&self) -> Arc<Dict> {
+        self.dict.clone()
     }
 }
 

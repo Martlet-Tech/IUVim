@@ -56,3 +56,47 @@ pub trait ImeEngine: Send + Sync {
 }
 
 use crate::Candidate;
+
+/// 预编辑显示五规则（classic/rime 两核心共用；判定顺序即契约顺序）：
+/// 1. 用户强制撇号（raw 含 `'`）：恒输入切分，不跟随候选；
+/// 2. 原文兜底（候选 text == 输入去撇号）：原样 plain 不分节；
+/// 3. 消费段不完整（简拼 jisb/nh、前缀档）：输入切分；
+/// 4. 消费段完整 且 候选 code（去撇号）== 输入：跟随候选切分（jian+吉安 → ji'an）；
+/// 5. 其余：输入切分。
+pub(crate) fn preview_rules(
+    raw: &str,
+    seg: &[String],
+    is_syllable: &dyn Fn(&str) -> bool,
+    display: &dyn Fn(&[String]) -> String,
+    selected: Option<&Candidate>,
+) -> String {
+    let Some(c) = selected else {
+        return display(seg);
+    };
+    if raw.contains('\'') {
+        return display(seg);
+    }
+    let plain = strip(raw);
+    if c.text == plain {
+        return plain;
+    }
+    let consumed = c.seg_len.max(1).min(seg.len());
+    let consumed_full = seg[..consumed].iter().all(|s| !s.is_empty() && is_syllable(s));
+    if !consumed_full {
+        return display(seg);
+    }
+    let code_plain = strip(&c.code);
+    if code_plain == plain {
+        let mut s = c.code.clone();
+        if consumed < seg.len() {
+            s.push('\'');
+            s.push_str(&display(&seg[consumed..]));
+        }
+        return s;
+    }
+    display(seg)
+}
+
+fn strip(s: &str) -> String {
+    s.chars().filter(|c| *c != '\'').collect()
+}
