@@ -40,21 +40,7 @@ impl Engine {
     /// 候选**全量返回不截断**（微软对齐：sh 候选 600+ 全给、翻页可达），由全局
     /// max_candidates 兜底。
     pub(crate) fn single_segment_candidates(&self, s: &str) -> Vec<crate::Candidate> {
-        if s.is_empty() {
-            return Vec::new();
-        }
-        let entries: Vec<iuv_data::Entry> = if self.is_syllable(s) {
-            self.dict.exact_single(s)
-        } else {
-            // 严格前缀：单字桶（桶只收单字，过滤 starts_with）
-            let first = s.chars().next().unwrap();
-            self.dict
-                .initial_top(first, iuv_data::INITIAL_BUCKET_SIZE)
-                .into_iter()
-                .filter(|e| e.code.starts_with(s))
-                .collect()
-        };
-        entries
+        crate::api::single_char_entries(&self.dict, s)
             .into_iter()
             .map(|e| crate::Candidate::for_entry(&e, crate::CandidateKind::Char, 1))
             .collect()
@@ -309,21 +295,11 @@ impl Engine {
     /// 消费端方案重排（2026-08-14）：方案[0] = 词频最优而非贪心——分节显示与主路径
     /// 跟随用户最可能打的词。排序键 = 方案 join 键 exact 词条最大权重（词条优先；
     /// 无词条 = 0），稳定排序保贪心原序。（原 session 显式调用，Step 1 收编进核心。）
+    /// 消费端方案重排（2026-08-14）：方案[0] = 词频最优而非贪心——分节显示与主路径
+    /// 跟随用户最可能打的词。排序键 = 方案 join 键 exact 词条最大权重（词条优先；
+    /// 无词条 = 0），稳定排序保贪心原序。共享实现见 [`rank_plans`]。
     pub(crate) fn rank_plans(&self, plans: Vec<Vec<String>>) -> Vec<Vec<String>> {
-        if plans.len() <= 1 {
-            return plans;
-        }
-        let mut scored: Vec<(u32, usize)> = plans
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let key = p.join("'");
-                let w = self.dict.exact(&key).first().map(|e| e.weight).unwrap_or(0);
-                (w, i)
-            })
-            .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        scored.into_iter().map(|(_, i)| plans[i].clone()).collect()
+        rank_plans(&self.dict, plans)
     }
 
     /// 按契约 §4.2 生成候选（编排本体，原 engine.rs 函数整体平移）。
@@ -367,18 +343,7 @@ impl Engine {
         // 兜底：所有路由均无候选且输入非空 → 原文候选（"不认识"语义）。
         // 无编号呈现由 UI 按 text == 预编辑原文 判定（Step 3 改显式类型标记）。
         if cands.is_empty() && !plain.is_empty() {
-            let kind = if plain.chars().count() >= 2 {
-                crate::CandidateKind::Word
-            } else {
-                crate::CandidateKind::Char
-            };
-            cands.push(crate::Candidate::new(
-                plain.clone(),
-                kind,
-                plain.clone(),
-                0,
-                seg.len(),
-            ));
+            cands.push(crate::api::raw_fallback_candidate(&plain, seg.len()));
         }
         cands
     }
@@ -437,4 +402,23 @@ fn push_unique_entry(
         crate::CandidateKind::for_word(&e.word),
         k,
     ));
+}
+
+/// 方案词频重排的共享实现（classic `Engine::rank_plans` 与 rime `ranked_seg` 共用，
+/// 2026-08-26 去重）：按方案 join 键 exact 词条最大权重降序，稳定保贪心原序。
+pub(crate) fn rank_plans(dict: &iuv_data::Dict, plans: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    if plans.len() <= 1 {
+        return plans;
+    }
+    let mut scored: Vec<(u32, usize)> = plans
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let key = p.join("'");
+            let w = dict.exact(&key).first().map(|e| e.weight).unwrap_or(0);
+            (w, i)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, i)| plans[i].clone()).collect()
 }

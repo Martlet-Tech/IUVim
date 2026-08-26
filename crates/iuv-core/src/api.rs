@@ -55,7 +55,7 @@ pub trait ImeEngine: Send + Sync {
     ) -> String;
 }
 
-use crate::Candidate;
+use crate::{Candidate, CandidateKind};
 
 /// 预编辑显示五规则（classic/rime 两核心共用；判定顺序即契约顺序）：
 /// 1. 用户强制撇号（raw 含 `'`）：恒输入切分，不跟随候选；
@@ -99,4 +99,33 @@ pub(crate) fn preview_rules(
 
 fn strip(s: &str) -> String {
     s.chars().filter(|c| *c != '\'').collect()
+}
+
+/// 单字桶查询的共享实现（classic `single_segment_candidates` 与 rime
+/// `prefix_chars_translation` 共用，2026-08-26 去重）：完整音节 → exact_single 全量；
+/// 严格前缀 → 首字母桶过滤 starts_with。
+pub(crate) fn single_char_entries(dict: &iuv_data::Dict, s: &str) -> Vec<iuv_data::Entry> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    if dict.is_syllable(s) {
+        dict.exact_single(s)
+    } else {
+        let first = s.chars().next().unwrap();
+        dict.initial_top(first, iuv_data::INITIAL_BUCKET_SIZE)
+            .into_iter()
+            .filter(|e| e.code.starts_with(s))
+            .collect()
+    }
+}
+
+/// 原文兜底候选（"不认识"语义，classic 尾部与 rime fallback 共用）：
+/// 多字符 → Word，单字符 → Char；text == code == plain。
+pub(crate) fn raw_fallback_candidate(plain: &str, seg_len: usize) -> Candidate {
+    let kind = if plain.chars().count() >= 2 {
+        CandidateKind::Word
+    } else {
+        CandidateKind::Char
+    };
+    Candidate::new(plain, kind, plain, 0, seg_len)
 }

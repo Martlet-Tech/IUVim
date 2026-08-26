@@ -22,8 +22,6 @@ pub(crate) struct BucketEntry {
     pub entry: iuv_data::Entry,
     /// true = 编码精确命中；false = 尾前缀补全（predictive）
     pub exact: bool,
-    /// 产生路径的音节段数（部分消费推进用）
-    pub parts: usize,
     /// 路径质量类：0=纯 Normal；1=含 Abbreviation；2=含 Completion。
     /// 词流分级输出——补全(全跨)置顶 → 纯全拼 → 含简拼沉底
     /// （2026-08-26 裁决，任务书 §13.4）。
@@ -58,7 +56,6 @@ pub(crate) fn collect_buckets(
         key: String,
         hops: usize,
         class: u8,
-        tail_completion: bool,
     }
 
     let mut visited: std::collections::HashSet<(usize, usize, String, bool)> =
@@ -70,7 +67,6 @@ pub(crate) fn collect_buckets(
         origin: usize,
         end: usize,
         key: String,
-        hops: usize,
         class: u8,
         completion: bool,
     }
@@ -86,7 +82,6 @@ pub(crate) fn collect_buckets(
             key: String::new(),
             hops: 0,
             class: 0,
-            tail_completion: false,
         });
         visited.insert((start, start, String::new(), false));
     }
@@ -143,7 +138,6 @@ pub(crate) fn collect_buckets(
                         origin: w.origin,
                         end: e,
                         key: nkey.clone(),
-                        hops: w.hops + 1,
                         class: if completion { class.max(2) } else { class },
                         completion,
                     });
@@ -155,7 +149,6 @@ pub(crate) fn collect_buckets(
                         key: nkey,
                         hops: w.hops + 1,
                         class,
-                        tail_completion: completion,
                     });
                 }
             }
@@ -182,7 +175,6 @@ pub(crate) fn collect_buckets(
                 BucketEntry {
                     entry,
                     exact: !m.completion,
-                    parts: m.hops,
                     class: if m.completion { m.class.max(2) } else { m.class },
                 },
             );
@@ -260,7 +252,6 @@ pub(crate) fn build_poet_graph(
         if let Some(be) = slot.first() {
             wg.entry(s).or_default().entry(e).or_default().push(GraphEntry {
                 word: be.entry.word.clone(),
-                code: be.entry.code.clone(),
                 log_weight: lm_log_prob(be.entry.weight),
             });
         }

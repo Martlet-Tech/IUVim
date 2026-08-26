@@ -449,6 +449,16 @@ impl Dict {
         &self.syllables
     }
 
+    /// 该串是否为完整合法音节（classic/rime 共用，2026-08-26 去重）。
+    pub fn is_syllable(&self, s: &str) -> bool {
+        self.syllables.contains(s)
+    }
+
+    /// 该串是否为某音节的真前缀（微软对齐单段档判定）。
+    pub fn is_syllable_prefix(&self, s: &str) -> bool {
+        !s.is_empty() && self.syllables.iter().any(|syl| syl.starts_with(s))
+    }
+
     /// 全部词条 weight 之和（LM 分母）。
     pub fn total_weight(&self) -> u64 {
         self.total

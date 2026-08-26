@@ -52,36 +52,22 @@ impl RimeEngine {
     }
 
     fn is_syllable(&self, s: &str) -> bool {
-        self.syllables.contains(s)
+        self.dict.is_syllable(s)
     }
 
     fn is_syllable_prefix(&self, s: &str) -> bool {
-        self.syllables.iter().any(|syl| syl.starts_with(s))
+        self.dict.is_syllable_prefix(s)
     }
 
     /// 纯单字政策（classic::single_segment_candidates 同款）：完整音节 →
     /// exact_single 全量；严格前缀 → 首字母桶过滤。
     fn prefix_chars_translation(&self, pending: &PendingInput, seg: &[String]) -> Translation {
         let plain = crate::strip_apostrophes(pending.raw);
-        let entries: Vec<iuv_data::Entry> = if self.is_syllable(&plain) {
-            self.dict.exact_single(&plain)
-        } else if let Some(first) = plain.chars().next() {
-            self.dict
-                .initial_top(first, iuv_data::INITIAL_BUCKET_SIZE)
-                .into_iter()
-                .filter(|e| e.code.starts_with(&plain))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let cands: Vec<crate::Candidate> = entries
+        let n_seg = seg.iter().filter(|s| !s.is_empty()).count().max(1);
+        let cands: Vec<crate::Candidate> = crate::api::single_char_entries(&self.dict, &plain)
             .into_iter()
             .map(|e| {
-                let mut c = crate::Candidate::for_entry(
-                    &e,
-                    crate::CandidateKind::Char,
-                    1.min(seg.iter().filter(|s| !s.is_empty()).count().max(1)),
-                );
+                let mut c = crate::Candidate::for_entry(&e, crate::CandidateKind::Char, 1usize.min(n_seg));
                 c.score = self.lm.log_prob(None, "", e.weight);
                 c
             })
@@ -107,21 +93,7 @@ impl RimeEngine {
     /// 分段视图首段 = 方案词频重排后的贪心切分（与会话层既有 seg 口径一致，
     /// 保证部分消费推进的段数语义在双引擎下不变）。
     fn ranked_seg(&self, raw: &str) -> Vec<String> {
-        let mut plans = self.schema.segment(raw);
-        if plans.len() > 1 {
-            let mut scored: Vec<(u32, usize)> = plans
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    let key = p.join("'");
-                    let w = self.dict.exact(&key).first().map(|e| e.weight).unwrap_or(0);
-                    (w, i)
-                })
-                .collect();
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-            let idx: Vec<usize> = scored.into_iter().map(|(_, i)| i).collect();
-            plans = idx.into_iter().map(|i| plans[i].clone()).collect();
-        }
+        let plans = crate::classic::rank_plans(&self.dict, self.schema.segment(raw));
         plans.into_iter().next().unwrap_or_default()
     }
 
@@ -130,19 +102,8 @@ impl RimeEngine {
         let plain = crate::strip_apostrophes(pending.raw);
         let mut cands = Vec::new();
         if !plain.is_empty() {
-            let kind = if plain.chars().count() >= 2 {
-                crate::CandidateKind::Word
-            } else {
-                crate::CandidateKind::Char
-            };
             let n_seg = seg.iter().filter(|s| !s.is_empty()).count();
-            cands.push(crate::Candidate::new(
-                plain.clone(),
-                kind,
-                plain,
-                0,
-                n_seg.max(1),
-            ));
+            cands.push(crate::api::raw_fallback_candidate(&plain, n_seg.max(1)));
         }
         Translation { segmentation: vec![], candidates: cands }
     }
@@ -156,7 +117,6 @@ impl ImeEngine for RimeEngine {
         // 图构建用小写视图（ASCII 一一对应；大写保形显示由会话层既有路径处理）
         let lower = pending.raw.to_lowercase();
         let seg = self.ranked_seg(pending.raw);
-        let n_seg = seg.iter().filter(|s| !s.is_empty()).count();
 
         let graph = syllabifier::build_graph(&lower, &self.syllables, MAX_SYLLABLE_LEN);
         // —— 微软对齐政策（classic PrefixChars，档位降级为核心内部政策）：
@@ -293,12 +253,9 @@ impl ImeEngine for RimeEngine {
                 graph.farthest,
                 |w| self.lm.log_prob(None, "", w),
             ) {
-                if let Some(sentence) = poet::make_sentence(
-                    &wg,
-                    graph.farthest,
-                    ctx.preceding_text,
-                    poet::Strategy::DynamicProgramming,
-                ) {
+                if let Some(sentence) =
+                    poet::make_sentence(&wg, graph.farthest, ctx.preceding_text)
+                {
                     cands.insert(0, translator::sentence_candidate(&sentence, seg.join("'")));
                 }
             }

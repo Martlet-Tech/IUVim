@@ -143,11 +143,11 @@ impl Engine {
     }
 
     pub(crate) fn is_syllable(&self, s: &str) -> bool {
-        self.dict.syllables().contains(s)
+        self.dict.is_syllable(s)
     }
 
     pub(crate) fn is_syllable_prefix(&self, s: &str) -> bool {
-        self.dict.syllables().iter().any(|syl| syl.starts_with(s))
+        self.dict.is_syllable_prefix(s)
     }
 
     /// 词库共享句柄（39-rime-pipeline.md：RimeEngine 与 classic 共享同一 Dict，
