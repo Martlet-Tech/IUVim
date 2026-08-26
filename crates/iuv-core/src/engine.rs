@@ -32,6 +32,9 @@ pub struct Engine {
     script: Mutex<Option<Arc<ScriptConverter>>>,
     /// 缓存 `config.page_size.max(1)`（P1.6：热路径每键多次读 page_size，避免整份克隆）。
     page_size: AtomicU32,
+    /// 可选替代候选核心（39-rime-pipeline.md Step3：rime 内核经此挂载，
+    /// start_session* 工厂自动改产其会话；None = classic）。
+    alt_core: Mutex<Option<Arc<dyn crate::api::ImeEngine>>>,
 }
 
 impl Engine {
@@ -64,11 +67,16 @@ impl Engine {
             user_remote: Mutex::new(None),
             script: Mutex::new(None),
             page_size: AtomicU32::new(page_size),
+            alt_core: Mutex::new(None),
         })
     }
 
     pub fn start_session(self: &Arc<Self>) -> Session {
         self.reload_user_dict();
+        if let Some(core) = self.alt_core() {
+            let runtime = Arc::new(std::sync::Mutex::new(self.config().initial_state));
+            return Session::over(self.clone(), core, runtime);
+        }
         Session::new(self.clone())
     }
 
@@ -79,7 +87,23 @@ impl Engine {
         runtime: Arc<std::sync::Mutex<crate::ImeState>>,
     ) -> Session {
         self.reload_user_dict();
+        if let Some(core) = self.alt_core() {
+            return Session::over(self.clone(), core, runtime);
+        }
         Session::with_runtime(self.clone(), runtime)
+    }
+
+    /// 挂载替代候选核心（Step3 装配点：load_engine 读 `config.engine == "rime"`
+    /// 后调用；词库共享见 [`shared_dict`](Self::shared_dict)）。重复挂载 = 替换。
+    pub fn attach_core(&self, core: Arc<dyn crate::api::ImeEngine>) {
+        *self.alt_core.lock().unwrap_or_else(|e| e.into_inner()) = Some(core);
+    }
+
+    fn alt_core(&self) -> Option<Arc<dyn crate::api::ImeEngine>> {
+        self.alt_core
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 装配简→繁转换器（31-script-traditional.md）。`None` = 数据缺失/不启用 → 繁体模式

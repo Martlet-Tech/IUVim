@@ -98,3 +98,18 @@ impl Default for PunctMode {
         PunctMode::Chinese
     }
 }
+/// 候选生成核心选择（39-rime-pipeline.md Step3 过渡开关）：
+/// `classic` = 原路由引擎（默认）；`rime` = rime 内核移植版。
+/// 过渡脚手架——rime 烘焙稳定后删除 classic 与本开关（git 留底）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EngineChoice {
+    Classic,
+    Rime,
+}
+
+impl Default for EngineChoice {
+    fn default() -> Self {
+        EngineChoice::Classic
+    }
+}

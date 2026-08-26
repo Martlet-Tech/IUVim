@@ -14,7 +14,7 @@ mod enums;
 mod io;
 mod runtime;
 
-pub use enums::{InitialMode, Orientation, PunctMode, ScriptMode, ThemeChoice, WidthMode};
+pub use enums::{EngineChoice, InitialMode, Orientation, PunctMode, ScriptMode, ThemeChoice, WidthMode};
 pub use io::default_config_path;
 pub use runtime::ImeState;
 
@@ -58,6 +58,9 @@ pub struct Config {
     /// Windows 平台 TSF/daemon 消费：log_line 按消息前缀 `[tag]` 匹配，命中即静音。
     /// 引擎本身不记日志；字段仅为共享 config.json 语义（设置页写、两侧读）。
     pub disabled_log_modules: Vec<String>,
+    /// 候选生成核心（39-rime-pipeline.md Step3 过渡开关，默认 classic）。
+    /// 装载点消费：TSF load_engine / REPL --engine。切换需重载输入法生效。
+    pub engine: EngineChoice,
 }
 
 impl Default for Config {
@@ -74,6 +77,7 @@ impl Default for Config {
             candidate_owner_apps: Vec::new(),
             theme: ThemeChoice::Light,
             disabled_log_modules: Vec::new(),
+            engine: EngineChoice::Classic,
         }
     }
 }

@@ -112,13 +112,30 @@ impl Session {
                 self.recompute();
             }
             Key::Backspace => {
-                if let Some((_, code)) = self.picked.pop() {
-                    // 有已选词：回退栈顶，词 code 拼回 raw 头部（续接的逆操作）
-                    self.raw = if self.raw.is_empty() {
-                        code
+                if let Some((text, code)) = self.picked.pop() {
+                    // rime 式逐字退（39-rime-pipeline.md §6）：多字词退末字——
+                    // 末字音节还原回未确认区，其余部分留栈；单字词整词退。
+                    // 音节数≠字数（简拼整词如 code="nhm"）无法对位 → 整词退兜底。
+                    let chars: Vec<char> = text.chars().collect();
+                    let syls: Vec<&str> = code.split('\'').collect();
+                    if chars.len() >= 2 && syls.len() == chars.len() {
+                        let new_text: String = chars[..chars.len() - 1].iter().collect();
+                        let new_code = syls[..syls.len() - 1].join("'");
+                        self.picked.push((new_text, new_code));
+                        let back_syllable = syls[syls.len() - 1].to_string();
+                        self.raw = if self.raw.is_empty() {
+                            back_syllable
+                        } else {
+                            format!("{}'{}", back_syllable, self.raw)
+                        };
                     } else {
-                        format!("{code}'{}", self.raw)
-                    };
+                        // 整词退：词 code 拼回 raw 头部（原续接逆操作）
+                        self.raw = if self.raw.is_empty() {
+                            code
+                        } else {
+                            format!("{}'{}", code, self.raw)
+                        };
+                    }
                     self.recompute();
                 } else if !self.raw.is_empty() {
                     // 真退格：删 raw 尾字符

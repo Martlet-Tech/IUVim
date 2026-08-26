@@ -669,7 +669,8 @@ fn resumed_tail_ambiguous_syllable_reachable() {
     );
 }
 
-/// 退格回退已选词：pop 栈顶，raw 恢复原输入。
+/// 退格回退已选词（39-rime-pipeline.md §6 rime 式逐字退）：
+/// 多字词退**末字**——末字音节还原回未确认区，其余留栈；再退整词。
 #[test]
 fn backspace_pops_picked() {
     let engine = Engine::new(tail_dict(), Config::default());
@@ -682,11 +683,20 @@ fn backspace_pops_picked() {
         .position(|c| c.text == "床前")
         .unwrap();
     s.on_key(Key::Digit((idx + 1) as u8));
+    // 第一次退格：床前 → 床 + qian 回未确认区
     let e = s.on_key(Key::Backspace);
-    assert_eq!(e.end, None, "回退栈顶不结束会话");
+    assert_eq!(e.end, None, "回退不结束会话");
+    assert_eq!(
+        e.composition, "床qian'ming'yue'guang",
+        "逐字退：前 字还原为 qian，实际：{}",
+        e.composition
+    );
+    assert!(s.is_active());
+    // 第二次退格：床 为单字词 → 整词退，raw 完整恢复
+    let e = s.on_key(Key::Backspace);
     assert_eq!(
         e.composition, "chuang'qian'ming'yue'guang",
-        "raw 恢复，实际：{}",
+        "单字词整词退，实际：{}",
         e.composition
     );
     assert!(

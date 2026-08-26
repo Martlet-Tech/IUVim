@@ -677,3 +677,40 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
   右移，是真实光标仅尺寸小），3 键即误判抑制 → 候选栏消失（微信不自绘候选栏）；notepad/
   WinTerm 返回真矩形（9×19+）不受影响。pbshow 不可靠（IMM 应用恒 true——系统认为 TIP 自绘，
   但桥同时转候选给游戏）。候选 UI 元素（`cand_elem`）同步不受抑制影响，游戏桥仍可拉取候选数据。
+
+## 8. 引擎核心接缝（39-rime-pipeline.md，2026-08-26 增补）
+
+### 8.1 顶层接口（唯一签名面）
+
+```rust
+// api.rs
+pub trait ImeEngine: Send + Sync {
+    fn translate(&self, ctx: &EngineCtx, pending: &PendingInput) -> Translation;
+    fn preedit(&self, ctx: &EngineCtx, pending: &PendingInput,
+               selected: Option<&Candidate>) -> String;
+}
+pub struct EngineCtx<'a> { pub preceding_text: &'a str }   // classic 忽略；rime 喂 poet
+pub struct PendingInput<'a> { pub raw: &'a str }
+pub struct Span { pub syllables: Vec<String>, pub tags: Vec<&'static str> }
+pub struct Translation { pub segmentation: Vec<Span>, pub candidates: Vec<Candidate> }
+```
+
+- 实现者：`Engine`（classic，impl 于 classic.rs）与 `RimeEngine`（rime/）。
+- 会话层只消费 `candidates` 与 `segmentation[0].syllables`（= 原 seg 口径）；
+  多段视图 Step3+ 演进。
+- `Candidate` 增 `score: f64`（serde default 0.0）：classic 仅整句填 Viterbi 路径分，
+  rime 全量填 log 概率；排序消费随 rime 化推进。
+
+### 8.2 装配与开关
+
+- `Config.engine: EngineChoice`（classic 默认 / rime），装载点消费（TSF load_engine、
+  REPL --engine），切换需重载输入法。
+- `Engine::attach_core(Arc<dyn ImeEngine>)`：挂载后 start_session* 自动改产核心会话；
+  词库经 `Engine::shared_dict()` Arc 共享——M2 调权/自造词/隐藏跨核心同源。
+
+### 8.3 行为变更（rime 核心下）
+
+- Backspace 逐字退已选词（多字词退末字、末字音节还原回未确认区；音节数≠字数整词退）；
+  classic 核心同样启用（两核统一手感）。
+- 预编辑显示规则收编为 `api::preview_rules` 五规则共用实现（行为不变）。
+- rime 核心候选流：补全(全跨)置顶 → 纯全拼桶 → 含简拼桶（详见任务书 §13 裁决表）。
