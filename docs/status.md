@@ -311,3 +311,20 @@
   改动仅 iuv-daemon toolbar/window.rs（apply_event + 注释）。测试：iuv-daemon 全绿（10）；
   手测清单：资源管理器隐藏→切浏览器保持隐藏、切回仍隐藏、菜单重开立即恢复（位置/四态正确）、
   正常焦点跟随显隐回归、daemon 重启后偏好生效。
+- [x] **39 引擎 Rime 化改造 Step1–3**（2026-08-26，分支 `feat/rime-engine`，任务书 `39-rime-pipeline.md`）：
+  三步走落地——**Step1** 拆分引擎核心与适配层：新增 `api.rs` 顶层接口（`ImeEngine::translate`
+  输入串→分段+候选 / `preedit` 高亮候选→预编辑串，`jian` 导航吉安显 `ji'an` 快赢兑现），
+  routes.rs→classic.rs 承接全部生成逻辑（rank_plans 编排自 session 收编），Candidate 增
+  `score` 字段；**Step2** librime 内核 Rust 改编：`src/rime/{syllabifier,translator,poet,mod}.rs`
+  ——音节图三类拼写边（Normal/Abbreviation 双族/Completion）、逐起点桶收集三态键形查询
+  （压缩简拼键 concat / 音节值 join' / 补全 prefix 展开）、poet arena 版 DP+Beam 组句、
+  整句闸门（无全跨可靠词才组句）与分类词流（补全置顶→纯拼→简拼沉底）；librime 的
+  Segmentation/Context 状态机不移植（打字期恒单段，段状态归会话层，裁决记录任务书 §13.1）；
+  **Step3** 过渡开关 `Config.engine: classic|rime`（TSF load_engine 装配点 + REPL --engine，
+  切换需重载生效）+ Backspace 改 rime 式**逐字退已选词**（多字词退末字、音节还原回未确认区；
+  classic 同步启用）。RimeEngine 与 classic 共享 `Arc<Dict>`——M2 调权/自造词/隐藏跨核心同源。
+  BSD-3 归属声明入派生文件头。测试：rime 行为 10 项 + engine_switch 3 项 + 既有回归迁移，
+  workspace 329 绿；真词库 7 输入对拍 6 项与 classic 全对齐。**遗留（任务书 §13.7 待复核）**：
+  shigechengy 整句选词质量分歧（是个车那个月 vs 是个成员）；Raw kind 显式类型标记替代
+  UI 魔法字符串（跨 iuv-ui/tsf 渲染契约，保守推迟）；箭头键位 rime 语义迁移（管理员拍板后置）；
+  λ 打分校准与烘焙后删 classic。
