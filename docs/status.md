@@ -324,7 +324,16 @@
   切换需重载生效）+ Backspace 改 rime 式**逐字退已选词**（多字词退末字、音节还原回未确认区；
   classic 同步启用）。RimeEngine 与 classic 共享 `Arc<Dict>`——M2 调权/自造词/隐藏跨核心同源。
   BSD-3 归属声明入派生文件头。测试：rime 行为 10 项 + engine_switch 3 项 + 既有回归迁移，
-  workspace 329 绿；真词库 7 输入对拍 6 项与 classic 全对齐。**遗留（任务书 §13.7 待复核）**：
+  workspace 329 绿；真词库对拍与 classic 全对齐。**二轮性能重构（同日，`3a7e50e`）**：
+  首版逐路径/序列 DP 桶收集在真词库长句组合爆炸（chuangqianmingyueguang 整句缺失、最坏 143s）。
+  管理员指示「学习小狼毫秒出」→ 通读 librime `table.cc/dictionary.cc/syllabifier.cc`，
+  按 Table::Query 同构重写为**词典游标引导 BFS**：BFS 携带键串游标走图，每音节步
+  `Dict::has_code/has_prefix` 零分配探针剪枝（exhausted 即砍枝，后者二分 upper_bound
+  不受等长码簇影响），词条物化延迟到桶标记统一取；两族简拼键形由键串构造自然统一、
+  特判全删；起点限定音节边界。性能档案见任务书 §14：长句全 translate 39ms、床前明月光
+  置顶恢复、9 输入对拍全部语义对齐。**部署实证（2026-08-26 20:16 dev-deploy）**：
+  config.json `"engine":"rime"`，notepad 新进程日志三连证——引擎加载成功（125.5 万词条）/
+  候选核心 rime / 加载完成 38ms 就绪，打字会话无异常。**遗留（任务书 §13.7 待复核）**：
   shigechengy 整句选词质量分歧（是个车那个月 vs 是个成员）；Raw kind 显式类型标记替代
   UI 魔法字符串（跨 iuv-ui/tsf 渲染契约，保守推迟）；箭头键位 rime 语义迁移（管理员拍板后置）；
   λ 打分校准与烘焙后删 classic。
