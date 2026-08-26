@@ -1,6 +1,9 @@
-//! 引擎：候选生成。契约 01-contract.md §4 engine.rs / §4.2 算法。
+//! 引擎资源容器。契约 01-contract.md §4。
+//!
+//! Step 1 拆分（39-rime-pipeline.md）：本文件只持有与管理资源
+//! （词库/配置/切分器/语言模型/用户库/简繁转换器）；候选生成逻辑本体在
+//! `classic.rs`（classic 核心），顶层接口实现见其 `impl ImeEngine for Engine`。
 
-use crate::routes::Route;
 use crate::userdict::{UserRemote, UserState};
 use crate::{
     schema::Quanpin, session::Session, script::ScriptConverter, Config, InputSchema, LmProvider,
@@ -113,152 +116,11 @@ impl Engine {
         self.page_size.load(Ordering::Relaxed)
     }
 
-    /// 档位判定（唯一判定点）：`plain` 为去 `'` 的整串，`plans` 为全部切分方案
-    /// （消费端遍历所有方案，2026-08-14：多段判定不再只看贪心方案[0]）。
-    /// 与契约 §4.2 路由表逐行对应：
-    /// - 整串是音节真前缀 → 单字档（切分器可能把它切成多段，但微软实测只出单字）
-    /// - 单段完整音节：无替代切分 → 单字档；有替代切分（xian）→ 全拼（混排西安）
-    /// - 单段非前缀（i/u/v）→ 空
-    /// - 多段：**存在任一全完整方案 → 全拼**（dier 贪心 [die,r] 是 Mixed，但 [di,er]
-    ///   全完整应走全拼枚举——否则「第二」不可达，实测 2026-08-14）；**末音节可补全
-    ///   （除末段外全完整 + 末段为音节前缀）→ 也归全拼 2b**（shigechengy → 补 y）；
-    ///   否则按段完整性分派（全不完整 → 简拼；混合 → 混拼，仅中段不完整如 nhao）
-    fn classify(&self, plain: &str, seg: &[String], plans: &[Vec<String>]) -> Route {
-        if !plain.is_empty() && self.is_syllable_prefix(plain) && !self.is_syllable(plain) {
-            return Route::PrefixChars;
-        }
-        if seg.len() == 1 {
-            if self.is_syllable(&seg[0]) {
-                return if plans.len() > 1 {
-                    Route::AmbiguousSyllable
-                } else {
-                    Route::CompleteChars
-                };
-            }
-            return Route::Empty;
-        }
-        let any_full = plans
-            .iter()
-            .any(|p| p.iter().all(|s| !s.is_empty() && self.is_syllable(s)));
-        // 末音节可补全（2026-08-18）：除末段外全为完整音节 + 末段为音节前缀
-        // （`shigechengy` → 末段 `y`，可补 yu/yi/yang/…）→ 归入全拼档走 2b 整句通道，
-        // 词条通道按输入砍（砍 `y` 而非补 `yu`），与 2a 路径砍完第一刀后前缀对齐。
-        // 否则 `shigechengy` 会被误判 Mixed（扩展笛卡尔）——2b 场景丢失。
-        let tail_completable = seg.len() >= 2
-            && seg[..seg.len() - 1]
-                .iter()
-                .all(|s| !s.is_empty() && self.is_syllable(s))
-            && {
-                let last = seg.last().unwrap();
-                !last.is_empty() && !self.is_syllable(last) && self.is_syllable_prefix(last)
-            };
-        if any_full || tail_completable {
-            Route::FullPinyin
-        } else if seg.iter().all(|s| !s.is_empty() && !self.is_syllable(s)) {
-            Route::Abbrev
-        } else {
-            Route::Mixed
-        }
-    }
-
-    /// 消费端方案重排（2026-08-14）：方案[0] = 词频最优而非贪心——分节显示与主路径
-    /// 跟随用户最可能打的词（keneng → ke'neng 可能；dier → di'er 第二）。
-    /// 排序键 = 方案 join 键 exact 词条最大权重（词条优先；无词条 = 0），
-    /// 稳定排序保贪心原序。切分函数零改动（消费端遍历所有方案）。
-    pub(crate) fn rank_plans(&self, plans: Vec<Vec<String>>) -> Vec<Vec<String>> {
-        if plans.len() <= 1 {
-            return plans;
-        }
-        let mut scored: Vec<(u32, usize)> = plans
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let key = p.join("'");
-                let w = self.dict.exact(&key).first().map(|e| e.weight).unwrap_or(0);
-                (w, i)
-            })
-            .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        scored.into_iter().map(|(_, i)| plans[i].clone()).collect()
-    }
-
-    /// 按契约 §4.2 生成候选。
-    ///
-    /// 路由（M1.5，微软实测对齐，见 docs/research/msime-probe-checklist.txt）：
-    /// - 整串为音节前缀（`c`/`sh`/`zho`）→ 纯单字（单字桶，词频序）
-    /// - 完整单音节：无歧义（`shi`）→ 纯单字（exact 全量）；歧义（`xian`→[xi,an]）→ 全拼两通道
-    /// - 单段非前缀（`i`/`u`/`v`）→ 无候选（末尾兜底：原文候选，见 generate_candidates）
-    /// - 多段全完整（`nihao`/`xi'an`）**或末音节可补全**（`shigechengy`）→ 全拼两通道
-    ///   （整句通道唯一一次 Viterbi 2a/2b + 词条通道砍尾巴 exact）
-    /// - 多段全不完整（`nh`/`nhm`/`nhmsx`）→ 简拼键逐级砍尾巴（构建期键，O(1) exact）
-    /// - 多段混合（`nhao`，中段不完整）→ 不完整段展开音节配对查询（上限内，超限降级）
-    ///
-    /// 部分消费：候选 seg_len=k，选中间级词经 session 悬空续接把尾巴重建为组合。
-    pub(crate) fn generate_candidates(
-        &self,
-        raw: &str,
-        seg: &[String],
-        plans: &[Vec<String>],
-    ) -> Vec<crate::Candidate> {
-        let plain = crate::strip_apostrophes(raw);
-        let mut cands = match self.classify(&plain, seg, plans) {
-            Route::PrefixChars => self.single_segment_candidates(&plain),
-            Route::CompleteChars => self.single_segment_candidates(&seg[0]),
-            Route::AmbiguousSyllable | Route::FullPinyin => {
-                self.full_pinyin_candidates(&raw, &plain, seg)
-            }
-            Route::Abbrev => self.abbrev_candidates(seg),
-            Route::Mixed => self.mixed_candidates(seg),
-            Route::Empty => Vec::new(),
-        };
-
-        // 前缀补全（联想）：默认关闭（微软化，候选仅 exact）；config 开启时追加。
-        //    用方案[0] 的 `'` 键做前缀匹配（词库键已分隔化）。
-        //    联想词消费全部当前段（seg_len = n），选中即整词上屏。
-        // 配置快照：单点锁取克隆（热载 set_config 与读取并发安全）。
-        let cfg = self.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if cfg.candidate_prefix {
-            let n = seg.len();
-            let squashed = seg.join("'");
-            for e in &self.dict.prefix(&squashed, 20) {
-                let kind = crate::CandidateKind::for_word(&e.word);
-                cands.push(crate::Candidate::for_entry(e, kind, n));
-            }
-        }
-
-        // 按 text 去重（保序，先见先留）
-        let mut seen = std::collections::HashSet::new();
-        cands.retain(|c| seen.insert(c.text.clone()));
-
-        // 截断到 max_candidates
-        cands.truncate(cfg.max_candidates);
-
-        // 兜底：所有路由均无候选且输入非空 → 原文候选（"不认识"语义：`input`/`window`/`i`
-        // 等无法命中任何词库的输入，窗口内容不空、可 1/Space 直接上屏原文）。
-        // 复用现有 Word/Char 惯例（多字符 Word、单字符 Char），不新增候选类型；
-        // 无编号呈现由 UI 按 text == 预编辑原文 判定。seg_len = 段数 → 全消费、会话结束。
-        if cands.is_empty() && !plain.is_empty() {
-            let kind = if plain.chars().count() >= 2 {
-                crate::CandidateKind::Word
-            } else {
-                crate::CandidateKind::Char
-            };
-            cands.push(crate::Candidate::new(
-                plain.clone(),
-                kind,
-                plain.clone(),
-                0,
-                seg.len(),
-            ));
-        }
-        cands
-    }
-
     pub(crate) fn is_syllable(&self, s: &str) -> bool {
         self.dict.syllables().contains(s)
     }
 
-    fn is_syllable_prefix(&self, s: &str) -> bool {
+    pub(crate) fn is_syllable_prefix(&self, s: &str) -> bool {
         self.dict.syllables().iter().any(|syl| syl.starts_with(s))
     }
 }

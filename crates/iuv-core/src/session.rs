@@ -1,5 +1,6 @@
 //! 会话状态机。契约 01-contract.md §4 session.rs / §4.1 按键行为。
 
+use crate::api::ImeEngine;
 use crate::{fullwidth_text, Candidate, Effect, Engine, ImeState, Key, PageInfo, ScriptMode, SessionEnd};
 use std::sync::{Arc, Mutex};
 
@@ -312,6 +313,7 @@ impl Session {
             code: c.code.clone(),
             weight: c.weight,
             seg_len: c.seg_len,
+            score: c.score,
         }
     }
 
@@ -322,18 +324,22 @@ impl Session {
         self.all_text()
     }
 
-    /// 重切分 → 重新生成候选 → page=0, selected=0。无候选也保持 active。
-    /// segment 返回全部切分方案；**消费端词频重排**（engine.rank_plans，2026-08-14：
-    /// 方案[0] = 词频最优而非贪心——分节显示/主路径跟随用户最可能打的词，
-    /// keneng → ke'neng、dier → di'er），engine 内部按"砍尾巴逐级前缀"
-    /// （k=n..1）生成从长到短的候选，整句遍历所有方案。
+    /// 经引擎接口重算（Step 1 收编编排，39-rime-pipeline.md）：translate 一次完成
+    /// 切分 → 方案词频重排 → 候选生成；会话层只存分段视图首段（= 原 seg）与候选。
+    /// 无候选也保持 active。
     fn recompute(&mut self) {
-        let plans = self.engine.schema.segment(&self.raw);
-        let plans = self.engine.rank_plans(plans);
-        self.seg = plans.first().cloned().unwrap_or_default();
-        self.all = self
+        let preceding = self.picked_text();
+        let ctx = crate::api::EngineCtx { preceding_text: &preceding };
+        let tr = self
             .engine
-            .generate_candidates(&self.raw, &self.seg, &plans);
+            .translate(&ctx, &crate::api::PendingInput { raw: &self.raw });
+        self.seg = tr
+            .segmentation
+            .into_iter()
+            .next()
+            .map(|s| s.syllables)
+            .unwrap_or_default();
+        self.all = tr.candidates;
         self.page = 0;
         self.selected = 0;
     }
@@ -424,18 +430,21 @@ impl Session {
         let page_cands = self.page_candidates().to_vec();
         // 混合预编辑（悬空显示）：已选词汉字 + 未选部分拼音分段。
         // 如选"床前"后：`床前ming'yue'guang`；commit 时由 end.text 全量替换上屏。
-        // **预编辑显示规则（2026-08-16，对齐主流输入法）**：
-        // 1. 只显示用户输入的字母 + ' 分节（绝不出现超出输入的扩展——禁止 ji'shi'ben）；
-        // 2. 有匹配（输入可扩展成词）→ 分节显示（' 连接，边界 = 输入合法切分）；
-        // 3. 分节边界可跟随候选（导航变化，但切分必须基于输入）：xian→西安 显示 xi'an；
-        // 4. 无匹配（input 逐扩展无词）→ 原样不分节（input）；
-        // 5. 用户按的 ' 恒保留参与分节（xi'、zhu'jincheng→zhu'jin'cheng）。
-        let tail_preview = if page_cands.is_empty() {
-            self.engine.schema.display(&self.seg)
-        } else {
-            let idx = self.selected.min(page_cands.len() - 1);
-            self.candidate_preview(&page_cands[idx])
-        };
+        // 尾巴预编辑 = 引擎接口输出（preedit，五条显示规则已收编 classic 核心，
+        // 39-rime-pipeline.md §4）：导航跟随候选切分（jian→吉安 显 ji'an）、
+        // 强制撇号/兜底/简拼各归其规则；会话层只拼已确认前文。
+        let preceding = self.picked_text();
+        let ctx = crate::api::EngineCtx { preceding_text: &preceding };
+        let tail_preview = self.engine.preedit(
+            &ctx,
+            &crate::api::PendingInput { raw: &self.raw },
+            if page_cands.is_empty() {
+                None
+            } else {
+                let idx = self.selected.min(page_cands.len() - 1);
+                Some(&page_cands[idx])
+            },
+        );
         let preview = if self.picked.is_empty() {
             tail_preview
         } else {
@@ -462,42 +471,6 @@ impl Session {
             },
             end: self.end.clone(),
         }
-    }
-
-    /// 预编辑显示（对齐主流输入法，2026-08-16 修正规则）。判定顺序：
-    /// 1. **用户强制撇号**（raw 含 `'`）：恒输入切分（用户 `'` 参与分节显示——
-    ///    schema 硬边界，空段保留），不跟随候选——xi' → "xi'"、zhu'jincheng → zhu'jin'cheng；
-    /// 2. **原文兜底**（text == 输入去撇号，无匹配）：原样 plain（不分节）——input → "input"；
-    /// 3. **消费段不完整**（简拼整词 jisb→记事本/jishiben、简拼键 nh、前缀档 n→你）：
-    ///    输入切分（display(seg)）——jisb → "ji's'b"、nh → "n'h"、n → "n"（候选 code 超出输入/非全音节不跟随）；
-    /// 4. **消费段完整 且 候选 code（去撇号）== 输入**：跟随候选切分（code + 尾巴）——
-    ///    xian→西安 "xi'an"、fenge→分割 "fen'ge"/风额 "feng'e"；
-    /// 5. 其余（单字"分"等 code≠输入）：输入切分（display(seg)）——fenge 导航到"分"仍 "fen'ge"。
-    fn candidate_preview(&self, c: &Candidate) -> String {
-        if self.raw.contains('\'') {
-            return self.engine.schema.display(&self.seg);
-        }
-        let plain = crate::strip_apostrophes(&self.raw);
-        if c.text == plain {
-            return plain;
-        }
-        let consumed = c.seg_len.max(1).min(self.seg.len());
-        let consumed_full = self.seg[..consumed]
-            .iter()
-            .all(|s| !s.is_empty() && self.engine.is_syllable(s));
-        if !consumed_full {
-            return self.engine.schema.display(&self.seg);
-        }
-        let code_plain = crate::strip_apostrophes(&c.code);
-        if code_plain == plain {
-            let mut s = c.code.clone();
-            if consumed < self.seg.len() {
-                s.push('\'');
-                s.push_str(&self.engine.schema.display(&self.seg[consumed..]));
-            }
-            return s;
-        }
-        self.engine.schema.display(&self.seg)
     }
 
     /// 有未提交的原始输入（TSF 据此决定按键是否放行给应用）。

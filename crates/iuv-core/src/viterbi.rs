@@ -67,10 +67,10 @@ pub fn best_sentence_scored(
     path.reverse();
     let text = path.join("");
     // Sentence 权重恒 0（契约 candidate.rs）；seg_len = 组句段数（消费全部 vseg 段）。
-    Some((
-        Candidate::new(text, CandidateKind::Sentence, seg.join("'"), 0, seg.len()),
-        dp[n].0,
-    ))
+    // score = 路径总 log_prob（Step1 起上浮到候选，39-rime-pipeline.md；排序未消费）。
+    let mut cand = Candidate::new(text, CandidateKind::Sentence, seg.join("'"), 0, seg.len());
+    cand.score = dp[n].0;
+    Some((cand, dp[n].0))
 }
 
 #[cfg(test)]

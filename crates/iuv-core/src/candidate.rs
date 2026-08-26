@@ -19,6 +19,11 @@ pub struct Candidate {
     pub weight: u32,
     /// 该候选消费的音节段数（所在前缀级 k；续接选词时推进用，M1 后期契约演进）
     pub seg_len: usize,
+    /// 统一标量分（39-rime-pipeline.md §Step1）：log 域可跨层级比较。
+    /// classic 现阶段仅整句填 Viterbi 路径分、其余 0（排序仍按生成序，统一打分
+    /// 在 rime 核心落地后启用）；构造器默认 0.0，既有调用点零改动。
+    #[serde(default)]
+    pub score: f64,
 }
 
 impl CandidateKind {
@@ -41,7 +46,14 @@ impl Candidate {
         weight: u32,
         seg_len: usize,
     ) -> Self {
-        Candidate { text: text.into(), kind, code: code.into(), weight, seg_len }
+        Candidate {
+            text: text.into(),
+            kind,
+            code: code.into(),
+            weight,
+            seg_len,
+            score: 0.0,
+        }
     }
 
     /// 由词库词条构造候选（P1.6 抽取：引擎 5 处词条 → 候选样板收敛）。
@@ -53,6 +65,7 @@ impl Candidate {
             code: e.code.clone(),
             weight: e.weight,
             seg_len,
+            score: 0.0,
         }
     }
 }

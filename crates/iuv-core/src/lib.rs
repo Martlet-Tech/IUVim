@@ -1,7 +1,9 @@
 //! iuv-core：引擎（切分/查词/Viterbi/会话状态机/排序管线）。跨平台纯 Rust。
 //! W0 冻结件：candidate/config/key；其余由 Agent B 在 W1 实现。
 
+pub mod api;
 pub mod candidate;
+pub mod classic;
 pub mod config;
 pub mod engine;
 pub mod key;
@@ -10,10 +12,10 @@ pub mod punct;
 pub mod schema;
 pub mod script;
 pub mod session;
-pub(crate) mod routes;
 pub(crate) mod userdict;
 pub mod viterbi;
 
+pub use api::{EngineCtx, ImeEngine, PendingInput, Span, Translation};
 pub use candidate::{Candidate, CandidateKind};
 pub use config::keymap::{apply_keymap, is_session_start_key};
 pub use config::{
