@@ -2,7 +2,7 @@
 //! 模拟 TSF load_engine 装配路径：config.engine == Rime → attach_core → 会话走 rime 核心。
 
 use iuv_core::config::EngineChoice;
-use iuv_core::{Config, Engine, Key, RimeEngine, Session, SessionEnd};
+use iuv_core::{Config, Engine, Key, RimeEngine, SessionEnd};
 
 fn rime_wired() -> Arc<Engine> {
     let dict = iuv_data::Dict::from_entries(vec![
