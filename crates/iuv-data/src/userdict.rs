@@ -158,6 +158,16 @@ impl UserDict {
         self.map.get(code).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// 是否存在该 code 条目（39-rime-pipeline.md Step2：用户独有词对游标探针可见性）。
+    pub fn has_code(&self, code: &str) -> bool {
+        self.map.contains_key(code)
+    }
+
+    /// 是否存在以 `prefix` 为真前缀（严格更长）的 code。用户库小，线性扫描即可。
+    pub fn has_prefix(&self, prefix: &str) -> bool {
+        self.map.keys().any(|k| k.len() > prefix.len() && k.starts_with(prefix))
+    }
+
     /// 一次交换：a/b 两词分别写入新权重（绝对值覆盖）。返回新 UserDict（写时复制）。
     /// 新权重由调用方计算（互写对方**合成**权重，见 Engine::swap_weights）。
     /// 双 code 签名：候选页内相邻词可能跨 code（单段档桶候选 sha/shi…同属 `sh`），

@@ -149,3 +149,36 @@ fn pick(s: &mut iuv_core::Session, text: &str) {
     }
     panic!("候选中找不到 {text}：{:?}", e.candidates.iter().map(|c| &c.text).take(9).collect::<Vec<_>>());
 }
+
+/// 39-rime-pipeline.md §6/§13 回归：用户**独有**词条对 rime 游标探针可见
+/// （2026-08-26 实测：野猪皮 仅存于用户库、基础库无此码 → has_code 只查基础库
+/// 返回 false → 永不收集。修复 = Dict::has_code/has_prefix 兼查 user()）。
+#[test]
+fn rime_user_only_word_visible() {
+    use iuv_data::UserDict;
+    // 基础库不含 ye'zhu'pi；用户库注入 8000 权重的 野猪皮
+    let dict = iuv_data::Dict::from_entries(vec![
+        ("ye'zhu".into(), "野猪".into(), 5000),
+        ("ye'zhu".into(), "业主".into(), 9000),
+        ("ye".into(), "也".into(), 30000),
+        ("pi".into(), "皮".into(), 1000),
+    ]);
+    dict.set_user(std::sync::Arc::new(
+        UserDict::empty().set_entry("ye'zhu'pi", "野猪皮", 8000),
+    ));
+    let cfg = Config { engine: EngineChoice::Rime, ..Config::default() };
+    let engine = Engine::new(dict, cfg);
+    let rime = RimeEngine::new(engine.shared_dict(), &engine.config());
+    engine.attach_core(rime);
+
+    let mut s = engine.start_session();
+    for c in "yezhupi".chars() {
+        s.on_key(Key::Char(c));
+    }
+    let e = s.effect();
+    let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    assert!(
+        texts.iter().any(|t| t == "野猪皮"),
+        "用户独有词 野猪皮 必须可达（游标探针须感知用户库）：{texts:?}"
+    );
+}

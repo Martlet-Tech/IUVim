@@ -353,11 +353,14 @@ impl Dict {
         }
         let target = squashed_code.as_bytes();
         let n = self.index.len() / 4;
-        if n == 0 {
-            return false;
-        }
-        let lo = self.lower_bound(target);
-        lo < n && self.code_at(self.index_off(lo)) == target
+        let base = if n == 0 {
+            false
+        } else {
+            let lo = self.lower_bound(target);
+            lo < n && self.code_at(self.index_off(lo)) == target
+        };
+        // 用户独有词条：基础库 mmap 无此码但仍应可收集（rime 游标探针可见性）
+        base || self.user().map(|u| u.has_code(squashed_code)).unwrap_or(false)
     }
 
     /// 零分配探针：是否存在以目标为真前缀（且不等长）的词条。
@@ -386,9 +389,10 @@ impl Dict {
             }
         }
         if lo >= n {
-            return false;
+            return self.user().map(|u| u.has_prefix(squashed_prefix)).unwrap_or(false);
         }
-        self.code_at(self.index_off(lo)).starts_with(target)
+        let base = self.code_at(self.index_off(lo)).starts_with(target);
+        base || self.user().map(|u| u.has_prefix(squashed_prefix)).unwrap_or(false)
     }
 
     /// 前缀补全：返回 squashed 以 prefix 开头（且不等于 prefix）的词条，
