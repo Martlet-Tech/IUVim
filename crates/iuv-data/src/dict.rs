@@ -345,6 +345,52 @@ impl Dict {
             .collect()
     }
 
+    /// 零分配探针：是否存在 code == 目标的词条（39-rime-pipeline.md Step2：
+    /// rime 核心游标走图用，热路径避免物化词条）。
+    pub fn has_code(&self, squashed_code: &str) -> bool {
+        if squashed_code.is_empty() {
+            return false;
+        }
+        let target = squashed_code.as_bytes();
+        let n = self.index.len() / 4;
+        if n == 0 {
+            return false;
+        }
+        let lo = self.lower_bound(target);
+        lo < n && self.code_at(self.index_off(lo)) == target
+    }
+
+    /// 零分配探针：是否存在以目标为真前缀（且不等长）的词条。
+    /// 实现：二分定位第一个**大于**目标的码（upper_bound），再查一次前缀——
+    /// 严格 O(log n)，不受等长码簇大小影响（"ni" 数百同码单字的实测教训）。
+    pub fn has_prefix(&self, squashed_prefix: &str) -> bool {
+        if squashed_prefix.is_empty() {
+            return false;
+        }
+        let target = squashed_prefix.as_bytes();
+        let n = self.index.len() / 4;
+        if n == 0 {
+            return false;
+        }
+        let mut lo = self.lower_bound(target);
+        // 跳过与目标相等的码段（lower_bound 落点可能就在簇首）
+        if lo < n && self.code_at(self.index_off(lo)) == target {
+            let mut hi = n;
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                if self.code_at(self.index_off(mid)) <= target {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+        }
+        if lo >= n {
+            return false;
+        }
+        self.code_at(self.index_off(lo)).starts_with(target)
+    }
+
     /// 前缀补全：返回 squashed 以 prefix 开头（且不等于 prefix）的词条，
     /// 跨编码按 weight 降序，最多 limit 条。低频路径（默认关闭），实现为
     /// 范围物化 + 全量排序；如开启后性能不达标再改归并取 top-k。

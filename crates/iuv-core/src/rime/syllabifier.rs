@@ -178,15 +178,12 @@ pub(crate) fn push_completion_edge(
     if tail.is_empty() || tail_start >= input_len {
         return;
     }
-    let mut reached_end = false;
     let slot = graph.edges.entry(tail_start).or_default();
     slot.entry(input_len).or_default().push(Spelling {
         syllable: tail.to_string(),
         spelling_type: SpellingType::Completion,
         credibility: COMPLETION_PENALTY,
     });
-    reached_end = true;
-    let _ = reached_end;
     if input_len > graph.farthest {
         // 补全边直达 len：farthest 抬到 len（剪枝已跑过，此处只抬界）
         graph.farthest = input_len;

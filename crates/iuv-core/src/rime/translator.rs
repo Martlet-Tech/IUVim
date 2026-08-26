@@ -2,10 +2,9 @@
 //!
 //! 派生自 librime（BSD-3-Clause）。核心流程对齐（行号为本仓 checkout）：
 //! 1. 音节图（见 syllabifier.rs）；
-//! 2. **桶收集**：从每个可达顶点出发沿图枚举音节路径查词，按「(起点,词条编码消耗
-//!    终点)」分组——对应 Dictionary::Lookup 的 DictEntryCollector（dictionary.cc:271-297）
-//!    与 PrepareForMakingSentence 的逐位置查询（st.cc:698-716）。其中**段首起点(0,*)
-//!    的桶喂词候选流，全部桶喂 Poet 词格**；
+//! 2. **词典游标引导 BFS 桶收集**（见 [`collect_buckets`]）——Table::Query 的
+//!    字符串键同构（table.cc:571-634：BFS 携带词典游标、exhausted 即剪枝，
+//!    只遍历词典中真实存在的路径）；段首起点(0,*)的桶喂词候选流，全部桶喂 Poet；
 //! 3. **整句闸门**：仅当「无覆盖全段的可靠精确词」且存在跨词组合可能时造句
 //!    （st.cc:482-507）；句候选排在一切词候选之前（st.cc:598-601）；
 //! 4. **词候选流**：按消耗终点降序分桶输出（码长优先于一切，st.cc:582-589），
@@ -17,11 +16,6 @@ use super::syllabifier::{SyllableGraph, SpellingType};
 use iuv_data::Dict;
 use std::collections::BTreeMap;
 
-/// 路径查询预算：每起点独立配额（防简拼组合爆炸饿死后续分支；
-/// 总量另有硬顶）。与 classic MAX_EXPAND_QUERIES 同量级思路。
-const QUERY_BUDGET_PER_ORIGIN: usize = 1024;
-const QUERY_BUDGET_TOTAL: usize = 16_384;
-
 /// 桶内条目。
 #[derive(Clone, Debug)]
 pub(crate) struct BucketEntry {
@@ -31,38 +25,168 @@ pub(crate) struct BucketEntry {
     /// 产生路径的音节段数（部分消费推进用）
     pub parts: usize,
     /// 路径质量类：0=纯 Normal；1=含 Abbreviation；2=含 Completion。
-    /// 词流分级输出（类内终点降序）——纯全拼桶先于简拼/补全污染桶，
-    /// 对齐 classic「exact 全量在前」的用户预期（2026-08-26 裁决，任务书附录）。
+    /// 词流分级输出——补全(全跨)置顶 → 纯全拼 → 含简拼沉底
+    /// （2026-08-26 裁决，任务书 §13.4）。
     pub class: u8,
 }
 
 /// 桶表：(起点字节位, 终点字节位) → 条目列表。
 pub(crate) type Buckets = BTreeMap<(usize, usize), Vec<BucketEntry>>;
 
-/// 从**每个可达顶点**出发枚举路径收集词条桶（librime 逐位置 Lookup 的等价）。
-/// `blocked` 为 M2 屏蔽谓词，先行过滤。
+/// 从给定起点集做「**词典游标引导 BFS**」收集词条桶。
+///
+/// 学 librime Table::Query（table.cc:571-634）：BFS 携带词典游标走图，每个音节步
+/// 用词典本身剪枝——扩展出的键若无任何词以其开头（`exact` 空且无更长前缀命中，
+/// 即游标 exhausted），立即砍枝。遍历的只是「词典中真实存在的路径」，切分组合
+/// 爆炸在结构上不可能发生；两族简拼键形（音节值 join' / 字母 concat）由键串构造
+/// 自然统一，无需特判。`origins` = 音节边界起点集（调用方按重排切分给出——
+/// 非边界起点只产跨字垃圾桶）。`blocked` 为 M2 屏蔽谓词，先行过滤。
 pub(crate) fn collect_buckets(
     dict: &Dict,
     graph: &SyllableGraph,
     max_word_syllables: usize,
+    origins: &std::collections::BTreeSet<usize>,
     blocked: impl Fn(&str, &str) -> bool,
 ) -> Buckets {
     let mut buckets: Buckets = BTreeMap::new();
-    let mut total_budget = QUERY_BUDGET_TOTAL;
-    let reachable: Vec<usize> = (0..graph.farthest)
-        .filter(|&v| v == 0 || graph.edges.contains_key(&v))
-        .collect();
 
-    for &start in &reachable {
-        if total_budget == 0 {
-            break;
+    // 游标状态：键串即词典位置；origin 随行（桶键 = (起点, 终点)）
+    #[derive(Clone)]
+    struct Walk {
+        origin: usize,
+        v: usize,
+        key: String,
+        hops: usize,
+        class: u8,
+        tail_completion: bool,
+    }
+
+    let mut visited: std::collections::HashSet<(usize, usize, String, bool)> =
+        std::collections::HashSet::new();
+    let mut queue: std::collections::VecDeque<Walk> = std::collections::VecDeque::new();
+    // 待物化桶标记（librime 惰性 accessor 的字符串键等价：游标步零分配探针，
+    // 命中只记 Marker，BFS 结束后统一取词条）
+    struct Marker {
+        origin: usize,
+        end: usize,
+        key: String,
+        hops: usize,
+        class: u8,
+        completion: bool,
+    }
+    let mut markers: Vec<Marker> = Vec::new();
+
+    for &start in origins {
+        if start >= graph.farthest || (start != 0 && !graph.edges.contains_key(&start)) {
+            continue;
         }
-        let mut parts: Vec<String> = Vec::new();
-        let mut origin_budget = QUERY_BUDGET_PER_ORIGIN;
-        walk(
-            dict, graph, start, start, &mut parts, true, false, 0,
-            max_word_syllables, &mut buckets, &mut origin_budget, &mut total_budget, &blocked,
-        );
+        queue.push_back(Walk {
+            origin: start,
+            v: start,
+            key: String::new(),
+            hops: 0,
+            class: 0,
+            tail_completion: false,
+        });
+        visited.insert((start, start, String::new(), false));
+    }
+
+    while let Some(w) = queue.pop_front() {
+        if w.hops >= max_word_syllables {
+            continue;
+        }
+        let Some(ends) = graph.edges.get(&w.v) else {
+            continue;
+        };
+        // 简拼=兜底语义：顶点存在 Normal 出边时只走 Normal/Completion
+        let has_normal = ends
+            .values()
+            .flat_map(|sps| sps.iter())
+            .any(|sp| sp.spelling_type == SpellingType::Normal);
+        for (&e, spellings) in ends.iter().rev() {
+            let mut ordered: Vec<&super::syllabifier::Spelling> = spellings.iter().collect();
+            if !has_normal {
+                // 无 Normal：短拼写优先（字母先于音节展开，压缩键先查）
+                ordered.sort_by_key(|sp| sp.syllable.chars().count());
+            } else {
+                ordered.retain(|sp| {
+                    sp.spelling_type == SpellingType::Normal
+                        || sp.spelling_type == SpellingType::Completion
+                });
+            }
+            for sp in ordered {
+                // 键串延长：字母直拼（压缩键族）；音节/补全段以 ' 连接（词库键族）
+                let mut nkey = String::with_capacity(w.key.len() + sp.syllable.len() + 1);
+                nkey.push_str(&w.key);
+                let last_byte = w.key.as_bytes().last().copied();
+                if last_byte.is_some_and(|b| b != b'\'') {
+                    nkey.push('\'');
+                }
+                nkey.push_str(&sp.syllable);
+                let completion = sp.spelling_type == SpellingType::Completion;
+                let abbrev = sp.spelling_type == SpellingType::Abbreviation;
+                let class = w.class.max(st_cls(completion, abbrev));
+                if !visited.insert((e, w.origin, nkey.clone(), completion)) {
+                    continue;
+                }
+                // —— 词典剪枝（rime exhausted 等价，零分配探针）——
+                let (has_eq, deeper) = if completion {
+                    // 补全段：前缀命中即收集（predictive）兼可继续走
+                    let p = dict.has_prefix(&nkey);
+                    (p, p)
+                } else {
+                    (dict.has_code(&nkey), dict.has_prefix(&nkey))
+                };
+                if has_eq {
+                    // 标记待物化桶（第二阶段统一 exact/prefix 取词条）
+                    markers.push(Marker {
+                        origin: w.origin,
+                        end: e,
+                        key: nkey.clone(),
+                        hops: w.hops + 1,
+                        class: if completion { class.max(2) } else { class },
+                        completion,
+                    });
+                }
+                if deeper {
+                    queue.push_back(Walk {
+                        origin: w.origin,
+                        v: e,
+                        key: nkey,
+                        hops: w.hops + 1,
+                        class,
+                        tail_completion: completion,
+                    });
+                }
+            }
+        }
+    }
+
+    // —— 第二阶段：按标记统一物化词条（惰性 accessor 的取词时刻）——
+    for m in &markers {
+        let got: Vec<iuv_data::Entry> = if m.completion {
+            dict.prefix(&m.key, 64)
+        } else {
+            dict.exact(&m.key)
+        };
+        if got.is_empty() {
+            continue;
+        }
+        let slot = buckets.entry((m.origin, m.end)).or_default();
+        for entry in got {
+            if blocked(&entry.code, &entry.word) {
+                continue;
+            }
+            merge_into(
+                slot,
+                BucketEntry {
+                    entry,
+                    exact: !m.completion,
+                    parts: m.hops,
+                    class: if m.completion { m.class.max(2) } else { m.class },
+                },
+            );
+        }
     }
 
     // 桶内排序：精确优先，其次权重降序、字序稳定（librime 组内三规则的化简）
@@ -77,123 +201,33 @@ pub(crate) fn collect_buckets(
     buckets
 }
 
-#[allow(clippy::too_many_arguments)]
-fn walk(
-    dict: &Dict,
-    graph: &SyllableGraph,
-    origin: usize,
-    v: usize,
-    parts: &mut Vec<String>,
-    all_letters: bool,
-    tail_completion: bool,
-    cur_class: u8,
-    max_word_syllables: usize,
-    buckets: &mut Buckets,
-    budget: &mut usize,
-    total_budget: &mut usize,
-    blocked: &impl Fn(&str, &str) -> bool,
-) {
-    if *budget == 0 || *total_budget == 0 || parts.len() > max_word_syllables {
-        return;
+fn st_cls(completion: bool, abbrev: bool) -> u8 {
+    if completion {
+        2
+    } else if abbrev {
+        1
+    } else {
+        0
     }
-    // 当前路径查询（键形三态，2026-08-26 裁决：白霜简拼键=压缩首字母串）：
-    //   全字母路径 → exact(concat)（命中构建期简拼键 nhm/nhmsx）；
-    //   含字母混合路径 → 不查（无此键形，噪音）；
-    //   纯音节值路径 → exact(join ')；Completion 尾段 → prefix(join ')。
-    if !parts.is_empty() && (all_letters || !parts.iter().any(|p| p.chars().count() == 1)) || tail_completion {
-        *budget -= 1;
-        *total_budget -= 1;
-        let key = parts.join("'");
-        let got: Vec<BucketEntry> = if tail_completion {
-            dict.prefix(&key, 64)
-                .into_iter()
-                .map(|e| BucketEntry {
-                    entry: e,
-                    exact: false,
-                    parts: parts.len(),
-                    class: cur_class.max(2),
-                })
-                .collect()
-        } else if all_letters {
-            let squashed: String = parts.concat();
-            dict.exact(&squashed)
-                .into_iter()
-                .map(|e| BucketEntry { entry: e, exact: true, parts: parts.len(), class: cur_class })
-                .collect()
-        } else {
-            dict.exact(&key)
-                .into_iter()
-                .map(|e| BucketEntry { entry: e, exact: true, parts: parts.len(), class: cur_class })
-                .collect()
-        };
-        let slot = buckets.entry((origin, v)).or_default();
-        for mut be in got {
-            if blocked(&be.entry.code, &be.entry.word) {
-                continue;
-            }
-            let be_class = be.class;
-            match slot.iter().position(|x| x.entry.word == be.entry.word) {
-                Some(i) => {
-                    // 同词多路径合并：精确优先、其后权重优先。
-                    // 类别归并（非序数）：含补全路径(2)恒保留 2（置顶语义），
-                    // 否则取更纯者（0 纯全拼 < 1 含简拼）。
-                    let merged_class = if slot[i].class == 2 || be_class == 2 {
-                        2
-                    } else {
-                        slot[i].class.min(be_class)
-                    };
-                    let replace = (!slot[i].exact && be.exact)
-                        || (slot[i].exact == be.exact
-                            && be.entry.weight > slot[i].entry.weight);
-                    if replace {
-                        slot[i] = be;
-                    }
-                    slot[i].class = merged_class;
-                }
-                None => slot.push(be),
-            }
-        }
-    }
-    if parts.len() >= max_word_syllables {
-        return;
-    }
-    if let Some(ends) = graph.edges.get(&v) {
-        // 简拼=兜底语义（2026-08-26 裁决）：顶点存在 Normal 出边时只走 Normal——
-        // 消灭「你会(ni'hui)」类中途简拼垃圾路径，组合爆炸随之消失；
-        // 全简拼输入（nhmsx）沿途无 Normal，自然全链放行。
-        let has_normal = ends
-            .values()
-            .flat_map(|sps| sps.iter())
-            .any(|sp| sp.spelling_type == SpellingType::Normal);
-        for (&e, spellings) in ends {
-            let mut ordered: Vec<&super::syllabifier::Spelling> =
-                spellings.iter().collect();
-            if !has_normal {
-                // 无 Normal：字母串拼写优先于音节展开（简拼键先查）
-                ordered.sort_by_key(|sp| sp.syllable.chars().count());
+}
+
+/// 同词多路径合并：精确优先、其后权重优先；类别含补全恒 2，否则取更纯者。
+fn merge_into(slot: &mut Vec<BucketEntry>, be: BucketEntry) {
+    match slot.iter().position(|x| x.entry.word == be.entry.word) {
+        Some(i) => {
+            let merged_class = if slot[i].class == 2 || be.class == 2 {
+                2
             } else {
-                // 有 Normal：只走 Normal + Completion（补全边是尾部唯一消费途径）
-                ordered.retain(|sp| {
-                    sp.spelling_type == SpellingType::Normal
-                        || sp.spelling_type == SpellingType::Completion
-                });
+                slot[i].class.min(be.class)
+            };
+            let replace = (!slot[i].exact && be.exact)
+                || (slot[i].exact == be.exact && be.entry.weight > slot[i].entry.weight);
+            if replace {
+                slot[i] = be;
             }
-            for sp in ordered {
-                let completion = sp.spelling_type == SpellingType::Completion;
-                let letter = sp.syllable.chars().count() == 1
-                    && sp.spelling_type == SpellingType::Abbreviation;
-                let abbrev = sp.spelling_type == SpellingType::Abbreviation;
-                let next_class =
-                    cur_class.max(if completion { 2 } else if abbrev { 1 } else { 0 });
-                let next_letters = all_letters && letter;
-                parts.push(sp.syllable.clone());
-                walk(
-                    dict, graph, origin, e, parts, next_letters, completion, next_class,
-                    max_word_syllables, buckets, budget, total_budget, blocked,
-                );
-                parts.pop();
-            }
+            slot[i].class = merged_class;
         }
+        None => slot.push(be),
     }
 }
 
@@ -249,6 +283,3 @@ pub(crate) fn sentence_candidate(s: &poet::Sentence, display_code: String) -> cr
     c.score = s.weight;
     c
 }
-
-#[cfg(test)]
-pub(crate) fn dbg_walk_trace() {}

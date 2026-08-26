@@ -239,9 +239,19 @@ TSF 契约、候选窗渲染、设置页。
 | 4 | 词候选流跨类别排序 | 类 2（尾前缀补全，恒全跨度）置顶 → 类 0（纯全拼）→ 类 1（含简拼）沉底；类内终点降序。桶内同词多路径合并时类别取「含补全则 2，否则更纯者」 | classic 2b 整句置顶 + rime end-desc 铁律双重对齐 |
 | 5 | 简拼边值长≠字节跨度的消费错位（你会@end3 却带 seg_len=2） | seg_len 改按**字节跨度映射贪心分段数**（librime end_pos 语义）；预测匹配恒 999 全消费 | 消除部分消费错位 panic 风险 |
 | 6 | 路径枚举预算 | 每起点独立 1024 + 全局 16384 硬顶（真词库下全局预算会被首起点简拼子树烧穿——实测教训） | 性能护栏 |
-| 7 | **【待管理员复核】shigechengy 整句质量**：classic=是个成员（2b 尾音节展开+yuan 长音节），rime=是个车那个月（poet 在补全桶上的 DP 选择偏差） | 功能正常（Sentence 置顶+词条完整），质量分歧挂起至打分校准阶段（§9 Step4 范畴） | 结构里程碑不被校准阻塞 |
+| 7 | **【待管理员复核】shigechengy 整句质量**：classic=是个成员（2b 尾音节展开+yuan 长音节），rime 初版=是个车那个月 | 游标引导重写后收敛为**是各成员国**（poet 在补全桶上的 DP 选择），仍与 classic 有差——挂起至打分校准阶段（§9 Step4 范畴） | 结构里程碑不被校准阻塞 |
+| 8 | **桶收集算法重构（二轮，管理员指示「学习小狼毫秒出」后通读 table.cc/dictionary.cc）**：逐路径 DFS 与序列去重 DP 均在真词库长句组合爆炸（chuangqianmingyueguang 出不了整句、最坏 143s） | 改为**词典游标引导 BFS**——Table::Query（table.cc:571-634）的字符串键同构：BFS 携带键串游标走图，每音节步 `has_code`/`has_prefix` 零分配探针剪枝（exhausted 即砍枝），只遍历词典中真实存在的路径；词条物化延迟到桶标记统一取（惰性 accessor 等价）；两族简拼键形由键串构造自然统一、特判全删 | 结构性根治，非补丁 |
+| 9 | iuv-data 新增零分配探针 API | `Dict::has_code(code)` / `Dict::has_prefix(code)`（后者二分 upper_bound 实现，不受等长码簇影响——"ni" 数百同码单字实测教训） | 契约 §8.2 同步 |
 
-## 14. Step 2 交付清单（2026-08-26）
+## 14. 桶收集性能档案（真词库 chuangqianmingyueguang 22 字节，引擎内耗时）
+
+| 版本 | 耗时 | 备注 |
+|---|---|---|
+| 逐路径 DFS | 组合爆炸 | 全跨桶缺失、长句无整句 |
+| 序列去重 DP + 缓存/封顶补丁 | 17s → 657ms | 未治本 |
+| **词典游标引导 BFS（定稿）** | **8.4ms；全 translate 39ms** | 最坏简拼 nhmsx 273ms，全部满足秒出 |
+
+## 15. Step 2 交付清单（2026-08-26）
 
 - `src/rime/syllabifier.rs`：音节图（Normal/Abbreviation 双族拼写/Completion 三类边、剪枝）
 - `src/rime/poet.rs`：arena 版组句（DP+Beam 双策略、单词解排除、左结合备查、MakeSentences 多句衰减）

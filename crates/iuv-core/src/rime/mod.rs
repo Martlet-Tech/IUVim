@@ -186,10 +186,19 @@ impl ImeEngine for RimeEngine {
         if graph.edges.is_empty() || graph.farthest == 0 {
             return self.fallback_translation(pending, &seg);
         }
+        // 音节边界起点集（重排切分的累计字节偏移）：非边界起点只产垃圾桶
+        let mut origins = std::collections::BTreeSet::new();
+        origins.insert(0);
+        let mut off = 0usize;
+        for s in seg.iter().filter(|s| !s.is_empty()) {
+            off += s.len();
+            origins.insert(off);
+        }
         let buckets = translator::collect_buckets(
             &self.dict,
             &graph,
             MAX_WORD_SYLLABLES,
+            &origins,
             self.blocked(),
         );
 
