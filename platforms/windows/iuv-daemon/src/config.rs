@@ -146,12 +146,45 @@ pub fn load_config() -> DaemonConfig {
             .filter_map(|x| x.as_str().map(String::from))
             .collect();
     }
-    // keymap 读取：直接反序列化（serde 两槽对象；旧数组格式在 daemon 侧不兼容——
-    // TSF 侧 from_file 已迁移落盘，daemon 读的配置文件始终为新格式；异常 → 默认）。
+    // keymap 读取：先做旧格式迁移（数组 → 两槽对象，与 iuv-core io.rs 同规），再反序列化。
+    // 旧格式 `{"page_prev": ["PageUp", ",", "Up"]}` 由旧版写入；新格式为两槽对象。
     if let Some(node) = v.get("keymap") {
-        cfg.keymap = serde_json::from_value(node.clone()).unwrap_or_default();
+        let migrated = migrate_legacy_keymap(node.clone());
+        cfg.keymap = serde_json::from_value(migrated).unwrap_or_default();
     }
     cfg
+}
+
+/// 旧 keymap 数组格式 → 两槽对象（与 iuv-core `migrate_keymap` 同规；取前两键作主/备）。
+fn migrate_legacy_keymap(v: serde_json::Value) -> serde_json::Value {
+    let Some(km) = v.as_object() else { return v };
+    let mut out = km.clone();
+    for field in [
+        "page_prev",
+        "page_next",
+        "candidate_prev",
+        "candidate_next",
+        "swap_left",
+        "swap_right",
+        "hide_candidate",
+        "toggle_mode",
+        "toggle_width",
+        "toggle_script",
+        "toggle_punct",
+        "open_settings",
+        "toggle_toolbar",
+    ] {
+        let Some(arr) = km.get(field).and_then(|x| x.as_array()) else {
+            continue; // 缺字段 / 已是对象 → 跳过
+        };
+        let names: Vec<String> =
+            arr.iter().filter_map(|x| x.as_str().map(String::from)).take(2).collect();
+        out.insert(
+            field.into(),
+            serde_json::json!({ "primary": names.first(), "secondary": names.get(1) }),
+        );
+    }
+    serde_json::Value::Object(out)
 }
 
 /// 解析 `initial_state` 节点（复用 iuv-core 类型与 serde 规则：缺字段补默认、未知值回退默认）。
@@ -418,6 +451,52 @@ mod tests {
         std::fs::write(iuv_dir.join("config.json"), r#"{ "page_size": 12 }"#).unwrap();
         let cfg = load_config();
         assert_eq!(cfg.page_size, 9, "12 钳回上界 9");
+        let _ = std::env::remove_var("LOCALAPPDATA");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_migrates_legacy_keymap_arrays() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("iuv-daemon-config-km-{}", std::process::id()));
+        let iuv_dir = dir.join("iuv");
+        std::fs::create_dir_all(&iuv_dir).unwrap();
+        // 旧格式 keymap（数组）→ 迁移为两槽对象（与 iuv-core io.rs 同规）
+        std::fs::write(
+            iuv_dir.join("config.json"),
+            r#"{
+                "keymap": {
+                    "page_prev": ["PageUp", ",", "Up"],
+                    "candidate_next": ["Right"],
+                    "toggle_mode": ["Alt+`"]
+                }
+            }"#,
+        )
+        .unwrap();
+        std::env::set_var("LOCALAPPDATA", &dir);
+        let cfg = load_config();
+        use iuv_core::Combo;
+        assert_eq!(
+            cfg.keymap.page_prev.primary,
+            Some(Combo::plain(iuv_core::Key::PageUp)),
+            "旧数组首键 → 主槽"
+        );
+        assert_eq!(
+            cfg.keymap.page_prev.secondary,
+            Some(Combo::plain(iuv_core::Key::Char(','))),
+            "旧数组次键 → 备槽"
+        );
+        assert_eq!(
+            cfg.keymap.candidate_next.primary,
+            Some(Combo::plain(iuv_core::Key::Right))
+        );
+        // 全局组合字符串（含修饰）同样迁移
+        assert_eq!(
+            cfg.keymap.toggle_mode.primary,
+            Some(Combo { ctrl: false, alt: true, shift: false, win: false, base: iuv_core::Key::Char('`') })
+        );
+        // 其余字段保持默认
+        assert_eq!(cfg.keymap.page_next.primary, Some(Combo::plain(iuv_core::Key::PageDown)));
         let _ = std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }

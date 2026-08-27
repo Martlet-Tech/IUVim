@@ -122,16 +122,31 @@ if (-not (Test-Path $configPath)) {
   "page_size": 5,
   // 候选窗布局：vertical = 竖排（一列）/ horizontal = 横排（单行）
   "candidate_orientation": "vertical",
-  // 快捷键四组语义键（键位与布局方向解耦，改布局后按需自行调整）
+  // 快捷键映射（41-keymap-settings.md）：双备选键位（主/备两槽，任一可空）。
+  // 会话内（翻页/候选移动/调权/隐藏）：仅无修饰/Shift 组合；Alt 不进输入法会话、Ctrl 让给应用。
+  // 全局热键（中英/全角/简繁/标点/设置/工具栏）：daemon RegisterHotKey，Alt/Ctrl 随便绑，须含修饰键。
   "keymap": {
-    // 前页（上翻页）：默认 ↑ / PageUp / 逗号
-    "page_prev": ["PageUp", ",", "Up"],
-    // 后页（下翻页）：默认 ↓ / PageDown / 句号
-    "page_next": ["PageDown", ".", "Down"],
-    // 前一个候选项（页内左移/上移）：默认 ←
-    "candidate_prev": ["Left"],
-    // 后一个候选项（页内右移/下移）：默认 →
-    "candidate_next": ["Right"]
+    // 翻上一页：主=PageUp 备=逗号
+    "page_prev": { "primary": "PageUp", "secondary": "," },
+    // 翻下一页：主=PageDown 备=句号
+    "page_next": { "primary": "PageDown", "secondary": "." },
+    // 候选前移（页内左移）：主=←
+    "candidate_prev": { "primary": "Left", "secondary": null },
+    // 候选后移（页内右移）：主=→
+    "candidate_next": { "primary": "Right", "secondary": null },
+    // 调权（与左侧候选交换权重）：Shift+←
+    "swap_left": { "primary": "Shift+Left", "secondary": null },
+    // 调权（与右侧候选交换权重）：Shift+→
+    "swap_right": { "primary": "Shift+Right", "secondary": null },
+    // 隐藏候选：Shift+Delete
+    "hide_candidate": { "primary": "Shift+Delete", "secondary": null },
+    // 全局热键默认全空（不预占全局键，用户自行在设置页绑定）
+    "toggle_mode": { "primary": null, "secondary": null },
+    "toggle_width": { "primary": null, "secondary": null },
+    "toggle_script": { "primary": null, "secondary": null },
+    "toggle_punct": { "primary": null, "secondary": null },
+    "open_settings": { "primary": null, "secondary": null },
+    "toggle_toolbar": { "primary": null, "secondary": null }
   },
   // 前缀联想（高级）：false = 候选仅精确匹配（默认）/ true = 追加前缀长词
   "candidate_prefix": false,

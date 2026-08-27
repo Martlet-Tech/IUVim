@@ -412,11 +412,9 @@ impl ToolbarWindow {
 
     /// 读当前 focused 实例四态（无实例 → 默认四态）。
     fn focused_state(&self) -> iuv_core::ImeState {
-        self.shared
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .focused
-            .and_then(|f| self.shared.lock().unwrap_or_else(|p| p.into_inner()).instances.get(&f).copied())
+        let sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+        sh.focused
+            .and_then(|f| sh.instances.get(&f).copied())
             .map(|i| i.state)
             .unwrap_or_default()
     }
