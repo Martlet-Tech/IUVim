@@ -341,3 +341,21 @@
   shigechengy 整句选词质量分歧（是个车那个月 vs 是个成员）；Raw kind 显式类型标记替代
   UI 魔法字符串（跨 iuv-ui/tsf 渲染契约，保守推迟）；箭头键位 rime 语义迁移（管理员拍板后置）；
   λ 打分校准与烘焙后删 classic。
+- [x] **快捷键双槽可配 + 全局热键 + 设置页游戏式录入**（2026-08-28，分支 `feat/keymap-settings`，任务书 `41-keymap-settings.md`，已手测通过并入 main）：
+  M7 键位热载收口。**数据模型**：`Keymap` 重写为 13 功能 × 主/备两槽（`Combo` 支持
+  Ctrl/Alt/Shift/Win+基础键，序列化 `"Shift+Left"` 式）；`Key` 增 Tab/Delete/Home/End/Insert/F1-F12；
+  旧 `Vec<Key>` 数组配置迁移 shim（TSF 与 daemon 双路径同规）。**会话内快捷键**：TSF `route_key`
+  会话内组合键查表归一化（翻页/候选移动/调权/隐藏）；`map_key` 删导航/翻页键硬编码——物理键
+  会话内语义完全由 keymap 决定（命中归一化、miss 放行给应用，清除即失效；候选移动默认补
+  Up/Down 备槽保肌肉记忆）；keymap 热载经既有 config_epoch 每键 poll 天然生效（无需新开应用）。
+  **全局热键**：daemon `RegisterHotKey` 注册中英/全角/简繁/标点/设置/工具栏六功能（Alt 随便绑，
+  普通软件做法与 TSF 完全独立），WM_HOTKEY 复用工具栏 on_click 的 focused→CtlClient 分派；
+  设置窗打开时 `FocusLost` 守卫（settings_open 保留 focused——设置窗是自家配置 UI 不算失焦，
+  热键继续作用于打开设置窗前焦点所在应用）。**设置页游戏式录入**：点击录入框 → egui 事件流
+  捕获组合键（`Event::Key`，官方注释明说给 input-capture UIs 用；弃用 WH_KEYBOARD_LL——winit
+  消息泵宿主下回调从不触发，日志实锤）；Esc 取消、Backspace 清除、纯字母无修饰拒绝提示、
+  会话红线（Alt/Ctrl/字母禁）、全局红线（≥1 修饰/Ctrl+Space 警告）、跨功能冲突检测；
+  录入态经 `CaptureMode` 事件临时注销全部全局热键（RegisterHotKey 系统级抢键会拦截录入）。
+  测试：workspace 全绿（约 347）；手测通过（简繁 Ctrl+Shift+F 翻转、清除键位即失效、
+  录入回填/取消/清除、设置窗打开热键继续生效、录入态热键被吸收）。
+
