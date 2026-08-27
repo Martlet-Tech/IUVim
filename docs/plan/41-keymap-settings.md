@@ -164,3 +164,26 @@ pub struct Combo { pub ctrl: bool, pub alt: bool, pub shift: bool, pub win: bool
   `纯字母无修饰被拒`、`vk=0x.. 无基础键映射`
 - `[settings] 进入录入模式/录入成功/校验拒绝/录入被拒`、`全局热键首注册/注册：成功 N 失败 M`
 
+### 10.5 WH_KEYBOARD_LL 回调不触发 → 弃用，改 egui 事件流（方案 A，2026-08-28）
+
+手测复测反馈「简繁绑 Ctrl+Shift+F 不好使 / Esc 取消不好使 / Backspace 清除不好使」。
+日志实锤：`[capture]` 钩子安装/卸载齐全，但录入期间（两次 17 秒等待）**零条「收到
+Esc/Backspace/捕获组合键」**——WH_KEYBOARD_LL 回调**从未被触发**。
+
+根因：低层键盘钩子回调依赖**安装线程的 Win32 消息泵**；daemon 设置窗跑在
+eframe/winit 事件循环下（winit 自持消息处理），且录入期间焦点在 `工具条激活`/`失焦`
+间频繁切换——钩子在该宿主环境下不可靠。此前 `fd26569` 修的「repaint 唤醒帧循环」
+只解决"捕获到后不刷新"，根本问题是捕获根本不发生。
+
+修复（方案 A，管理员拍板）：**完全弃用 WH_KEYBOARD_LL**，改用 egui 自身事件流：
+`egui::Event::Key` 提供 `key`/`physical_key`（官方注释明说给 games/input-capture UIs）、
+`modifiers`（alt/ctrl/shift）。设置窗有焦点时必然收到（用户录入时焦点必在设置窗），
+天然支持 Alt/Ctrl/Shift，绕开消息泵依赖。
+
+- `capture.rs` 重写为纯逻辑：`process_key_event(egui::Key, &Modifiers) -> Option<CaptureOutcome>`
+  （Captured/Clear/Cancel/Rejected）；`egui_key_to_base` 映射；删全部钩子机制。
+- `settings.rs`：`start_capture` 仅置位；`poll_capture` 遍历 `ctx.input().events` 消费；
+  删 capture_state/repaint 接线；on_exit 复位。
+- 测试：capture 8 项（Esc/Backspace/Shift 组合/Ctrl+Shift+F/Alt+1/纯字母拒绝/修饰键忽略/标点）。
+
+

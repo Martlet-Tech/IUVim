@@ -322,14 +322,13 @@ struct SettingsApp {
     /// 会话组 TSF 消费（config_epoch 热载）；全局组 daemon RegisterHotKey 消费。
     keymap: iuv_core::Keymap,
     /// 录入模式目标（游戏式捕捉）：正在等待用户按下组合键的功能槽位。
-    /// 点击录入框置位 → 装 WH_KEYBOARD_LL → 捕获 → 回填 → 复位。
+    /// 点击录入框置位 → 从 egui 事件流捕获（41-keymap-settings.md §10.2 方案 A）→
+    /// 回填 → 复位。
     capture: Option<CaptureTarget>,
     /// 录入模式提示（捕获中显示在框内）。
     capturing: bool,
     /// 最近一次冲突/校验警告（录入回填时置位，显示红字）。
     keymap_warn: Option<String>,
-    /// 当前录入会话的捕获状态（与钩子回调共享）。
-    capture_state: Option<std::sync::Arc<crate::capture::CaptureState>>,
     /// 禁用日志模块集（denylist，勾掉某模块即加入；默认空 = 全记录）。
     disabled_log: Vec<String>,
     /// 「清除全部」二次确认。
@@ -374,7 +373,6 @@ impl SettingsApp {
             capture: None,
             capturing: false,
             keymap_warn: None,
-            capture_state: None,
             disabled_log: cfg.disabled_log_modules.clone(),
             confirm_clear: false,
             pending_clear: false,
@@ -545,7 +543,7 @@ impl SettingsApp {
                         self.capture_row(ui, label, target, &mut clicked);
                     }
                     if let Some(t) = clicked {
-                        self.start_capture(t, ui.ctx());
+                        self.start_capture(t);
                     }
                 });
                 ui.add_space(10.0);
@@ -561,7 +559,7 @@ impl SettingsApp {
                         self.capture_row(ui, label, target, &mut clicked);
                     }
                     if let Some(t) = clicked {
-                        self.start_capture(t, ui.ctx());
+                        self.start_capture(t);
                     }
                     ui.add_space(4.0);
                     if ui.button("恢复默认键位").clicked() {
@@ -697,50 +695,47 @@ impl SettingsApp {
         }
     }
 
-    /// 进入录入模式：置位目标 + 装钩子 + 注入帧唤醒回调。
-    /// `ctx` 用于把 `request_repaint` 注入钩子回调（捕获到按键后唤醒 eframe 出新帧，
-    /// 否则 `ControlFlow::Wait` 下无事件不渲染 → poll_capture 停摆，2026-08-28 修复）。
-    fn start_capture(&mut self, target: CaptureTarget, ctx: &egui::Context) {
-        // 结束旧会话（若有）
-        if self.capturing {
-            crate::capture::end();
-        }
-        let state = std::sync::Arc::new(crate::capture::CaptureState::default());
-        let ctx = ctx.clone(); // egui::Context: Send+Sync，可安全跨线程
-        let ok = crate::capture::begin(state.clone(), Box::new(move || ctx.request_repaint()));
-        if ok {
-            self.capture = Some(target);
-            self.capturing = true;
-            self.capture_state = Some(state);
-            self.keymap_warn = None;
-            log::log_line("[settings] 进入录入模式");
-        } else {
-            self.capture = None;
-            self.capturing = false;
-            self.capture_state = None;
-            self.keymap_warn = Some("无法安装键盘钩子，录入不可用".into());
-        }
+    /// 进入录入模式：仅置位目标（方案 A——按键从 egui 事件流捕获，无需钩子）。
+    fn start_capture(&mut self, target: CaptureTarget) {
+        self.capture = Some(target);
+        self.capturing = true;
+        self.keymap_warn = None;
+        log::log_line(&format!("[capture] 进入录入模式（等待组合键）"));
     }
 
-    /// 每帧轮询：捕获完成 → 校验 + 回填 + 复位。
-    /// 在 ui() 帧首调用。钩子回调经注入的 repaint 回调唤醒帧（2026-08-28 修复后
-    /// outcome 写入后必有下一帧调度，此处可可靠消费）。
+    /// 每帧从 egui 事件流消费按键：capturing 态下遇到 pressed 按键 → 处理 → 回填。
+    /// 在 logic() 帧首调用。设置窗有焦点时必然收到（用户录入时焦点必在设置窗）。
     fn poll_capture(&mut self, ctx: &egui::Context) {
-        let Some(state) = self.capture_state.clone() else { return };
         if !self.capturing {
             return;
         }
-        let outcome = state.outcome.lock().unwrap_or_else(|p| p.into_inner()).take();
-        if let Some(outcome) = outcome {
-            // 捕获完成：结束钩子会话
-            crate::capture::end();
+        let target = self.capture;
+        let events: Vec<egui::Event> = ctx.input(|i| i.events.clone());
+        for ev in events {
+            let egui::Event::Key {
+                key,
+                modifiers,
+                pressed,
+                repeat,
+                ..
+            } = ev
+            else {
+                continue;
+            };
+            if !pressed || repeat {
+                continue;
+            }
+            let Some(outcome) = crate::capture::process_key_event(key, &modifiers) else {
+                continue; // 纯修饰键等，继续等
+            };
+            // 捕获完成：复位 + 回填
             self.capturing = false;
-            let target = self.capture.take();
-            self.capture_state = None;
+            self.capture = None;
             if let Some(target) = target {
                 self.apply_capture(target, outcome);
             }
             ctx.request_repaint();
+            return;
         }
     }
 
@@ -1191,13 +1186,9 @@ impl eframe::App for SettingsApp {
     }
 
     fn on_exit(&mut self) {
-        // 确保钩子卸载（窗口关闭时若仍在录入）
-        if self.capturing {
-            crate::capture::end();
-            self.capturing = false;
-            self.capture_state = None;
-            self.capture = None;
-        }
+        // 窗口关闭时若仍在录入：复位（方案 A 无钩子需卸载）
+        self.capturing = false;
+        self.capture = None;
         log::log_line("[settings] 设置窗口已关闭");
     }
 }
