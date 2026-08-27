@@ -89,9 +89,10 @@ struct Shared {
     pos: Option<(i32, i32)>,
 }
 
-/// 工具条事件（FIFO 载荷）：信号通道三消息 + 语言栏菜单开关。
+/// 工具条事件（FIFO 载荷）：信号通道三消息 + 语言栏菜单开关 + 全局热键变更。
 /// FocusGained/FocusLost/StateChanged 来自信号管道；ToggleVisible 来自数据面
-/// 语言栏右键菜单（Request::ToggleToolbar）。单队列保证全局顺序。
+/// 语言栏右键菜单（Request::ToggleToolbar）；HotkeysChanged 来自 daemon 主循环
+/// （设置页保存 keymap 后入队，见 main.rs）。单队列保证全局顺序。
 pub(super) enum BarEvent {
     /// 激活：绑定该实例并显示（渲染其四态）。
     FocusGained { pid: u32, tid: u32, state: ImeState },
@@ -101,6 +102,8 @@ pub(super) enum BarEvent {
     StateChanged { pid: u32, tid: u32, state: ImeState },
     /// 全局显隐偏好切换（语言栏菜单）。
     ToggleVisible,
+    /// 全局热键变更（keymap 保存后）：工具条线程全量注销 + 重注册。
+    HotkeysChanged,
 }
 
 /// 工具栏宿主（daemon 主线程持有；信号线程/管道线程经它入队，工具条线程 drain 消费）。
@@ -195,6 +198,12 @@ impl ToolbarHost {
         self.enqueue(ev);
     }
 
+    /// 全局热键变更通知（41-keymap-settings.md §4）：设置页保存 keymap 后由 daemon
+    /// 主循环调用 → 工具条线程全量注销 + 按新配置重注册。
+    pub fn hotkeys_changed(&self) {
+        self.enqueue(BarEvent::HotkeysChanged);
+    }
+
     /// 入队 + 唤醒工具条线程 drain。
     fn enqueue(&self, ev: BarEvent) {
         {
@@ -236,6 +245,14 @@ fn toolbar_thread_main(
 ) {
     register_bar_class();
     register_tip_class();
+    // 全局热键首注册（41-keymap-settings.md §4）：keymap 全局六动作主/备两槽。
+    // 后续变更走 BarEvent::HotkeysChanged 全量重注册。先读配置再移交 state。
+    let keymap = state
+        .config
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .keymap
+        .clone();
     let win = Box::new(ToolbarWindow::new(shared, state, icons, pending));
     if win.hwnd.is_invalid() {
         log::log_line("[toolbar] 建窗失败，工具条线程退出");
@@ -244,6 +261,10 @@ fn toolbar_thread_main(
     let hwnd = win.hwnd;
     // SAFETY: win 为 Box（地址稳定），线程存活期间有效；wnd_proc 经 GWLP_USERDATA 取回。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*win as *const ToolbarWindow as isize) };
+    {
+        let (ok, fail) = crate::hotkey::register_all(hwnd, &keymap);
+        log::log_line(&format!("[toolbar] 全局热键首注册：成功 {ok}，失败 {fail}"));
+    }
     // SAFETY: GetCurrentThreadId 纯查询（PostThreadMessage 退出用）。
     let os_tid = unsafe { GetCurrentThreadId() };
     let _ = tx.send((hwnd.0 as usize, os_tid));

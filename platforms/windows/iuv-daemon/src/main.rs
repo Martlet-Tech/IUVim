@@ -13,7 +13,9 @@
 //! 绝不 panic：`main` 顶层 `catch_unwind` + panic 钩子落日志；管道线程体自包
 //! `catch_unwind`。守护进程崩溃会丢用户库状态，故一切错误降级而非 panic。
 
+mod capture;
 mod config;
+mod hotkey;
 mod log;
 mod settings;
 mod state;
@@ -132,6 +134,9 @@ fn run() -> i32 {
             log::log_line("[main] 收到 OpenSettings，运行设置窗口");
             let _ = settings::run_settings(&state);
             state.settings_open.store(false, Ordering::Release);
+            // 设置页可能保存了 keymap → 通知工具条线程全量重注册全局热键
+            //（41-keymap-settings.md §4；未保存时重注册同配置，幂等无害）。
+            toolbar.hotkeys_changed();
             log::log_line("[main] 设置窗口已关闭，继续后台常驻");
             continue;
         }

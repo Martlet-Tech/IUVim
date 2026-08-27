@@ -22,8 +22,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect, LoadCursorW, SetCursor,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSIZE,
     SWP_NOZORDER, SW_HIDE, SW_SHOWNA, GWLP_USERDATA, HTCLIENT, HTTRANSPARENT, IDC_ARROW, IDC_HAND,
-    MA_NOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
-    WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
+    MA_NOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
 };
 
 use super::prefs::{save_pref, ToolbarPref};
@@ -227,6 +227,20 @@ impl ToolbarWindow {
                     }
                 }
             }
+            BarEvent::HotkeysChanged => {
+                // 全局热键全量重注册（41-keymap-settings.md §4）：先注销再按新配置注册。
+                log::log_line("[toolbar] 全局热键变更 → 注销 + 重注册");
+                let keymap = self
+                    .state
+                    .config
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .keymap
+                    .clone();
+                crate::hotkey::unregister_all(self.hwnd);
+                let (ok, fail) = crate::hotkey::register_all(self.hwnd, &keymap);
+                log::log_line(&format!("[toolbar] 全局热键注册：成功 {ok}，失败 {fail}"));
+            }
         }
     }
 
@@ -343,30 +357,95 @@ impl ToolbarWindow {
                         _ => return,
                     }
                 };
-                log::log_line(&format!(
-                    "[toolbar] 点击按钮#{index} {label}翻转（实例 {pid}:{tid}）"
-                ));
-                let name = ctl_pipe_name(pid, tid);
-                match CtlClient::connect(&name).and_then(|c| c.request(&cmd)) {
-                    Ok(CtlResult::Ok { state }) => {
-                        log::log_line(&format!("[toolbar] 实例应用成功：{state:?}"));
-                        let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                        if let Some(i) = sh.instances.get_mut(&(pid, tid)) {
-                            i.state = state;
-                        }
-                    }
-                    Ok(CtlResult::Err { msg }) => {
-                        log::log_line(&format!("[toolbar] 实例应用失败：{msg}"));
-                    }
-                    Err(e) => {
-                        log::log_line(&format!(
-                            "[toolbar] 控制管道不可达（实例离线/未注册？）：{e}"
-                        ));
-                    }
-                }
-                self.repaint();
+                self.dispatch_state_toggle(&label, &cmd, pid, tid);
             }
         }
+    }
+
+    /// 全局热键触发（WM_HOTKEY → bar_wnd_proc → on_hotkey；41-keymap-settings.md §4）。
+    /// 复用 on_click 的 focused → CtlClient 分派：四态 → 连 focused 实例控制管道；
+    /// 设置/工具栏显隐 → PipeClient（与语言栏菜单同路径）。
+    fn on_hotkey(&mut self, action: crate::hotkey::GlobalAction) {
+        let (label, target_cmd) = match action {
+            crate::hotkey::GlobalAction::ToggleMode => {
+                let st = self.focused_state();
+                ("中英", CtlCmd::SetMode(st.mode == InitialMode::Chinese))
+            }
+            crate::hotkey::GlobalAction::ToggleWidth => {
+                let st = self.focused_state();
+                ("全半角", CtlCmd::SetWidth(st.width == WidthMode::Half))
+            }
+            crate::hotkey::GlobalAction::ToggleScript => {
+                let st = self.focused_state();
+                ("简繁", CtlCmd::SetScript(st.script == ScriptMode::Simplified))
+            }
+            crate::hotkey::GlobalAction::TogglePunct => {
+                let st = self.focused_state();
+                ("标点", CtlCmd::SetPunct(st.punct == PunctMode::Chinese))
+            }
+            crate::hotkey::GlobalAction::OpenSettings => {
+                log::log_line("[hotkey] 打开设置页");
+                if let Ok(c) = PipeClient::connect() {
+                    let _ = c.request(&Request::OpenSettings);
+                }
+                return;
+            }
+            crate::hotkey::GlobalAction::ToggleToolbar => {
+                log::log_line("[hotkey] 切换工具栏显隐");
+                if let Ok(c) = PipeClient::connect() {
+                    let _ = c.request(&Request::ToggleToolbar);
+                }
+                return;
+            }
+        };
+        let focused = self
+            .shared
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .focused;
+        let Some((pid, tid)) = focused else {
+            log::log_line(&format!("[hotkey] {label} 但无 focused 实例，忽略"));
+            return;
+        };
+        self.dispatch_state_toggle(&label, &target_cmd, pid, tid);
+    }
+
+    /// 读当前 focused 实例四态（无实例 → 默认四态）。
+    fn focused_state(&self) -> iuv_core::ImeState {
+        self.shared
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .focused
+            .and_then(|f| self.shared.lock().unwrap_or_else(|p| p.into_inner()).instances.get(&f).copied())
+            .map(|i| i.state)
+            .unwrap_or_default()
+    }
+
+    /// 四态翻转分派（on_click 与 on_hotkey 共用）：连 focused 实例控制管道发 cmd →
+    /// 按结果更新实例表 + 重绘。
+    fn dispatch_state_toggle(&mut self, label: &str, cmd: &CtlCmd, pid: u32, tid: u32) {
+        log::log_line(&format!(
+            "[toolbar] {label}翻转（实例 {pid}:{tid}）"
+        ));
+        let name = ctl_pipe_name(pid, tid);
+        match CtlClient::connect(&name).and_then(|c| c.request(cmd)) {
+            Ok(CtlResult::Ok { state }) => {
+                log::log_line(&format!("[toolbar] 实例应用成功：{state:?}"));
+                let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(i) = sh.instances.get_mut(&(pid, tid)) {
+                    i.state = state;
+                }
+            }
+            Ok(CtlResult::Err { msg }) => {
+                log::log_line(&format!("[toolbar] 实例应用失败：{msg}"));
+            }
+            Err(e) => {
+                log::log_line(&format!(
+                    "[toolbar] 控制管道不可达（实例离线/未注册？）：{e}"
+                ));
+            }
+        }
+        self.repaint();
     }
 
     /// 悬停更新（WM_MOUSEMOVE 命中）：改 hover 行 + 刷新 tooltip。
@@ -517,6 +596,16 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
         }
         WM_ERASEBKGND => LRESULT(1),
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_HOTKEY => {
+            // 全局热键触发（41-keymap-settings.md §4）：wParam 低 16 位 = 热键 id。
+            let id = (wparam.0 & 0xFFFF) as usize;
+            if let Some((action, _secondary)) = crate::hotkey::hotkey_from_id(id) {
+                if let Some(w) = get_bar_mut(hwnd) {
+                    w.on_hotkey(action);
+                }
+            }
+            LRESULT(0)
+        }
         WM_SETCURSOR => {
             // 悬停光标：客户区按按钮命中二选一——功能钮（四态/齿轮）= 手指头，
             // logo/空白 = 箭头；非客户区走类默认（箭头）。lparam 不含坐标，取

@@ -61,6 +61,9 @@ pub struct DaemonConfig {
     /// 禁用日志模块列表（denylist；默认空 = 全记录，见 26-log-modules.md）。
     /// 设置页开发者标签勾选、TSF/daemon 两侧 log_line 按消息 `[tag]` 过滤。
     pub disabled_log_modules: Vec<String>,
+    /// 快捷键映射（41-keymap-settings.md §3）：会话内 7 组 + 全局热键 6 组，各主/备两槽。
+    /// 会话组 TSF 消费（config_epoch 热载已通）；全局组 daemon `RegisterHotKey` 消费。
+    pub keymap: iuv_core::Keymap,
 }
 
 impl Default for DaemonConfig {
@@ -73,6 +76,7 @@ impl Default for DaemonConfig {
             passthrough_apps: Vec::new(),
             candidate_owner_apps: Vec::new(),
             disabled_log_modules: Vec::new(),
+            keymap: iuv_core::Keymap::default(),
         }
     }
 }
@@ -142,6 +146,11 @@ pub fn load_config() -> DaemonConfig {
             .filter_map(|x| x.as_str().map(String::from))
             .collect();
     }
+    // keymap 读取：直接反序列化（serde 两槽对象；旧数组格式在 daemon 侧不兼容——
+    // TSF 侧 from_file 已迁移落盘，daemon 读的配置文件始终为新格式；异常 → 默认）。
+    if let Some(node) = v.get("keymap") {
+        cfg.keymap = serde_json::from_value(node.clone()).unwrap_or_default();
+    }
     cfg
 }
 
@@ -206,6 +215,11 @@ pub fn save_config(cfg: &DaemonConfig) -> io::Result<()> {
                     .map(|s| serde_json::Value::String(s.clone()))
                     .collect(),
             ),
+        );
+        obj.insert(
+            "keymap".into(),
+            serde_json::to_value(&cfg.keymap)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?,
         );
         // 旧顶层 english_punctuation 键清理（迁移后由新 initial_state.punct 取代）。
         obj.remove("english_punctuation");
@@ -318,12 +332,18 @@ mod tests {
             passthrough_apps: vec!["notepad.exe".to_string()],
             candidate_owner_apps: vec!["wow.exe".to_string()],
             disabled_log_modules: vec!["uielem".to_string()],
+            keymap: iuv_core::Keymap {
+                toggle_mode: iuv_core::TwoSlot::from(iuv_core::Combo::plain(iuv_core::Key::F5)),
+                ..iuv_core::Keymap::default()
+            },
         })
         .unwrap();
         // 未知字段保留
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["page_size"], 7);
-        assert_eq!(v["keymap"]["page_prev"][0], "[");
+        // keymap 写为两槽对象（覆盖旧数组格式）
+        assert_eq!(v["keymap"]["page_prev"]["primary"], "PageUp");
+        assert_eq!(v["keymap"]["toggle_mode"]["primary"], "F5");
         // 已知字段更新
         assert_eq!(v["theme"], "dark");
         assert_eq!(v["candidate_orientation"], "horizontal");
@@ -349,6 +369,12 @@ mod tests {
         assert_eq!(cfg.passthrough_apps, vec!["notepad.exe".to_string()]);
         assert_eq!(cfg.candidate_owner_apps, vec!["wow.exe".to_string()]);
         assert_eq!(cfg.disabled_log_modules, vec!["uielem".to_string()]);
+        // keymap 往返：F5 全局热键读回
+        assert_eq!(
+            cfg.keymap.toggle_mode.primary,
+            Some(iuv_core::Combo::plain(iuv_core::Key::F5))
+        );
+        assert_eq!(cfg.keymap.page_prev.primary, Some(iuv_core::Combo::plain(iuv_core::Key::PageUp)));
         let _ = std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }

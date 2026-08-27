@@ -270,6 +270,37 @@ const LOG_MODULES: &[(&str, &str)] = &[
     ("state", "守护进程状态"),
 ];
 
+/// 录入目标：某个功能（会话或全局）× 主/备槽。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureTarget {
+    Session(iuv_core::SessionAction, Slot),
+    Global(iuv_core::GlobalAction, Slot),
+}
+
+/// 槽位（主/备）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    Primary,
+    Secondary,
+}
+
+impl Slot {
+    fn name(self) -> &'static str {
+        match self {
+            Slot::Primary => "主",
+            Slot::Secondary => "备",
+        }
+    }
+}
+
+/// 取两槽的 &mut Combo 位置。
+fn slot_combo_mut<'a>(slot: &'a mut iuv_core::TwoSlot, which: Slot) -> &'a mut Option<iuv_core::Combo> {
+    match which {
+        Slot::Primary => &mut slot.primary,
+        Slot::Secondary => &mut slot.secondary,
+    }
+}
+
 /// 设置页 UI 状态。
 struct SettingsApp {
     state: Arc<DaemonState>,
@@ -287,6 +318,18 @@ struct SettingsApp {
     passthrough: String,
     /// 候选自绘名单文本编辑（每行一个 exe 名）。
     candidate_owner: String,
+    /// 快捷键映射（41-keymap-settings.md §3）：会话内 7 + 全局 6，各主/备两槽。
+    /// 会话组 TSF 消费（config_epoch 热载）；全局组 daemon RegisterHotKey 消费。
+    keymap: iuv_core::Keymap,
+    /// 录入模式目标（游戏式捕捉）：正在等待用户按下组合键的功能槽位。
+    /// 点击录入框置位 → 装 WH_KEYBOARD_LL → 捕获 → 回填 → 复位。
+    capture: Option<CaptureTarget>,
+    /// 录入模式提示（捕获中显示在框内）。
+    capturing: bool,
+    /// 最近一次冲突/校验警告（录入回填时置位，显示红字）。
+    keymap_warn: Option<String>,
+    /// 当前录入会话的捕获状态（与钩子回调共享）。
+    capture_state: Option<std::sync::Arc<crate::capture::CaptureState>>,
     /// 禁用日志模块集（denylist，勾掉某模块即加入；默认空 = 全记录）。
     disabled_log: Vec<String>,
     /// 「清除全部」二次确认。
@@ -327,6 +370,11 @@ impl SettingsApp {
             initial: cfg.initial_state,
             passthrough: cfg.passthrough_apps.join("\n"),
             candidate_owner: cfg.candidate_owner_apps.join("\n"),
+            keymap: cfg.keymap,
+            capture: None,
+            capturing: false,
+            keymap_warn: None,
+            capture_state: None,
             disabled_log: cfg.disabled_log_modules.clone(),
             confirm_clear: false,
             pending_clear: false,
@@ -468,18 +516,371 @@ impl SettingsApp {
         }
     }
 
-    /// 按键：键位自定义（M7 灰置占位）。
+    /// 按键：键位自定义（41-keymap-settings.md §5，游戏式录入）。
+    /// 两卡片：会话内（7 项，TSF 键 sink）+ 全局（6 项，daemon RegisterHotKey）。
+    /// 每项主/备两槽；点击槽位录入框 → WH_KEYBOARD_LL 捕获组合键。
     fn keymap_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("按键");
         ui.add_space(4.0);
+        ui.small("点击录入框后按下组合键（游戏式，支持 Alt/Ctrl/Shift/Win 组合）；Esc 取消、Backspace 清除该槽。");
+        ui.add_space(4.0);
+        if let Some(warn) = self.keymap_warn.clone() {
+            ui.colored_label(egui::Color32::from_rgb(0xC0, 0x40, 0x40), warn);
+            ui.add_space(4.0);
+        }
+
+        // —— 会话内快捷键（TSF 键 sink）——
         card(ui, |ui| {
-            ui.add_enabled_ui(false, |ui| {
-                ui.label("键位自定义（M7 开放）");
-                let _ = ui.button("翻页键…");
-                let _ = ui.button("候选移动键…");
-                ui.small("（规划中）");
-            });
+            ui.strong("输入会话内");
+            ui.small("仅无修饰/Shift 组合；Alt 组合不会到达输入法会话（机制限制），Ctrl 组合让给应用。");
+            ui.add_space(6.0);
+            let mut clicked: Option<CaptureTarget> = None;
+            for (label, action) in self.session_actions() {
+                let target = CaptureTarget::Session(action, Slot::Primary);
+                self.capture_row(ui, label, target, &mut clicked);
+            }
+            if let Some(t) = clicked {
+                self.start_capture(t);
+            }
         });
+        ui.add_space(10.0);
+
+        // —— 全局热键（daemon）——
+        card(ui, |ui| {
+            ui.strong("全局快捷键（任意软件生效）");
+            ui.small("普通软件做法（daemon RegisterHotKey），Alt/Ctrl 随便绑；必须含修饰键。");
+            ui.add_space(6.0);
+            let mut clicked: Option<CaptureTarget> = None;
+            for (label, action) in self.global_actions() {
+                let target = CaptureTarget::Global(action, Slot::Primary);
+                self.capture_row(ui, label, target, &mut clicked);
+            }
+            if let Some(t) = clicked {
+                self.start_capture(t);
+            }
+            ui.add_space(4.0);
+            if ui.button("恢复默认键位").clicked() {
+                self.keymap = iuv_core::Keymap::default();
+                self.keymap_warn = None;
+            }
+        });
+    }
+
+    /// 会话动作列表（展示顺序即 UI 顺序）。
+    fn session_actions(&self) -> Vec<(&'static str, iuv_core::SessionAction)> {
+        use iuv_core::SessionAction::*;
+        vec![
+            ("翻上一页", PagePrev),
+            ("翻下一页", PageNext),
+            ("候选前移", CandidatePrev),
+            ("候选后移", CandidateNext),
+            ("调权（与左侧候选交换）", SwapLeft),
+            ("调权（与右侧候选交换）", SwapRight),
+            ("隐藏候选", HideCandidate),
+        ]
+    }
+
+    /// 全局动作列表。
+    fn global_actions(&self) -> Vec<(&'static str, iuv_core::GlobalAction)> {
+        use iuv_core::GlobalAction::*;
+        vec![
+            ("中英切换", ToggleMode),
+            ("全角/半角", ToggleWidth),
+            ("简体/繁体", ToggleScript),
+            ("中文标点", TogglePunct),
+            ("打开设置", OpenSettings),
+            ("显示/隐藏工具栏", ToggleToolbar),
+        ]
+    }
+
+    /// 会话动作 → 槽位可变引用。
+    fn keymap_slot_session(&mut self, a: iuv_core::SessionAction) -> &mut iuv_core::TwoSlot {
+        match a {
+            iuv_core::SessionAction::PagePrev => &mut self.keymap.page_prev,
+            iuv_core::SessionAction::PageNext => &mut self.keymap.page_next,
+            iuv_core::SessionAction::CandidatePrev => &mut self.keymap.candidate_prev,
+            iuv_core::SessionAction::CandidateNext => &mut self.keymap.candidate_next,
+            iuv_core::SessionAction::SwapLeft => &mut self.keymap.swap_left,
+            iuv_core::SessionAction::SwapRight => &mut self.keymap.swap_right,
+            iuv_core::SessionAction::HideCandidate => &mut self.keymap.hide_candidate,
+        }
+    }
+
+    /// 全局动作 → 槽位可变引用。
+    fn keymap_slot_global(&mut self, a: iuv_core::GlobalAction) -> &mut iuv_core::TwoSlot {
+        match a {
+            iuv_core::GlobalAction::ToggleMode => &mut self.keymap.toggle_mode,
+            iuv_core::GlobalAction::ToggleWidth => &mut self.keymap.toggle_width,
+            iuv_core::GlobalAction::ToggleScript => &mut self.keymap.toggle_script,
+            iuv_core::GlobalAction::TogglePunct => &mut self.keymap.toggle_punct,
+            iuv_core::GlobalAction::OpenSettings => &mut self.keymap.open_settings,
+            iuv_core::GlobalAction::ToggleToolbar => &mut self.keymap.toggle_toolbar,
+        }
+    }
+
+    /// 一行：功能名 + [主录入框] [备录入框]。渲染后把点击目标写入 `clicked`。
+    /// 槽位值先拷贝（避免 self.keymap 与 self.capture 的借用冲突）。
+    fn capture_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        target: CaptureTarget,
+        clicked: &mut Option<CaptureTarget>,
+    ) {
+        // 拷贝当前两槽组合（展示用）
+        let (primary, secondary) = self.slot_combos(target);
+        let mut hit: Option<CaptureTarget> = None;
+        ui.horizontal(|ui| {
+            ui.add_sized([130.0, 20.0], egui::Label::new(label));
+            self.capture_slot_button(ui, target, Slot::Primary, primary, &mut hit);
+            self.capture_slot_button(ui, target, Slot::Secondary, secondary, &mut hit);
+        });
+        if let Some(t) = hit {
+            *clicked = Some(t);
+        }
+        ui.add_space(2.0);
+    }
+
+    /// 读某功能两槽组合（拷贝值；不借用 self.keymap）。
+    fn slot_combos(
+        &self,
+        target: CaptureTarget,
+    ) -> (Option<iuv_core::Combo>, Option<iuv_core::Combo>) {
+        let slot = match target {
+            CaptureTarget::Session(a, _) => self.keymap.session_slot(a),
+            CaptureTarget::Global(a, _) => self.keymap.global_slot(a),
+        };
+        (slot.primary, slot.secondary)
+    }
+
+    /// 单个槽位录入按钮：显示当前键位（空 = "未设置"）；点击写入 `hit`（主/备）。
+    /// 槽位值 `combo` 为拷贝值，展示后释放。
+    fn capture_slot_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        target: CaptureTarget,
+        which: Slot,
+        combo: Option<iuv_core::Combo>,
+        hit: &mut Option<CaptureTarget>,
+    ) {
+        let target = match target {
+            CaptureTarget::Session(a, _) => CaptureTarget::Session(a, which),
+            CaptureTarget::Global(a, _) => CaptureTarget::Global(a, which),
+        };
+        let is_capturing_this = self.capture == Some(target) && self.capturing;
+        let text = if is_capturing_this {
+            "按下组合键…（Esc 取消 / Backspace 清除）".to_string()
+        } else {
+            match combo {
+                Some(c) => format!("{}（{}）", c.name(), which.name()),
+                None => "未设置".to_string(),
+            }
+        };
+        let btn = egui::Button::new(
+            egui::RichText::new(text).color(if is_capturing_this {
+                egui::Color32::from_rgb(0x00, 0x78, 0xD7)
+            } else if combo.is_some() {
+                egui::Color32::from_rgb(0x20, 0x80, 0x40)
+            } else {
+                egui::Color32::GRAY
+            }),
+        )
+        .min_size(egui::vec2(170.0, 24.0));
+        if ui.add(btn).clicked() {
+            *hit = Some(target);
+        }
+    }
+
+    /// 进入录入模式：置位目标 + 装钩子。
+    fn start_capture(&mut self, target: CaptureTarget) {
+        // 结束旧会话（若有）
+        if self.capturing {
+            crate::capture::end();
+        }
+        let state = std::sync::Arc::new(crate::capture::CaptureState::default());
+        let ok = crate::capture::begin(state.clone());
+        if ok {
+            self.capture = Some(target);
+            self.capturing = true;
+            self.capture_state = Some(state);
+            self.keymap_warn = None;
+        } else {
+            self.capture = None;
+            self.capturing = false;
+            self.capture_state = None;
+            self.keymap_warn = Some("无法安装键盘钩子，录入不可用".into());
+        }
+    }
+
+    /// 每帧轮询：捕获完成 → 校验 + 回填 + 复位。
+    /// 在 ui() 帧首调用（capture_state 的 request_repaint 触发帧后消费）。
+    fn poll_capture(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.capture_state.clone() else { return };
+        if !self.capturing {
+            return;
+        }
+        let outcome = state.outcome.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(outcome) = outcome {
+            // 捕获完成：结束钩子会话
+            crate::capture::end();
+            self.capturing = false;
+            let target = self.capture.take();
+            self.capture_state = None;
+            if let Some(target) = target {
+                self.apply_capture(target, outcome);
+            }
+            ctx.request_repaint();
+        } else if state.request_repaint.load(std::sync::atomic::Ordering::SeqCst) {
+            // 钩子回调请求重绘（可能已有结果但被消费，或 Esc 置位）
+            state.request_repaint.store(false, std::sync::atomic::Ordering::SeqCst);
+            ctx.request_repaint();
+        }
+    }
+
+    /// 应用捕获结果到槽位（含校验/冲突检测）。
+    fn apply_capture(&mut self, target: CaptureTarget, outcome: crate::capture::CaptureOutcome) {
+        use crate::capture::CaptureOutcome;
+        match outcome {
+            CaptureOutcome::Cancel => {
+                self.keymap_warn = None; // Esc 取消：槽位不变
+            }
+            CaptureOutcome::Clear => {
+                // 清除该槽（主/备）
+                let c = self.slot_combo_mut(target);
+                *c = None;
+                self.keymap_warn = None;
+            }
+            CaptureOutcome::Captured(combo) => {
+                // 校验
+                if let Err(msg) = self.validate_combo(target, &combo) {
+                    self.keymap_warn = Some(msg);
+                    return;
+                }
+                let c = self.slot_combo_mut(target);
+                *c = Some(combo);
+                self.keymap_warn = None;
+            }
+        }
+    }
+
+    /// 目标槽位的可变 Combo 引用。
+    fn slot_combo_mut(&mut self, target: CaptureTarget) -> &mut Option<iuv_core::Combo> {
+        match target {
+            CaptureTarget::Session(a, which) => {
+                let slot = self.keymap_slot_session(a);
+                slot_combo_mut(slot, which)
+            }
+            CaptureTarget::Global(a, which) => {
+                let slot = self.keymap_slot_global(a);
+                slot_combo_mut(slot, which)
+            }
+        }
+    }
+
+    /// 组合校验（会话/全局红线 + 跨功能冲突）。Err → 拒绝并给红字。
+    fn validate_combo(
+        &self,
+        target: CaptureTarget,
+        combo: &iuv_core::Combo,
+    ) -> Result<(), String> {
+        // 会话内红线
+        if let CaptureTarget::Session(a, _) = target {
+            let label = self.session_label(a);
+            if combo.alt {
+                return Err(format!(
+                    "{label}：Alt 组合不会到达输入法会话（WM_SYSKEYDOWN 不进 TSF 键 sink），运行时无效。"
+                ));
+            }
+            if combo.ctrl {
+                return Err(format!("{label}：Ctrl 组合让位给应用（冲突大），会话快捷键不可用。"));
+            }
+            if combo.base_is_letter() {
+                return Err(format!(
+                    "{label}：字母键是拼音输入空间，不能作为会话快捷键。"
+                ));
+            }
+        }
+        // 全局红线
+        if let CaptureTarget::Global(a, _) = target {
+            let label = self.global_label(a);
+            if !combo.has_modifier() {
+                return Err(format!(
+                    "{label}：全局热键必须含修饰键（否则全系统劫持字母/数字）。"
+                ));
+            }
+            if combo.name() == "Ctrl+Space" {
+                return Err(format!(
+                    "{label}：Ctrl+Space 是系统「输入法/非输入法切换」热键，建议不要占用。"
+                ));
+            }
+        }
+        // 跨功能冲突（排除自身槽位——目标槽本身即将被替换）
+        let is_target = |c: &iuv_core::Combo| match target {
+            CaptureTarget::Session(a, w) => {
+                let s = self.keymap.session_slot(a);
+                match w {
+                    Slot::Primary => s.primary.as_ref() == Some(c),
+                    Slot::Secondary => s.secondary.as_ref() == Some(c),
+                }
+            }
+            CaptureTarget::Global(a, w) => {
+                let s = self.keymap.global_slot(a);
+                match w {
+                    Slot::Primary => s.primary.as_ref() == Some(c),
+                    Slot::Secondary => s.secondary.as_ref() == Some(c),
+                }
+            }
+        };
+        // 会话与全局两表统一查
+        let (label, occupied) = self.find_conflict(combo, &is_target);
+        if let Some(occ) = occupied {
+            return Err(format!(
+                "{label}：{combo} 已被「{occ}」占用，请换一个组合。"
+            ));
+        }
+        Ok(())
+    }
+
+    /// 全表冲突查找：返回 (当前功能名, 占用方功能名)。排除 is_target 命中的槽位
+    /// （即被替换的旧值）。
+    fn find_conflict(
+        &self,
+        combo: &iuv_core::Combo,
+        is_target: &dyn Fn(&iuv_core::Combo) -> bool,
+    ) -> (String, Option<String>) {
+        for (label, action) in self.session_actions() {
+            let slot = self.keymap.session_slot(action);
+            for c in slot.iter() {
+                if c == combo && !is_target(c) {
+                    return (label.to_string(), Some(label.to_string()));
+                }
+            }
+        }
+        for (label, action) in self.global_actions() {
+            let slot = self.keymap.global_slot(action);
+            for c in slot.iter() {
+                if c == combo && !is_target(c) {
+                    return (label.to_string(), Some(label.to_string()));
+                }
+            }
+        }
+        (String::new(), None)
+    }
+
+    fn session_label(&self, a: iuv_core::SessionAction) -> String {
+        self.session_actions()
+            .into_iter()
+            .find(|(_, x)| *x == a)
+            .map(|(l, _)| l.to_string())
+            .unwrap_or_else(|| "会话功能".into())
+    }
+
+    fn global_label(&self, a: iuv_core::GlobalAction) -> String {
+        self.global_actions()
+            .into_iter()
+            .find(|(_, x)| *x == a)
+            .map(|(l, _)| l.to_string())
+            .unwrap_or_else(|| "全局功能".into())
     }
 
     /// 外观：候选窗主题 + 布局方向。
@@ -705,6 +1106,7 @@ impl SettingsApp {
             passthrough_apps: apps.clone(),
             candidate_owner_apps: cand_owners.clone(),
             disabled_log_modules: self.disabled_log.clone(),
+            keymap: self.keymap.clone(),
         }) {
             Ok(()) => {
                 {
@@ -716,6 +1118,7 @@ impl SettingsApp {
                     c.passthrough_apps = apps;
                     c.candidate_owner_apps = cand_owners;
                     c.disabled_log_modules = self.disabled_log.clone();
+                    c.keymap = self.keymap.clone();
                 }
                 self.state.bump_config_epoch();
                 msgs.push("配置已保存并广播 config_epoch（会话进程检测后重载）".into());
@@ -750,6 +1153,8 @@ impl eframe::App for SettingsApp {
         if self.state.close_settings.swap(false, Ordering::AcqRel) {
             let _ = ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        // 录入轮询：捕获完成 → 校验回填（41-keymap-settings.md §5）。
+        self.poll_capture(ctx);
     }
 
     /// 绘制 UI（root Ui 无外边距；多面板自上而下）。
@@ -766,6 +1171,13 @@ impl eframe::App for SettingsApp {
     }
 
     fn on_exit(&mut self) {
+        // 确保钩子卸载（窗口关闭时若仍在录入）
+        if self.capturing {
+            crate::capture::end();
+            self.capturing = false;
+            self.capture_state = None;
+            self.capture = None;
+        }
         log::log_line("[settings] 设置窗口已关闭");
     }
 }

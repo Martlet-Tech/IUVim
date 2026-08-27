@@ -95,6 +95,12 @@ impl Combo {
     }
 }
 
+impl std::fmt::Display for Combo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name())
+    }
+}
+
 impl serde::Serialize for Combo {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&self.name())
