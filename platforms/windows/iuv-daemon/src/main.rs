@@ -132,7 +132,7 @@ fn run() -> i32 {
             // 标记窗口运行中：此后的 OpenSettings 转发聚焦而非积压（防幽灵重开）。
             state.settings_open.store(true, Ordering::Release);
             log::log_line("[main] 收到 OpenSettings，运行设置窗口");
-            let _ = settings::run_settings(&state);
+            let _ = settings::run_settings(&state, &toolbar);
             state.settings_open.store(false, Ordering::Release);
             // 设置页可能保存了 keymap → 通知工具条线程全量重注册全局热键
             //（41-keymap-settings.md §4；未保存时重注册同配置，幂等无害）。

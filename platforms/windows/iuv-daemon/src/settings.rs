@@ -112,7 +112,11 @@ fn center_window_on_screen() {
 }
 
 /// eframe 窗口主体（阻塞直到窗口关闭；主线程调用）。返回 Ok(()) = 正常关闭。
-pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
+/// `toolbar` = 工具栏宿主（录入态开关通知：全局热键临时注销，41-keymap-settings.md §12）。
+pub fn run_settings(
+    state: &Arc<DaemonState>,
+    toolbar: &Arc<crate::toolbar::ToolbarHost>,
+) -> Result<(), String> {
     const WIDTH: f32 = 640.0;
     const HEIGHT: f32 = 480.0;
 
@@ -128,6 +132,7 @@ pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
         ..Default::default()
     };
     let state = state.clone();
+    let toolbar = toolbar.clone();
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         eframe::run_native(
             SETTINGS_TITLE,
@@ -152,7 +157,7 @@ pub fn run_settings(state: &Arc<DaemonState>) -> Result<(), String> {
                     style.visuals.selection.stroke =
                         egui::Stroke::new(1.0, egui::Color32::WHITE);
                 });
-                Ok(Box::new(SettingsApp::new(state)))
+                Ok(Box::new(SettingsApp::new(state, toolbar)))
             }),
         )
     }));
@@ -304,6 +309,8 @@ fn slot_combo_mut<'a>(slot: &'a mut iuv_core::TwoSlot, which: Slot) -> &'a mut O
 /// 设置页 UI 状态。
 struct SettingsApp {
     state: Arc<DaemonState>,
+    /// 工具栏宿主（录入态开关通知：全局热键临时注销，41-keymap-settings.md §12）。
+    toolbar: Arc<crate::toolbar::ToolbarHost>,
     /// 当前标签页。
     tab: Tab,
     /// 主题单选值（"light"/"dark"）。
@@ -358,10 +365,11 @@ fn card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> 
 }
 
 impl SettingsApp {
-    fn new(state: Arc<DaemonState>) -> Self {
+    fn new(state: Arc<DaemonState>, toolbar: Arc<crate::toolbar::ToolbarHost>) -> Self {
         let cfg = state.config.lock().unwrap_or_else(|p| p.into_inner()).clone();
         SettingsApp {
             state,
+            toolbar,
             tab: Tab::Common,
             theme: cfg.theme,
             orientation: cfg.candidate_orientation,
@@ -696,10 +704,12 @@ impl SettingsApp {
     }
 
     /// 进入录入模式：仅置位目标（方案 A——按键从 egui 事件流捕获，无需钩子）。
+    /// 通知工具栏注销全部全局热键（41-keymap-settings.md §12：录入态吸收所有按键）。
     fn start_capture(&mut self, target: CaptureTarget) {
         self.capture = Some(target);
         self.capturing = true;
         self.keymap_warn = None;
+        self.toolbar.set_capture_mode(true);
         log::log_line(&format!("[capture] 进入录入模式（等待组合键）"));
     }
 
@@ -728,9 +738,10 @@ impl SettingsApp {
             let Some(outcome) = crate::capture::process_key_event(key, &modifiers) else {
                 continue; // 纯修饰键等，继续等
             };
-            // 捕获完成：复位 + 回填
+            // 捕获完成：复位 + 回填 + 恢复全局热键
             self.capturing = false;
             self.capture = None;
+            self.toolbar.set_capture_mode(false);
             if let Some(target) = target {
                 self.apply_capture(target, outcome);
             }
@@ -1186,7 +1197,10 @@ impl eframe::App for SettingsApp {
     }
 
     fn on_exit(&mut self) {
-        // 窗口关闭时若仍在录入：复位（方案 A 无钩子需卸载）
+        // 窗口关闭时若仍在录入：复位 + 恢复全局热键（41-keymap-settings.md §12）
+        if self.capturing {
+            self.toolbar.set_capture_mode(false);
+        }
         self.capturing = false;
         self.capture = None;
         log::log_line("[settings] 设置窗口已关闭");

@@ -206,5 +206,22 @@ None → Pass 放行给应用。候选移动默认 keymap 补 Up/Down 备槽（�
   补 Up/Down 备槽；测试同步（map_key_arrows/paging/shift_arrows/control_keys 改断言
   None、defaults/all_combos 数量更新）。
 
+### 10.7 设置窗打开时热键失效 + 录入态抢键 → 焦点语义 + CaptureMode（2026-08-28）
+
+手测反馈「daemon 设置了快捷键，不会执行动作」。日志实锤两类：
+
+1. **设置窗打开时热键失效**：切到设置窗 → TSF `OnKillThreadFocus` → daemon `FocusLost`
+   → `focused = None` → `on_hotkey`「无 focused 实例，忽略」刷屏。但设置窗是 daemon
+   自家配置 UI，用户打开设置窗 ≠ 离开 iuv 使用。修复：`FocusLost` 分支加守卫——
+   `settings_open` 时保留 focused（不清空），全局热键继续作用于打开设置窗前焦点所在
+   的应用（管理员决策：继续作用于原应用）。设置窗关闭后焦点回原应用 → FocusGained
+   自然恢复。
+2. **录入态抢键**：`RegisterHotKey` 系统级捕获——录入模式按已注册热键时，按键进
+   `WM_HOTKEY` 不进 egui 流 → 录不进去。修复：`CaptureMode` 事件——进入录入 →
+   工具栏线程 `unregister_all`；退出录入（成功/Esc/Backspace/关窗）→ 按当前配置
+   `register_all`。接线：`run_settings(state, toolbar)` + SettingsApp 持 toolbar +
+   `set_capture_mode`。
+
+
 
 

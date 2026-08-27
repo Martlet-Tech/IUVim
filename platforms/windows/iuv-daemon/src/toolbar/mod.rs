@@ -104,6 +104,9 @@ pub(super) enum BarEvent {
     ToggleVisible,
     /// 全局热键变更（keymap 保存后）：工具条线程全量注销 + 重注册。
     HotkeysChanged,
+    /// 录入态开关（41-keymap-settings.md §12）：true = 设置窗录入模式，临时注销全部
+    /// 全局热键（吸收所有按键——RegisterHotKey 系统级抢键会拦截录入）；false = 恢复注册。
+    CaptureMode(bool),
 }
 
 /// 工具栏宿主（daemon 主线程持有；信号线程/管道线程经它入队，工具条线程 drain 消费）。
@@ -202,6 +205,12 @@ impl ToolbarHost {
     /// 主循环调用 → 工具条线程全量注销 + 按新配置重注册。
     pub fn hotkeys_changed(&self) {
         self.enqueue(BarEvent::HotkeysChanged);
+    }
+
+    /// 录入态开关（41-keymap-settings.md §12）：设置窗进入/退出录入模式时调用。
+    /// true → 工具条线程注销全部全局热键（吸收所有按键）；false → 按当前配置重注册。
+    pub fn set_capture_mode(&self, capturing: bool) {
+        self.enqueue(BarEvent::CaptureMode(capturing));
     }
 
     /// 入队 + 唤醒工具条线程 drain。

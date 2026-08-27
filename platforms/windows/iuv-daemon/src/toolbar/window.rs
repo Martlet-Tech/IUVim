@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 use std::mem::size_of;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use iuv_core::{InitialMode, PunctMode, ScriptMode, WidthMode};
@@ -170,6 +171,18 @@ impl ToolbarWindow {
                 }
             }
             BarEvent::FocusLost { pid, tid } => {
+                // 设置窗打开时抑制失焦（41-keymap-settings.md §12）：设置窗是 daemon
+                // 自家配置 UI——用户打开设置窗 ≠ 离开 iuv 使用，全局热键应继续作用于
+                // 打开设置窗前焦点所在的应用。TSF 实例切到设置窗会触发 OnKillThreadFocus
+                // → FocusLost，若不抑制则 focused 被清空 → 设置窗里按全局热键
+                // 「无 focused 实例，忽略」（日志刷屏，2026-08-28 实测）。设置窗关闭后
+                // 焦点回原应用 → OnSetThreadFocus → FocusGained 自然恢复，无需额外校正。
+                if self.state.settings_open.load(Ordering::Acquire) {
+                    log::log_line(&format!(
+                        "[toolbar] 失焦（{pid}:{tid}）但设置窗打开，保留 focused（全局热键继续作用于原应用）"
+                    ));
+                    return;
+                }
                 let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
                 if let Some(i) = sh.instances.get_mut(&(pid, tid)) {
                     i.active = false;
@@ -230,18 +243,34 @@ impl ToolbarWindow {
             BarEvent::HotkeysChanged => {
                 // 全局热键全量重注册（41-keymap-settings.md §4）：先注销再按新配置注册。
                 log::log_line("[toolbar] 全局热键变更 → 注销 + 重注册");
-                let keymap = self
-                    .state
-                    .config
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .keymap
-                    .clone();
+                self.reregister_hotkeys();
+            }
+            BarEvent::CaptureMode(true) => {
+                // 录入态：注销全部全局热键（41-keymap-settings.md §12）——RegisterHotKey
+                // 系统级抢键，不注销则设置窗录入按已注册热键时按键进 WM_HOTKEY 不进 egui 流。
+                log::log_line("[toolbar] 录入态：注销全部全局热键（吸收按键）");
                 crate::hotkey::unregister_all(self.hwnd);
-                let (ok, fail) = crate::hotkey::register_all(self.hwnd, &keymap);
-                log::log_line(&format!("[toolbar] 全局热键注册：成功 {ok}，失败 {fail}"));
+            }
+            BarEvent::CaptureMode(false) => {
+                // 退出录入：按当前配置重注册（若期间保存了 keymap，后续 HotkeysChanged 再全量重注册）。
+                log::log_line("[toolbar] 录入结束：重注册全局热键");
+                self.reregister_hotkeys();
             }
         }
+    }
+
+    /// 注销 + 按当前配置重注册全局热键（HotkeysChanged / 退出录入共用）。
+    fn reregister_hotkeys(&mut self) {
+        let keymap = self
+            .state
+            .config
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .keymap
+            .clone();
+        crate::hotkey::unregister_all(self.hwnd);
+        let (ok, fail) = crate::hotkey::register_all(self.hwnd, &keymap);
+        log::log_line(&format!("[toolbar] 全局热键注册：成功 {ok}，失败 {fail}"));
     }
 
     /// 显示（首显定位：记忆位置（clamp 回工作区）或主屏右下角；ULW 上屏 + SW_SHOWNA 不抢焦点）。
