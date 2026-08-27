@@ -186,4 +186,25 @@ eframe/winit 事件循环下（winit 自持消息处理），且录入期间焦�
   删 capture_state/repaint 接线；on_exit 复位。
 - 测试：capture 8 项（Esc/Backspace/Shift 组合/Ctrl+Shift+F/Alt+1/纯字母拒绝/修饰键忽略/标点）。
 
+### 10.6 清除 keymap 键位后仍生效 → map_key 去导航键硬编码（2026-08-28）
+
+手测反馈「清除上翻页的 PageUp 后，PageUp 还能翻页」。config 已正确落盘
+（`page_prev.primary = null`），但 TSF 侧有两条绕过 keymap 的硬编码路径：
+
+1. `map_key`（session_bridge.rs）把 `VK_PRIOR → Key::PageUp`、`VK_NEXT → Key::PageDown`、
+   方向键 → `Key::Up/Down/Left/Right` **无条件硬编码**；`route_key` 组合键查表 miss
+   （PageUp 已清）→ 落到 map_key → 返回 `Key::PageUp` → `Session::on_key` 翻页。
+2. `Session::on_key` 对 `Key::PageUp/PageDown` 无条件翻页、方向键无条件移动候选——
+   本意是「keymap 命中后归一化再喂」，但 map_key 把物理键直通进了引擎。
+
+修复：`map_key` **不再硬编码导航/翻页键**——这些物理键的会话内语义**完全由 keymap
+决定**：route_key 命中 → 归一化（PageUp/Left…）喂 Session；未命中 → map_key 返回
+None → Pass 放行给应用。候选移动默认 keymap 补 Up/Down 备槽（保肌肉记忆：
+`candidate_prev = Left/Up`、`candidate_next = Right/Down`）。会话外行为不变（本就放行）。
+
+- 改动：session_bridge.rs map_key 删导航键硬编码；iuv-core keymap 默认候选移动
+  补 Up/Down 备槽；测试同步（map_key_arrows/paging/shift_arrows/control_keys 改断言
+  None、defaults/all_combos 数量更新）。
+
+
 

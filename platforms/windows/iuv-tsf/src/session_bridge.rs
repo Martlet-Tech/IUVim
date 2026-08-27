@@ -39,12 +39,8 @@ pub fn map_key(
     const VK_SPACE: u16 = 0x20;
     const VK_RETURN: u16 = 0x0D;
     const VK_ESCAPE: u16 = 0x1B;
-    const VK_PRIOR: u16 = 0x21; // PageUp
-    const VK_NEXT: u16 = 0x22; // PageDown
-    const VK_UP: u16 = 0x26;
-    const VK_DOWN: u16 = 0x28;
-    const VK_LEFT: u16 = 0x25;
-    const VK_RIGHT: u16 = 0x27;
+    // 导航/翻页键常量已移除：这些物理键的会话内语义由 keymap 决定（41-keymap-settings.md
+    // §10.6），不再经 map_key 硬编码；combo 构造用 iuv-win keys.rs 的 vk_to_base_key。
     const VK_DELETE: u16 = 0x2E;
     const VK_1: u16 = 0x31;
     const VK_9: u16 = 0x39;
@@ -69,12 +65,13 @@ pub fn map_key(
         VK_SPACE => Some(Key::Space),
         VK_RETURN => Some(Key::Enter),
         VK_ESCAPE => Some(Key::Esc),
-        VK_PRIOR => Some(Key::PageUp),
-        VK_NEXT => Some(Key::PageDown),
-        VK_UP => Some(Key::Up),
-        VK_DOWN => Some(Key::Down),
-        VK_LEFT => Some(Key::Left),
-        VK_RIGHT => Some(Key::Right),
+        // 导航/翻页键（PageUp/PageDown/方向键）**不再在此硬编码映射**——它们与会话快捷键
+        // 语义冲突：清除 keymap 键位后仍会经此直通 Session 翻页/移动候选（实测：清除
+        // page_prev 的 PageUp 后 PageUp 仍翻页）。41-keymap-settings.md §11 修复：
+        // 这些物理键的会话内语义**完全由 keymap 决定**——route_key 先查组合键表，命中
+        // 归一化（PageUp/Left…）喂 Session；未命中则 map_key 返回 None → Pass 放行给应用
+        // （会话外本就放行，行为不变）。候选移动由 keymap candidate_prev/next 归一化
+        // 为 Key::Left/Right 后进入 Session，不再经物理方向键直通。
         VK_DELETE => None, // 裸 Delete 放行给应用编辑；Shift+Delete 由组合键表映射 HideCandidate
         VK_1..=VK_9 if !with_shift => Some(Key::Digit((char_code - 0x30) as u8)),
         VK_A..=VK_Z => {
@@ -336,40 +333,36 @@ mod tests {
     }
 
     #[test]
-    fn map_key_arrows() {
-        assert_eq!(
-            map_key(0x25, 0x25, false, false, false, false),
-            Some(Key::Left)
-        );
-        assert_eq!(
-            map_key(0x27, 0x27, false, false, false, false),
-            Some(Key::Right)
-        );
+    fn map_key_arrows_released_to_keymap() {
+        // 41-keymap-settings.md §11：方向键不再由 map_key 硬编码映射——会话内语义
+        // 完全由 keymap 决定（route_key 组合键查表归一化为 Left/Right/PageUp 等）；
+        // 未命中 → map_key 返回 None → 放行给应用。会话外本就放行。
+        assert_eq!(map_key(0x25, 0x25, false, false, false, false), None);
+        assert_eq!(map_key(0x27, 0x27, false, false, false, false), None);
+        assert_eq!(map_key(0x26, 0x26, false, false, false, false), None);
+        assert_eq!(map_key(0x28, 0x28, false, false, false, false), None);
         // Ctrl+左右 = 词跳转，放行给应用
         assert_eq!(map_key(0x25, 0x25, false, false, true, false), None);
     }
 
     #[test]
-    fn map_key_shift_arrows_plain() {
-        // 41-keymap-settings.md：Shift+←/→ 不再由 map_key 映射为 Swap（改由组合键表
-        // route_key 查 keymap 归一化）；map_key 对方向键统一返回 Left/Right。
-        assert_eq!(
-            map_key(0x25, 0x25, true, false, false, false),
-            Some(Key::Left)
-        );
-        assert_eq!(
-            map_key(0x27, 0x27, true, false, false, false),
-            Some(Key::Right)
-        );
-        // CapsLock 不影响方向键（大小写语义只作用于字母）
-        assert_eq!(
-            map_key(0x25, 0x25, true, true, false, false),
-            Some(Key::Left)
-        );
-        assert_eq!(
-            map_key(0x26, 0x26, true, false, false, false),
-            Some(Key::Up)
-        );
+    fn map_key_paging_released_to_keymap() {
+        // PageUp/PageDown 不再由 map_key 硬编码为翻页（清除 keymap 键位后仍翻页的
+        // 根因，41-keymap-settings.md §11）：会话内由 keymap page_prev/page_next 归一化；
+        // 未命中 → None → 放行给应用。
+        assert_eq!(map_key(0x21, 0, false, false, false, false), None); // PageUp
+        assert_eq!(map_key(0x22, 0, false, false, false, false), None); // PageDown
+    }
+
+    #[test]
+    fn map_key_shift_arrows_released() {
+        // Shift+←/→ 由组合键表（route_key 查 keymap）归一化为 Swap 或 放行；
+        // map_key 对 Shift+方向键同样返回 None（不再有物理方向键直通路径）。
+        assert_eq!(map_key(0x25, 0x25, true, false, false, false), None);
+        assert_eq!(map_key(0x27, 0x27, true, false, false, false), None);
+        // CapsLock 不影响方向键
+        assert_eq!(map_key(0x25, 0x25, true, true, false, false), None);
+        assert_eq!(map_key(0x26, 0x26, true, false, false, false), None);
         // 组合仍受 Ctrl/Alt 放行约束（Alt 是系统键收不到；Ctrl 组合放行给应用）
         assert_eq!(map_key(0x25, 0x25, true, false, true, false), None);
         assert_eq!(map_key(0x25, 0x25, true, false, false, true), None);
@@ -504,19 +497,11 @@ mod tests {
             Some(Key::Enter)
         );
         assert_eq!(map_key(0x1B, 0, false, false, false, false), Some(Key::Esc));
-        assert_eq!(
-            map_key(0x21, 0, false, false, false, false),
-            Some(Key::PageUp)
-        );
-        assert_eq!(
-            map_key(0x22, 0, false, false, false, false),
-            Some(Key::PageDown)
-        );
-        assert_eq!(map_key(0x26, 0, false, false, false, false), Some(Key::Up));
-        assert_eq!(
-            map_key(0x28, 0, false, false, false, false),
-            Some(Key::Down)
-        );
+        // 导航/翻页键由 keymap 路由（41-keymap-settings.md §11），map_key 不再硬编码
+        assert_eq!(map_key(0x21, 0, false, false, false, false), None);
+        assert_eq!(map_key(0x22, 0, false, false, false, false), None);
+        assert_eq!(map_key(0x26, 0, false, false, false, false), None);
+        assert_eq!(map_key(0x28, 0, false, false, false, false), None);
     }
 
     #[test]

@@ -207,8 +207,14 @@ impl Default for Keymap {
                 primary: Some(Key::PageDown.into()),
                 secondary: Some(Key::Char('.').into()),
             },
-            candidate_prev: TwoSlot { primary: Some(Key::Left.into()), secondary: None },
-            candidate_next: TwoSlot { primary: Some(Key::Right.into()), secondary: None },
+            candidate_prev: TwoSlot {
+                primary: Some(Key::Left.into()),
+                secondary: Some(Key::Up.into()),
+            },
+            candidate_next: TwoSlot {
+                primary: Some(Key::Right.into()),
+                secondary: Some(Key::Down.into()),
+            },
             swap_left: TwoSlot { primary: Some(Combo::shifted(Key::Left)), secondary: None },
             swap_right: TwoSlot { primary: Some(Combo::shifted(Key::Right)), secondary: None },
             hide_candidate: TwoSlot { primary: Some(Combo::shifted(Key::Delete)), secondary: None },
@@ -409,9 +415,11 @@ mod tests {
         assert_eq!(k.page_prev.secondary, Some(combo(",")));
         assert_eq!(k.page_next.primary, Some(combo("PageDown")));
         assert_eq!(k.page_next.secondary, Some(combo(".")));
-        // 候选移动 主=←/→
+        // 候选移动 主=←/→ 备=↑/↓（保肌肉记忆：map_key 去硬编码后由 keymap 治理）
         assert_eq!(k.candidate_prev.primary, Some(combo("Left")));
         assert_eq!(k.candidate_next.primary, Some(combo("Right")));
+        assert_eq!(k.candidate_prev.secondary, Some(combo("Up")));
+        assert_eq!(k.candidate_next.secondary, Some(combo("Down")));
         // 调权/隐藏 = 原 Shift 组合（保肌肉记忆）
         assert_eq!(k.swap_left.primary, Some(combo("Shift+Left")));
         assert_eq!(k.swap_right.primary, Some(combo("Shift+Right")));
@@ -484,7 +492,7 @@ mod tests {
         assert!(list.contains(&combo("Shift+Left")));
         assert!(list.contains(&combo("Alt+1")));
         assert!(list.contains(&combo("Ctrl+Alt+I")));
-        assert_eq!(list.len(), 11, "会话 9（翻页2×2+移动2+调权2+隐藏1）+ 全局 2");
+        assert_eq!(list.len(), 13, "会话 11（翻页2×2+移动2×2+调权2+隐藏1）+ 全局 2");
     }
 
     #[test]
