@@ -7,7 +7,10 @@
 //!
 //! 线程模型：钩子须装在**有消息泵的线程**（回调由该线程 pump 触发）。设置窗跑在
 //! daemon 主线程（eframe/winit 消息循环），故在主线程安装/卸载。回调经共享状态写
-//! 捕获结果 + 置位请求重绘标志（egui ctx.request_repaint 由调用方接线）。
+//! 捕获结果 + 调 `repaint` 回调唤醒帧循环（2026-08-28 修复：eframe 默认
+//! `ControlFlow::Wait`——无事件不渲染新帧，若只置标志则 poll_capture 永远不被
+//! 调度 → 捕获到按键但 UI 不刷新，即"点击后无法录入"根因）。设置页把
+//! `egui::Context::request_repaint` 的封装注入为 repaint 回调。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,21 +21,35 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, KBDLLHOOKSTRUCT, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
 };
 
-/// 捕获结果：`None` = 等待中 / Esc 取消；`Some(None)` = Backspace 清除该槽；
-/// `Some(Some(combo))` = 捕获到组合键。
+use crate::log::log_line;
+
+/// 捕获结果。`Captured` = 组合键；`Clear` = Backspace 清除该槽；`Cancel` = Esc 取消
+/// （槽位不变）；`Rejected(String)` = 捕获到但校验不过（如纯字母无修饰），给 UI 提示。
 #[derive(Clone, Debug)]
 pub enum CaptureOutcome {
     Captured(Combo),
     Clear,
     Cancel,
+    Rejected(String),
 }
 
 /// 捕获会话输出（设置页与钩子回调共享）。
-#[derive(Default)]
 pub struct CaptureState {
     pub outcome: Mutex<Option<CaptureOutcome>>,
-    pub request_repaint: AtomicBool,
     pub installed: AtomicBool,
+    /// 唤醒帧循环的回调（egui::Context::request_repaint 封装；钩子回调内调用，
+    /// 保证 outcome 被消费的帧被调度——见模块头 2026-08-28 修复说明）。
+    repaint: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+}
+
+impl Default for CaptureState {
+    fn default() -> Self {
+        CaptureState {
+            outcome: Mutex::new(None),
+            installed: AtomicBool::new(false),
+            repaint: Mutex::new(None),
+        }
+    }
 }
 
 /// 钩子句柄槽（SetWindowsHookEx 返回值；卸载后置 None）。
@@ -46,13 +63,17 @@ static STATE: Mutex<Option<Arc<CaptureState>>> = Mutex::new(None);
 struct HhookSlot(windows::Win32::UI::WindowsAndMessaging::HHOOK);
 unsafe impl Send for HhookSlot {}
 
-/// 开始捕获：清空结果 + 装钩子（幂等）。返回是否成功装钩。
-pub fn begin(state: Arc<CaptureState>) -> bool {
+/// 开始捕获：清空结果 + 装钩子。`repaint` = 唤醒帧循环的回调（设置页注入）。
+/// 返回是否成功装钩。
+pub fn begin(state: Arc<CaptureState>, repaint: Box<dyn Fn() + Send + Sync>) -> bool {
     // 若已有会话：先卸载旧的（防御——正常 UI 流不会并发，但双开设置窗可能）。
     end();
     *state.outcome.lock().unwrap_or_else(|p| p.into_inner()) = None;
-    state.request_repaint.store(false, Ordering::SeqCst);
     state.installed.store(false, Ordering::SeqCst);
+    {
+        let mut r = state.repaint.lock().unwrap_or_else(|p| p.into_inner());
+        *r = Some(repaint);
+    }
     {
         let mut s = STATE.lock().unwrap_or_else(|p| p.into_inner());
         *s = Some(state.clone());
@@ -65,11 +86,13 @@ pub fn begin(state: Arc<CaptureState>) -> bool {
                 *h = Some(hk);
             }
             state.installed.store(true, Ordering::SeqCst);
+            log_line("[capture] WH_KEYBOARD_LL 钩子已安装，等待录入");
             true
         }
         None => {
             let mut s = STATE.lock().unwrap_or_else(|p| p.into_inner());
             *s = None;
+            log_line("[capture] 钩子安装失败（SetWindowsHookExW 返回错误）");
             false
         }
     }
@@ -84,7 +107,17 @@ pub fn end() {
     if let Some(hk) = h.take() {
         // SAFETY: 钩子在主线程安装，卸载也在主线程（end 由调用方主线程调）。
         let _ = unsafe { UnhookWindowsHookEx(hk.0) };
+        log_line("[capture] 钩子已卸载");
     }
+}
+
+/// 写结果 + 唤醒帧（钩子回调收尾用）。
+fn finish(state: &CaptureState, outcome: CaptureOutcome) {
+    *state.outcome.lock().unwrap_or_else(|p| p.into_inner()) = Some(outcome);
+    if let Some(r) = state.repaint.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+        r();
+    }
+    end();
 }
 
 fn install_hook() -> Option<HhookSlot> {
@@ -101,7 +134,8 @@ fn install_hook() -> Option<HhookSlot> {
 /// WH_KEYBOARD_LL 回调：捕获组合键（吞键 return 1）。逻辑：
 /// - 忽略释放事件（LLKHF_UP）与纯修饰键按下（等待与其组合的基础键）；
 /// - Esc → Cancel（槽位不变）；Backspace → Clear（清除该槽）；
-/// - 捕获 vk + 修饰键态 → 构造 Combo；纯字母无修饰 → 拒绝继续等（防吃掉拼音）。
+/// - 捕获 vk + 修饰键态 → 构造 Combo；纯字母无修饰 → Rejected（UI 提示）。
+/// 每次收尾调 `finish`：写 outcome + 唤醒帧（request_repaint 的真正调用点）。
 pub unsafe extern "system" fn hook_proc(
     code: i32,
     wparam: WPARAM,
@@ -120,18 +154,14 @@ pub unsafe extern "system" fn hook_proc(
                 let is_modifier = matches!(vk, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C);
                 // Esc 取消
                 if vk == 0x1B {
-                    *state.outcome.lock().unwrap_or_else(|p| p.into_inner()) =
-                        Some(CaptureOutcome::Cancel);
-                    state.request_repaint.store(true, Ordering::SeqCst);
-                    end();
+                    log_line("[capture] 收到 Esc → 取消录入");
+                    finish(&state, CaptureOutcome::Cancel);
                     return LRESULT(1);
                 }
                 // Backspace 清除该槽
                 if vk == 0x08 {
-                    *state.outcome.lock().unwrap_or_else(|p| p.into_inner()) =
-                        Some(CaptureOutcome::Clear);
-                    state.request_repaint.store(true, Ordering::SeqCst);
-                    end();
+                    log_line("[capture] 收到 Backspace → 清除该槽");
+                    finish(&state, CaptureOutcome::Clear);
                     return LRESULT(1);
                 }
                 if is_modifier {
@@ -166,16 +196,22 @@ pub unsafe extern "system" fn hook_proc(
                         win,
                         base,
                     };
-                    // 纯字母无修饰 → 拒绝（会吃掉拼音/全局劫持）；继续等待
-                    if combo.has_modifier() || !combo.base_is_letter() {
-                        *state.outcome.lock().unwrap_or_else(|p| p.into_inner()) =
-                            Some(CaptureOutcome::Captured(combo));
-                        state.request_repaint.store(true, Ordering::SeqCst);
-                        end();
+                    // 纯字母无修饰 → 拒绝（会吃掉拼音/全局劫持）；给 UI 提示
+                    if !combo.has_modifier() && combo.base_is_letter() {
+                        log_line(&format!(
+                            "[capture] 纯字母无修饰被拒：{}（等待有效组合）",
+                            combo.name()
+                        ));
+                        finish(&state, CaptureOutcome::Rejected(combo.name()));
                         return LRESULT(1);
                     }
+                    log_line(&format!("[capture] 捕获组合键：{}", combo.name()));
+                    finish(&state, CaptureOutcome::Captured(combo));
+                    return LRESULT(1);
                 }
-                return LRESULT(1); // 未形成有效组合：吞键继续等
+                // 无基础键映射（纯功能键以外）→ 吞键继续等
+                log_line(&format!("[capture] vk={vk:#x} 无基础键映射，吞键继续等"));
+                return LRESULT(1);
             }
         }
     }
@@ -204,3 +240,4 @@ mod tests {
         }
     }
 }
+

@@ -133,3 +133,34 @@ pub struct Combo { pub ctrl: bool, pub alt: bool, pub shift: bool, pub win: bool
 
 - 提交策略：每完成一个子阶段且 cargo test 全绿即自动 commit（分支 feat/keymap-settings）。
 - 验证边界：只用 cargo test --workspace 验证；dev-deploy 部署后交管理员手测。
+
+## 10. 修复记录（2026-08-28 手测反馈，实测根因）
+
+### 10.1 全局卡片不可见 → keymap_tab 包 ScrollArea
+
+手测反馈「能看到会话内设置、看不到全局部分；Ctrl+- 缩放 UI 后才看到全局部分在下面」。
+根因：keymap_tab 13 行内容超出设置窗固定 640×480 可视区，**缺 ScrollArea**（其他 tab 均有），
+全局卡片被挤出。修复：keymap_tab 内容包 `ScrollArea::vertical`（max_height = 可用高度 − 12）。
+
+### 10.2 点击录入框后无法录入 → repaint 回调唤醒帧循环
+
+手测反馈「鼠标点击录入框后，没法录入新按键」。根因：钩子回调捕获到按键后只置
+`AtomicBool` 标志，**未真正唤醒 eframe 帧循环**——eframe 默认 `ControlFlow::Wait`，
+无事件不渲染新帧 → 挂在 `logic()` 上的 `poll_capture` 不被调度 → outcome 永不消费
+→ UI 无反应（按键其实已捕获，只是画面不刷新）。
+修复：`CaptureState` 增 `repaint: Mutex<Option<Box<dyn Fn()+Send+Sync>>>` 回调槽；
+`begin(state, repaint)` 由设置页注入 `egui::Context::request_repaint` 封装；
+`hook_proc` 收尾统一走 `finish()`：写 outcome + **调 repaint 回调** + 卸钩。
+删除 `request_repaint: AtomicBool`。
+
+### 10.3 纯字母无修饰被静默吞掉 → Rejected 提示
+
+手测乱试时纯字母键无任何反馈（被钩子吞掉继续等）。新增 `CaptureOutcome::Rejected(String)`
+——捕获到纯字母无修饰组合时立即结束录入并红字提示「会被拼音输入吞掉」。
+
+### 10.4 关键日志（分析用）
+
+- `[capture] WH_KEYBOARD_LL 钩子已安装/卸载`、`收到 Esc/Backspace`、`捕获组合键：X`、
+  `纯字母无修饰被拒`、`vk=0x.. 无基础键映射`
+- `[settings] 进入录入模式/录入成功/校验拒绝/录入被拒`、`全局热键首注册/注册：成功 N 失败 M`
+

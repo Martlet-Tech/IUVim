@@ -519,6 +519,8 @@ impl SettingsApp {
     /// 按键：键位自定义（41-keymap-settings.md §5，游戏式录入）。
     /// 两卡片：会话内（7 项，TSF 键 sink）+ 全局（6 项，daemon RegisterHotKey）。
     /// 每项主/备两槽；点击槽位录入框 → WH_KEYBOARD_LL 捕获组合键。
+    /// 2026-08-28：包 ScrollArea——13 行内容超出 640×480 固定窗口，无滚动则全局
+    /// 卡片被挤出可视区（此前靠 Ctrl+- 缩放 UI 才能看到）。
     fn keymap_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("按键");
         ui.add_space(4.0);
@@ -528,42 +530,46 @@ impl SettingsApp {
             ui.colored_label(egui::Color32::from_rgb(0xC0, 0x40, 0x40), warn);
             ui.add_space(4.0);
         }
+        egui::ScrollArea::vertical()
+            .id_salt("keymap_scroll")
+            .max_height(ui.available_height() - 12.0)
+            .show(ui, |ui| {
+                // —— 会话内快捷键（TSF 键 sink）——
+                card(ui, |ui| {
+                    ui.strong("输入会话内");
+                    ui.small("仅无修饰/Shift 组合；Alt 组合不会到达输入法会话（机制限制），Ctrl 组合让给应用。");
+                    ui.add_space(6.0);
+                    let mut clicked: Option<CaptureTarget> = None;
+                    for (label, action) in self.session_actions() {
+                        let target = CaptureTarget::Session(action, Slot::Primary);
+                        self.capture_row(ui, label, target, &mut clicked);
+                    }
+                    if let Some(t) = clicked {
+                        self.start_capture(t, ui.ctx());
+                    }
+                });
+                ui.add_space(10.0);
 
-        // —— 会话内快捷键（TSF 键 sink）——
-        card(ui, |ui| {
-            ui.strong("输入会话内");
-            ui.small("仅无修饰/Shift 组合；Alt 组合不会到达输入法会话（机制限制），Ctrl 组合让给应用。");
-            ui.add_space(6.0);
-            let mut clicked: Option<CaptureTarget> = None;
-            for (label, action) in self.session_actions() {
-                let target = CaptureTarget::Session(action, Slot::Primary);
-                self.capture_row(ui, label, target, &mut clicked);
-            }
-            if let Some(t) = clicked {
-                self.start_capture(t);
-            }
-        });
-        ui.add_space(10.0);
-
-        // —— 全局热键（daemon）——
-        card(ui, |ui| {
-            ui.strong("全局快捷键（任意软件生效）");
-            ui.small("普通软件做法（daemon RegisterHotKey），Alt/Ctrl 随便绑；必须含修饰键。");
-            ui.add_space(6.0);
-            let mut clicked: Option<CaptureTarget> = None;
-            for (label, action) in self.global_actions() {
-                let target = CaptureTarget::Global(action, Slot::Primary);
-                self.capture_row(ui, label, target, &mut clicked);
-            }
-            if let Some(t) = clicked {
-                self.start_capture(t);
-            }
-            ui.add_space(4.0);
-            if ui.button("恢复默认键位").clicked() {
-                self.keymap = iuv_core::Keymap::default();
-                self.keymap_warn = None;
-            }
-        });
+                // —— 全局热键（daemon）——
+                card(ui, |ui| {
+                    ui.strong("全局快捷键（任意软件生效）");
+                    ui.small("普通软件做法（daemon RegisterHotKey），Alt/Ctrl 随便绑；必须含修饰键。");
+                    ui.add_space(6.0);
+                    let mut clicked: Option<CaptureTarget> = None;
+                    for (label, action) in self.global_actions() {
+                        let target = CaptureTarget::Global(action, Slot::Primary);
+                        self.capture_row(ui, label, target, &mut clicked);
+                    }
+                    if let Some(t) = clicked {
+                        self.start_capture(t, ui.ctx());
+                    }
+                    ui.add_space(4.0);
+                    if ui.button("恢复默认键位").clicked() {
+                        self.keymap = iuv_core::Keymap::default();
+                        self.keymap_warn = None;
+                    }
+                });
+            });
     }
 
     /// 会话动作列表（展示顺序即 UI 顺序）。
@@ -691,19 +697,23 @@ impl SettingsApp {
         }
     }
 
-    /// 进入录入模式：置位目标 + 装钩子。
-    fn start_capture(&mut self, target: CaptureTarget) {
+    /// 进入录入模式：置位目标 + 装钩子 + 注入帧唤醒回调。
+    /// `ctx` 用于把 `request_repaint` 注入钩子回调（捕获到按键后唤醒 eframe 出新帧，
+    /// 否则 `ControlFlow::Wait` 下无事件不渲染 → poll_capture 停摆，2026-08-28 修复）。
+    fn start_capture(&mut self, target: CaptureTarget, ctx: &egui::Context) {
         // 结束旧会话（若有）
         if self.capturing {
             crate::capture::end();
         }
         let state = std::sync::Arc::new(crate::capture::CaptureState::default());
-        let ok = crate::capture::begin(state.clone());
+        let ctx = ctx.clone(); // egui::Context: Send+Sync，可安全跨线程
+        let ok = crate::capture::begin(state.clone(), Box::new(move || ctx.request_repaint()));
         if ok {
             self.capture = Some(target);
             self.capturing = true;
             self.capture_state = Some(state);
             self.keymap_warn = None;
+            log::log_line("[settings] 进入录入模式");
         } else {
             self.capture = None;
             self.capturing = false;
@@ -713,7 +723,8 @@ impl SettingsApp {
     }
 
     /// 每帧轮询：捕获完成 → 校验 + 回填 + 复位。
-    /// 在 ui() 帧首调用（capture_state 的 request_repaint 触发帧后消费）。
+    /// 在 ui() 帧首调用。钩子回调经注入的 repaint 回调唤醒帧（2026-08-28 修复后
+    /// outcome 写入后必有下一帧调度，此处可可靠消费）。
     fn poll_capture(&mut self, ctx: &egui::Context) {
         let Some(state) = self.capture_state.clone() else { return };
         if !self.capturing {
@@ -729,10 +740,6 @@ impl SettingsApp {
             if let Some(target) = target {
                 self.apply_capture(target, outcome);
             }
-            ctx.request_repaint();
-        } else if state.request_repaint.load(std::sync::atomic::Ordering::SeqCst) {
-            // 钩子回调请求重绘（可能已有结果但被消费，或 Esc 置位）
-            state.request_repaint.store(false, std::sync::atomic::Ordering::SeqCst);
             ctx.request_repaint();
         }
     }
@@ -750,15 +757,28 @@ impl SettingsApp {
                 *c = None;
                 self.keymap_warn = None;
             }
+            CaptureOutcome::Rejected(combo) => {
+                // 钩子层已拒（纯字母无修饰等）：给 UI 提示，录入会话已结束（槽位不变）
+                self.keymap_warn = Some(format!(
+                    "「{}」不可用：纯字母键无修饰会被拼音输入吞掉，请按带修饰的组合键。",
+                    combo
+                ));
+                log::log_line(&format!("[settings] 录入被拒：{combo}（纯字母无修饰）"));
+            }
             CaptureOutcome::Captured(combo) => {
                 // 校验
                 if let Err(msg) = self.validate_combo(target, &combo) {
+                    log::log_line(&format!("[settings] 校验拒绝：{msg}"));
                     self.keymap_warn = Some(msg);
                     return;
                 }
                 let c = self.slot_combo_mut(target);
                 *c = Some(combo);
                 self.keymap_warn = None;
+                log::log_line(&format!(
+                    "[settings] 录入成功：{:?} → {}",
+                    target, combo
+                ));
             }
         }
     }
