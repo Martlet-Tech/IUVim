@@ -18,10 +18,10 @@ use crate::ui::{effect_to_snapshot, CandidateUi, CaretRect};
 /// 大写 → `Key::ShiftChar`（保形进序列，匹配只认小写、commit 原样上屏）；
 /// 小写 → `Key::Char`（含 CapsLock+Shift 反转）。
 /// 约定：**Ctrl/Alt 组合键一律放行给应用**（如 Ctrl+S 保存、Alt+字母 菜单）；
-/// 输入法只消费 Shift 修饰的组合——字母（大小写）与**方向键（M2 主动调权
-/// Shift+←/→ = SwapLeft/SwapRight）**。注意：Alt 组合是 `WM_SYSKEYDOWN`，
-/// **不经过 ITfKeyEventSink**（TSF 机制限制，输入法收不到）——快捷键设计红线，
-/// 详见 18-m2-user-dict.md 附录；Shift/Ctrl 组合是 `WM_KEYDOWN` 必经键 sink。
+/// 会话内快捷键（翻页/移动/调权/隐藏）由 `route_key` 的组合键表（keymap）先行查表
+/// 归一化，**不在此映射**——M2 调权 Shift+←/→、隐藏 Shift+Delete 自 41-keymap-settings.md
+/// 起移入可配置 keymap（默认值保持原 Shift 组合）。注意：Alt 组合是 `WM_SYSKEYDOWN`，
+/// **不经过 ITfKeyEventSink**（TSF 机制限制，输入法收不到）——快捷键设计红线。
 /// 映射表集中在此一处，M3+ 加双拼/快捷键只动这里（13 任务书 §5）。
 pub fn map_key(
     vk: u16,
@@ -73,13 +73,9 @@ pub fn map_key(
         VK_NEXT => Some(Key::PageDown),
         VK_UP => Some(Key::Up),
         VK_DOWN => Some(Key::Down),
-        // M2 主动调权：Shift+←/→（WM_KEYDOWN 必经 TSF，方向键无大小写语义）。
-        VK_LEFT if with_shift => Some(Key::SwapLeft),
-        VK_RIGHT if with_shift => Some(Key::SwapRight),
         VK_LEFT => Some(Key::Left),
         VK_RIGHT => Some(Key::Right),
-        // M2 隐藏候选：Shift+Delete（会话内消费；裸 Delete 放行给应用编辑）。
-        VK_DELETE if with_shift => Some(Key::HideCandidate),
+        VK_DELETE => None, // 裸 Delete 放行给应用编辑；Shift+Delete 由组合键表映射 HideCandidate
         VK_1..=VK_9 if !with_shift => Some(Key::Digit((char_code - 0x30) as u8)),
         VK_A..=VK_Z => {
             // 字母：优先用布局字符（无 Shift 态恒小写），退化用 vk 推算。
@@ -354,25 +350,25 @@ mod tests {
     }
 
     #[test]
-    fn map_key_shift_arrows_swap() {
-        // M2 主动调权：Shift+←/→ → SwapLeft/SwapRight（会话内交换相邻候选权重）
+    fn map_key_shift_arrows_plain() {
+        // 41-keymap-settings.md：Shift+←/→ 不再由 map_key 映射为 Swap（改由组合键表
+        // route_key 查 keymap 归一化）；map_key 对方向键统一返回 Left/Right。
         assert_eq!(
             map_key(0x25, 0x25, true, false, false, false),
-            Some(Key::SwapLeft)
+            Some(Key::Left)
         );
         assert_eq!(
             map_key(0x27, 0x27, true, false, false, false),
-            Some(Key::SwapRight)
+            Some(Key::Right)
         );
         // CapsLock 不影响方向键（大小写语义只作用于字母）
         assert_eq!(
             map_key(0x25, 0x25, true, true, false, false),
-            Some(Key::SwapLeft)
+            Some(Key::Left)
         );
         assert_eq!(
             map_key(0x26, 0x26, true, false, false, false),
-            Some(Key::Up),
-            "仅左右方向键消费 Shift"
+            Some(Key::Up)
         );
         // 组合仍受 Ctrl/Alt 放行约束（Alt 是系统键收不到；Ctrl 组合放行给应用）
         assert_eq!(map_key(0x25, 0x25, true, false, true, false), None);
@@ -407,35 +403,46 @@ mod tests {
     }
 
     #[test]
-    fn apply_keymap_paging() {
+    fn keymap_combo_lookup() {
+        // 41-keymap-settings.md：会话快捷键经 Combo 查表归一化（route_key 路径）。
+        // 此处直接验证 keymap 的 Combo 语义 + iuv-win combo_from_vk 的拼装。
+        use iuv_core::SessionAction;
+        use iuv_win::combo_from_vk;
         let cfg = iuv_core::Config::default();
+        // 翻页：PageUp / , 主备两槽
         assert_eq!(
-            iuv_core::apply_keymap(Key::Char(','), &cfg.keymap),
-            Key::PageUp
+            cfg.keymap.map(&combo_from_vk(0x21, 0, false, false, false).unwrap()),
+            Some(SessionAction::PagePrev)
         );
         assert_eq!(
-            iuv_core::apply_keymap(Key::Char('.'), &cfg.keymap),
-            Key::PageDown
-        );
-        assert_eq!(iuv_core::apply_keymap(Key::Up, &cfg.keymap), Key::PageUp);
-        assert_eq!(
-            iuv_core::apply_keymap(Key::Down, &cfg.keymap),
-            Key::PageDown
+            cfg.keymap.map(&combo_from_vk(0xBC, 0x2C, false, false, false).unwrap()),
+            Some(SessionAction::PagePrev)
         );
         assert_eq!(
-            iuv_core::apply_keymap(Key::PageUp, &cfg.keymap),
-            Key::PageUp
+            cfg.keymap.map(&combo_from_vk(0x22, 0, false, false, false).unwrap()),
+            Some(SessionAction::PageNext)
         );
-        // 未命中：原样
+        // 调权：Shift+←/→
         assert_eq!(
-            iuv_core::apply_keymap(Key::Char('a'), &cfg.keymap),
-            Key::Char('a')
+            cfg.keymap.map(&combo_from_vk(0x25, 0, true, false, false).unwrap()),
+            Some(SessionAction::SwapLeft)
         );
-        assert_eq!(iuv_core::apply_keymap(Key::Space, &cfg.keymap), Key::Space);
         assert_eq!(
-            iuv_core::apply_keymap(Key::Digit(3), &cfg.keymap),
-            Key::Digit(3)
+            cfg.keymap.map(&combo_from_vk(0x27, 0, true, false, false).unwrap()),
+            Some(SessionAction::SwapRight)
         );
+        // 隐藏：Shift+Delete
+        assert_eq!(
+            cfg.keymap.map(&combo_from_vk(0x2E, 0, true, false, false).unwrap()),
+            Some(SessionAction::HideCandidate)
+        );
+        // 字母不入会话查表（拼音输入空间）
+        assert_eq!(
+            cfg.keymap.map(&combo_from_vk(0x41, 0x61, false, false, false).unwrap()),
+            None
+        );
+        // 未绑定：F5 无映射
+        assert_eq!(cfg.keymap.map(&combo_from_vk(0x74, 0, false, false, false).unwrap()), None);
     }
 
     #[test]
@@ -513,19 +520,14 @@ mod tests {
     }
 
     #[test]
-    fn map_key_shift_delete_hide() {
-        // M2 隐藏候选：Shift+Delete → HideCandidate（会话内消费）
-        assert_eq!(
-            map_key(0x2E, 0, true, false, false, false),
-            Some(Key::HideCandidate)
-        );
+    fn map_key_shift_delete_release() {
+        // 41-keymap-settings.md：Shift+Delete → HideCandidate 由组合键表（route_key 查
+        // keymap）归一化，map_key 不再映射；Shift+Delete 与裸 Delete 均返回 None（放行）。
+        assert_eq!(map_key(0x2E, 0, true, false, false, false), None);
         // 裸 Delete 放行给应用（编辑删除）
         assert_eq!(map_key(0x2E, 0, false, false, false, false), None);
         // CapsLock 不影响（非字母键）
-        assert_eq!(
-            map_key(0x2E, 0, true, true, false, false),
-            Some(Key::HideCandidate)
-        );
+        assert_eq!(map_key(0x2E, 0, true, true, false, false), None);
         // 组合受控：Ctrl+Delete / Alt+Delete 放行
         assert_eq!(map_key(0x2E, 0, true, false, true, false), None);
         assert_eq!(map_key(0x2E, 0, true, false, false, true), None);

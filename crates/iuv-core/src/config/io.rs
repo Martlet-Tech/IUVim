@@ -29,7 +29,7 @@ impl Config {
         let text = text.trim_start_matches('\u{FEFF}'); // UTF-8 BOM
         let text = strip_jsonc_comments(text); // 兼容带 // 注释的配置（安装器产出的默认文件）
         let v = match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(v) => migrate_initial_state(v),
+            Ok(v) => migrate_initial_state(migrate_keymap(v)),
             Err(e) => {
                 log_config(&format!(
                     "配置解析失败（{e}）：{}，使用默认配置",
@@ -70,6 +70,51 @@ fn migrate_initial_state(mut v: serde_json::Value) -> serde_json::Value {
         return v;
     };
     obj.insert("initial_state".into(), serde_json::json!({ "punct": punct }));
+    v
+}
+
+/// keymap 旧格式迁移 shim（2026-08-27，41-keymap-settings.md §3）：
+/// 旧 `"keymap": {"page_prev": ["PageUp", ",", "Up"], ...}`（每项 = Vec<Key> 字符串数组）
+/// → 新两槽格式 `{"page_prev": {"primary": "PageUp", "secondary": ","}, ...}`。
+/// 只迁移两槽语义字段（会话 7 + 全局 6）；取数组前两键作 primary/secondary，第三键起丢弃
+/// （两槽模型容量上限）。新格式对象节点（含 primary/secondary）原样保留。
+const KEYMAP_SESSION_FIELDS: &[&str] = &[
+    "page_prev",
+    "page_next",
+    "candidate_prev",
+    "candidate_next",
+    "swap_left",
+    "swap_right",
+    "hide_candidate",
+];
+const KEYMAP_GLOBAL_FIELDS: &[&str] = &[
+    "toggle_mode",
+    "toggle_width",
+    "toggle_script",
+    "toggle_punct",
+    "open_settings",
+    "toggle_toolbar",
+];
+
+fn migrate_keymap(mut v: serde_json::Value) -> serde_json::Value {
+    let Some(km) = v.get_mut("keymap").and_then(|x| x.as_object_mut()) else {
+        return v;
+    };
+    for field in KEYMAP_SESSION_FIELDS.iter().chain(KEYMAP_GLOBAL_FIELDS) {
+        let Some(arr) = km.get(*field).and_then(|x| x.as_array()) else {
+            continue; // 缺字段 / 已是对象（新格式）→ 跳过
+        };
+        let mut names: Vec<String> = arr
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect();
+        names.truncate(2);
+        let obj = serde_json::json!({
+            "primary": names.first(),
+            "secondary": names.get(1),
+        });
+        km.insert((*field).into(), obj);
+    }
     v
 }
 

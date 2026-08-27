@@ -15,6 +15,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod ipc;
+pub mod keys;
 pub mod popup;
 pub mod shm;
 pub mod ulw;
@@ -23,6 +24,7 @@ pub use ipc::{
     ctl_pipe_name, CtlClient, CtlCmd, CtlResult, CtlServer, PipeClient, PipeServer, Request,
     Response, SignalClient, SignalServer, ToolbarSignal,
 };
+pub use keys::{base_key_to_vk, combo_from_vk, combo_mods, vk_to_base_key};
 pub use popup::LayeredWindow;
 pub use shm::{ShmReader, ShmWriter};
 pub use ulw::UlwSurface;

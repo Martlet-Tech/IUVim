@@ -1,7 +1,8 @@
 //! 按键路由（P2.2 从 text_service.rs 拆出）：`test_key_down`/`handle_key_down`
 //! 判定与处理 + 键盘状态辅助函数（`char_code`/`capslock_on` 等，mode.rs 共用）。
 
-use iuv_core::{apply_keymap, is_session_start_key, Key};
+use iuv_core::{is_session_start_key, Key};
+use iuv_win::combo_from_vk;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VK_CAPITAL, VK_SHIFT,
@@ -76,10 +77,30 @@ impl TextService {
             return KeyAction::CommitText(text);
         }
 
+        // —— 会话内：先查组合键表（41-keymap-settings.md）——
+        // 由 (vk, shift, ctrl, alt) 构造 Combo → keymap 命中会话动作 → 归一化消费。
+        // Ctrl/Alt 组合 combo_from_vk 直接返回 None（红线：放行给应用/Alt 不进 sink）；
+        // 字母基础键跳过（恒走拼音输入，不参与会话快捷键——验证层已禁，此处兜底）。
+        // 未命中 → 落回 map_key（字母/数字/标点正常处理）。
+        if session_active {
+            if let Some(combo) = combo_from_vk(vk, char_code(vk), shift, ctrl, alt) {
+                if !combo.base_is_letter() {
+                    if let Some(action) = config.keymap.map(&combo) {
+                        log_line(&format!(
+                            "[key] 组合键命中：{} → {:?}",
+                            combo.name(),
+                            action
+                        ));
+                        return KeyAction::SessionKey(action.key());
+                    }
+                }
+            }
+        }
+
         let caps = capslock_on();
         let key = map_key(vk, char_code(vk), shift, caps, ctrl, alt);
         let Some(key) = key else { return KeyAction::Pass };
-        if self.session.borrow().is_none() {
+        if !session_active {
             // 开启新会话：仅字母键；CapsLock 生效时字母放行直通（仿微软：Caps = 英文模式，
             // 不建会话；会话内 Caps 字母照常进序列，避免 composition 残留错乱）。
             if !is_session_start_key(key) || caps_passthrough(&key, caps) {
@@ -87,8 +108,8 @@ impl TextService {
             }
             return KeyAction::StartSession(key);
         }
-        // 会话内按键：先应用快捷键映射（翻页键重映射），映射键一律消费。
-        KeyAction::SessionKey(apply_keymap(key, &config.keymap))
+        // 会话内按键（未命中组合键表）：字母/数字/标点正常推进会话。
+        KeyAction::SessionKey(key)
     }
 
     /// OnTestKeyDown 判定（无副作用）：本键是否由本输入法消费。

@@ -6,7 +6,7 @@ use std::error::Error;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
-use iuv_core::{apply_keymap, Config, Effect, Engine, ImeEngine, Key, Session, SessionEnd, RimeEngine};
+use iuv_core::{Config, Combo, Effect, Engine, ImeEngine, Key, Session, SessionEnd, RimeEngine};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -108,8 +108,16 @@ fn interactive(engine: &Arc<Engine>, core: Option<&Arc<RimeEngine>>) -> io::Resu
                     print_effect(&e);
                     session = Some(s);
                 } else if let Some(ch) = single_char(line) {
-                    // 标点键：按 keymap 重映射（默认 ,=上翻 . =下翻），与运行时一致
-                    dispatch(&mut session, apply_keymap(Key::Char(ch), &engine.config().keymap));
+                    // 标点/单字符键：按 keymap 重映射（默认 ,=上翻 . =下翻），与运行时一致。
+                    // 会话快捷键语义 = 无修饰组合键查表 → 归一化（翻页/候选移动）。
+                    let combo = Combo::plain(Key::Char(ch));
+                    let key = engine
+                        .config()
+                        .keymap
+                        .map(&combo)
+                        .map(|a| a.key())
+                        .unwrap_or(Key::Char(ch));
+                    dispatch(&mut session, key);
                 } else {
                     print_hint();
                 }

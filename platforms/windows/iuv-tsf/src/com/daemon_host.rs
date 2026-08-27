@@ -48,9 +48,10 @@ impl TextService {
     }
 
     /// M6 配置热载（config_epoch 变化触发，DaemonClient::poll 回调）：
-    /// 重载 config.json → 引擎配置（page_size/passthrough_apps/主题等读取点随新值生效）
+    /// 重载 config.json → 引擎配置（page_size/passthrough_apps/theme/keymap 等读取点随新值生效）
     /// + 候选窗主题即时切换（set_theme，下帧 paint 生效）。
-    /// 键位（keymap）热载为 M7 范畴（TSF 键映射装配不热切），keymap 变化仅记日志。
+    /// 会话快捷键（keymap）热载：route_key 每键读 `engine.config().keymap` 查表，
+    /// set_config 替换后即生效（41-keymap-settings.md §2；全局热键由 daemon 侧重注册）。
     pub(crate) fn apply_config_hot_reload(&self, engine: &Arc<Engine>) {
         let cfg = iuv_core::Config::load();
         let keymap_changed = cfg.keymap != engine.config().keymap;
@@ -66,11 +67,7 @@ impl TextService {
             "[daemon] 配置热载：theme={:?} passthrough_apps={} keymap{}",
             cfg.theme,
             cfg.passthrough_apps.len(),
-            if keymap_changed {
-                "变化（键位热载 M7）"
-            } else {
-                "不变"
-            }
+            if keymap_changed { "变化（会话键已生效）" } else { "不变" }
         ));
     }
 }

@@ -240,7 +240,27 @@ impl Session {
             // 旧实现放行给应用，Word/记事本/Excel 插入位置各异 → :d / d: / 的:）。
             // TODO(用户自定义按键映射)：落地时收编集 = 可打印符号 − 用户已定义功能键。
             Key::Char(c) => self.tail.push(c),
-            Key::Digit(_) | Key::ShiftChar(_) => {}
+            // 防御性忽略：Tab/Delete/Home/End/Insert/F1-F12 正常情况下经组合查表被归一化为
+            // 会话动作（或未绑定放行给应用），不该直达会话；兜底忽略不扰动 composition。
+            Key::Digit(_)
+            | Key::ShiftChar(_)
+            | Key::Tab
+            | Key::Delete
+            | Key::Home
+            | Key::End
+            | Key::Insert
+            | Key::F1
+            | Key::F2
+            | Key::F3
+            | Key::F4
+            | Key::F5
+            | Key::F6
+            | Key::F7
+            | Key::F8
+            | Key::F9
+            | Key::F10
+            | Key::F11
+            | Key::F12 => {}
         }
         self.effect()
     }

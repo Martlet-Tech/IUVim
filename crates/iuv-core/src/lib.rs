@@ -18,9 +18,9 @@ pub mod viterbi;
 
 pub use api::{EngineCtx, ImeEngine, PendingInput, Span, Translation};
 pub use candidate::{Candidate, CandidateKind};
-pub use config::keymap::{apply_keymap, is_session_start_key};
+pub use config::keymap::{is_session_start_key, Combo, GlobalAction, Keymap, SessionAction, TwoSlot};
 pub use config::{
-    Config, ImeState, InitialMode, Keymap, Orientation, PunctMode, ScriptMode, ThemeChoice,
+    Config, ImeState, InitialMode, Orientation, PunctMode, ScriptMode, ThemeChoice,
     WidthMode,
 };
 pub use engine::Engine;

@@ -8,7 +8,7 @@
 //! 本文件保留 `Config` 本体与序列化测试。
 
 pub mod keymap;
-pub use keymap::Keymap;
+pub use keymap::{Combo, GlobalAction, Keymap, SessionAction, TwoSlot};
 
 mod enums;
 mod io;
@@ -86,7 +86,6 @@ impl Default for Config {
 mod tests {
     use super::io::strip_jsonc_comments;
     use super::*;
-    use crate::Key;
 
     fn tmp_file(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("iuv-config-test-{}", std::process::id()));
@@ -101,8 +100,8 @@ mod tests {
         assert_eq!(c.max_candidates, 1024);
         assert_eq!(c.max_word_syllables, 7);
         assert!(!c.candidate_prefix);
-        assert!(c.keymap.page_prev.contains(&Key::Char(',')));
-        assert!(c.keymap.page_next.contains(&Key::Char('.')));
+        assert_eq!(c.keymap.page_prev.primary.as_ref().map(Combo::name), Some("PageUp".into()));
+        assert_eq!(c.keymap.page_next.primary.as_ref().map(Combo::name), Some("PageDown".into()));
         // 直通名单默认空（不启用）
         assert!(c.passthrough_apps.is_empty());
         // 候选渲染自持名单默认空（恒自绘）
@@ -164,9 +163,10 @@ mod tests {
         .unwrap();
         let c = Config::from_file(&p);
         assert_eq!(c.page_size, 7);
-        assert!(c.keymap.page_prev.contains(&Key::Char('[')));
+        // 旧格式数组 ["["] → 迁移为新两槽 primary="["
+        assert_eq!(c.keymap.page_prev.primary.as_ref().map(Combo::name), Some("[".into()));
         // 未写的 page_next 用默认
-        assert!(c.keymap.page_next.contains(&Key::Char('.')));
+        assert_eq!(c.keymap.page_next.primary.as_ref().map(Combo::name), Some("PageDown".into()));
     }
 
     #[test]
