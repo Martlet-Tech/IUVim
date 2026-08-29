@@ -75,6 +75,22 @@ impl TextService {
         }
     }
 
+    /// M1 桌宠：强制结束打字态（发送 `Typing{active=false}` + 复位 `was_typing`）。
+    ///
+    /// 供 `flush_session` / `deactivate` / `OnKillThreadFocus` 共用——保证边沿状态机
+    /// 自洽：Alt+Tab 切走 → 复位；回焦后首段会话才能重新触发 `Typing(true)` transition
+    /// （QA P2-B 修复：切走不复位会让 `was_typing` 卡 true，回焦后首段会话不发
+    /// `Typing(true)` → 宠物一直 Idle）。
+    pub(crate) fn force_typing_stop(&self) {
+        if self.was_typing.get() {
+            self.was_typing.set(false);
+            if let Some(client) = self.daemon.borrow().as_ref() {
+                let (pid, tid) = self.instance_id();
+                client.typing(pid, tid, false);
+            }
+        }
+    }
+
     /// 未确认输入以**原文上屏**并清理会话（关闭输入法 Ctrl+Space / 焦点切换 Alt+Tab 共用）。
     ///
     /// 用户语义：结束中文输入时，拼音原文提交上屏（`zhu'jin'cheng` 预编辑 →
@@ -100,6 +116,9 @@ impl TextService {
         }
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
+        // M1 桌宠：flush_session 强制结束会话 → 发 Typing(false)（若之前在打字）。
+        // 与 dispatch 边沿检测互补：dispatch 走正常 end 路径；flush_session 走强制路径。
+        self.force_typing_stop();
     }
 
     /// 会话外中文标点判定（handle_key_down 与 test_key_down **共用**，保证对称：

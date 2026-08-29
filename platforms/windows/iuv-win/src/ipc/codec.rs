@@ -20,6 +20,7 @@
 //!     0x21 FocusGained  : u32 pid u32 tid 4×u8（ImeState）
 //!     0x22 FocusLost    : u32 pid u32 tid
 //!     0x23 StateChanged : u32 pid u32 tid 4×u8（ImeState）
+//!     0x24 Typing       : u32 pid u32 tid u8(0=结束/1=开始)   ← M1 新增（桌宠打字动画）
 //!
 //! Response:
 //!   u8 tag
@@ -407,6 +408,12 @@ pub(crate) fn encode_signal(sig: &ToolbarSignal) -> Vec<u8> {
             out.extend_from_slice(&tid.to_le_bytes());
             put_toolbar_state(&mut out, state);
         }
+        ToolbarSignal::Typing { pid, tid, active } => {
+            out.push(0x24);
+            out.extend_from_slice(&pid.to_le_bytes());
+            out.extend_from_slice(&tid.to_le_bytes());
+            out.push(u8::from(*active));
+        }
     }
     out
 }
@@ -435,6 +442,13 @@ pub(crate) fn decode_signal(payload: &[u8]) -> io::Result<ToolbarSignal> {
             let state = r.toolbar_state()?;
             r.finish()?;
             ToolbarSignal::StateChanged { pid, tid, state }
+        }
+        0x24 => {
+            let pid = r.u32()?;
+            let tid = r.u32()?;
+            let active = r.bool()?;
+            r.finish()?;
+            ToolbarSignal::Typing { pid, tid, active }
         }
         t => return Err(bad(&format!("未知 ToolbarSignal tag 0x{t:02X}"))),
     };
@@ -686,5 +700,53 @@ mod tests {
         let bytes = encode_ctl_result(&err);
         assert_eq!(decode_ctl_result(&bytes).unwrap(), err);
         assert!(decode_ctl_result(&[0x01]).is_err(), "Ok 截断");
+    }
+
+    /// M1 桌宠：Typing 信号（tag 0x24）编解码往返 + 截断/非法字节拒绝。
+    #[test]
+    fn typing_signal_roundtrip() {
+        for active in [true, false] {
+            let sig = ToolbarSignal::Typing {
+                pid: 1234,
+                tid: 56,
+                active,
+            };
+            let bytes = encode_signal(&sig);
+            assert_eq!(decode_signal(&bytes).unwrap(), sig);
+            // 帧前缀 + 载荷往返
+            let frame = to_frame(&bytes);
+            let payload = parse_frame(&frame).unwrap();
+            assert_eq!(decode_signal(payload).unwrap(), sig);
+        }
+        // 截断拒绝
+        assert!(decode_signal(&[0x24, 0x01, 0x02]).is_err(), "Typing 截断（缺 tid/active）");
+        assert!(decode_signal(&[0x24, 0, 0, 0, 1, 0, 0, 0, 2]).is_err(), "Typing active 字节非法");
+        // 尾部残留拒绝
+        let mut bytes = encode_signal(&ToolbarSignal::Typing { pid: 1, tid: 2, active: true });
+        bytes.push(0xAA);
+        assert!(decode_signal(&bytes).is_err(), "Typing 残留字节");
+    }
+
+    /// M1 桌宠：所有 ToolbarSignal 变体联合往返（含原有三信号 + 新 Typing）。
+    #[test]
+    fn all_toolbar_signals_roundtrip() {
+        let state = ImeState {
+            mode: iuv_core::InitialMode::English,
+            width: iuv_core::WidthMode::Half,
+            script: iuv_core::ScriptMode::Traditional,
+            punct: iuv_core::PunctMode::English,
+        };
+        for sig in [
+            ToolbarSignal::FocusGained { pid: 1, tid: 2, state },
+            ToolbarSignal::FocusLost { pid: 1, tid: 2 },
+            ToolbarSignal::StateChanged { pid: 1, tid: 2, state },
+            ToolbarSignal::Typing { pid: 1, tid: 2, active: true },
+            ToolbarSignal::Typing { pid: 1, tid: 2, active: false },
+        ] {
+            let bytes = encode_signal(&sig);
+            assert_eq!(decode_signal(&bytes).unwrap(), sig);
+        }
+        // 未知 tag 拒绝
+        assert!(decode_signal(&[0xFF, 0, 0, 0, 1, 0, 0, 0, 2]).is_err());
     }
 }

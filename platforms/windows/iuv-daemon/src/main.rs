@@ -17,6 +17,7 @@ mod capture;
 mod config;
 mod hotkey;
 mod log;
+mod pet_assets;
 mod settings;
 mod state;
 mod toolbar;
@@ -115,7 +116,9 @@ fn run() -> i32 {
     state.publish();
 
     // ---- 5. 浮动工具栏宿主（32-status-toolbar.md §6：全局唯一看板，独立消息泵线程）----
-    let toolbar = ToolbarHost::spawn(state.clone());
+    // M1 桌宠：装配默认宠 PetSprites 一次（失败降级 None → 工具栏宠物区留空）。
+    let pet_sprites = std::sync::Arc::new(crate::pet_assets::load_default_sprites());
+    let toolbar = ToolbarHost::spawn(state.clone(), pet_sprites);
 
     // ---- 6. 管道监听线程（写请求应用 + publish + 立即写盘）----
     spawn_pipe_thread(state.clone(), toolbar.clone());

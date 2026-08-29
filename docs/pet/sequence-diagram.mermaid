@@ -1,0 +1,51 @@
+sequenceDiagram
+    autonumber
+    participant TSF as TSF 实例 (iuv-tsf)
+    participant SIG as SignalServer (iuv-win)
+    participant HOST as ToolbarHost (daemon)
+    participant WND as ToolbarWindow (工具条线程)
+    participant PM as PetModel (iuv-core)
+    participant R as pet.rs / render_composite (iuv-ui)
+    participant ULW as ULW 窗口
+
+    Note over TSF,ULW: 四态联动（复用现有 StateChanged 路径）
+    TSF->>SIG: StateChanged{pid,tid,state}
+    SIG->>HOST: ToolbarSignal::StateChanged
+    HOST->>WND: BarEvent::StateChanged（入 FIFO + WM_APP_REFRESH）
+    WND->>WND: apply_event：更新实例表
+    WND->>PM: on_ime_state(state)
+    PM->>PM: 字段变化 → motion=StateFlash, flash_kind=变化字段
+    WND->>R: render_composite(spec, pet, theme, scale)
+    R->>PM: clip() / frame()
+    R->>ULW: 上屏（工具栏 Surface 缓存 + 宠物帧合成）
+
+    Note over TSF,ULW: 打字事件（新增 Typing 信号 tag 0x24）
+    TSF->>SIG: Typing{pid,tid,active=true}（OnStart/UpdateComposition 非空）
+    SIG->>HOST: ToolbarSignal::Typing
+    HOST->>WND: BarEvent::TypingState(true)
+    WND->>PM: on_typing(true) → motion=Typing
+    WND->>WND: SetTimer(33ms)（动画激活）
+    loop 动画帧循环（≤30fps）
+        WND->>PM: advance(33ms)
+        WND->>R: render_pet_frame → 合成（脏区：仅宠物区）
+        R->>ULW: 上屏
+    end
+    TSF->>SIG: Typing{pid,tid,active=false}（OnEndComposition）
+    SIG->>HOST: ToolbarSignal::Typing
+    HOST->>WND: BarEvent::TypingState(false)
+    WND->>PM: on_typing(false) → motion=Idle
+    WND->>WND: KillTimer（空闲停帧，零 tick）
+
+    Note over TSF,ULW: 点击互动 / 拖拽
+    User->>ULW: WM_LBUTTONDOWN（宠物命中区）
+    ULW->>WND: pet_down = Some(...) + SetCapture
+    alt 位移 ≤4px → 松开
+        ULW->>WND: WM_LBUTTONUP
+        WND->>PM: on_click() → motion=React
+        WND->>WND: SetTimer + 重绘
+    else 位移 >4px → 拖拽
+        ULW->>WND: WM_MOUSEMOVE
+        WND->>WND: start_drag_at(按下点)（复用拖拽管线）
+        ULW->>WND: WM_LBUTTONUP
+        WND->>WND: end_drag() → clamp 回工作区 + 持久化
+    end

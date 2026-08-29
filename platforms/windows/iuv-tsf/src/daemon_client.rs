@@ -370,6 +370,13 @@ impl DaemonClient {
         self.send_signal(&ToolbarSignal::StateChanged { pid, tid, state });
     }
 
+    /// M1 桌宠：打字中上报（组合开始/结束）。失败静默降级（沿用 send_signal 既有
+    /// 持久连接 + 失败弃缓存重连机制；daemon 不在线/版本过老未知 tag → 立即 Err，
+    /// 下一拍自然补上终态，不影响输入法主体）。
+    pub fn typing(&self, pid: u32, tid: u32, active: bool) {
+        self.send_signal(&ToolbarSignal::Typing { pid, tid, active });
+    }
+
     /// 发送信号（连接缓存复用；未连/断开 → 先重连一次；仍失败 → 记日志放弃，
     /// 下次焦点事件自然补上终态）。
     fn send_signal(&self, sig: &ToolbarSignal) {

@@ -6,10 +6,11 @@ use std::mem::size_of;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use iuv_core::{InitialMode, PunctMode, ScriptMode, WidthMode};
+use iuv_core::{InitialMode, PunctMode, ScriptMode, WidthMode, PetModel};
 use iuv_ui::{
-    hit_test, render_toolbar, TextRenderer, Theme, ToolbarIcons, ToolbarSpec, TB_GEAR, TB_LOGO,
-    TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
+    hit_test, pet_alpha_at, render_composite, CompositeSpec, PetRenderSpec, PetSprites,
+    TextRenderer, Theme, ToolbarIcons, ToolbarSpec, TB_GEAR, TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT,
+    TB_WIDTH, PET_OVERHANG, PET_ZONE_W,
 };
 use iuv_ui::layout::Rect;
 use iuv_win::{ctl_pipe_name, CtlClient, CtlCmd, CtlResult, PipeClient, Request};
@@ -20,11 +21,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect, LoadCursorW, SetCursor,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSIZE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOWNA, GWLP_USERDATA, HTCLIENT, HTTRANSPARENT, IDC_ARROW, IDC_HAND,
-    MA_NOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
+    DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect, KillTimer, LoadCursorW,
+    SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, SWP_NOACTIVATE,
+    SWP_NOCOPYBITS, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, GWLP_USERDATA, HTCLIENT,
+    HTTRANSPARENT, IDC_ARROW, IDC_HAND, MA_NOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
+    WM_SETCURSOR, WM_TIMER,
 };
 
 use super::prefs::{save_pref, ToolbarPref};
@@ -48,6 +50,17 @@ pub(super) struct ToolbarWindow {
     text: Option<TextRenderer>,
     ulw: UlwSurface,
     rows: Vec<Rect>,
+    /// 宠物显示矩形（复合坐标；命中 + 拖拽判别用）。`None` = 无素材/未初始化。
+    pet_rect: Option<Rect>,
+    /// 复合窗口几何（最近一次 frame() 计算；用于 WM_NCHITTEST 不重复公式）。
+    composite_w: i32,
+    composite_h: i32,
+    toolbar_w: i32,
+    toolbar_h: i32,
+    overhang: i32,
+    radius: f32,
+    /// 工具栏 Surface 缓存（脏区重绘：仅在 hover/pressed/四态/主题变化时重渲；
+    /// 动画 tick 仅重渲宠物帧 + 合成。M1 仅在 frame() 内懒建首帧缓存，零额外字段）。
     visible: bool,
     hover: Option<usize>,
     pressed: Option<usize>,
@@ -55,18 +68,52 @@ pub(super) struct ToolbarWindow {
     drag_offset: Option<(i32, i32)>,
     /// tooltip 窗口（悬停显示按钮说明）。
     tip: TooltipWindow,
+    /// M1 桌宠：宠物动画状态机（纯逻辑，无 I/O；工具条线程独占）。
+    pet_model: PetModel,
+    /// M1 桌宠：默认宠精灵帧缓存（素材失败 → 空集；clip 缺失回退由 iuv-ui 处理）。
+    pet_sprites: Arc<PetSprites>,
+    /// M1 桌宠：宠物点击/拖拽判别（按下 = 记录光标屏坐标 + 矩形；> 4px 位移 → 拖拽）。
+    pet_down: Option<((i32, i32), Rect)>,
 }
+
+/// 动画定时器 id（Win32 范围 1..u32::MAX；0/1 留作系统预定义；选不与现有 hotkey id 冲突值）。
+const PET_TIMER_ID: usize = 0xBADC0DE;
+
+/// 动画 tick 间隔（ms）：30fps 上限（M1-IMPLEMENTATION §4.3）。
+const PET_TIMER_MS: u32 = 33;
+
+/// 宠物按下/拖拽判别阈值（px；§5.3 推荐判别版）。
+const PET_DRAG_THRESHOLD: i32 = 4;
+
+/// pet_alpha_at 命中阈值（§5.2：宠物像素点 > 0x20 视为可点击/拖拽）。
+const PET_HIT_ALPHA: u8 = 0x20;
 
 impl ToolbarWindow {
     pub(super) fn new(
         shared: Arc<Mutex<Shared>>,
         state: Arc<DaemonState>,
         icons: Arc<ToolbarIcons>,
+        pet_sprites: Arc<PetSprites>,
         pending: Arc<Mutex<VecDeque<BarEvent>>>,
     ) -> ToolbarWindow {
         let hwnd = create_window(CLASS_BAR);
         let theme = current_theme(&state);
-        let tip = TooltipWindow::new(theme.clone());
+        let tip = TooltipWindow::new(theme);
+        // PetModel 初始四态 = focused 实例当前态（无 focused → 默认 ImeState::default()）。
+        // 真正的初始四态在首次 apply_event(FocusGained) 时被 `reset_for_instance` 覆盖。
+        let initial_state = shared
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .focused
+            .and_then(|f| {
+                shared
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .instances
+                    .get(&f)
+                    .map(|i| i.state)
+            })
+            .unwrap_or_default();
         let mut w = ToolbarWindow {
             hwnd,
             shared,
@@ -77,11 +124,21 @@ impl ToolbarWindow {
             text: None,
             ulw: UlwSurface::new(),
             rows: Vec::new(),
+            pet_rect: None,
+            composite_w: 0,
+            composite_h: 0,
+            toolbar_w: 0,
+            toolbar_h: 0,
+            overhang: 0,
+            radius: 0.0,
             visible: false,
             hover: None,
             pressed: None,
             drag_offset: None,
             tip,
+            pet_model: PetModel::new(initial_state),
+            pet_sprites,
+            pet_down: None,
         };
         if !hwnd.is_invalid() {
             w.text = Some(TextRenderer::new());
@@ -154,8 +211,20 @@ impl ToolbarWindow {
                 );
                 let was_bound = sh.focused == Some((pid, tid));
                 let pref_visible = sh.visible;
+                let prior_focused = sh.focused;
                 sh.focused = Some((pid, tid));
                 drop(sh);
+                // M1 桌宠：切换 focused 实例 → 整体重置 PetModel（避免新实例先收到
+                // 旧实例残留的 React/Typing；新实例从 Idle 起步、PetModel.look = 新态）。
+                if prior_focused != Some((pid, tid)) {
+                    self.pet_model = PetModel::new(state);
+                    self.kill_pet_timer();
+                } else {
+                    // 同实例重复 FocusGained（罕见，如 Alt+Tab 回切）：仅同步 look，
+                    // 不打断当前动画（保留视觉连续性）。
+                    self.pet_model.on_ime_state(state);
+                    self.sync_pet_timer();
+                }
                 log::log_line(&format!("[toolbar] 激活（{pid}:{tid}）"));
                 if !pref_visible {
                     // 偏好关闭：只绑定实例不显示（§32「切回 iuv → 按偏好重新显示」；
@@ -168,6 +237,10 @@ impl ToolbarWindow {
                     self.show();
                 } else if !was_bound && self.drag_offset.is_none() {
                     self.repaint();
+                    self.sync_pet_timer();
+                } else {
+                    // 即使没改绘制，也按 PetModel 状态同步定时器
+                    self.sync_pet_timer();
                 }
             }
             BarEvent::FocusLost { pid, tid } => {
@@ -207,10 +280,16 @@ impl ToolbarWindow {
                 }
                 let bound = sh.focused == Some((pid, tid));
                 drop(sh);
+                // M1 桌宠：四态变化驱动 PetModel（M1 桌宠骨架：四态联动核心入口）。
+                if bound {
+                    self.pet_model.on_ime_state(state);
+                }
                 // 绑定实例四态变化且可见 → 重绘换内容（拖拽中留给 reconcile 收尾帧）。
                 if bound && self.visible && self.drag_offset.is_none() {
                     self.repaint();
                 }
+                // 状态变化后：可能进入一次性动作（StateFlash）→ 需要 SetTimer
+                self.sync_pet_timer();
             }
             BarEvent::ToggleVisible => {
                 let visible = {
@@ -232,7 +311,7 @@ impl ToolbarWindow {
                     let bound_active = {
                         let sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
                         sh.focused
-                            .map_or(false, |f| sh.instances.get(&f).map_or(false, |i| i.active))
+                            .is_some_and(|f| sh.instances.get(&f).is_some_and(|i| i.active))
                     };
                     if bound_active && !self.visible {
                         log::log_line("[toolbar] 工具条 → 显示（偏好重开，绑定实例活跃）");
@@ -256,7 +335,77 @@ impl ToolbarWindow {
                 log::log_line("[toolbar] 录入结束：重注册全局热键");
                 self.reregister_hotkeys();
             }
+            BarEvent::TypingState { pid, tid, active } => {
+                // M1 桌宠：打字中事件驱动 PetModel。
+                // 仅对当前绑定实例生效（与 StateChanged 同款 pid:tid 校验）。
+                let bound = self
+                    .shared
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .focused
+                    == Some((pid, tid));
+                if bound {
+                    self.pet_model.on_typing(active);
+                    self.sync_pet_timer();
+                    if self.visible && self.drag_offset.is_none() {
+                        self.repaint();
+                    }
+                }
+            }
         }
+    }
+
+    /// 同步动画定时器到 PetModel.needs_tick：true → SetTimer；false → KillTimer。
+    /// §5.4：show/apply_event/TypingState/StateChanged/on_click 后必须调用。
+    /// WM_TIMER 推进后若 needs_tick 变 false 同样 KillTimer（空闲停帧，零 tick）。
+    fn sync_pet_timer(&mut self) {
+        if self.hwnd.is_invalid() {
+            return;
+        }
+        if self.pet_model.needs_tick() {
+            // SAFETY: SetTimer 在窗口创建线程调用；id 复用固定值（重复 SetTimer 同一 id
+            // 会重置计时器，符合预期）。
+            unsafe {
+                let _ = SetTimer(
+                    Some(self.hwnd),
+                    PET_TIMER_ID,
+                    PET_TIMER_MS,
+                    None,
+                );
+            }
+        } else {
+            self.kill_pet_timer();
+        }
+    }
+
+    /// 关闭动画定时器（幂等：KillTimer 对未注册 id 静默返回 0/失败）。
+    fn kill_pet_timer(&mut self) {
+        if self.hwnd.is_invalid() {
+            return;
+        }
+        // SAFETY: KillTimer 在窗口创建线程调用；已注册 id 关闭；未注册 id 静默忽略。
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), PET_TIMER_ID);
+        }
+    }
+
+    /// 宠物点击命中：给定客户区坐标，判断是否落在宠物**不透明**像素上。
+    /// 用于 WM_NCHITTEST 与 WM_LBUTTONDOWN 区分"宠物像素（可点）"与"宠物区透明（穿透）"。
+    fn pet_pixel_hit(&self, x: i32, y: i32) -> bool {
+        let Some(pr) = self.pet_rect else { return false };
+        if x < pr.x || x >= pr.x + pr.w || y < pr.y || y >= pr.y + pr.h {
+            return false;
+        }
+        // alpha 阈值：素材中宠物像素 alpha > PET_HIT_ALPHA（0x20）视为可点
+        let a = pet_alpha_at(
+            &self.pet_sprites,
+            self.pet_model.clip(),
+            self.pet_model.frame(),
+            &pr,
+            x as f32,
+            y as f32,
+        );
+        a > PET_HIT_ALPHA
     }
 
     /// 注销 + 按当前配置重注册全局热键（HotkeysChanged / 退出录入共用）。
@@ -295,6 +444,8 @@ impl ToolbarWindow {
         // SAFETY: SW_SHOWNA 显示但不激活——绝不抢焦点（点击不打断活动 composition）。
         let _ = unsafe { ShowWindow(self.hwnd, SW_SHOWNA) };
         self.visible = true;
+        // 宠物动画：仅在 visible + needs_tick 时 SetTimer（focused 实例 + 一次性动作期）。
+        self.sync_pet_timer();
     }
 
     /// 原位重绘（reconcile / 悬停 / 按下变化）。
@@ -311,7 +462,8 @@ impl ToolbarWindow {
         self.present(&surf, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
     }
 
-    /// 渲染当前帧 → Surface + 刷新按钮命中矩形。
+    /// 渲染当前帧 → Surface（**M1 复合**：工具栏 + 宠物区同窗） + 刷新按钮命中矩形 +
+    /// 宠物显示矩形。Surface 尺寸 = (toolbar_w + pet_zone_w, toolbar_h + pet_overhang)。
     fn frame(&mut self) -> Option<iuv_ui::Surface> {
         let scale = self.scale();
         let inst = {
@@ -319,17 +471,42 @@ impl ToolbarWindow {
             sh.focused.and_then(|f| sh.instances.get(&f).copied())
         };
         let state = inst.map(|i| i.state).unwrap_or_default();
-        let spec = ToolbarSpec {
+        let toolbar_spec = ToolbarSpec {
             icons: &self.icons,
             state,
             hover: self.hover,
             pressed: self.pressed,
         };
-        let (surf, rows) = render_toolbar(&spec, &self.theme, scale);
+        // 宠物规格：素材空集（is_empty）→ 整张 Surface 不画宠物（仅工具栏）。否则按
+        // PetModel 解析的 clip/frame 渲染。M1 单一默认宠；clips/frame 越界回退
+        // 由 iuv-ui::PetSprites::frame 承担。
+        let pet_spec = if self.pet_sprites.is_empty() {
+            None
+        } else {
+            Some(PetRenderSpec {
+                sprites: &self.pet_sprites,
+                clip: self.pet_model.clip(),
+                frame: self.pet_model.frame(),
+            })
+        };
+        let composite_spec = CompositeSpec {
+            toolbar: &toolbar_spec,
+            pet: pet_spec.as_ref(),
+        };
+        let (surf, rows, pet_rect) = render_composite(&composite_spec, &self.theme, scale);
         if surf.w == 0 || surf.h == 0 {
             return None;
         }
         self.rows = rows;
+        self.pet_rect = pet_rect;
+        // 缓存复合几何（供 WM_NCHITTEST 不重复公式）
+        self.composite_w = surf.w as i32;
+        self.composite_h = surf.h as i32;
+        // toolbar_w/toolbar_h = composite_w - pet_zone_w;overhang = composite_h - toolbar_h
+        self.overhang = (PET_OVERHANG * scale).ceil() as i32;
+        self.toolbar_w = self.composite_w - (PET_ZONE_W * scale).ceil() as i32;
+        self.toolbar_h = self.composite_h - self.overhang;
+        self.radius = self.theme.corner_radius * scale;
         Some(surf)
     }
 
@@ -341,7 +518,11 @@ impl ToolbarWindow {
         self.visible = false;
         self.hover = None;
         self.pressed = None;
+        // 宠物按下判别状态一并清（防 hide 后再 WM_LBUTTONUP 误触发）
+        self.pet_down = None;
         self.tip.hide();
+        // 隐藏必停动画定时器（§5.4：避免定时器在窗口隐藏态空转）
+        self.kill_pet_timer();
         if !self.hwnd.is_invalid() {
             // SAFETY: 隐藏工具条窗口
             let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
@@ -571,10 +752,36 @@ impl ToolbarWindow {
         });
         log::log_line(&format!("[toolbar] 位置已记忆：{pos:?}"));
     }
+
+    /// M1 桌宠：宠物点击互动（§5.3，未拖拽场景下 WM_LBUTTONUP 触发）。
+    /// 打断任意动作 → React（一次性 10 帧）；自然回退到稳定态。
+    fn on_pet_click(&mut self) {
+        self.pet_model.on_click();
+        self.sync_pet_timer();
+        // 立即重绘（即使定时器也在跑，首帧不能等下一拍）
+        if self.visible && self.drag_offset.is_none() {
+            self.repaint();
+        }
+    }
+
+    /// M1 桌宠：动画 tick 推进（WM_TIMER）。dt 用 33ms（SetTimer 周期）。
+    /// 推进后若 needs_tick=false → KillTimer（空闲停帧，零 tick）。
+    fn on_pet_tick(&mut self) {
+        self.pet_model.advance(PET_TIMER_MS);
+        // 推进后：若空闲停帧则 KillTimer；否则保持定时器（继续推进）。
+        self.sync_pet_timer();
+        // 可见时重绘（一次性态推进关键帧；稳定态在 typing 循环时也需重绘）。
+        // 拖拽中不重绘（避免抢 SetWindowPos）。
+        if self.visible && self.drag_offset.is_none() {
+            self.repaint();
+        }
+    }
 }
 
 impl Drop for ToolbarWindow {
     fn drop(&mut self) {
+        // 防定时器在窗口销毁后触发，触碰已释放的 ToolbarWindow（§5.4）。
+        self.kill_pet_timer();
         if !self.hwnd.is_invalid() {
             // SAFETY: 先清零 GWLP_USERDATA，杜绝 wnd_proc 访问到即将释放的 self。
             let _ = unsafe { SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0) };
@@ -598,6 +805,7 @@ fn get_bar_mut(hwnd: HWND) -> Option<&'static mut ToolbarWindow> {
 
 /// 工具条窗口过程：定时器/刷新 → reconcile；ULW 内容不画窗口 DC（WM_PAINT 只校验）；
 /// 圆角外点击穿透（WM_NCHITTEST）；悬停高亮 + tooltip；空白区/logo 拖拽；按下反馈 + 抬起执行。
+/// M1 桌宠：宠物命中 + 点击/拖拽判别 + 动画定时器（见 `on_pet_click` / `on_pet_tick`）。
 pub(super) unsafe extern "system" fn bar_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -609,6 +817,15 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
             // FIFO 有新消息：drain 串行执行显隐动作。
             if let Some(w) = get_bar_mut(hwnd) {
                 w.reconcile();
+            }
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            // M1 桌宠：动画 tick（30fps 上限；空闲停帧已 sync_pet_timer KillTimer）。
+            if wparam.0 == PET_TIMER_ID {
+                if let Some(w) = get_bar_mut(hwnd) {
+                    w.on_pet_tick();
+                }
             }
             LRESULT(0)
         }
@@ -635,25 +852,35 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
         }
         WM_SETCURSOR => {
             // 悬停光标：客户区按按钮命中二选一——功能钮（四态/齿轮）= 手指头，
-            // logo/空白 = 箭头；非客户区走类默认（箭头）。lparam 不含坐标，取
+            // logo/空白/宠物区透明 = 箭头；非客户区走类默认（箭头）。lparam 不含坐标，取
             // GetCursorPos − 窗口原点得客户区坐标（同 WM_NCHITTEST 臂手法）。
             // 拖拽捕获期间系统不发本消息，无需特判。
             if (lparam.0 as u32 & 0xFFFF) == HTCLIENT as u32 {
-                let over_button = get_bar_mut(hwnd)
-                    .map(|w| {
-                        let (sx, sy) = cursor_screen();
-                        let mut rc = RECT::default();
-                        // SAFETY: GetWindowRect/GetCursorPos 纯查询。
-                        unsafe { GetWindowRect(hwnd, &mut rc) }.is_ok()
-                            && hit_test(&w.rows, sx - rc.left, sy - rc.top)
-                                .map_or(false, |i| i != TB_LOGO)
-                    })
-                    .unwrap_or(false);
+                let cursor_kind = get_bar_mut(hwnd).map(|w| {
+                    let (sx, sy) = cursor_screen();
+                    let mut rc = RECT::default();
+                    // SAFETY: GetWindowRect/GetCursorPos 纯查询。
+                    if unsafe { GetWindowRect(hwnd, &mut rc) }.is_err() {
+                        return IDC_ARROW;
+                    }
+                    let (cx, cy) = (sx - rc.left, sy - rc.top);
+                    // M1 桌宠：宠物像素点 → 手型（P2 提案，纳入"功能位"判定族）
+                    if w.pet_pixel_hit(cx, cy) {
+                        return IDC_HAND;
+                    }
+                    // 工具栏按钮命中（含 logo 排除，logo 走箭头）
+                    let over_button = hit_test(&w.rows, cx, cy)
+                        .is_some_and(|i| i != TB_LOGO);
+                    if over_button {
+                        IDC_HAND
+                    } else {
+                        IDC_ARROW
+                    }
+                });
                 // SAFETY: SetCursor 设标准内置光标；LoadCursorW 取系统 stock 光标。
                 unsafe {
-                    let cursor =
-                        LoadCursorW(None, if over_button { IDC_HAND } else { IDC_ARROW })
-                            .unwrap_or_default();
+                    let cursor = LoadCursorW(None, cursor_kind.unwrap_or(IDC_ARROW))
+                        .unwrap_or_default();
                     SetCursor(Some(cursor));
                 }
                 LRESULT(1)
@@ -662,22 +889,35 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
             }
         }
         WM_NCHITTEST => {
+            // M1 桌宠：复合窗口命中判定顺序（§5.2）：
+            //   1) 宠物像素命中（alpha > 阈值） → HTCLIENT（可点可拖）
+            //   2) 工具栏背景圆角矩形内 → HTCLIENT（按钮命中）
+            //   3) 其余（宠物区透明、工具栏圆角外、工具栏右侧空隙） → HTTRANSPARENT
             let (sx, sy) = client_pos(lparam); // 屏幕坐标
             let mut rc = RECT::default();
             if unsafe { GetWindowRect(hwnd, &mut rc) }.is_err() {
                 return LRESULT(HTCLIENT as isize);
             }
             let (x, y) = (sx - rc.left, sy - rc.top);
-            let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
-            let radius = match get_bar_mut(hwnd) {
-                Some(wnd) => wnd.theme.corner_radius * wnd.scale(),
-                None => 0.0,
-            };
-            if in_rounded_rect(x, y, w, h, radius) {
-                LRESULT(HTCLIENT as isize)
-            } else {
-                LRESULT(HTTRANSPARENT as isize)
+            // 1) 宠物像素命中（在判定工具栏之前：宠物区在工具栏之上，水平方向无重叠）
+            if get_bar_mut(hwnd)
+                .map(|wnd| wnd.pet_pixel_hit(x, y))
+                .unwrap_or(false)
+            {
+                return LRESULT(HTCLIENT as isize);
             }
+            // 2) 工具栏背景圆角矩形内（y 偏移 PET_OVERHANG，复用 frame 缓存几何）
+            let (tx, ty, tw, th, radius) = match get_bar_mut(hwnd) {
+                Some(wnd) => (x, y - wnd.overhang, wnd.toolbar_w, wnd.toolbar_h, wnd.radius),
+                None => return LRESULT(HTTRANSPARENT as isize),
+            };
+            if ty >= 0 && ty < th && tx >= 0 && tx < tw
+                && in_rounded_rect(tx, ty, tw, th, radius)
+            {
+                return LRESULT(HTCLIENT as isize);
+            }
+            // 3) 其余穿透
+            LRESULT(HTTRANSPARENT as isize)
         }
         WM_MOUSEMOVE => {
             let (x, y) = client_pos(lparam);
@@ -696,6 +936,18 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
                     let _ = unsafe { TrackMouseEvent(&mut tme) };
                     w.on_hover(x, y);
                 }
+                // 宠物按下判别：记录下笔点，超过阈值 → 升格为拖拽（与工具栏拖拽共用管线）
+                if let Some((press_screen, _pet_rect)) = w.pet_down {
+                    let (cx, cy) = cursor_screen();
+                    let (dx, dy) = (cx - press_screen.0, cy - press_screen.1);
+                    if dx * dx + dy * dy > PET_DRAG_THRESHOLD * PET_DRAG_THRESHOLD {
+                        // 升格为整窗拖拽：复用现有 start_drag 语义（§5.3「start_drag_at(按下点)」）
+                        // ——drag_offset = 光标屏坐标 - 窗口位置，保证拖拽跟随光标不跳窗
+                        // （旧实现 offset=(0,0) 会把窗口左上角瞬移到光标处，宠物偏离栖木位）。
+                        let _ = w.pet_down.take();
+                        w.start_drag();
+                    }
+                }
             }
             LRESULT(0)
         }
@@ -710,22 +962,53 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
         WM_LBUTTONDOWN => {
             let (x, y) = client_pos(lparam);
             if let Some(w) = get_bar_mut(hwnd) {
-                match hit_test(&w.rows, x, y) {
-                    // 空白区或 logo（拖动把手）：开始拖拽（§6.6 任意非按钮空白区拖动）。
-                    None | Some(TB_LOGO) => {
-                        w.start_drag();
+                // M1 桌宠：先看宠物像素命中（在按钮命中之前：宠物在工具栏上沿之上，不重叠）
+                if w.pet_pixel_hit(x, y) {
+                    if let Some(pr) = w.pet_rect {
+                        let (cx, cy) = cursor_screen();
+                        w.pet_down = Some(((cx, cy), pr));
+                        // SetCapture：保证用户拖到窗外 / 在窗内释放时 WM_LBUTTONUP 仍能收到；
+                        // click vs drag 判别靠"是否移动 > 阈值"，与 SetCapture 无冲突（传统模式）。
+                        // SAFETY: SetCapture 捕获鼠标到本窗口（拖拽期间持续收 WM_MOUSEMOVE）。
+                        let _ = unsafe { SetCapture(hwnd) };
                     }
-                    Some(i) => {
-                        // 功能按钮按下（点击反馈）+ 鼠标抬起时执行。
-                        w.pressed = Some(i);
-                        w.repaint();
+                    LRESULT(0)
+                } else {
+                    match hit_test(&w.rows, x, y) {
+                        // 空白区或 logo（拖动把手）：开始拖拽（§6.6 任意非按钮空白区拖动）。
+                        None | Some(TB_LOGO) => {
+                            w.start_drag();
+                        }
+                        Some(i) => {
+                            // 功能按钮按下（点击反馈）+ 鼠标抬起时执行。
+                            w.pressed = Some(i);
+                            w.repaint();
+                        }
                     }
+                    LRESULT(0)
                 }
+            } else {
+                LRESULT(0)
             }
-            LRESULT(0)
         }
         WM_LBUTTONUP => {
             if let Some(w) = get_bar_mut(hwnd) {
+                // M1 桌宠：先看 pet_down（按下宠物后的抬起事件）
+                if w.pet_down.is_some() {
+                    let _ = w.pet_down.take();
+                    // 释放捕获（若有）
+                    if w.drag_offset.is_none() {
+                        let _ = unsafe { ReleaseCapture() };
+                    }
+                    // 未升格为拖拽 → 触发宠物点击互动
+                    if w.drag_offset.is_none() {
+                        w.on_pet_click();
+                    } else {
+                        // 拖拽中：复用现有 end_drag
+                        w.end_drag();
+                    }
+                    return LRESULT(0);
+                }
                 if let Some(i) = w.pressed.take() {
                     w.repaint();
                     // 释放捕获（若有）
