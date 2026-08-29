@@ -19,6 +19,11 @@ pub struct Candidate {
     pub weight: u32,
     /// 该候选消费的音节段数（所在前缀级 k；续接选词时推进用，M1 后期契约演进）
     pub seg_len: usize,
+    /// 统一标量分（log 域，39-rime-pipeline.md §2/§4；2026-08-29 λ 校准落地）。
+    /// 词候选 = ln((freq+1)/total) + 拼写可信度累计；句候选 = 组句路径权重
+    /// （Σ(log_weight + λ)）。classic 引擎与不产分的路径恒 0.0（未打分语义），
+    /// 仅诊断展示用，不参与排序（整句保底置顶 + 类别序结构不变）。
+    pub score: f64,
 }
 
 impl CandidateKind {
@@ -47,6 +52,7 @@ impl Candidate {
             code: code.into(),
             weight,
             seg_len,
+            score: 0.0,
         }
     }
 
@@ -59,6 +65,7 @@ impl Candidate {
             code: e.code.clone(),
             weight: e.weight,
             seg_len,
+            score: 0.0,
         }
     }
 }

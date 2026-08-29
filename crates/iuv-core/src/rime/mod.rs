@@ -3,7 +3,7 @@
 //! 派生自 librime（BSD-3-Clause）。模块构成：
 //! - [`syllabifier`]：音节图（Normal/Abbreviation/Completion 三类拼写边）；
 //! - [`translator`]：词条桶收集 + 整句闸门 + 词候选流；
-//! - [`poet`]：组句 DP/Beam 双策略。
+//! - [`poet`]：组句 DP（λ 长度惩罚参数化 + librime 平局决胜）。
 //!
 //! 架构裁决（2026-08-26，记录于任务书附录）：librime 的 Segmentation/Context
 //! 状态机**不移植**——ImeEngine 接缝按「单活动段」切分，打字期 rime 本就单段
@@ -34,6 +34,10 @@ pub struct RimeEngine {
     syllables: BTreeSet<String>,
     /// 候选截断上限（对齐 Config.max_candidates 语义）
     max_candidates: usize,
+    /// 组句长度惩罚 λ（config `rime_lambda`，39 号 W2 校准项）
+    lambda: f64,
+    /// 简拼/补全边拼写罚分（config `rime_spelling_penalty`）
+    spelling_penalty: f64,
 }
 
 impl RimeEngine {
@@ -48,6 +52,8 @@ impl RimeEngine {
             lm,
             syllables,
             max_candidates: config.max_candidates,
+            lambda: config.rime_lambda,
+            spelling_penalty: config.rime_spelling_penalty,
         })
     }
 
@@ -119,7 +125,13 @@ impl ImeEngine for RimeEngine {
         crate::perf::record("onkey.seg", t);
 
         let t = crate::perf::tick();
-        let graph = syllabifier::build_graph(&lower, &self.syllables, MAX_SYLLABLE_LEN);
+        let graph = syllabifier::build_graph(
+            &lower,
+            &self.syllables,
+            MAX_SYLLABLE_LEN,
+            self.spelling_penalty,
+            self.spelling_penalty,
+        );
         crate::perf::record("onkey.graph", t);
         // —— 微软对齐政策（classic PrefixChars，档位降级为核心内部政策）：
         // 整串为音节真前缀且非完整音节 → 纯单字，不走图流。——
@@ -140,7 +152,13 @@ impl ImeEngine for RimeEngine {
                     if !self.is_syllable(last)
                         && self.syllables.iter().any(|syl| syl.starts_with(last.as_str()))
                     {
-                        syllabifier::push_completion_edge(&mut graph, lower.len(), tail_start, last);
+                        syllabifier::push_completion_edge(
+                            &mut graph,
+                            lower.len(),
+                            tail_start,
+                            last,
+                            self.spelling_penalty,
+                        );
                     }
                 }
             }
@@ -230,7 +248,10 @@ impl ImeEngine for RimeEngine {
                         // 预测匹配（尾前缀补全）覆盖全输入 → 恒全消费
                         let seg_len = if be.exact { consumed_parts(end) } else { 999 };
                         let kind = crate::CandidateKind::for_word(&be.entry.word);
-                        cands.push(crate::Candidate::for_entry(&be.entry, kind, seg_len));
+                        let mut cand = crate::Candidate::for_entry(&be.entry, kind, seg_len);
+                        // 统一标量分：log 词权 + 拼写可信度累计（诊断展示，不参与排序）
+                        cand.score = self.lm.log_prob(None, "", be.entry.weight) + be.cred;
+                        cands.push(cand);
                     }
                 }
             }
@@ -257,7 +278,7 @@ impl ImeEngine for RimeEngine {
                 |w| self.lm.log_prob(None, "", w),
             ) {
                 if let Some(sentence) =
-                    poet::make_sentence(&wg, graph.farthest, ctx.preceding_text)
+                    poet::make_sentence(&wg, graph.farthest, ctx.preceding_text, self.lambda)
                 {
                     cands.insert(0, translator::sentence_candidate(&sentence, seg.join("'")));
                 }
@@ -450,5 +471,129 @@ mod tests {
         let texts: Vec<String> = tr.candidates.iter().map(|c| c.text.clone()).collect();
         assert!(texts.contains(&"是".to_string()), "{texts:?}");
         assert!(!texts.contains(&"时候".to_string()), "前缀档不出词：{texts:?}");
+    }
+
+    /// 真词库校准诊断（39 号 W2，λ 校准用）：dump 切分/音节图/桶/poet 词格/
+    /// 组句结果。需真词库，默认跳过：
+    /// `cargo test -p iuv-core real_dict --ignored -- --ignored --nocapture`
+    #[test]
+    #[ignore = "需真词库 data/iuv.imedic（仓库根运行）"]
+    fn real_dict_poet_graph_dump() {
+        let dict_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/iuv.imedic");
+        let dict = StdArc::new(iuv_data::load(std::path::Path::new(dict_path)).unwrap());
+        println!("== prefix probes ==");
+        for p in ["cheng'y", "cheng", "y"] {
+            let got: Vec<String> =
+                dict.prefix(p, 64).iter().map(|e| format!("{}:{}", e.word, e.weight)).collect();
+            println!("  prefix({p:?}) -> {got:?}");
+        }
+        let cfg = crate::Config {
+            engine: crate::config::EngineChoice::Rime,
+            ..Default::default()
+        };
+        let e = RimeEngine::new(dict.clone(), &cfg);
+        let raw = "shigechengy";
+        let lower = raw.to_lowercase();
+        let seg = e.ranked_seg(raw);
+        println!("== seg = {seg:?}");
+        let mut graph = syllabifier::build_graph(
+            &lower,
+            &e.syllables,
+            MAX_SYLLABLE_LEN,
+            e.spelling_penalty,
+            e.spelling_penalty,
+        );
+        // 复刻 translate 的 2b 补全边注入
+        {
+            let lens: Vec<usize> =
+                seg.iter().filter(|s| !s.is_empty()).map(|s| s.chars().count()).collect();
+            if lens.len() >= 2 {
+                let total: usize = lens.iter().sum();
+                let tail_start = total - lens[lens.len() - 1];
+                if let Some(last) = seg.iter().filter(|s| !s.is_empty()).last() {
+                    if !e.is_syllable(last)
+                        && e.syllables.iter().any(|syl| syl.starts_with(last.as_str()))
+                    {
+                        syllabifier::push_completion_edge(
+                            &mut graph,
+                            lower.len(),
+                            tail_start,
+                            last,
+                            e.spelling_penalty,
+                        );
+                    }
+                }
+            }
+        }
+        for (from, ends) in &graph.edges {
+            for (to, sps) in ends {
+                for sp in sps {
+                    println!(
+                        "  edge [{from:>2},{to:>2}) {:?} {:?} cred={:.4}",
+                        sp.syllable, sp.spelling_type, sp.credibility
+                    );
+                }
+            }
+        }
+        println!("== farthest = {}", graph.farthest);
+        let mut origins = std::collections::BTreeSet::new();
+        origins.insert(0);
+        for (_, to_map) in graph.edges.iter() {
+            for (to, sps) in to_map {
+                if sps.iter().any(|sp| sp.spelling_type == syllabifier::SpellingType::Normal) {
+                    origins.insert(*to);
+                }
+            }
+        }
+        let buckets = translator::collect_buckets(
+            &dict,
+            &graph,
+            MAX_WORD_SYLLABLES,
+            &origins,
+            e.blocked(),
+        );
+        for ((s, en), slot) in &buckets {
+            for be in slot.iter().take(5) {
+                println!(
+                    "  bucket [{s:>2},{en:>2}) {:?} w={:>7} exact={:?} class={} cred={:.4}",
+                    be.entry.word, be.entry.weight, be.exact, be.class, be.cred
+                );
+            }
+        }
+        let mut wg_filtered: translator::Buckets = buckets
+            .iter()
+            .map(|(k, slot)| {
+                (*k, slot.iter().filter(|b| b.class != 1).cloned().collect::<Vec<_>>())
+            })
+            .filter(|(_, slot)| !slot.is_empty())
+            .collect();
+        if let Some(wg) = translator::build_poet_graph(
+            &mut wg_filtered,
+            graph.farthest,
+            |w| e.lm.log_prob(None, "", w),
+        ) {
+            println!("== poet graph ==");
+            for (s, ends) in &wg {
+                for (en, entries) in ends {
+                    for g in entries {
+                        println!("  poet [{s:>2},{en:>2}) {:?} lw={:.4}", g.word, g.log_weight);
+                    }
+                }
+            }
+            if let Some(sent) = poet::make_sentence(&wg, graph.farthest, "", e.lambda) {
+                println!("== best = {:?} weight={:.4}", sent.words, sent.weight);
+                // λ 灵敏度扫描（校准参考）：观察组句选词随 λ 的变化
+                println!("== lambda sweep ==");
+                for lam in [-20.0f64, -13.8155, -10.0, -7.0, -4.0, -2.0, -1.0, -0.5, 0.0] {
+                    if let Some(s) = poet::make_sentence(&wg, graph.farthest, "", lam) {
+                        println!("  λ={:>7.4} -> {:?} w={:.4}", lam, s.words, s.weight);
+                    }
+                }
+            }
+        }
+        let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw });
+        for c in tr.candidates.iter().take(8) {
+            println!("  cand {:?}\t{:?}\tw={}\tscore={:.4}", c.text, c.kind, c.weight, c.score);
+        }
     }
 }

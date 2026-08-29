@@ -324,8 +324,11 @@ impl Dict {
     }
 
     /// 前缀补全：返回 squashed 以 prefix 开头（且不等于 prefix）的词条，
-    /// 跨编码按 weight 降序，最多 limit 条。低频路径（默认关闭），实现为
-    /// 范围物化 + 全量排序；如开启后性能不达标再改归并取 top-k。
+    /// 跨编码按 weight 降序，最多 limit 条。实现为范围物化 + 权重降序排序 +
+    /// 截断——排序必须在截断**之前**（码序前 64/20 条 ≠ 高频前 64/20 条，
+    /// cheng'y 的 64 截断曾把高频「成员」排挤到窗外，2026-08-29 λ 校准实测）。
+    /// 无用户库时同样保证权重序（此前排序只在 merged 有用户库分支里发生，
+    /// REPL/对拍与生产行为隐性分叉）。如开启后性能不达标再改归并取 top-k。
     pub fn prefix(&self, squashed_prefix: &str, limit: usize) -> Vec<Entry> {
         if limit == 0 || squashed_prefix.is_empty() {
             return Vec::new();
@@ -343,6 +346,7 @@ impl Dict {
             }
             out.push(self.entry_at(self.index_off(i)));
         }
+        out.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
         out = self.merged("", out);
         out.truncate(limit);
         out
@@ -763,5 +767,26 @@ mod tests {
             .set_entry("shou'xuan", "手癣", 99999);
         d.set_user(Arc::new(user));
         assert!(!d.exact("shou'xuan").iter().any(|e| e.word == "手癣"));
+    }
+
+    #[test]
+    fn prefix_weight_desc_without_user_dict() {
+        // 前缀补全契约：跨编码 weight 降序，与是否装配用户库无关。
+        // 回归钉（2026-08-29 λ 校准实测）：无用户库时曾按码序原样返回，
+        // 64/20 截断把高频词排挤窗外（cheng'y 截断丢「成员」→ 整句误组）。
+        let d = Dict::from_entries(vec![
+            ("cheng'yuan".into(), "成员".into(), 10739),
+            ("cheng'yi".into(), "乘以".into(), 2022),
+            ("cheng'ya".into(), "承压".into(), 226),
+        ]);
+        let hits: Vec<String> =
+            d.prefix("cheng'y", 2).iter().map(|e| e.word.clone()).collect();
+        assert_eq!(hits, vec!["成员", "乘以"], "截断前必须先权重降序");
+        // 装配用户库后契约不变（覆盖权重生效）
+        let user = crate::userdict::UserDict::empty().set_entry("cheng'ya", "承压", 99999);
+        d.set_user(Arc::new(user));
+        let hits: Vec<String> =
+            d.prefix("cheng'y", 1).iter().map(|e| e.word.clone()).collect();
+        assert_eq!(hits, vec!["承压"], "用户覆盖后仍权重序");
     }
 }

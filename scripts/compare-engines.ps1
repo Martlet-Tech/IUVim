@@ -2,7 +2,7 @@
 # 用法：scripts/compare-engines.ps1 [-Dict data\iuv.imedic] [-Words nihao,xian,nhmsx]
 param(
     [string]$Dict = "data\iuv.imedic",
-    [string]$Words = "nihao,xian,shigechengy,nhmsx,nhao,nihaoshijie,sh,zheshiming"
+    [string]$Words = "nihao,xian,shigechengy,haoshengy,nhmsx,nhao,nihaoshijie,sh,zheshiming,chuangqianmingyueguang,zhongguorenmin,xiexiedajia"
 )
 $repl = ".\target\debug\iuv-repl.exe"
 if (-not (Test-Path $repl)) { Write-Error "先构建：cargo build -p iuv-repl"; exit 1 }

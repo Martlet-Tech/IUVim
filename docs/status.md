@@ -12,7 +12,7 @@
 
 - M3 整句增强(LMDG)/模糊音
 - 符号/emoji 候选、学习候选（微软对齐已知差距，见 M1.5 条目）
-- 39 号 rime 管线收尾：λ 打分校准与烘焙后删 classic（`docs/plan/39-rime-pipeline.md`）
+- 39 号 rime 管线收尾：仅剩烘焙后删 classic（λ 打分校准已完成，见 2026-08-29 条目；`docs/plan/39-rime-pipeline.md`）
 - M9 可自定义贴图皮肤框架（调研定稿/挂起；前置 M8 工具栏已多轮打磨，可重新评估）
 - 点子库：Tab 键用途（`29-tab-ideas.md`，暂不做）
 
@@ -438,3 +438,10 @@
 - [x] **方案**：结构去重四件套——路径解析统一到新 `iuv_core::paths`（LOCALAPPDATA→APPDATA\Local→USERPROFILE\AppData\Local→HOME；TSF 侧兜底由幻路径 `C:\Users\Default\...` 改为 `%TEMP%\iuv`，两者在 env 缺失时都找不到真实词库，语义等价但不再误导）；文件日志器收敛到 `iuv_win::logger`（denylist `[tag]` 解析唯一实现，两进程行为由代码保证一致；iuv-win 原 fn 指针钩子机制删除，`log_line` 内惰性 init）；daemon 的 JSONC/BOM/keymap 迁移改调 iuv-core 公开实现（新增键位字段不再要改 3 处）；langbar 菜单收敛为常量表 + `handle_menu_id` 单一分发。零风险项：死代码删除、`tests2/tests3` 并入 `tests`、编译期音节助手（SYLLABLES/is_syllable/greedy_segment）自 dict.rs 移入 format.rs 并顺带对齐 lue→lve/nue→nve 归一（与 Quanpin 一致）、Sentence.weight 字段删除（原供已删的 score）。**classic 管线未动**（39 号计划书另行收尾）。
 - [x] **改动**：详见分支 diff；文档侧重写 README、修全部断链、更新 39/41 号任务书状态行、AGENTS.md scripts 清单补 download-opencc/clear-data/compare-engines/convert-main-icon、00-overview §5 索引标注归档去向。
 - [x] **测试**：workspace 全绿（351 通过/1 忽略；净减 4 个重复/死测试）；`cargo check` 零警告；iuv-tsf release 构建通过。**待手测**：dev-deploy 部署后打字链路、设置页（日志模块开关/恢复默认）、语言栏右键菜单、工具栏显隐——尤其 TSF 与 daemon 用户库路径合并后的首启。
+
+## 2026-08-29 · 39 号 λ 打分校准（分支 feat/rime-lambda-calib，未并 main）
+
+- [x] **根因**：39 号收尾项「λ 打分校准」起步即发现打分机制未落地——syllabifier 的 credibility 是死数据、候选无统一 score、组句平局先到先得、λ 无参数出口；且 §13#7 shigechengy 分歧（是各成员国 vs classic 是个成员）的真因不在打分参数，而在 `Dict::prefix` 截断序 bug（无用户库时按码序返回、64 截断把高频「成员」排挤出 cheng'y 补全桶——生产有用户库时 merged 排序反而掩盖了此差异，REPL/对拍与生产隐性分叉）。
+- [x] **方案**：机制先建、参数后调——① BucketEntry.cred 贯穿 BFS/合并/poet 词格（librime dictionary.cc:164 credibility 语义）；② poet λ 参数化 + 平局决胜重建（poet.cc:88-109：权重降序→少词优先→词长序列字典序）；③ `Candidate.score` 重落地（词=log 权+cred、句=路径权重；仅诊断展示不参与排序——整句保底置顶与类别序 §13#4 结构不动；上轮精简曾删无消费者的 score，本轮有真实消费方且契约 §8.1 已载）；④ `Config.rime_lambda/rime_spelling_penalty` 参数出口（默认=librime 原值）；⑤ prefix 范围物化后**先权重降序再截断**（兑现契约注释，classic candidate_prefix 同受益）。
+- [x] **改动**：iuv-core（poet/translator/syllabifier/mod/candidate/config）、iuv-data（dict.rs prefix）、iuv-repl（batch 输出增 score 列）、compare-engines.ps1 语料 9→12 条、契约 §8.1/§8.2、39 号任务书 §13#7 结案+#11 新裁决+§15A 校准基线/结果附录。
+- [x] **测试**：新增 dict.rs prefix 权重序回归测试（含用户库覆盖场景）+ rime real_dict_poet_graph_dump 真词库诊断（ignored，dump 图/桶/组句 + λ 扫描）；workspace 全绿。真词库验证：W1 默认参数 12 条语料与基线逐字节一致（零行为变化）；prefix 修复后与 classic 首屏 **12/12 全对齐**，shigechengy=是个成员且 λ∈[-20,0] 恒胜。**遗留**：烘焙后删 classic（等管理员确认）；dev-deploy 部署手测留给管理员。
