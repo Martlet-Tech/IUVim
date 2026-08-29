@@ -73,6 +73,13 @@ pub struct Config {
     /// 候选生成核心（39-rime-pipeline.md Step3 过渡开关，默认 classic）。
     /// 装载点消费：TSF load_engine / REPL --engine。切换需重载输入法生效。
     pub engine: EngineChoice,
+    /// rime 引擎组句长度惩罚 λ（log 域每词罚分，39 号 W2 校准项）。
+    /// 默认 = librime 原生 kPenalty ln(1e-6)：每多一个词多扣一次，长词路径占优。
+    /// 仅 `engine: "rime"` 时消费；调参需重载输入法生效。
+    pub rime_lambda: f64,
+    /// rime 引擎拼写可信度罚分（log 域，简拼边与补全边各扣一次）。
+    /// 默认 = librime syllabifier.cc:28 ln(0.05)。仅 `engine: "rime"` 时消费。
+    pub rime_spelling_penalty: f64,
 }
 
 impl Default for Config {
@@ -92,6 +99,8 @@ impl Default for Config {
             // 性能埋点是排查工具：默认关闭，需要时显式开启（见字段注释）。
             perf_probe: false,
             engine: EngineChoice::Classic,
+            rime_lambda: crate::rime::poet::DEFAULT_LAMBDA,
+            rime_spelling_penalty: crate::rime::syllabifier::COMPLETION_PENALTY,
         }
     }
 }

@@ -261,3 +261,17 @@ TSF 契约、候选窗渲染、设置页。
 - `api.rs` preview_rules 抽取（classic/rime 共用）；Session::over 挂任意核心；Engine::shared_dict
 - REPL `--engine classic|rime` 开关（batch 输出增 score 列）
 - 测试：rime 行为测试 10 项（词优先/歧义桶/混拼/尾补全/屏蔽/preedit/部分消费/简拼键/严格前缀等），workspace 326 绿
+
+## 15A. λ 校准基线（feat/rime-lambda-calib，2026-08-29，REPL 真词库前 5 候选）
+
+> 语料：nihao xian shigechengy haoshengy nhmsx nhao nihaoshijie sh zheshiming
+> chuangqianmingyueguang zhongguorenmin xiexiedajia（compare-engines.ps1 默认语料已扩充）。
+
+- **一致（8/12）**：xian、nhmsx、nhao、sh、zheshiming、nihaoshijie、zhongguorenmin、
+  xiexiedajia、chuangqianmingyueguang 首屏文本一致（后四者 classic 走 Sentence、
+  rime 命中白霜同文本词条，文本等价）；nihao 同（classic Sentence / rime 词条）。
+- **分歧 1（主靶，§13#7）**：shigechengy——classic「是个成员」(Sentence) vs
+  rime「是各成员国」(Sentence)。
+- **分歧 2**：haoshengy 词流序差——rime class2 补全桶置顶（好声音 1138/好生意 190/
+  好生养 10/好声音啊 3）后毫升(1933) 沉第 5；classic 好声音(Sentence) + 毫升(1933)/
+  好生/好胜/好省。首屏文本一致（好声音），页内序差属 §13#4 类别序既定裁决的体现。

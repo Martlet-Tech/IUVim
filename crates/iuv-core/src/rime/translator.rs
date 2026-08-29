@@ -26,6 +26,10 @@ pub(crate) struct BucketEntry {
     /// 词流分级输出——补全(全跨)置顶 → 纯全拼 → 含简拼沉底
     /// （2026-08-26 裁决，任务书 §13.4）。
     pub class: u8,
+    /// 路径拼写可信度累计（log 域负值，Normal 0 / Abbreviation·Completion 各
+    /// ln(0.05)，librime dictionary.cc:164 credibility 语义）。进 poet 词格与
+    /// 候选 score；2026-08-29 λ 校准起真正消费（此前是死数据）。
+    pub cred: f64,
 }
 
 /// 桶表：(起点字节位, 终点字节位) → 条目列表。
@@ -56,6 +60,7 @@ pub(crate) fn collect_buckets(
         key: String,
         hops: usize,
         class: u8,
+        cred: f64,
     }
 
     let mut visited: std::collections::HashSet<(usize, usize, String, bool)> =
@@ -69,6 +74,7 @@ pub(crate) fn collect_buckets(
         key: String,
         class: u8,
         completion: bool,
+        cred: f64,
     }
     let mut markers: Vec<Marker> = Vec::new();
 
@@ -82,6 +88,7 @@ pub(crate) fn collect_buckets(
             key: String::new(),
             hops: 0,
             class: 0,
+            cred: 0.0,
         });
         visited.insert((start, start, String::new(), false));
     }
@@ -121,6 +128,7 @@ pub(crate) fn collect_buckets(
                 let completion = sp.spelling_type == SpellingType::Completion;
                 let abbrev = sp.spelling_type == SpellingType::Abbreviation;
                 let class = w.class.max(st_cls(completion, abbrev));
+                let cred = w.cred + sp.credibility;
                 if !visited.insert((e, w.origin, nkey.clone(), completion)) {
                     continue;
                 }
@@ -140,6 +148,7 @@ pub(crate) fn collect_buckets(
                         key: nkey.clone(),
                         class: if completion { class.max(2) } else { class },
                         completion,
+                        cred,
                     });
                 }
                 if deeper {
@@ -149,6 +158,7 @@ pub(crate) fn collect_buckets(
                         key: nkey,
                         hops: w.hops + 1,
                         class,
+                        cred,
                     });
                 }
             }
@@ -176,6 +186,7 @@ pub(crate) fn collect_buckets(
                     entry,
                     exact: !m.completion,
                     class: if m.completion { m.class.max(2) } else { m.class },
+                    cred: m.cred,
                 },
             );
         }
@@ -203,7 +214,8 @@ fn st_cls(completion: bool, abbrev: bool) -> u8 {
     }
 }
 
-/// 同词多路径合并：精确优先、其后权重优先；类别含补全恒 2，否则取更纯者。
+/// 同词多路径合并：精确优先、其后权重优先；类别含补全恒 2，否则取更纯者；
+/// cred 取两条路径中更优（较大，负值惩罚小者为优）。
 fn merge_into(slot: &mut Vec<BucketEntry>, be: BucketEntry) {
     match slot.iter().position(|x| x.entry.word == be.entry.word) {
         Some(i) => {
@@ -212,12 +224,14 @@ fn merge_into(slot: &mut Vec<BucketEntry>, be: BucketEntry) {
             } else {
                 slot[i].class.min(be.class)
             };
+            let merged_cred = slot[i].cred.max(be.cred);
             let replace = (!slot[i].exact && be.exact)
                 || (slot[i].exact == be.exact && be.entry.weight > slot[i].entry.weight);
             if replace {
                 slot[i] = be;
             }
             slot[i].class = merged_class;
+            slot[i].cred = merged_cred;
         }
         None => slot.push(be),
     }
@@ -252,7 +266,9 @@ pub(crate) fn build_poet_graph(
         if let Some(be) = slot.first() {
             wg.entry(s).or_default().entry(e).or_default().push(GraphEntry {
                 word: be.entry.word.clone(),
-                log_weight: lm_log_prob(be.entry.weight),
+                // credibility 累进 log 权重（dictionary.cc:164 语义）——
+                // 补全/简拼边在组句 DP 中劣于纯全拼边（2026-08-29 λ 校准）
+                log_weight: lm_log_prob(be.entry.weight) + be.cred,
             });
         }
     }
@@ -262,13 +278,15 @@ pub(crate) fn build_poet_graph(
     Some(wg)
 }
 
-/// 由 Poet 结果构造整句候选（seg_len 置大数 = 全消费）。
+/// 由 Poet 结果构造整句候选（seg_len 置大数 = 全消费；score = 组句路径权重）。
 pub(crate) fn sentence_candidate(s: &poet::Sentence, display_code: String) -> crate::Candidate {
-    crate::Candidate::new(
+    let mut c = crate::Candidate::new(
         s.words.concat(),
         crate::CandidateKind::Sentence,
         display_code,
         0,
         999,
-    )
+    );
+    c.score = s.weight;
+    c
 }

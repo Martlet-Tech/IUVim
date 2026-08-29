@@ -13,10 +13,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// 简拼可信度罚分（2026-08-26 裁决：无 algebra 体系，取 librime 补全罚分同阶 ln(0.05)）。
-pub(crate) const ABBREV_PENALTY: f64 = -2.995_732_273_553_991;
-
-/// 尾前缀补全罚分（librime syllabifier.cc:28 硬编码 ln(0.05)）。
+/// 简拼/补全可信度罚分默认值（librime syllabifier.cc:28 硬编码 ln(0.05)）。
+/// 简拼与补全同值，config `rime_spelling_penalty` 可调，此处仅是缺省。
 pub(crate) const COMPLETION_PENALTY: f64 = -2.995_732_273_553_991;
 
 /// 拼写类型（librime SpellingType 子集）。序 = 质量序（值小者优）。
@@ -48,6 +46,8 @@ pub(crate) struct SyllableGraph {
 }
 
 /// 在 `input`（小写化字母串，可含 `'` 分隔符）上构建音节图。
+/// `abbrev_penalty` / `completion_penalty`：简拼边与补全边的可信度罚分
+/// （log 域负值；config `rime_spelling_penalty`，默认 ln(0.05)）。
 ///
 /// 规则（自 librime 化简，依据见模块注释）：
 /// 1. 位置升序扩展；每个到达位置先吞前导 `'`；
@@ -60,6 +60,8 @@ pub(crate) fn build_graph(
     input: &str,
     syllables: &BTreeSet<String>,
     max_syllable_len: usize,
+    abbrev_penalty: f64,
+    completion_penalty: f64,
 ) -> SyllableGraph {
     let bytes = input.as_bytes();
     let n = bytes.len();
@@ -107,7 +109,7 @@ pub(crate) fn build_graph(
                 e,
                 syl.clone(),
                 SpellingType::Abbreviation,
-                ABBREV_PENALTY,
+                abbrev_penalty,
             );
         }
         add_spelling(
@@ -117,7 +119,7 @@ pub(crate) fn build_graph(
             e,
             initial.to_string(),
             SpellingType::Abbreviation,
-            ABBREV_PENALTY,
+            abbrev_penalty,
         );
     }
 
@@ -134,7 +136,7 @@ pub(crate) fn build_graph(
                 n,
                 tail.to_string(),
                 SpellingType::Completion,
-                COMPLETION_PENALTY,
+                completion_penalty,
             );
         }
     }
@@ -174,6 +176,7 @@ pub(crate) fn push_completion_edge(
     input_len: usize,
     tail_start: usize,
     tail: &str,
+    completion_penalty: f64,
 ) {
     if tail.is_empty() || tail_start >= input_len {
         return;
@@ -182,7 +185,7 @@ pub(crate) fn push_completion_edge(
     slot.entry(input_len).or_default().push(Spelling {
         syllable: tail.to_string(),
         spelling_type: SpellingType::Completion,
-        credibility: COMPLETION_PENALTY,
+        credibility: completion_penalty,
     });
     if input_len > graph.farthest {
         // 补全边直达 len：farthest 抬到 len（剪枝已跑过，此处只抬界）

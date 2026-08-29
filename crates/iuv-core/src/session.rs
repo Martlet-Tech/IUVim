@@ -363,6 +363,7 @@ impl Session {
             code: c.code.clone(),
             weight: c.weight,
             seg_len: c.seg_len,
+            score: c.score,
         }
     }
 

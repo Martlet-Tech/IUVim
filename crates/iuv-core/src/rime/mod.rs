@@ -3,7 +3,7 @@
 //! 派生自 librime（BSD-3-Clause）。模块构成：
 //! - [`syllabifier`]：音节图（Normal/Abbreviation/Completion 三类拼写边）；
 //! - [`translator`]：词条桶收集 + 整句闸门 + 词候选流；
-//! - [`poet`]：组句 DP/Beam 双策略。
+//! - [`poet`]：组句 DP（λ 长度惩罚参数化 + librime 平局决胜）。
 //!
 //! 架构裁决（2026-08-26，记录于任务书附录）：librime 的 Segmentation/Context
 //! 状态机**不移植**——ImeEngine 接缝按「单活动段」切分，打字期 rime 本就单段
@@ -34,6 +34,10 @@ pub struct RimeEngine {
     syllables: BTreeSet<String>,
     /// 候选截断上限（对齐 Config.max_candidates 语义）
     max_candidates: usize,
+    /// 组句长度惩罚 λ（config `rime_lambda`，39 号 W2 校准项）
+    lambda: f64,
+    /// 简拼/补全边拼写罚分（config `rime_spelling_penalty`）
+    spelling_penalty: f64,
 }
 
 impl RimeEngine {
@@ -48,6 +52,8 @@ impl RimeEngine {
             lm,
             syllables,
             max_candidates: config.max_candidates,
+            lambda: config.rime_lambda,
+            spelling_penalty: config.rime_spelling_penalty,
         })
     }
 
@@ -119,7 +125,13 @@ impl ImeEngine for RimeEngine {
         crate::perf::record("onkey.seg", t);
 
         let t = crate::perf::tick();
-        let graph = syllabifier::build_graph(&lower, &self.syllables, MAX_SYLLABLE_LEN);
+        let graph = syllabifier::build_graph(
+            &lower,
+            &self.syllables,
+            MAX_SYLLABLE_LEN,
+            self.spelling_penalty,
+            self.spelling_penalty,
+        );
         crate::perf::record("onkey.graph", t);
         // —— 微软对齐政策（classic PrefixChars，档位降级为核心内部政策）：
         // 整串为音节真前缀且非完整音节 → 纯单字，不走图流。——
@@ -140,7 +152,13 @@ impl ImeEngine for RimeEngine {
                     if !self.is_syllable(last)
                         && self.syllables.iter().any(|syl| syl.starts_with(last.as_str()))
                     {
-                        syllabifier::push_completion_edge(&mut graph, lower.len(), tail_start, last);
+                        syllabifier::push_completion_edge(
+                            &mut graph,
+                            lower.len(),
+                            tail_start,
+                            last,
+                            self.spelling_penalty,
+                        );
                     }
                 }
             }
@@ -230,7 +248,10 @@ impl ImeEngine for RimeEngine {
                         // 预测匹配（尾前缀补全）覆盖全输入 → 恒全消费
                         let seg_len = if be.exact { consumed_parts(end) } else { 999 };
                         let kind = crate::CandidateKind::for_word(&be.entry.word);
-                        cands.push(crate::Candidate::for_entry(&be.entry, kind, seg_len));
+                        let mut cand = crate::Candidate::for_entry(&be.entry, kind, seg_len);
+                        // 统一标量分：log 词权 + 拼写可信度累计（诊断展示，不参与排序）
+                        cand.score = self.lm.log_prob(None, "", be.entry.weight) + be.cred;
+                        cands.push(cand);
                     }
                 }
             }
@@ -257,7 +278,7 @@ impl ImeEngine for RimeEngine {
                 |w| self.lm.log_prob(None, "", w),
             ) {
                 if let Some(sentence) =
-                    poet::make_sentence(&wg, graph.farthest, ctx.preceding_text)
+                    poet::make_sentence(&wg, graph.farthest, ctx.preceding_text, self.lambda)
                 {
                     cands.insert(0, translator::sentence_candidate(&sentence, seg.join("'")));
                 }
