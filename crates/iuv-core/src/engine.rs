@@ -1,27 +1,21 @@
 //! 引擎资源容器。契约 01-contract.md §4。
 //!
-//! Step 1 拆分（39-rime-pipeline.md）：本文件只持有与管理资源
-//! （词库/配置/切分器/语言模型/用户库/简繁转换器）；候选生成逻辑本体在
-//! `classic.rs`（classic 核心），顶层接口实现见其 `impl ImeEngine for Engine`。
+//! 本文件只持有与管理资源（词库/配置/切分器/语言模型/用户库/简繁转换器）；
+//! 候选生成核心 = rime（`rime::RimeEngine`，39-rime-pipeline.md 收尾后唯一核心），
+//! 在构造时内部装配，会话工厂产出的会话直接绑定该核心。
 
 use crate::userdict::{UserRemote, UserState};
-use crate::{
-    schema::Quanpin, session::Session, script::ScriptConverter, Config, InputSchema, LmProvider,
-    UnigramLm,
-};
+use crate::{rime::RimeEngine, session::Session, script::ScriptConverter, Config};
 use iuv_data::Dict;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// 引擎：进程级单例，跨线程共享。
 pub struct Engine {
-    /// 词库（Arc：classic/rime 双核心共享同一实例——M2 用户库写入对两者同时可见，
-    /// 39-rime-pipeline.md §Step2）。
+    /// 词库（Arc：rime 核心与用户库写入共享同一实例——M2 用户库调权/屏蔽同源）。
     pub(crate) dict: Arc<Dict>,
     /// 配置（Mutex：M6 设置页热载 engine.set_config 需要 &self 内部可变）。
     pub(crate) config: Mutex<Config>,
-    pub(crate) schema: Box<dyn InputSchema>,
-    pub(crate) lm: Box<dyn LmProvider>,
     /// 用户权重覆盖表状态（M2 主动调权，18-m2-user-dict.md）：路径 + 上次加载 mtime
     /// （会话创建时检测跨进程写入的延迟生效；M6 daemon 模式关闭，见 userdict.rs）。
     pub(crate) user_state: Mutex<UserState>,
@@ -32,52 +26,31 @@ pub struct Engine {
     script: Mutex<Option<Arc<ScriptConverter>>>,
     /// 缓存 `config.page_size.max(1)`（P1.6：热路径每键多次读 page_size，避免整份克隆）。
     page_size: AtomicU32,
-    /// 可选替代候选核心（39-rime-pipeline.md Step3：rime 内核经此挂载，
-    /// start_session* 工厂自动改产其会话；None = classic）。
-    alt_core: Mutex<Option<Arc<dyn crate::api::ImeEngine>>>,
+    /// 候选生成核心（39-rime-pipeline.md 收尾：rime 为唯一核心，构造时内部装配）。
+    ime: Arc<dyn crate::api::ImeEngine>,
 }
 
 impl Engine {
-    /// 默认装配：Quanpin + UnigramLm。
+    /// 默认装配：rime 核心（Quanpin 切分 + UnigramLm 组句均在核心内部构造）。
     pub fn new(dict: Dict, config: Config) -> Arc<Engine> {
-        let syllables = dict.syllables().clone();
-        let lm = UnigramLm::new(dict.total_weight());
-        Self::with_parts(
-            dict,
-            config,
-            Box::new(Quanpin::new(syllables)),
-            Box::new(lm),
-        )
-    }
-
-    /// 全注入构造器（测试与后续里程碑用）。
-    pub fn with_parts(
-        dict: Dict,
-        config: Config,
-        schema: Box<dyn InputSchema>,
-        lm: Box<dyn LmProvider>,
-    ) -> Arc<Engine> {
         let page_size = config.page_size.max(1) as u32;
+        let dict = Arc::new(dict);
+        let ime = RimeEngine::new(dict.clone(), &config);
         Arc::new(Engine {
-            dict: Arc::new(dict),
+            dict,
             config: Mutex::new(config),
-            schema,
-            lm,
             user_state: Mutex::new(UserState::default()),
             user_remote: Mutex::new(None),
             script: Mutex::new(None),
             page_size: AtomicU32::new(page_size),
-            alt_core: Mutex::new(None),
+            ime,
         })
     }
 
     pub fn start_session(self: &Arc<Self>) -> Session {
         self.reload_user_dict();
-        if let Some(core) = self.alt_core() {
-            let runtime = Arc::new(std::sync::Mutex::new(self.config().initial_state));
-            return Session::over(self.clone(), core, runtime);
-        }
-        Session::new(self.clone())
+        let runtime = Arc::new(std::sync::Mutex::new(self.config().initial_state));
+        Session::over(self.clone(), self.ime.clone(), runtime)
     }
 
     /// 注入实例运行时四态开会话（32-status-toolbar.md §5.1）：TSF 每实例持有自己的
@@ -87,23 +60,7 @@ impl Engine {
         runtime: Arc<std::sync::Mutex<crate::ImeState>>,
     ) -> Session {
         self.reload_user_dict();
-        if let Some(core) = self.alt_core() {
-            return Session::over(self.clone(), core, runtime);
-        }
-        Session::with_runtime(self.clone(), runtime)
-    }
-
-    /// 挂载替代候选核心（Step3 装配点：load_engine 读 `config.engine == "rime"`
-    /// 后调用；词库共享见 [`shared_dict`](Self::shared_dict)）。重复挂载 = 替换。
-    pub fn attach_core(&self, core: Arc<dyn crate::api::ImeEngine>) {
-        *self.alt_core.lock().unwrap_or_else(|e| e.into_inner()) = Some(core);
-    }
-
-    fn alt_core(&self) -> Option<Arc<dyn crate::api::ImeEngine>> {
-        self.alt_core
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        Session::over(self.clone(), self.ime.clone(), runtime)
     }
 
     /// 装配简→繁转换器（31-script-traditional.md）。`None` = 数据缺失/不启用 → 繁体模式
@@ -142,19 +99,6 @@ impl Engine {
         self.page_size.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn is_syllable(&self, s: &str) -> bool {
-        self.dict.is_syllable(s)
-    }
-
-    pub(crate) fn is_syllable_prefix(&self, s: &str) -> bool {
-        self.dict.is_syllable_prefix(s)
-    }
-
-    /// 词库共享句柄（39-rime-pipeline.md：RimeEngine 与 classic 共享同一 Dict，
-    /// 保证用户库调权/屏蔽跨核心一致）。
-    pub fn shared_dict(&self) -> Arc<Dict> {
-        self.dict.clone()
-    }
 }
 
 #[cfg(test)]

@@ -689,31 +689,30 @@ pub trait ImeEngine: Send + Sync {
     fn preedit(&self, ctx: &EngineCtx, pending: &PendingInput,
                selected: Option<&Candidate>) -> String;
 }
-pub struct EngineCtx<'a> { pub preceding_text: &'a str }   // classic 忽略；rime 喂 poet
+pub struct EngineCtx<'a> { pub preceding_text: &'a str }   // rime 喂 poet（组句上下文）
 pub struct PendingInput<'a> { pub raw: &'a str }
 pub struct Span { pub syllables: Vec<String>, pub tags: Vec<&'static str> }
 pub struct Translation { pub segmentation: Vec<Span>, pub candidates: Vec<Candidate> }
 ```
 
-- 实现者：`Engine`（classic，impl 于 classic.rs）与 `RimeEngine`（rime/）。
+- 实现者：`RimeEngine`（rime/，39 号收尾后唯一实现；Engine 构造时内部装配）。
 - 会话层只消费 `candidates` 与 `segmentation[0].syllables`（= 原 seg 口径）；
-  多段视图 Step3+ 演进。
-- `Candidate` 增 `score: f64`（serde default 0.0）：classic 仅整句填 Viterbi 路径分，
-  rime 全量填 log 概率；排序消费随 rime 化推进。
+  打字期 rime 按「单活动段」覆盖重译，segmentation 恒单段。
+- `Candidate.score: f64`：rime 全量填 log 概率（词=log 权+cred、句=路径权重）；
+  仅诊断展示，不参与排序（整句保底置顶 + 类别序结构不变）。
 
 ### 8.2 装配与开关
 
-- `Config.engine: EngineChoice`（classic 默认 / rime），装载点消费（TSF load_engine、
-  REPL --engine），切换需重载输入法。
+- 候选核心 = rime 唯一（`RimeEngine::new(Arc<Dict>, &Config)`，`Engine::new` 内部装配）。
+  ~~`Config.engine`/`EngineChoice` 过渡开关~~已删（39 号收尾，git 留底）；旧配置
+  `"engine"` 键经 `migrate_engine` shim 清理。
 - rime 打分参数（39 号 W2 λ 校准，默认 = librime 原值）：`Config.rime_lambda: f64`
   （组句每词长度惩罚，默认 ln(1e-6)）、`Config.rime_spelling_penalty: f64`
-  （简拼/补全边可信度罚分，默认 ln(0.05)）。仅 engine=rime 消费，重载生效。
-- `Engine::attach_core(Arc<dyn ImeEngine>)`：挂载后 start_session* 自动改产核心会话；
-  词库经 `Engine::shared_dict()` Arc 共享——M2 调权/自造词/隐藏跨核心同源。
+  （简拼/补全边可信度罚分，默认 ln(0.05)）。重载生效。
 
-### 8.3 行为变更（rime 核心下）
+### 8.3 行为变更（rime 核心）
 
-- Backspace 逐字退已选词（多字词退末字、末字音节还原回未确认区；音节数≠字数整词退）；
-  classic 核心同样启用（两核统一手感）。
+- Backspace 逐字退已选词（多字词退末字、末字音节还原回未确认区；音节数≠字数整词退）。
 - 预编辑显示规则收编为 `api::preview_rules` 五规则共用实现（行为不变）。
-- rime 核心候选流：补全(全跨)置顶 → 纯全拼桶 → 含简拼桶（详见任务书 §13 裁决表）。
+- rime 核心候选流：补全(全跨)置顶 → 纯全拼桶 → 含简拼桶（详见任务书 §13 裁决表）；
+  词优先（可靠精确词在场不组句）、简拼边展开含单音节词条、大写保形字符不参与匹配。

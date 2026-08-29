@@ -38,11 +38,12 @@ pub struct RimeEngine {
     lambda: f64,
     /// 简拼/补全边拼写罚分（config `rime_spelling_penalty`）
     spelling_penalty: f64,
+    /// 前缀联想开关（config `candidate_prefix`，默认关；开启时词条流后追加联想长词）。
+    candidate_prefix: bool,
 }
 
 impl RimeEngine {
-    /// 从共享词库装配（与 classic Engine 共享同一 Dict 实例：
-    /// M2 用户库调权/屏蔽跨核心一致）。
+    /// 从共享词库装配（与 Engine 共享同一 Dict 实例：M2 用户库调权/屏蔽一致）。
     pub fn new(dict: Arc<Dict>, config: &crate::Config) -> Arc<RimeEngine> {
         let syllables = dict.syllables().clone();
         let lm = crate::UnigramLm::new(dict.total_weight());
@@ -54,6 +55,7 @@ impl RimeEngine {
             max_candidates: config.max_candidates,
             lambda: config.rime_lambda,
             spelling_penalty: config.rime_spelling_penalty,
+            candidate_prefix: config.candidate_prefix,
         })
     }
 
@@ -65,7 +67,7 @@ impl RimeEngine {
         self.dict.is_syllable_prefix(s)
     }
 
-    /// 纯单字政策（classic::single_segment_candidates 同款）：完整音节 →
+    /// 纯单字政策（api::single_char_entries 同款）：完整音节 →
     /// exact_single 全量；严格前缀 → 首字母桶过滤。
     fn prefix_chars_translation(&self, pending: &PendingInput, seg: &[String]) -> Translation {
         let plain = crate::strip_apostrophes(pending.raw);
@@ -93,13 +95,13 @@ impl RimeEngine {
     }
 
     /// 分段视图首段 = 方案词频重排后的贪心切分（与会话层既有 seg 口径一致，
-    /// 保证部分消费推进的段数语义在双引擎下不变）。
+    /// 保证部分消费推进的段数语义稳定）。
     fn ranked_seg(&self, raw: &str) -> Vec<String> {
-        let plans = crate::classic::rank_plans(&self.dict, self.schema.segment(raw));
+        let plans = crate::api::rank_plans(&self.dict, self.schema.segment(raw));
         plans.into_iter().next().unwrap_or_default()
     }
 
-    /// 原文兜底候选（与 classic generate_candidates 尾部同款："不认识"语义）。
+    /// 原文兜底候选（"不认识"语义）。
     fn fallback_translation(&self, pending: &PendingInput, seg: &[String]) -> Translation {
         let plain = crate::strip_apostrophes(pending.raw);
         let mut cands = Vec::new();
@@ -116,10 +118,17 @@ impl ImeEngine for RimeEngine {
         if pending.raw.is_empty() {
             return Translation { segmentation: vec![], candidates: vec![] };
         }
-        // 图构建用小写视图（ASCII 一一对应；大写保形显示由会话层既有路径处理）
+        // 图构建视图：保留大小写（大写保形字符不参与拼音匹配——syllabifier 对
+        // 非小写字母不产 Normal/简拼边，作为不可达分隔；`niHAO` 仍从 ni 前缀出词、
+        // `Hello` 直接兜底原文，与 classic 大写保形语义一致）。üe 去点输入形归一
+        // （24-ue-input-alias.md）：lue→lve、nue→nve，与 Quanpin::segment 同一
+        // 归一单点——替换长度不变（3→3），图顶点坐标系安全。
         // 以下 perf 细分仅在 `perf_probe` 开启时计时（关闭时每个 tick 只是一次原子读），
         // 用于定位 onkey 尖峰；`buckets` 是其中唯一真正访问词库 mmap 的一步。
-        let lower = pending.raw.to_lowercase();
+        let lower = pending
+            .raw
+            .replace("lue", "lve")
+            .replace("nue", "nve");
         let t = crate::perf::tick();
         let seg = self.ranked_seg(pending.raw);
         crate::perf::record("onkey.seg", t);
@@ -133,7 +142,7 @@ impl ImeEngine for RimeEngine {
             self.spelling_penalty,
         );
         crate::perf::record("onkey.graph", t);
-        // —— 微软对齐政策（classic PrefixChars，档位降级为核心内部政策）：
+        // —— 微软对齐政策（prefix 档位降级为核心内部政策）：
         // 整串为音节真前缀且非完整音节 → 纯单字，不走图流。——
         let plain_l = lower.trim_matches('\'');
         if !plain_l.is_empty() && !self.is_syllable(plain_l) && self.is_syllable_prefix(plain_l) {
@@ -282,6 +291,17 @@ impl ImeEngine for RimeEngine {
                 {
                     cands.insert(0, translator::sentence_candidate(&sentence, seg.join("'")));
                 }
+            }
+        }
+
+        // 前缀联想（config `candidate_prefix`，默认关，微软化）：追加以当前码
+        // （seg 去空段 join `'`）为前缀的词条（classic generate_candidates 同款）。
+        if self.candidate_prefix {
+            let n = seg.iter().filter(|s| !s.is_empty()).count().max(1);
+            let squashed = seg.join("'");
+            for e in &self.dict.prefix(&squashed, 20) {
+                let kind = crate::CandidateKind::for_word(&e.word);
+                cands.push(crate::Candidate::for_entry(e, kind, n));
             }
         }
 
@@ -487,10 +507,7 @@ mod tests {
                 dict.prefix(p, 64).iter().map(|e| format!("{}:{}", e.word, e.weight)).collect();
             println!("  prefix({p:?}) -> {got:?}");
         }
-        let cfg = crate::Config {
-            engine: crate::config::EngineChoice::Rime,
-            ..Default::default()
-        };
+        let cfg = crate::Config::default();
         let e = RimeEngine::new(dict.clone(), &cfg);
         let raw = "shigechengy";
         let lower = raw.to_lowercase();

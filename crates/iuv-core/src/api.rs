@@ -5,13 +5,13 @@
 //! ② 高亮候选 → 预编辑显示串（[`ImeEngine::preedit`]，如输入 `jian` 导航到
 //!    「吉安」时返回 `ji'an`）。
 //!
-//! classic 与 rime 两个核心都实现此 trait；会话层只认它，不感知核心差异。
-//! `EngineCtx::preceding_text` 为 Step 3 预埋钩子：classic 忽略，rime 核心喂给
-//! 组句打分（poet 的 preceding_text 机制）。
+//! rime 核心实现此 trait；会话层只认它，不感知核心实现差异。
+//! `EngineCtx::preceding_text` 为组句预埋钩子：rime 核心喂给组句打分
+//! （poet 的 preceding_text 机制）。
 
 /// 一次 translate/preedit 的上下文。
 pub struct EngineCtx<'a> {
-    /// 已确认前文（悬空选词拼接的汉字）。classic 忽略；rime 组句上下文用。
+    /// 已确认前文（悬空选词拼接的汉字）。rime 组句上下文用。
     pub preceding_text: &'a str,
 }
 
@@ -30,8 +30,8 @@ pub struct Span {
 
 /// translate 输出：分段视图 + 活动段候选列表。
 ///
-/// classic 阶段 `segmentation` 恒为整串一段（现有行为零变化）；rime 核心落地后
-/// 才出现真正的多段视图（Step 3 会话层开始消费）。
+/// 打字期 rime 按「单活动段」覆盖重译（39-rime-pipeline.md 架构裁决），
+/// `segmentation` 恒为单段（首段 = 方案词频重排后的贪心切分）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Translation {
     pub segmentation: Vec<Span>,
@@ -55,7 +55,7 @@ pub trait ImeEngine: Send + Sync {
 
 use crate::{Candidate, CandidateKind};
 
-/// 预编辑显示五规则（classic/rime 两核心共用；判定顺序即契约顺序）：
+/// 预编辑显示五规则（rime 核心使用；判定顺序即契约顺序）：
 /// 1. 用户强制撇号（raw 含 `'`）：恒输入切分，不跟随候选；
 /// 2. 原文兜底（候选 text == 输入去撇号）：原样 plain 不分节；
 /// 3. 消费段不完整（简拼 jisb/nh、前缀档）：输入切分；
@@ -95,9 +95,8 @@ pub(crate) fn preview_rules(
     display(seg)
 }
 
-/// 单字桶查询的共享实现（classic `single_segment_candidates` 与 rime
-/// `prefix_chars_translation` 共用，2026-08-26 去重）：完整音节 → exact_single 全量；
-/// 严格前缀 → 首字母桶过滤 starts_with。
+/// 单字桶查询的共享实现（rime `prefix_chars_translation` 使用，2026-08-26 去重）：
+/// 完整音节 → exact_single 全量；严格前缀 → 首字母桶过滤 starts_with。
 pub(crate) fn single_char_entries(dict: &iuv_data::Dict, s: &str) -> Vec<iuv_data::Entry> {
     if s.is_empty() {
         return Vec::new();
@@ -113,7 +112,7 @@ pub(crate) fn single_char_entries(dict: &iuv_data::Dict, s: &str) -> Vec<iuv_dat
     }
 }
 
-/// 原文兜底候选（"不认识"语义，classic 尾部与 rime fallback 共用）：
+/// 原文兜底候选（"不认识"语义，rime fallback 使用）：
 /// 多字符 → Word，单字符 → Char；text == code == plain。
 pub(crate) fn raw_fallback_candidate(plain: &str, seg_len: usize) -> Candidate {
     let kind = if plain.chars().count() >= 2 {
@@ -122,4 +121,23 @@ pub(crate) fn raw_fallback_candidate(plain: &str, seg_len: usize) -> Candidate {
         CandidateKind::Char
     };
     Candidate::new(plain, kind, plain, 0, seg_len)
+}
+
+/// 方案词频重排的共享实现（rime `ranked_seg` 使用，2026-08-26 自 classic 平移）：
+/// 按方案 join 键 exact 词条最大权重降序，稳定保贪心原序。
+pub(crate) fn rank_plans(dict: &iuv_data::Dict, plans: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    if plans.len() <= 1 {
+        return plans;
+    }
+    let mut scored: Vec<(u32, usize)> = plans
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let key = p.join("'");
+            let w = dict.exact(&key).first().map(|e| e.weight).unwrap_or(0);
+            (w, i)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, i)| plans[i].clone()).collect()
 }

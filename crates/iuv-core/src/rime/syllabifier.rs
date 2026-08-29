@@ -112,15 +112,19 @@ pub(crate) fn build_graph(
                 abbrev_penalty,
             );
         }
-        add_spelling(
-            &mut edges,
-            &mut reached,
-            v,
-            e,
-            initial.to_string(),
-            SpellingType::Abbreviation,
-            abbrev_penalty,
-        );
+        // 族②字母串自身：仅小写字母（大写保形字符不产边——作为不可达分隔，
+        // `Hello` 的 H 处无出边 → farthest=0 → 兜底原文，与 classic 语义一致）。
+        if initial.as_bytes().first().is_some_and(|b| b.is_ascii_lowercase()) {
+            add_spelling(
+                &mut edges,
+                &mut reached,
+                v,
+                e,
+                initial.to_string(),
+                SpellingType::Abbreviation,
+                abbrev_penalty,
+            );
+        }
     }
 
     let farthest = (0..=n).rev().find(|&p| p == 0 || reached[p]).unwrap_or(0);

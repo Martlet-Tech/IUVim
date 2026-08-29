@@ -381,7 +381,7 @@ impl Dict {
         &self.syllables
     }
 
-    /// 该串是否为完整合法音节（classic/rime 共用，2026-08-26 去重）。
+    /// 该串是否为完整合法音节（rime 与引擎公共路径使用，2026-08-26 去重）。
     pub fn is_syllable(&self, s: &str) -> bool {
         self.syllables.contains(s)
     }

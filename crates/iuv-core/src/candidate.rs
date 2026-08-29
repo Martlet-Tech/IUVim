@@ -21,7 +21,7 @@ pub struct Candidate {
     pub seg_len: usize,
     /// 统一标量分（log 域，39-rime-pipeline.md §2/§4；2026-08-29 λ 校准落地）。
     /// 词候选 = ln((freq+1)/total) + 拼写可信度累计；句候选 = 组句路径权重
-    /// （Σ(log_weight + λ)）。classic 引擎与不产分的路径恒 0.0（未打分语义），
+    /// （Σ(log_weight + λ)）。未打分路径（原文兜底等）恒 0.0，
     /// 仅诊断展示用，不参与排序（整句保底置顶 + 类别序结构不变）。
     pub score: f64,
 }

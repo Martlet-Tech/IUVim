@@ -12,7 +12,6 @@
 
 - M3 整句增强(LMDG)/模糊音
 - 符号/emoji 候选、学习候选（微软对齐已知差距，见 M1.5 条目）
-- 39 号 rime 管线收尾：仅剩烘焙后删 classic（λ 打分校准已完成，见 2026-08-29 条目；`docs/plan/39-rime-pipeline.md`）
 - M9 可自定义贴图皮肤框架（调研定稿/挂起；前置 M8 工具栏已多轮打磨，可重新评估）
 - 点子库：Tab 键用途（`29-tab-ideas.md`，暂不做）
 
@@ -444,4 +443,11 @@
 - [x] **根因**：39 号收尾项「λ 打分校准」起步即发现打分机制未落地——syllabifier 的 credibility 是死数据、候选无统一 score、组句平局先到先得、λ 无参数出口；且 §13#7 shigechengy 分歧（是各成员国 vs classic 是个成员）的真因不在打分参数，而在 `Dict::prefix` 截断序 bug（无用户库时按码序返回、64 截断把高频「成员」排挤出 cheng'y 补全桶——生产有用户库时 merged 排序反而掩盖了此差异，REPL/对拍与生产隐性分叉）。
 - [x] **方案**：机制先建、参数后调——① BucketEntry.cred 贯穿 BFS/合并/poet 词格（librime dictionary.cc:164 credibility 语义）；② poet λ 参数化 + 平局决胜重建（poet.cc:88-109：权重降序→少词优先→词长序列字典序）；③ `Candidate.score` 重落地（词=log 权+cred、句=路径权重；仅诊断展示不参与排序——整句保底置顶与类别序 §13#4 结构不动；上轮精简曾删无消费者的 score，本轮有真实消费方且契约 §8.1 已载）；④ `Config.rime_lambda/rime_spelling_penalty` 参数出口（默认=librime 原值）；⑤ prefix 范围物化后**先权重降序再截断**（兑现契约注释，classic candidate_prefix 同受益）。
 - [x] **改动**：iuv-core（poet/translator/syllabifier/mod/candidate/config）、iuv-data（dict.rs prefix）、iuv-repl（batch 输出增 score 列）、compare-engines.ps1 语料 9→12 条、契约 §8.1/§8.2、39 号任务书 §13#7 结案+#11 新裁决+§15A 校准基线/结果附录。
-- [x] **测试**：新增 dict.rs prefix 权重序回归测试（含用户库覆盖场景）+ rime real_dict_poet_graph_dump 真词库诊断（ignored，dump 图/桶/组句 + λ 扫描）；workspace 全绿。真词库验证：W1 默认参数 12 条语料与基线逐字节一致（零行为变化）；prefix 修复后与 classic 首屏 **12/12 全对齐**，shigechengy=是个成员且 λ∈[-20,0] 恒胜。**遗留**：烘焙后删 classic（等管理员确认）；dev-deploy 部署手测留给管理员。
+- [x] **测试**：新增 dict.rs prefix 权重序回归测试（含用户库覆盖场景）+ rime real_dict_poet_graph_dump 真词库诊断（ignored，dump 图/桶/组句 + λ 扫描）；workspace 全绿。真词库验证：W1 默认参数 12 条语料与基线逐字节一致（零行为变化）；prefix 修复后与 classic 首屏 **12/12 全对齐**，shigechengy=是个成员且 λ∈[-20,0] 恒胜。**遗留（已兑现 2026-08-29）**：烘焙后删 classic（等管理员确认，见下条）；dev-deploy 部署手测留给管理员。
+
+## 2026-08-29 · 39 号收尾：烘焙后删 classic（分支 feat/rime-single-core，管理员确认，手测待部署）
+
+- [x] **根因**：39 号 §2/§3/§6 预定的过渡终点——rime 已烘焙稳定（真词库部署打字无异常、λ 校准后 12 条语料与 classic 首屏全对齐），管理员确认删除 classic 引擎与过渡开关，维护面回归单一。详见任务书附录 §16。
+- [x] **方案**：删 classic 四件套——① 删 `classic.rs`（430 行核心 + `impl ImeEngine for Engine`）与 `EngineChoice`/`Config.engine` 开关，`Engine::new` 内部装配 `RimeEngine`（`ime: Arc<dyn ImeEngine>`），`start_session*` 恒产 rime 会话；② 删过渡脚手架（`attach_core`/`alt_core`/`shared_dict`/`Session::new`/`with_runtime`/REPL `--engine`/`compare-engines.ps1`），`rank_plans` 迁入 `api.rs`；③ 旧 `"engine"` 配置键加 `migrate_engine` shim 清理；④ 契约 §8/任务书/台账/AGENTS/README 同步。
+- [x] **补齐 rime 功能缺口（删 classic 暴露）**：üe 输入形归一（图构建前 lue→lve/nue→nve，替换长度不变坐标系安全）；`candidate_prefix` 前缀联想（RimeEngine 字段 + 词条流后追加，classic 同款）；简拼键形拼接修复（单字母简拼边直拼 concat——旧实现恒 join `'`，`jj` 拼成 `j'j` 命中不了压缩式简拼键，§13#2 裁决兑现）；**大写保形**（图构建不再 `to_lowercase`——大写字符不可达分隔，`Hello` 兜底原文而非被 `he` 音节截胡，`niHAO` 仍从 ni 前缀出词）。
+- [x] **测试**：会话层 18 项 classic 语义断言改写为 rime 语义（词优先/简拼展开/类别序，对照表见任务书 §16.4）；`engine_switch.rs` 删 classic 默认行为测试、`api_seam.rs` 改经 `RimeEngine` 测契约。workspace 全绿（约 354）+ cargo check 零警告；真词库 REPL 12 条语料与 §15A 基线全对齐（shigechengy=是个成员、chuangqianmingyueguang=床前明月光、nhmsx=你还没 命中 concat 修复）。**待手测**：dev-deploy 部署后打字链路（新 DLL 已装配 rime 唯一核心，无配置开关）。

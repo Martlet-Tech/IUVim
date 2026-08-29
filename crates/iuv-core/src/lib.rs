@@ -2,7 +2,6 @@
 
 pub mod api;
 pub mod candidate;
-pub mod classic;
 pub mod config;
 pub mod engine;
 pub mod key;

@@ -61,13 +61,9 @@ fn load_engine() -> Option<Arc<Engine>> {
                 dict.entry_count()
             ));
             let engine = Engine::new(dict, Config::load());
-            // 39-rime-pipeline.md Step3：config.engine == "rime" → 挂载 rime 核心
-            // （词库 Arc 共享，M2 调权/屏蔽跨核心同源；切换需重载输入法生效）。
-            if engine.config().engine == iuv_core::config::EngineChoice::Rime {
-                let rime = iuv_core::RimeEngine::new(engine.shared_dict(), &engine.config());
-                engine.attach_core(rime);
-                log_line("候选核心：rime（39-rime-pipeline 过渡开关）");
-            }
+            // 39-rime-pipeline.md 收尾：rime 为唯一候选核心（Engine 构造时内部装配，
+            // 词库 Arc 共享，M2 调权/屏蔽同源）。
+            log_line("候选核心：rime（唯一核心）");
             // M6 日志模块禁用集装配（26-log-modules.md）：引擎配置即共享 config.json，
             // 首装配与 config_epoch 热载（apply_config_hot_reload）两处同步。
             let cfg = engine.config();

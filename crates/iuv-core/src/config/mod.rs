@@ -14,7 +14,7 @@ mod enums;
 mod io;
 mod runtime;
 
-pub use enums::{EngineChoice, InitialMode, Orientation, PunctMode, ScriptMode, ThemeChoice, WidthMode};
+pub use enums::{InitialMode, Orientation, PunctMode, ScriptMode, ThemeChoice, WidthMode};
 pub use io::{default_config_path, migrate_keymap, strip_bom, strip_jsonc_comments};
 pub use runtime::ImeState;
 
@@ -70,15 +70,12 @@ pub struct Config {
     /// 恰好抵消关闭日志换来的手感（2026-08-29 实测）。排查时才显式置 true，
     /// 经既有 config_epoch 热载即时生效，无需重载输入法。
     pub perf_probe: bool,
-    /// 候选生成核心（39-rime-pipeline.md Step3 过渡开关，默认 classic）。
-    /// 装载点消费：TSF load_engine / REPL --engine。切换需重载输入法生效。
-    pub engine: EngineChoice,
     /// rime 引擎组句长度惩罚 λ（log 域每词罚分，39 号 W2 校准项）。
     /// 默认 = librime 原生 kPenalty ln(1e-6)：每多一个词多扣一次，长词路径占优。
-    /// 仅 `engine: "rime"` 时消费；调参需重载输入法生效。
+    /// 调参需重载输入法生效。
     pub rime_lambda: f64,
     /// rime 引擎拼写可信度罚分（log 域，简拼边与补全边各扣一次）。
-    /// 默认 = librime syllabifier.cc:28 ln(0.05)。仅 `engine: "rime"` 时消费。
+    /// 默认 = librime syllabifier.cc:28 ln(0.05)。
     pub rime_spelling_penalty: f64,
 }
 
@@ -98,7 +95,6 @@ impl Default for Config {
             disabled_log_modules: Vec::new(),
             // 性能埋点是排查工具：默认关闭，需要时显式开启（见字段注释）。
             perf_probe: false,
-            engine: EngineChoice::Classic,
             rime_lambda: crate::rime::poet::DEFAULT_LAMBDA,
             rime_spelling_penalty: crate::rime::syllabifier::COMPLETION_PENALTY,
         }
@@ -358,5 +354,19 @@ mod tests {
         .unwrap();
         let c3 = Config::from_file(&p3);
         assert_eq!(c3.initial_state.punct, PunctMode::Chinese, "新节点优先");
+    }
+
+    #[test]
+    fn from_file_old_engine_key_ignored() {
+        // 39 号收尾：双引擎过渡开关已删，旧配置残留 "engine" 键（classic/rime 均）无害——
+        // migrate_engine shim 清理后正常解析，其余字段照常生效。
+        let p = tmp_file("legacy_engine.json");
+        std::fs::write(&p, r#"{ "engine": "rime", "page_size": 7 }"#).unwrap();
+        let c = Config::from_file(&p);
+        assert_eq!(c.page_size, 7, "engine 键不应影响其余字段");
+        let p2 = tmp_file("legacy_engine_classic.json");
+        std::fs::write(&p2, r#"{ "engine": "classic", "page_size": 8 }"#).unwrap();
+        let c2 = Config::from_file(&p2);
+        assert_eq!(c2.page_size, 8, "classic 旧值同样忽略");
     }
 }

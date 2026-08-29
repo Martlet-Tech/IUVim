@@ -117,12 +117,19 @@ pub(crate) fn collect_buckets(
                 });
             }
             for sp in ordered {
-                // 键串延长：字母直拼（压缩键族）；音节/补全段以 ' 连接（词库键族）
+                // 键串延长：字母串自身（单字母简拼边，压缩简拼键族）**直拼**；
+                // 音节全名/补全段以 ' 连接（词库键族）——对齐任务书 §13#2
+                // 「全字母路径用 concat 键、纯音节路径用 join' 键」（2026-08-29
+                // 补：旧实现恒 join，纯简拼 `jj` 拼成 `j'j` 命中不了 concat 键）。
                 let mut nkey = String::with_capacity(w.key.len() + sp.syllable.len() + 1);
                 nkey.push_str(&w.key);
-                let last_byte = w.key.as_bytes().last().copied();
-                if last_byte.is_some_and(|b| b != b'\'') {
-                    nkey.push('\'');
+                let concat = sp.spelling_type == SpellingType::Abbreviation
+                    && sp.syllable.chars().count() == 1;
+                if !concat {
+                    let last_byte = w.key.as_bytes().last().copied();
+                    if last_byte.is_some_and(|b| b != b'\'') {
+                        nkey.push('\'');
+                    }
                 }
                 nkey.push_str(&sp.syllable);
                 let completion = sp.spelling_type == SpellingType::Completion;
