@@ -11,7 +11,7 @@ use windows::Win32::UI::TextServices::ITfContext;
 
 use crate::composition::Composition;
 use crate::com::engine_host::engine;
-use crate::log::{self, log_line};
+use crate::log::{self, log_line, perf_record_with, perf_tick};
 use crate::session_bridge::{caps_passthrough, is_passthrough_app, map_key};
 
 use super::text_service::TextService;
@@ -131,7 +131,12 @@ impl TextService {
                 }
             }
         }
-        match self.route_key(vk) {
+        let t_route = perf_tick();
+        let action = self.route_key(vk);
+        // 计时区间必须只包 route_key：dispatch 在下方 match 分支里，若被圈进来
+        // 这一列就成了「整键总耗时」（实测 30904us ≈ onkey+settext+render+dispatch 之和）。
+        perf_record_with("route", t_route, || format!("vk={vk:#x}"));
+        let handled = match action {
             KeyAction::Pass => false,
             KeyAction::CommitText(text) => {
                 self.commit_punct(pic, &text);
@@ -143,7 +148,9 @@ impl TextService {
                 // 注入实例运行时四态（32-toolbar §5.1：per-实例，live 读）。
                 let mut session = engine.start_session_with_runtime(self.runtime.clone());
                 self.punct_quote_open.set(false); // 拼音输入开始：引号配对复位为开形
+                let t_onkey = perf_tick();
                 let effect = session.on_key(key);
+                perf_record_with("onkey", t_onkey, || "start-session".to_owned());
                 *self.session.borrow_mut() = Some(session);
                 *self.composition.borrow_mut() =
                     Some(Composition::new(pic.clone(), self.client_id.get()));
@@ -155,16 +162,19 @@ impl TextService {
                     "[key] 按键：{}（会话内）",
                     key.name()
                 ));
+                let t_onkey = perf_tick();
                 let effect = self
                     .session
                     .borrow_mut()
                     .as_mut()
                     .map(|s| s.on_key(key))
                     .expect("会话存在性已由 route_key 判定");
+                perf_record_with("onkey", t_onkey, || key.name());
                 self.dispatch(&effect);
                 true
             }
-        }
+        };
+        handled
     }
 }
 

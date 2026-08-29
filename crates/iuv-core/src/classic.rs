@@ -353,10 +353,21 @@ impl Engine {
 /// 会话层不再分步调用），行为与拆分前完全一致。
 impl ImeEngine for Engine {
     fn translate(&self, _ctx: &EngineCtx, pending: &PendingInput) -> Translation {
+        // 三段细分（perf_probe 开启时才计时，关闭时每个 tick 只是一次原子读）：
+        // 切分 / 方案重排 / 候选生成。用于定位 onkey 尖峰——实测尖峰与输入长度无关，
+        // 若三段同时变慢则指向内存/缺页，若只有某一段变慢才是算法问题。
+        let t = crate::perf::tick();
         let plans = self.schema.segment(pending.raw);
+        crate::perf::record("onkey.segment", t);
+
+        let t = crate::perf::tick();
         let plans = self.rank_plans(plans);
+        crate::perf::record("onkey.rank", t);
+
         let seg = plans.first().cloned().unwrap_or_default();
+        let t = crate::perf::tick();
         let candidates = self.generate_candidates(pending.raw, &seg, &plans);
+        crate::perf::record("onkey.generate", t);
         Translation {
             segmentation: vec![Span {
                 syllables: seg,

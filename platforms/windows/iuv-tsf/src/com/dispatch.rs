@@ -8,7 +8,7 @@ use iuv_core::Session;
 
 use crate::composition::Composition;
 use crate::com::engine_host::engine;
-use crate::log::{self, log_line};
+use crate::log::{self, log_line, perf_record_with, perf_tick};
 use crate::session_bridge::{apply_effect, is_passthrough_app};
 use crate::ui::{CandidateUi, CandwinCandidateWindow, CaretRect};
 use crate::ui_element::CandidateElementHost;
@@ -18,6 +18,7 @@ use super::text_service::TextService;
 /// 应用 Effect（契约 §7）：composition → 候选窗；end 则上屏/取消并清理会话。
 impl TextService {
     pub(crate) fn dispatch(&self, effect: &iuv_core::Effect) {
+        let t = perf_tick();
         dispatch_effect(
             &self.session,
             &self.composition,
@@ -25,7 +26,14 @@ impl TextService {
             &self.caret,
             &self.cand_elem,
             effect,
-        )
+        );
+        perf_record_with("dispatch", t, || {
+            format!(
+                "cand={} all={}",
+                effect.candidates.len(),
+                effect.all_candidates.len()
+            )
+        });
     }
 }
 

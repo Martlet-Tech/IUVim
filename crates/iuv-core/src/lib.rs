@@ -8,6 +8,7 @@ pub mod config;
 pub mod engine;
 pub mod key;
 pub mod lm;
+pub mod perf;
 pub mod punct;
 pub mod rime;
 pub mod schema;

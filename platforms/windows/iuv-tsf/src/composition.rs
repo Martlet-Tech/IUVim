@@ -20,6 +20,13 @@ use windows_core::{implement, BOOL, ComObject, Interface, Result};
 use crate::log::log_line;
 use crate::ui::CaretRect;
 
+/// 光标量取（`GetTextExt`）连续失败多少次后判定宿主不支持并停止尝试。
+///
+/// 取 3 而非 1：个别应用在文档尚未就绪时会短暂失败后恢复正常，首次失败即永久
+/// 禁用会让这类宿主再也拿不到候选窗位置。代价是最初几次仍会尝试，但之后每键
+/// 都省下一次跨进程调用与一条失败日志。
+const CARET_PROBE_FAIL_LIMIT: u8 = 3;
+
 /// composition 封装：持有 ITfContext 与当前 composition 对象。
 ///
 /// 所有方法取 `&self`：内部用 RefCell 保存可变状态，避免 edit session
@@ -32,6 +39,10 @@ pub struct Composition {
     comp: Rc<RefCell<Option<ITfComposition>>>,
     /// 是否曾被外部终止（sink 置位）：TextService 据此丢弃会话降级重建。
     terminated: Rc<Cell<bool>>,
+    /// 光标量取（`GetTextExt`）连续失败计数：达 [`CARET_PROBE_FAIL_LIMIT`] 判定宿主
+    /// 不支持并停止尝试。量取成功即复位（宿主可能只是文档未就绪时短暂失败）。
+    /// 本对象每会话新建，标记随会话结束自然失效，无需清理。
+    caret_probe_fails: Rc<Cell<u8>>,
 }
 
 impl Composition {
@@ -41,6 +52,7 @@ impl Composition {
             client_id,
             comp: Rc::new(RefCell::new(None)),
             terminated: Rc::new(Cell::new(false)),
+            caret_probe_fails: Rc::new(Cell::new(0)),
         }
     }
 
@@ -63,6 +75,7 @@ impl Composition {
             comp_slot: self.comp.clone(),
             terminated: self.terminated.clone(),
             text: text.to_owned(),
+            caret_probe_fails: self.caret_probe_fails.clone(),
             started: RefCell::new(None),
             caret: RefCell::new(None),
         };
@@ -127,10 +140,16 @@ impl Composition {
     /// SYNC|READ：回调不在编辑锁内时同步完成；被锁即失败——正好跳过打字路径
     /// 自身触发布局变化时的重复量取。
     pub(crate) fn query_caret(&self) -> Option<CaretRect> {
+        // 宿主不支持光标量取（打字路径已连续失败达上限）：整体早退，不再为每次布局
+        // 事件发起一个注定失败的只读 edit session。返回 None → 调用方保持原位。
+        if self.caret_probe_fails.get() >= CARET_PROBE_FAIL_LIMIT {
+            return None;
+        }
         let comp = self.comp.borrow().clone()?;
         let session = RepositionSession {
             context: self.context.clone(),
             comp,
+            caret_probe_fails: self.caret_probe_fails.clone(),
             caret: RefCell::new(None),
         };
         let com = ComObject::new(session);
@@ -180,6 +199,8 @@ struct SetTextSession {
     /// 终止标志（StartComposition 成功时复位）。
     terminated: Rc<Cell<bool>>,
     text: String,
+    /// 光标量取连续失败计数（与 Composition 共享）：达上限后跳过 GetTextExt。
+    caret_probe_fails: Rc<Cell<u8>>,
     /// 输出：本次新建的 composition。
     started: RefCell<Option<ITfComposition>>,
     /// 输出：新光标矩形（屏幕坐标）。
@@ -196,13 +217,10 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
                 // InsertTextAtSelection(QUERYONLY) 的模拟插入 range 在某些实现下无效（E_INVALIDARG）。
                 let mut sel = [TF_SELECTION::default()];
                 let mut fetched = 0u32;
-                trace_step(
-                    &format!("GetSelection(ec={ec}, TF_DEFAULT_SELECTION)"),
-                    || unsafe {
-                        self.context
-                            .GetSelection(ec, TF_DEFAULT_SELECTION, &mut sel, &mut fetched)
-                    },
-                )?;
+                trace_step("GetSelection(TF_DEFAULT_SELECTION)", || unsafe {
+                    self.context
+                        .GetSelection(ec, TF_DEFAULT_SELECTION, &mut sel, &mut fetched)
+                })?;
                 if fetched == 0 || sel[0].range.is_none() {
                     log_line(&format!("GetSelection 无 selection（fetched={fetched}）"));
                     return Err(windows::Win32::Foundation::E_FAIL.into());
@@ -222,7 +240,7 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
                     terminated: self.terminated.clone(),
                 });
                 let sink: ITfCompositionSink = sink.to_interface();
-                let c = trace_step(&format!("StartComposition(ec={ec}, sink=Some)"), || unsafe {
+                let c = trace_step("StartComposition", || unsafe {
                     context_comp.StartComposition(ec, &range, &sink)
                 })?;
                 *self.started.borrow_mut() = Some(c.clone());
@@ -234,11 +252,11 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
         // SAFETY: GetRange 返回本 composition 的有效范围，调用期间存活。
         let range = trace_step("comp.GetRange", || unsafe { comp.GetRange() })?;
         let wide: Vec<u16> = self.text.encode_utf16().collect();
-        let wide_len = wide.len();
-        let display: String = self.text.chars().take(32).collect();
         // SAFETY: SetText 替换整个 composition 文本（写入切片为 UTF-16 编码）。
-        trace_step(&format!("range.SetText(ec={ec}, len={wide_len}, text={display:?})"), || {
-            unsafe { range.SetText(ec, 0, &wide) }
+        // 注：原先会把预编辑文本前 32 字符拼进描述（每键一次 String 分配），
+        // 描述改静态后已移除——失败时仍有 HRESULT 可定位，不缺排查手段。
+        trace_step("range.SetText", || unsafe {
+            range.SetText(ec, 0, &wide)
         })?;
         // 仿 Weasel：把光标 range 折叠到组合文本末尾，并把该 range 设为当前 selection，
         // 否则光标仍停在原 selection 处（组合文本开头）。
@@ -250,26 +268,47 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
             range: ManuallyDrop::new(Some(range.clone())),
             style: TF_SELECTIONSTYLE::default(),
         }];
-        trace_step(&format!("context.SetSelection(n={})", sel.len()), || unsafe {
+        trace_step("context.SetSelection", || unsafe {
             self.context.SetSelection(ec, &sel)
         })?;
 
         // 量取光标矩形（composition 文本的尾端，屏幕坐标）。
+        // 宿主不支持时直接跳过：Electron/Chromium 实测 GetTextExt 恒失败（0x80040206），
+        // 每键白跑一次跨进程调用 + 一条失败日志；候选窗位置改由布局跟随
+        // （OnLayoutChange → query_caret）兜底。
+        if self.caret_probe_fails.get() >= CARET_PROBE_FAIL_LIMIT {
+            return Ok(());
+        }
         // SAFETY: GetActiveView 由 TSF 保证在 edit session 内可调用。
         let view = match trace_step("context.GetActiveView", || unsafe { self.context.GetActiveView() }) {
             Ok(v) => v,
             Err(e) => {
-                log_line(&format!("GetActiveView 失败：{e}，跳过光标量取"));
+                log_line(&format!("[edit] GetActiveView 失败：{e}，跳过光标量取"));
                 return Ok(());
             }
         };
         let mut rc = RECT::default();
         let mut clipped = BOOL(0);
         // SAFETY: GetTextExt 由 TSF 保证在 edit session 内可调用；输出缓冲在调用前初始化。
-        let ext = trace_step(
-            &format!("view.GetTextExt(ec={ec})"),
-            || unsafe { view.GetTextExt(ec, &range, &mut rc, &mut clipped) },
-        );
+        let ext = trace_step("view.GetTextExt", || unsafe {
+            view.GetTextExt(ec, &range, &mut rc, &mut clipped)
+        });
+        // 成败都维护失败计数，达上限后本分支不再进入（见上方早退）。
+        // clipped 不计失败：宿主是支持的，只是文本此刻在视口外。
+        match &ext {
+            Ok(()) if clipped.as_bool() => {}
+            Ok(()) => self.caret_probe_fails.set(0),
+            Err(_) => {
+                let fails = self.caret_probe_fails.get().saturating_add(1);
+                self.caret_probe_fails.set(fails);
+                if fails == CARET_PROBE_FAIL_LIMIT {
+                    log_line(&format!(
+                        "[caret] GetTextExt 连续失败 {fails} 次：判定宿主不支持，\
+后续按键跳过量取（候选窗位置由布局跟随兜底）"
+                    ));
+                }
+            }
+        }
         log_line(&format!(
             "[caret] GetTextExt：rc=({},{},{},{}) clipped={} err={:?}",
             rc.left, rc.top, rc.right, rc.bottom, clipped.0,
@@ -297,12 +336,19 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
     }
 }
 
-/// 分步调试日志：每个 TSF 调用包装一层，成功打 OK，失败打 HRESULT 并短路。
+/// 分步调试日志：每个 TSF 调用包装一层，失败打 HRESULT 并短路。
+///
+/// `name` 必须是**静态**描述（不拼接动态内容）：本函数只在失败分支才格式化，
+/// 调用点若预先 `format!` 出来，热路径就会为一条看不到（或本就不写）的日志
+/// 白做字符串分配。
+///
+/// 消息带 `[edit]` 前缀：原先无前缀，而 `log.rs` 对无 tag 消息**恒放行**，
+/// 导致 Electron 类宿主上每键一条失败日志无法通过配置关闭。
 fn trace_step<T>(name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
     match f() {
         Ok(v) => Ok(v),
         Err(e) => {
-            log_line(&format!("do_edit_session: {name} 失败：{e:?}"));
+            log_line(&format!("[edit] do_edit_session: {name} 失败：{e:?}"));
             Err(e)
         }
     }
@@ -314,6 +360,8 @@ fn trace_step<T>(name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
 struct RepositionSession {
     context: ITfContext,
     comp: ITfComposition,
+    /// 光标量取连续失败计数（与 Composition 共享）。
+    caret_probe_fails: Rc<Cell<u8>>,
     /// 输出：光标矩形（None = 量取失败/clipped/文本不可见）。
     caret: RefCell<Option<CaretRect>>,
 }
@@ -336,9 +384,15 @@ impl ITfEditSession_Impl for RepositionSession_Impl {
         let mut rc = RECT::default();
         let mut clipped = BOOL(0);
         // SAFETY: GetTextExt 由 TSF 保证在 edit session 内可调用；输出缓冲先初始化。
-        trace_step("reposition: view.GetTextExt(ec)", || unsafe {
+        // 失败计入共享计数（与打字路径同一份）：宿主不支持时 query_caret 整体早退。
+        if let Err(e) = trace_step("reposition: view.GetTextExt(ec)", || unsafe {
             view.GetTextExt(ec, &range, &mut rc, &mut clipped)
-        })?;
+        }) {
+            let fails = self.caret_probe_fails.get().saturating_add(1);
+            self.caret_probe_fails.set(fails);
+            return Err(e);
+        }
+        self.caret_probe_fails.set(0);
         if clipped.as_bool() || (rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0) {
             // MSDN：clipped 或全零 = 文本不可见（如最小化）：保持原位。
             return Ok(());
@@ -372,8 +426,8 @@ impl ITfEditSession_Impl for EndSession_Impl {
         let range = trace_step("end: comp.GetRange", || unsafe { comp.GetRange() })?;
         let wide: Vec<u16> = self.text.encode_utf16().collect();
         // SAFETY: SetText 替换 composition 范围文本；空串 = 删除（cancel 语义）。
-        trace_step(&format!("end: range.SetText(ec={ec}, len={})", wide.len()), || {
-            unsafe { range.SetText(ec, 0, &wide) }
+        trace_step("end: range.SetText", || unsafe {
+            range.SetText(ec, 0, &wide)
         })?;
         // 显式把选区折叠到文本尾端并设为当前 selection——「composition 结束后光标
         // 放哪」TSF 未定义、由应用自定：Word 会恢复自己记录的选区锚点（composition
@@ -389,7 +443,7 @@ impl ITfEditSession_Impl for EndSession_Impl {
             range: ManuallyDrop::new(Some(range)),
             style: TF_SELECTIONSTYLE::default(),
         }];
-        trace_step(&format!("end: context.SetSelection(n={})", sel.len()), || unsafe {
+        trace_step("end: context.SetSelection", || unsafe {
             self.context.SetSelection(ec, &sel)
         })?;
         // SAFETY: EndComposition 需要写 cookie，当前 edit session 为读写。

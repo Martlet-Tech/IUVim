@@ -70,7 +70,9 @@ fn load_engine() -> Option<Arc<Engine>> {
             }
             // M6 日志模块禁用集装配（26-log-modules.md）：引擎配置即共享 config.json，
             // 首装配与 config_epoch 热载（apply_config_hot_reload）两处同步。
-            crate::log::set_log_modules_disabled(&engine.config().disabled_log_modules);
+            let cfg = engine.config();
+            crate::log::set_log_modules_disabled(&cfg.disabled_log_modules);
+            crate::log::configure_perf_probe(cfg.perf_probe);
             // M2 主动调权用户库装配（18-m2-user-dict.md）：缺失/损坏 → 空库继续，
             // attach 返回 Err 仅记日志（不代表未装配——路径已记录，首次交换时创建文件）。
             let user_path = user_dict_path();

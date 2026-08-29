@@ -115,10 +115,16 @@ impl ImeEngine for RimeEngine {
             return Translation { segmentation: vec![], candidates: vec![] };
         }
         // 图构建用小写视图（ASCII 一一对应；大写保形显示由会话层既有路径处理）
+        // 以下 perf 细分仅在 `perf_probe` 开启时计时（关闭时每个 tick 只是一次原子读），
+        // 用于定位 onkey 尖峰；`buckets` 是其中唯一真正访问词库 mmap 的一步。
         let lower = pending.raw.to_lowercase();
+        let t = crate::perf::tick();
         let seg = self.ranked_seg(pending.raw);
+        crate::perf::record("onkey.seg", t);
 
+        let t = crate::perf::tick();
         let graph = syllabifier::build_graph(&lower, &self.syllables, MAX_SYLLABLE_LEN);
+        crate::perf::record("onkey.graph", t);
         // —— 微软对齐政策（classic PrefixChars，档位降级为核心内部政策）：
         // 整串为音节真前缀且非完整音节 → 纯单字，不走图流。——
         let plain_l = lower.trim_matches('\'');
@@ -149,6 +155,7 @@ impl ImeEngine for RimeEngine {
         // 音节边界起点集：**图推导**——所有 Normal 边的终点 ∪ {0}。
         // （旧实现按无撇号长度累加，续接态 raw 带 `'` 时与含撇号坐标系错位，
         // 多起点全丢 → 句通道静默失效 + 中段词消失，2026-08-26 实测根因。）
+        let t = crate::perf::tick();
         let mut origins = std::collections::BTreeSet::new();
         origins.insert(0);
         for (_, to_map) in graph.edges.iter() {
@@ -165,6 +172,7 @@ impl ImeEngine for RimeEngine {
             &origins,
             self.blocked(),
         );
+        crate::perf::record("onkey.buckets", t);
 
         // —— 词候选流（st.cc 码长优先 + 2026-08-26 裁决分级）：
         //    类 2（尾前缀补全，恒覆盖全跨度——对齐 classic 2b 整句置顶与
@@ -208,6 +216,7 @@ impl ImeEngine for RimeEngine {
                 .min(n_seg_cum.max(1))
         };
 
+        let t = crate::perf::tick();
         let mut cands: Vec<crate::Candidate> = Vec::new();
         for class in [2u8, 0, 1] {
             let mut ends: Vec<usize> = buckets
@@ -264,6 +273,7 @@ impl ImeEngine for RimeEngine {
         // 文本去重（DistinctTranslation：静默丢重、先见先留）
         let mut seen = std::collections::HashSet::new();
         cands.retain(|c| seen.insert(c.text.clone()));
+        crate::perf::record("onkey.assemble", t);
 
         // 截断 + 原文兜底
         cands.truncate(self.max_candidates);

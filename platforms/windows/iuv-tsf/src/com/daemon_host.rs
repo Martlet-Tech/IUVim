@@ -58,6 +58,8 @@ impl TextService {
         engine.set_config(cfg.clone());
         // 日志模块禁用集热载（26-log-modules.md）：随 config_epoch 生效。
         crate::log::set_log_modules_disabled(&cfg.disabled_log_modules);
+        // 性能埋点热载（config_epoch 触发）：排查时置 true 即时生效，无需重载。
+        crate::log::configure_perf_probe(cfg.perf_probe);
         let theme = match cfg.theme {
             iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
             iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
