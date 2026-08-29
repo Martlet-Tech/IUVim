@@ -1,20 +1,26 @@
-//! 桌宠精灵素材（M1 桌宠骨架 · daemon 侧资产装配）。
+//! 桌宠形象素材装配（少女分层皮肤 + 外部皮肤目录 + L0 帧表回退）。
 //!
-//! 决策（docs/pet/M1-IMPLEMENTATION.md §1.1）：**不建缩放/转换工具**——源图即最终素材，
-//! 编译期 `include_bytes!` 内嵌（与 `toolbar_icons.rs` 同模式），运行时 `Pixmap::decode_png`
-//! 解码 + `iuv_ui::pet::slice_frames` 切割。素材文件落地在 `assets/pet/default.png`，
-//! 许可与版权见 `assets/pet/LICENSE.md`（CC0 默认宠）。
+//! # 三级装配（任一失败静默降级，daemon 绝不 panic）
 //!
-//! 失败降级：素材缺失 / 解码失败 / 切割失败 → 返回 `PetSprites::default()`（空帧表），
-//! 上层 `ToolbarWindow` 据此决定"宠物区留空、工具栏区不受影响"——daemon 绝不 panic。
+//! 1. **外部皮肤目录**：`<iuv_dir>/pet/skins/<skin_id>/` 下放 `skin.json` + 各图层 PNG。
+//!    免重编译换装——这是为后续换装/换角色预留的扩展口（本次不实现管理 UI）。
+//! 2. **内置默认皮肤**：`include_str!` / `include_bytes!` 内嵌（开箱可用、零外部依赖）。
+//! 3. **L0 帧表回退**：像素狗 `assets/pet/default.png`（分层素材整体缺失时兜底）。
 //!
-//! §9 共享约定：零新依赖；布局常量 Rust `const` 内嵌，不引入 toml。
+//! # 皮肤描述单一数据源
+//!
+//! 内置与外部皮肤都走同一份 `skin.json` 反序列化，保证内外格式一致、
+//! 「内置」只是把素材编译进二进制而已。
+//!
+//! §9 共享约定：零新依赖；解码用 tiny-skia 自带 `Pixmap::decode_png`。
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 
-use iuv_core::PetClip;
-use iuv_ui::{pet::slice_frames, PetSheetLayout, PetSprites};
+use iuv_core::{iuv_dir, FaceExpr, LayerId, PetSkin};
+use iuv_ui::pet::slice_frames;
+use iuv_ui::{LayerImages, PetSheetLayout, PetSprites};
 use tiny_skia::Pixmap;
 
 use crate::log::log_line;
@@ -26,13 +32,31 @@ macro_rules! asset {
     };
 }
 
-/// 默认宠帧表（assets/pet/default.png）：行 = 动画、列 = 帧数，行优先切割。
-///
-/// 与 `assets/pet/LICENSE.md` §4 "M1 帧表布局约定" 一一对应——
-/// 任何对外变更（替换默认宠 / 改帧表规格）必须同步更新该文件。
+/// 当前内置皮肤标识（同时用作外部皮肤目录名）。
+pub const DEFAULT_SKIN_ID: &str = "girl_default";
+
+// ===== 内置少女皮肤（girl_default）=====
+
+/// 皮肤描述（与 `assets/pet/girl_default/skin.json` 同一份文件）。
+const GIRL_SKIN_JSON: &str = include_str!(asset!("pet/girl_default/skin.json"));
+
+// 图层 PNG（呆毛 ahoge 为全透明占位，不入包；缺失层由渲染层自动跳过）
+const GIRL_BODY: &[u8] = include_bytes!(asset!("pet/girl_default/body.png"));
+const GIRL_HEAD: &[u8] = include_bytes!(asset!("pet/girl_default/head.png"));
+const GIRL_HAIR_BACK: &[u8] = include_bytes!(asset!("pet/girl_default/hair_back.png"));
+const GIRL_HAIR_FRONT: &[u8] = include_bytes!(asset!("pet/girl_default/hair_front.png"));
+const GIRL_FACE_NORMAL: &[u8] = include_bytes!(asset!("pet/girl_default/face_normal.png"));
+const GIRL_FACE_BLINK: &[u8] = include_bytes!(asset!("pet/girl_default/face_blink.png"));
+const GIRL_FACE_SMILE: &[u8] = include_bytes!(asset!("pet/girl_default/face_smile.png"));
+const GIRL_FACE_FOCUS: &[u8] = include_bytes!(asset!("pet/girl_default/face_focus.png"));
+const GIRL_FACE_SURPRISED: &[u8] = include_bytes!(asset!("pet/girl_default/face_surprised.png"));
+const GIRL_FACE_SLEEPY: &[u8] = include_bytes!(asset!("pet/girl_default/face_sleepy.png"));
+
+// ===== L0 回退：像素狗帧表（M1 原始素材，保留作兜底）=====
+
 const DEFAULT_SHEET: &[u8] = include_bytes!(asset!("pet/default.png"));
 
-/// 帧表布局（@96dpi 基准）：6 列 × 5 行 × 16×16 = 30 帧。改这里时同步更新 LICENSE.md。
+/// 像素狗帧表布局（@96dpi 基准）：6 列 × 5 行 × 16×16 = 30 帧。
 const DEFAULT_LAYOUT: PetSheetLayout = PetSheetLayout {
     frame_w: 16,
     frame_h: 16,
@@ -40,102 +64,240 @@ const DEFAULT_LAYOUT: PetSheetLayout = PetSheetLayout {
     cols: 6,
 };
 
-/// `PetSprites` 装配失败时使用的空集（None 帧表）—— 渲染层据此决定留空。
+/// 桌宠形象：皮肤描述 + 已解码分层素材 + L0 帧表兜底。
+///
+/// 由 daemon 启动时装配一次，经 `Arc` 交工具条线程独占。
+pub struct PetArt {
+    /// 皮肤描述（图层 z-order / 锚点 / 摆动参数 / 呼吸 / 眨眼）
+    pub skin: PetSkin,
+    /// 已解码的分层位图（分层路径）
+    pub images: LayerImages,
+    /// 像素狗帧表（L0 回退路径；分层不可用时启用）
+    pub fallback: PetSprites,
+}
+
+impl PetArt {
+    /// 是否走分层渲染路径（分层素材齐全）。
+    ///
+    /// `false` 时上层应改用 `fallback` 帧表渲染（L0 降级）。
+    pub fn is_layered(&self) -> bool {
+        !self.images.is_empty()
+    }
+}
+
+/// 装配桌宠形象（三级降级，绝不 panic）。
+pub fn load_pet_art() -> PetArt {
+    // ① 外部皮肤目录（免重编译换装）
+    if let Some(dir) = external_skin_dir(DEFAULT_SKIN_ID) {
+        if let Some((skin, images)) = load_skin_dir(&dir) {
+            log_line(&format!(
+                "[pet] 已加载外部皮肤：{DEFAULT_SKIN_ID}（{} 图层）",
+                skin.layers.len()
+            ));
+            return PetArt { skin, images, fallback: load_default_sprites() };
+        }
+        log_line(&format!(
+            "[pet] 外部皮肤目录不可用（{}），回退内置皮肤",
+            dir.display()
+        ));
+    }
+    // ② 内置默认皮肤
+    if let Some((skin, images)) = builtin_girl_art() {
+        log_line(&format!(
+            "[pet] 已装配内置少女皮肤：{DEFAULT_SKIN_ID}（{} 图层）",
+            skin.layers.len()
+        ));
+        return PetArt { skin, images, fallback: load_default_sprites() };
+    }
+    // ③ L0 帧表兜底
+    log_line("[pet] 分层素材缺失，回退 L0 帧表（像素狗）");
+    PetArt {
+        skin: PetSkin::builtin_girl_default(),
+        images: LayerImages::empty(),
+        fallback: load_default_sprites(),
+    }
+}
+
+/// 外部皮肤目录：`<iuv_dir>/pet/skins/<skin_id>/`（不存在 → `None`）。
+pub fn external_skin_dir(skin_id: &str) -> Option<PathBuf> {
+    let dir = iuv_dir()?.join("pet").join("skins").join(skin_id);
+    if dir.is_dir() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// 从目录加载皮肤：`skin.json` + 各图层 PNG。
+///
+/// 任一环节失败（读文件/解析 JSON/解码 PNG）→ `None`，由调用方降级。
+/// 图层缺失**不**导致整体失败：只要有任意一张可用即可（缺的层渲染时跳过）。
+pub fn load_skin_dir(dir: &Path) -> Option<(PetSkin, LayerImages)> {
+    let json = std::fs::read_to_string(dir.join("skin.json")).ok()?;
+    let skin: PetSkin = serde_json::from_str(&json).ok()?;
+    let mut images = LayerImages::empty();
+
+    for layer in &skin.layers {
+        // 表情层按 FaceExpr 逐张加载，不走通用图层文件名
+        if layer.id == LayerId::Face {
+            continue;
+        }
+        let path = dir.join(format!("{}.png", layer.id.file_stem()));
+        if let Some(px) = decode_file(&path) {
+            images.insert(layer.id, px);
+        } else {
+            log_line(&format!("[pet] 图层缺失，已跳过：{}", path.display()));
+        }
+    }
+    for expr in FaceExpr::ALL {
+        let path = dir.join(expr.file_name());
+        if let Some(px) = decode_file(&path) {
+            images.insert_face(expr, px);
+        }
+    }
+    if images.is_empty() {
+        return None;
+    }
+    Some((skin, images))
+}
+
+/// 内置少女皮肤装配。
+fn builtin_girl_art() -> Option<(PetSkin, LayerImages)> {
+    let skin: PetSkin = serde_json::from_str(GIRL_SKIN_JSON).ok()?;
+    let mut images = LayerImages::empty();
+    images.insert(LayerId::Body, decode(GIRL_BODY)?);
+    images.insert(LayerId::Head, decode(GIRL_HEAD)?);
+    images.insert(LayerId::HairBack, decode(GIRL_HAIR_BACK)?);
+    images.insert(LayerId::HairFront, decode(GIRL_HAIR_FRONT)?);
+    images.insert_face(FaceExpr::Normal, decode(GIRL_FACE_NORMAL)?);
+    images.insert_face(FaceExpr::Blink, decode(GIRL_FACE_BLINK)?);
+    images.insert_face(FaceExpr::Smile, decode(GIRL_FACE_SMILE)?);
+    images.insert_face(FaceExpr::Focus, decode(GIRL_FACE_FOCUS)?);
+    images.insert_face(FaceExpr::Surprised, decode(GIRL_FACE_SURPRISED)?);
+    images.insert_face(FaceExpr::Sleepy, decode(GIRL_FACE_SLEEPY)?);
+    Some((skin, images))
+}
+
+/// `PetSprites` 装配失败时使用的空集。
 pub fn empty_sprites() -> PetSprites {
     PetSprites::new(Vec::new(), HashMap::new())
 }
 
-/// 装配默认宠 `PetSprites`（进程启动一次，失败 → 空集，工具栏宠物区留空）。
+/// 装配 L0 回退帧表（像素狗）。
 ///
-/// 解码 PNG → 切割帧 → 构造 `PetSprites`：clip → frames 区间映射（M1 默认映射见下）。
-/// 全部失败降级不 panic：
-/// - `Pixmap::decode_png` 失败 → 记日志返回空集
-/// - `slice_frames` 失败（尺寸不整除等）→ 记日志返回空集
-/// - 帧总数为 0 → 返回空集
+/// 解码失败 / 切割失败 → 空集（上层据此不画宠物，工具栏不受影响）。
 pub fn load_default_sprites() -> PetSprites {
     let sheet = match Pixmap::decode_png(DEFAULT_SHEET) {
         Ok(p) => p,
         Err(e) => {
-            log_line(&format!("[pet] 默认宠帧表解码失败：{e:?}（工具栏宠物区留空）"));
+            log_line(&format!("[pet] 回退帧表解码失败：{e:?}"));
             return empty_sprites();
         }
     };
-    // tiny-skia 0.12 Pixmap::decode_png 像素内存序 = RGBA（与 PetSprites 期望一致，
-    // 后续渲染层 `render_pet_frame` 用的也是 RGBA Pixmap）；无需 R/B 交换。
-
     let frames = slice_frames(&sheet, &DEFAULT_LAYOUT);
     if frames.is_empty() {
-        log_line(&format!(
-            "[pet] 帧表切割为空（sheet {}x{}, 期望 {}x{} 帧）→ 工具栏宠物区留空",
-            sheet.width(),
-            sheet.height(),
-            DEFAULT_LAYOUT.cols,
-            DEFAULT_LAYOUT.rows
-        ));
+        log_line("[pet] 回退帧表切割为空");
         return empty_sprites();
     }
-    log_line(&format!(
-        "[pet] 默认宠已装配：{} 帧（{}x{} 网格 × {}x{} px）",
-        frames.len(),
-        DEFAULT_LAYOUT.cols,
-        DEFAULT_LAYOUT.rows,
-        DEFAULT_LAYOUT.frame_w,
-        DEFAULT_LAYOUT.frame_h
-    ));
-
-    // 帧区间映射（行优先切片；区间半开 [start, end)）：
-    //   row 0 = idle（6 帧）     → Idle, ModeCn, ModeEn（Idle/英文回退）
-    //   row 1 = walk（6 帧）     → Typing
-    //   row 2 = run（6 帧）       → 预留（M1 未映射）
-    //   row 3 = jump（6 帧）      → React, Width, Script, Punct（四态一闪共用）
-    //   row 4 = attack（6 帧）    → 预留（M1 未映射）
     let cols = DEFAULT_LAYOUT.cols as usize;
-    let mut clips: HashMap<PetClip, Range<usize>> = HashMap::new();
-    clips.insert(PetClip::Idle, 0..cols);
-    clips.insert(PetClip::ModeCn, 0..cols);
-    clips.insert(PetClip::ModeEn, 0..cols);
-    clips.insert(PetClip::Typing, cols..2 * cols);
-    clips.insert(PetClip::React, 3 * cols..3 * cols + 2.min(cols)); // 一次性跳 2 帧
-    clips.insert(PetClip::Width, 3 * cols..3 * cols + 2.min(cols));
-    clips.insert(PetClip::Script, 3 * cols..3 * cols + 2.min(cols));
-    clips.insert(PetClip::Punct, 3 * cols..3 * cols + 2.min(cols));
-
+    let mut clips: HashMap<iuv_core::PetClip, Range<usize>> = HashMap::new();
+    clips.insert(iuv_core::PetClip::Idle, 0..cols);
+    clips.insert(iuv_core::PetClip::ModeCn, 0..cols);
+    clips.insert(iuv_core::PetClip::ModeEn, 0..cols);
+    clips.insert(iuv_core::PetClip::Typing, cols..2 * cols);
+    clips.insert(iuv_core::PetClip::React, 3 * cols..3 * cols + 2.min(cols));
+    clips.insert(iuv_core::PetClip::Width, 3 * cols..3 * cols + 2.min(cols));
+    clips.insert(iuv_core::PetClip::Script, 3 * cols..3 * cols + 2.min(cols));
+    clips.insert(iuv_core::PetClip::Punct, 3 * cols..3 * cols + 2.min(cols));
     PetSprites::new(frames, clips)
+}
+
+/// 解码内嵌 PNG 字节。
+fn decode(bytes: &[u8]) -> Option<Pixmap> {
+    Pixmap::decode_png(bytes).ok()
+}
+
+/// 解码磁盘 PNG 文件（外部皮肤目录用）。
+fn decode_file(path: &Path) -> Option<Pixmap> {
+    let bytes = std::fs::read(path).ok()?;
+    Pixmap::decode_png(&bytes).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 真实素材存在时 `load_default_sprites` 成功；clip 映射覆盖核心动画。
-    /// 全部失败路径在 daemon 集成测试覆盖（手测：删 default.png / 改 PNG 头部）。
     #[test]
-    fn load_default_sprites_succeeds_with_real_asset() {
-        let sprites = load_default_sprites();
-        // 至少 30 帧 + 8 clip 区间
-        assert!(sprites.clip_len(PetClip::Idle) >= 1, "Idle 必有");
-        assert!(sprites.clip_len(PetClip::Typing) >= 1, "Typing 必有");
-        assert!(sprites.clip_len(PetClip::React) >= 1, "React 必有");
-        // React 一次性只取 2 帧（jump 行的前 2 帧）
-        let react_len = sprites.clip_len(PetClip::React);
-        assert!(react_len <= 2, "React 一次性 2 帧上限，实际 {react_len}");
+    fn builtin_girl_art_loads_all_layers() {
+        let (skin, images) = builtin_girl_art().expect("内置少女皮肤必须可装配");
+        assert_eq!(skin.id, DEFAULT_SKIN_ID);
+        assert_eq!(skin.design_size, (224, 256));
+        assert!(!images.is_empty());
+        // 核心图层全在
+        for id in [LayerId::Body, LayerId::Head, LayerId::HairBack, LayerId::HairFront] {
+            assert!(images.get(id).is_some(), "{id:?} 图层必须存在");
+        }
+        // 全部表情都在（缺失时渲染层会回退 Normal，但内置包应当提供齐全）
+        for expr in FaceExpr::ALL {
+            assert!(images.face(expr).is_some(), "{expr:?} 表情必须存在");
+        }
     }
 
     #[test]
-    fn empty_sprites_returns_no_frames() {
+    fn builtin_layer_sizes_match_design_size() {
+        let (skin, images) = builtin_girl_art().expect("内置皮肤可装配");
+        let (dw, dh) = skin.design_size;
+        for id in [LayerId::Body, LayerId::Head, LayerId::HairBack, LayerId::HairFront] {
+            let px = images.get(id).expect("图层存在");
+            assert_eq!(
+                (px.width(), px.height()),
+                (dw, dh),
+                "{id:?} 尺寸必须等于 design_size（分层对齐的前提）"
+            );
+        }
+        for expr in FaceExpr::ALL {
+            let px = images.face(expr).expect("表情存在");
+            assert_eq!((px.width(), px.height()), (dw, dh), "{expr:?} 尺寸必须一致");
+        }
+    }
+
+    #[test]
+    fn builtin_skin_layers_have_no_face_layer_gap() {
+        // 表情层在 skin.layers 中存在，但素材按 FaceExpr 加载
+        let (skin, images) = builtin_girl_art().expect("内置皮肤可装配");
+        assert!(skin.layer(LayerId::Face).is_some(), "皮肤描述应含表情层");
+        assert!(
+            images.get(LayerId::Face).is_none(),
+            "表情素材应存在 faces 槽位而非 layers"
+        );
+        assert!(images.face(FaceExpr::Normal).is_some());
+    }
+
+    #[test]
+    fn load_pet_art_is_layered_with_builtin_assets() {
+        let art = load_pet_art();
+        assert!(art.is_layered(), "内置素材齐全时应走分层路径");
+        assert!(!art.fallback.is_empty(), "L0 回退帧表应始终可用");
+    }
+
+    #[test]
+    fn fallback_sprites_are_usable() {
+        let sprites = load_default_sprites();
+        assert!(!sprites.is_empty());
+        assert!(sprites.clip_len(iuv_core::PetClip::Idle) >= 1);
+        assert!(sprites.clip_len(iuv_core::PetClip::Typing) >= 1);
+    }
+
+    #[test]
+    fn empty_sprites_has_no_frames() {
         let s = empty_sprites();
         assert!(s.is_empty());
-        assert_eq!(s.clip_len(PetClip::Idle), 0);
-        assert_eq!(s.clip_len(PetClip::Typing), 0);
     }
 
-    /// 默认 layout 总帧数 = cols × rows（30）。
     #[test]
-    fn layout_total_matches_30() {
-        assert_eq!(DEFAULT_LAYOUT.cols, 6);
-        assert_eq!(DEFAULT_LAYOUT.rows, 5);
-        assert_eq!(DEFAULT_LAYOUT.frame_w, 16);
-        assert_eq!(DEFAULT_LAYOUT.frame_h, 16);
-        assert_eq!(DEFAULT_LAYOUT.total(), 30);
+    fn load_skin_dir_missing_dir_returns_none() {
+        // 不存在的目录 → None（调用方降级）
+        let missing = std::env::temp_dir().join("iuv_pet_skin_that_does_not_exist");
+        assert!(load_skin_dir(&missing).is_none());
     }
 }

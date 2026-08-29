@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use iuv_core::PetClip;
+use iuv_core::{FaceExpr, LayerId, PetAnim, PetClip, PetSkin};
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 
 use crate::layout::Rect as LayoutRect;
@@ -340,6 +340,195 @@ pub fn pet_alpha_at(
     src.data()[idx + 3]
 }
 
+// ===== 分层渲染（少女形象 · Live2D 式） =====
+
+/// 已解码的分层素材（每图层一张位图 + 每种表情一张位图）。
+///
+/// **关键约定**：所有图层位图尺寸**相同**（= `PetSkin::design_size`），透明区域表示该层
+/// 无内容。全画布尺寸让各层天然对齐、锚点语义统一，绕锚点旋转时不会错位——这正是
+/// Live2D 分层素材的通行做法。
+#[derive(Clone, Debug, Default)]
+pub struct LayerImages {
+    layers: [Option<Pixmap>; LayerId::COUNT],
+    faces: [Option<Pixmap>; FaceExpr::COUNT],
+}
+
+impl LayerImages {
+    /// 空素材集（渲染时静默跳过全部图层）。
+    pub fn empty() -> Self {
+        LayerImages {
+            layers: std::array::from_fn(|_| None),
+            faces: std::array::from_fn(|_| None),
+        }
+    }
+
+    /// 放入图层位图（同一 id 重复放入覆盖旧值）。
+    pub fn insert(&mut self, id: LayerId, px: Pixmap) {
+        self.layers[id.index()] = Some(px);
+    }
+
+    /// 放入表情位图。
+    pub fn insert_face(&mut self, expr: FaceExpr, px: Pixmap) {
+        self.faces[expr.index()] = Some(px);
+    }
+
+    /// 取图层位图（缺失 → `None`）。
+    pub fn get(&self, id: LayerId) -> Option<&Pixmap> {
+        self.layers[id.index()].as_ref()
+    }
+
+    /// 取表情位图（缺失 → `None`）。
+    pub fn face(&self, expr: FaceExpr) -> Option<&Pixmap> {
+        self.faces[expr.index()].as_ref()
+    }
+
+    /// 是否一张素材都没有。
+    pub fn is_empty(&self) -> bool {
+        self.layers.iter().all(|l| l.is_none()) && self.faces.iter().all(|f| f.is_none())
+    }
+}
+
+/// 把单个图层缩放到目标矩形，并绕**归一化锚点**旋转后合成到 `canvas`。
+///
+/// 变换矩阵（右乘链：先缩放 → 把锚点平移到原点 → 旋转 → 平移到目标锚点位置）：
+/// ```text
+/// T = translate(pivot) ∘ rotate(deg) ∘ translate(-anchor·dst_size) ∘ scale(s)
+/// ```
+///
+/// tiny-skia 的 `from_rotate` 绕原点旋转，故用"平移—旋转—平移"三明治把支点移到锚点。
+///
+/// `deg == 0` 时跳过旋转（绝大多数帧的常见路径），省一次矩阵分解。
+///
+/// **零 panic**：尺寸非法 / 旋转失败 / 参数非有限 → 返回 `false`。
+pub fn blit_layer(
+    canvas: &mut Pixmap,
+    src: &Pixmap,
+    dst: &LayoutRect,
+    anchor: (f32, f32),
+    deg: f32,
+) -> bool {
+    if dst.w <= 0 || dst.h <= 0 || src.width() == 0 || src.height() == 0 {
+        return false;
+    }
+    let dst_w = dst.w as f32;
+    let dst_h = dst.h as f32;
+    let sx = dst_w / src.width() as f32;
+    let sy = dst_h / src.height() as f32;
+    if !sx.is_finite() || !sy.is_finite() || sx <= 0.0 || sy <= 0.0 {
+        return false;
+    }
+
+    let ax = anchor.0.clamp(0.0, 1.0);
+    let ay = anchor.1.clamp(0.0, 1.0);
+    let pivot_x = dst.x as f32 + ax * dst_w;
+    let pivot_y = dst.y as f32 + ay * dst_h;
+
+    // 注意 tiny-skia 的 `post_*` 是**左乘**：新变换套在最外层、最后作用。
+    // 故按"作用顺序"倒着链接：scale → 平移锚点到原点 → 旋转 → 平移到目标锚点位置。
+    let scaled = Transform::from_scale(sx, sy)
+        .post_translate(-ax * dst_w, -ay * dst_h);
+    let rotated = if deg == 0.0 {
+        scaled
+    } else {
+        scaled.post_rotate(deg)
+    };
+    let t = rotated.post_translate(pivot_x, pivot_y);
+
+    let paint = PixmapPaint {
+        opacity: 1.0,
+        quality: FilterQuality::Bilinear,
+        ..Default::default()
+    };
+    // 位置已包含在 transform 内，故 x/y 传 0
+    canvas.draw_pixmap(0, 0, src.as_ref(), &paint, t, None);
+    true
+}
+
+/// 分层合成：按 `PetSkin` 的 z-order 逐层绘制，并抽出宠物区的 alpha 位图。
+///
+/// - 图层素材缺失 → **跳过该层**（而非整体失败），保证缺素材时仍能看到部分形象
+/// - 表情层用 `expr` 对应素材；该表情缺失时依次回退 `FaceExpr::Normal`、整张 `Face` 层
+/// - 呼吸：`anim.breath_offset()` 换算成像素后**整体**同步偏移（所有层一致，避免头身脱节）
+///
+/// 返回宠物区的 alpha 位图（长度 `dst.w * dst.h`），供 daemon 做点击命中。
+/// 一张都没画上 → `None`。
+pub fn render_pet_layered(
+    canvas: &mut Pixmap,
+    skin: &PetSkin,
+    images: &LayerImages,
+    expr: FaceExpr,
+    anim: &PetAnim,
+    dst: &LayoutRect,
+) -> Option<Vec<u8>> {
+    if dst.w <= 0 || dst.h <= 0 {
+        return None;
+    }
+    let breath_px = (anim.breath_offset() * dst.h as f32).round() as i32;
+
+    let mut drew_any = false;
+    for layer in &skin.layers {
+        let src = if layer.id == LayerId::Face {
+            images
+                .face(expr)
+                .or_else(|| images.face(FaceExpr::Normal))
+                .or_else(|| images.get(LayerId::Face))
+        } else {
+            images.get(layer.id)
+        };
+        let Some(src) = src else { continue };
+        let layer_dst = LayoutRect { x: dst.x, y: dst.y + breath_px, w: dst.w, h: dst.h };
+        if blit_layer(canvas, src, &layer_dst, layer.anchor, anim.layer_angle(layer.id)) {
+            drew_any = true;
+        }
+    }
+    if !drew_any {
+        return None;
+    }
+    extract_alpha_mask(canvas, dst)
+}
+
+/// 从画布的 `dst` 矩形抽取 alpha 通道（长度 `w*h`），供命中测试 O(1) 查表。
+fn extract_alpha_mask(canvas: &Pixmap, dst: &LayoutRect) -> Option<Vec<u8>> {
+    if dst.w <= 0 || dst.h <= 0 {
+        return None;
+    }
+    let (w, h) = (dst.w as u32, dst.h as u32);
+    let mut mask = Vec::with_capacity((w * h) as usize);
+    let cw = canvas.width();
+    let ch = canvas.height();
+    for y in 0..h {
+        for x in 0..w {
+            let px = dst.x + x as i32;
+            let py = dst.y + y as i32;
+            if px < 0 || py < 0 || px >= cw as i32 || py >= ch as i32 {
+                mask.push(0);
+                continue;
+            }
+            let idx = ((py as u32 * cw + px as u32) * 4 + 3) as usize;
+            mask.push(if idx < canvas.data().len() { canvas.data()[idx] } else { 0 });
+        }
+    }
+    Some(mask)
+}
+
+/// 在 alpha mask 上做命中测试（`threshold` 沿用既有 `PET_HIT_ALPHA = 0x20`）。
+///
+/// **所见即所点**：mask 直接从合成结果抽取，天然支持任意旋转/缩放变换，无需像
+/// [`pet_alpha_at`] 那样按矩形逆算（分层后各层变换各异，逆算已不可行）。
+///
+/// 越界 / mask 尺寸与 (w, h) 不匹配 → `false`。
+pub fn pet_mask_hit(mask: &[u8], w: i32, h: i32, px: f32, py: f32, threshold: u8) -> bool {
+    if w <= 0 || h <= 0 || mask.len() != (w as usize) * (h as usize) {
+        return false;
+    }
+    let x = px.floor() as i32;
+    let y = py.floor() as i32;
+    if x < 0 || y < 0 || x >= w || y >= h {
+        return false;
+    }
+    mask[(y as usize) * (w as usize) + x as usize] >= threshold
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,5 +774,229 @@ mod tests {
         // 矩形内但无帧（先清 clips）
         let sprites_empty = PetSprites::new(Vec::new(), HashMap::new());
         assert_eq!(pet_alpha_at(&sprites_empty, PetClip::Idle, 0, &dst, 4.0, 4.0), 0);
+    }
+
+    // ===== 分层渲染（少女形象） =====
+
+    use iuv_core::PetLayer;
+
+    /// 构造纯色位图（premultiplied RGBA）。
+    fn solid(w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) -> Pixmap {
+        let mut p = Pixmap::new(w, h).unwrap();
+        p.fill(tiny_skia::Color::from_rgba8(r, g, b, a));
+        p
+    }
+
+    /// 测试用皮肤：关闭呼吸（breath_amp=0）以保证渲染结果确定。
+    fn test_skin(layers: Vec<PetLayer>) -> PetSkin {
+        PetSkin {
+            id: "test".to_string(),
+            design_size: (8, 8),
+            layers,
+            breath_amp: 0.0,
+            breath_period_ms: 3500,
+            blink_interval_ms: (2600, 6400),
+        }
+    }
+
+    fn no_swing(id: LayerId, anchor: (f32, f32)) -> PetLayer {
+        PetLayer { id, anchor, spring: None }
+    }
+
+    #[test]
+    fn layer_images_insert_and_get() {
+        let mut imgs = LayerImages::empty();
+        assert!(imgs.is_empty());
+        assert!(imgs.get(LayerId::Body).is_none());
+        imgs.insert(LayerId::Body, solid(4, 4, 255, 0, 0, 255));
+        assert!(!imgs.is_empty());
+        assert_eq!(imgs.get(LayerId::Body).unwrap().width(), 4);
+        assert!(imgs.get(LayerId::Head).is_none(), "未放入的图层应缺失");
+
+        imgs.insert_face(FaceExpr::Smile, solid(4, 4, 0, 255, 0, 255));
+        assert!(imgs.face(FaceExpr::Smile).is_some());
+        assert!(imgs.face(FaceExpr::Normal).is_none());
+    }
+
+    #[test]
+    fn blit_layer_scales_source_to_dst() {
+        let src = solid(8, 8, 0, 0, 255, 255);
+        let mut canvas = Pixmap::new(16, 16).unwrap();
+        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        assert!(blit_layer(&mut canvas, &src, &dst, (0.5, 0.5), 0.0));
+        // 中心与四角都应有内容（等比铺满）
+        for (x, y) in [(8, 8), (1, 1), (14, 14)] {
+            let idx = ((y * 16 + x) * 4 + 3) as usize;
+            assert_eq!(canvas.data()[idx], 255, "({x},{y}) 应被铺满");
+        }
+    }
+
+    #[test]
+    fn blit_layer_rotation_actually_rotates_around_anchor() {
+        // 铺满的正方形绕中心旋转 45° → 变成菱形：中心仍有内容，角落空出来
+        let src = solid(8, 8, 0, 0, 255, 255);
+        let mut canvas = Pixmap::new(16, 16).unwrap();
+        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        assert!(blit_layer(&mut canvas, &src, &dst, (0.5, 0.5), 45.0));
+        let center = ((8 * 16 + 8) * 4 + 3) as usize;
+        let corner = ((1 * 16 + 1) * 4 + 3) as usize;
+        assert!(canvas.data()[center] > 200, "旋转后中心应仍有内容");
+        assert!(canvas.data()[corner] < 128, "旋转后角落应空出，实际 {}", canvas.data()[corner]);
+    }
+
+    #[test]
+    fn blit_layer_rejects_invalid_without_panic() {
+        let src = solid(8, 8, 255, 0, 0, 255);
+        let mut canvas = Pixmap::new(16, 16).unwrap();
+        // 零/负尺寸
+        assert!(!blit_layer(&mut canvas, &src, &LayoutRect { x: 0, y: 0, w: 0, h: 8 }, (0.5, 0.5), 0.0));
+        assert!(!blit_layer(&mut canvas, &src, &LayoutRect { x: 0, y: 0, w: 8, h: 0 }, (0.5, 0.5), 0.0));
+        assert!(!blit_layer(&mut canvas, &src, &LayoutRect { x: 0, y: 0, w: -8, h: 8 }, (0.5, 0.5), 0.0));
+        // 越界 dst 也不应 panic（由 tiny-skia 裁剪）
+        let _ = blit_layer(&mut canvas, &src, &LayoutRect { x: 100, y: 100, w: 16, h: 16 }, (0.5, 0.5), 30.0);
+    }
+
+    #[test]
+    fn render_pet_layered_respects_z_order() {
+        // Body(红) 在下、Head(蓝) 在上 → 上层覆盖下层
+        let skin = test_skin(vec![
+            no_swing(LayerId::Body, (0.5, 1.0)),
+            no_swing(LayerId::Head, (0.5, 0.95)),
+        ]);
+        let mut imgs = LayerImages::empty();
+        imgs.insert(LayerId::Body, solid(8, 8, 255, 0, 0, 255));
+        imgs.insert(LayerId::Head, solid(8, 8, 0, 0, 255, 255));
+
+        let mut canvas = Pixmap::new(16, 16).unwrap();
+        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let anim = PetAnim::new(&skin);
+        assert!(render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst).is_some());
+
+        let idx = (8 * 16 + 8) * 4;
+        let (r, b) = (canvas.data()[idx], canvas.data()[idx + 2]);
+        assert!(b > 200 && r < 64, "上层 Head(蓝) 应覆盖 Body(红)，实际 r={r} b={b}");
+    }
+
+    #[test]
+    fn render_pet_layered_skips_missing_layers() {
+        // 只提供 Body，skin 里还有 Head → 应跳过缺失层并照常画出 Body
+        let skin = test_skin(vec![
+            no_swing(LayerId::Body, (0.5, 1.0)),
+            no_swing(LayerId::Head, (0.5, 0.95)),
+        ]);
+        let mut imgs = LayerImages::empty();
+        imgs.insert(LayerId::Body, solid(8, 8, 255, 0, 0, 255));
+
+        let mut canvas = Pixmap::new(16, 16).unwrap();
+        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let anim = PetAnim::new(&skin);
+        assert!(render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst).is_some());
+        let idx = (8 * 16 + 8) * 4;
+        assert!(canvas.data()[idx] > 200, "Body(红) 应被画出");
+    }
+
+    #[test]
+    fn render_pet_layered_returns_none_when_nothing_drawn() {
+        let skin = test_skin(vec![no_swing(LayerId::Body, (0.5, 1.0))]);
+        let imgs = LayerImages::empty(); // 完全没有素材
+        let mut canvas = Pixmap::new(16, 16).unwrap();
+        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let anim = PetAnim::new(&skin);
+        assert!(render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst).is_none());
+    }
+
+    #[test]
+    fn render_pet_layered_mask_matches_drawn_pixels() {
+        // 左半透明、右半不透明的图层 → mask 应如实反映
+        let mut src = solid(8, 8, 0, 0, 255, 255);
+        for y in 0..8u32 {
+            for x in 0..4u32 {
+                let i = ((y * 8 + x) * 4 + 3) as usize;
+                src.data_mut()[i] = 0;
+            }
+        }
+        let skin = test_skin(vec![no_swing(LayerId::Body, (0.5, 1.0))]);
+        let mut imgs = LayerImages::empty();
+        imgs.insert(LayerId::Body, src);
+
+        let mut canvas = Pixmap::new(16, 16).unwrap();
+        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let anim = PetAnim::new(&skin);
+        let mask = render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst)
+            .expect("应返回 mask");
+        assert_eq!(mask.len(), 16 * 16, "mask 长度应等于 dst 面积");
+        // 左半 (x=2) 透明、右半 (x=13) 不透明
+        assert!(pet_mask_hit(&mask, 16, 16, 2.0, 8.0, 0x20) == false, "左侧应透明");
+        assert!(pet_mask_hit(&mask, 16, 16, 13.0, 8.0, 0x20), "右侧应命中");
+    }
+
+    #[test]
+    fn render_pet_layered_face_falls_back_to_normal() {
+        // 请求 Smile 但只提供 Normal → 回退到 Normal 并正常绘制
+        let skin = test_skin(vec![no_swing(LayerId::Face, (0.5, 0.5))]);
+        let mut imgs = LayerImages::empty();
+        imgs.insert_face(FaceExpr::Normal, solid(8, 8, 0, 255, 0, 255));
+
+        let mut canvas = Pixmap::new(16, 16).unwrap();
+        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let anim = PetAnim::new(&skin);
+        assert!(render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Smile, &anim, &dst).is_some());
+        let idx = (8 * 16 + 8) * 4;
+        assert!(canvas.data()[idx + 1] > 200, "应回退绘制 Normal(绿)");
+    }
+
+    #[test]
+    fn render_pet_layered_applies_breath_offset() {
+        // 开启呼吸：推进到相位 90°（偏移最大）后，整体应向下平移
+        let mut skin = test_skin(vec![no_swing(LayerId::Body, (0.5, 1.0))]);
+        skin.breath_amp = 0.25; // 放大幅度便于观测
+        let mut imgs = LayerImages::empty();
+        // 只有上半部分有内容，便于观察垂直位移
+        let mut src = solid(8, 8, 255, 0, 0, 255);
+        for y in 4..8u32 {
+            for x in 0..8u32 {
+                let i = ((y * 8 + x) * 4 + 3) as usize;
+                src.data_mut()[i] = 0;
+            }
+        }
+        imgs.insert(LayerId::Body, src);
+
+        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let mut anim = PetAnim::new(&skin);
+
+        let mut canvas_a = Pixmap::new(16, 16).unwrap();
+        render_pet_layered(&mut canvas_a, &skin, &imgs, FaceExpr::Normal, &anim, &dst);
+        let top_row_alpha = |c: &Pixmap| {
+            let idx = ((1 * 16 + 8) * 4 + 3) as usize;
+            c.data()[idx]
+        };
+        let before = top_row_alpha(&canvas_a);
+
+        // 推进约四分之一周期 → 呼吸偏移接近最大值
+        for _ in 0..(3500 / 4 / 16) {
+            anim.step(16, 0);
+        }
+        let mut canvas_b = Pixmap::new(16, 16).unwrap();
+        render_pet_layered(&mut canvas_b, &skin, &imgs, FaceExpr::Normal, &anim, &dst);
+        let after = top_row_alpha(&canvas_b);
+
+        assert!(anim.breath_offset() > 0.0, "应处于呼吸正相位");
+        assert!(
+            after < before,
+            "呼吸正相位时内容应下移、顶部腾空：before={before} after={after}"
+        );
+    }
+
+    #[test]
+    fn pet_mask_hit_basics() {
+        let mask = vec![0u8, 255, 0, 255]; // 2x2
+        assert!(!pet_mask_hit(&mask, 2, 2, 0.0, 0.0, 0x20), "透明点不命中");
+        assert!(pet_mask_hit(&mask, 2, 2, 1.0, 0.0, 0x20), "不透明点命中");
+        assert!(pet_mask_hit(&mask, 2, 2, 1.9, 1.9, 0x20), "右下角命中");
+        // 越界与尺寸不匹配
+        assert!(!pet_mask_hit(&mask, 2, 2, 2.0, 0.0, 0x20), "越界不命中");
+        assert!(!pet_mask_hit(&mask, 2, 2, -1.0, 0.0, 0x20));
+        assert!(!pet_mask_hit(&mask, 3, 2, 1.0, 0.0, 0x20), "尺寸不匹配不命中");
+        assert!(!pet_mask_hit(&mask, 0, 0, 0.0, 0.0, 0x20), "零尺寸不命中");
     }
 }

@@ -18,6 +18,7 @@
 //! 可单测（无 I/O、无 panic 路径），`cargo test -p iuv-core` 全绿。
 
 use crate::config::{InitialMode, ImeState};
+use crate::pet_skin::FaceExpr;
 
 /// 动作片段标识（M1 内置集；M2 起由 mod 素材描述扩展）。
 ///
@@ -40,6 +41,25 @@ pub enum PetClip {
     Script,
     /// 标点切换一闪（一次性）。
     Punct,
+}
+
+impl PetClip {
+    /// 该动作对应的**表情基线**（渲染层据此选择表情层素材）。
+    ///
+    /// 语义对齐 `docs/pet/UIUX.md` §4.2 状态共生动画：中文=常态、英文=打盹、
+    /// 打字=专注、点击互动=微笑、四态切换一闪=惊讶。
+    ///
+    /// 眨眼由 [`crate::pet_physics::PetAnim::is_blinking`] 单独覆盖（闭眼优先于基线），
+    /// 故此处不返回 [`FaceExpr::Blink`]。
+    pub fn face(self) -> FaceExpr {
+        match self {
+            PetClip::Idle | PetClip::ModeCn => FaceExpr::Normal,
+            PetClip::ModeEn => FaceExpr::Sleepy,
+            PetClip::Typing => FaceExpr::Focus,
+            PetClip::React => FaceExpr::Smile,
+            PetClip::Width | PetClip::Script | PetClip::Punct => FaceExpr::Surprised,
+        }
+    }
 }
 
 /// 动作层——区分稳定的"循环/静止"态与可打断的"一次性"态。
@@ -587,6 +607,41 @@ mod tests {
             ..default_state()
         });
         assert_eq!(m.clip(), PetClip::Width);
+    }
+
+    // ===== clip → 表情基线（少女形象） =====
+
+    #[test]
+    fn clip_face_maps_speech_states() {
+        assert_eq!(PetClip::Idle.face(), FaceExpr::Normal);
+        assert_eq!(PetClip::ModeCn.face(), FaceExpr::Normal, "中文模式 = 常态");
+        assert_eq!(PetClip::ModeEn.face(), FaceExpr::Sleepy, "英文模式 = 打盹（UIUX §4.2）");
+        assert_eq!(PetClip::Typing.face(), FaceExpr::Focus, "打字中 = 专注");
+        assert_eq!(PetClip::React.face(), FaceExpr::Smile, "点击互动 = 微笑");
+    }
+
+    #[test]
+    fn clip_face_flash_states_are_surprised() {
+        for clip in [PetClip::Width, PetClip::Script, PetClip::Punct] {
+            assert_eq!(clip.face(), FaceExpr::Surprised, "{clip:?} 四态一闪应为惊讶");
+        }
+    }
+
+    #[test]
+    fn clip_face_never_returns_blink() {
+        // 眨眼由 PetAnim::is_blinking 覆盖，基线表情不得是 Blink
+        for clip in [
+            PetClip::Idle,
+            PetClip::ModeCn,
+            PetClip::ModeEn,
+            PetClip::Typing,
+            PetClip::React,
+            PetClip::Width,
+            PetClip::Script,
+            PetClip::Punct,
+        ] {
+            assert_ne!(clip.face(), FaceExpr::Blink, "{clip:?} 不得返回 Blink");
+        }
     }
 
     // ===== needs_tick 矩阵 =====

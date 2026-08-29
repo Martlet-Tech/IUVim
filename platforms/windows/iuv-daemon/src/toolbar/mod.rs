@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use iuv_core::ImeState;
 use iuv_win::{Request, ToolbarSignal};
-use iuv_ui::{theme_dark, theme_light, PetSprites, Theme, ToolbarIcons};
+use iuv_ui::{theme_dark, theme_light, Theme, ToolbarIcons};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
@@ -57,6 +57,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 // WM_MOUSELEAVE 在 windows-rs 0.62 中位于 Controls 模块（值 0x02A3 = 675），本地定义。
 const WM_MOUSELEAVE: u32 = 675;
 
+use crate::pet_assets::PetArt;
 use crate::state::DaemonState;
 use crate::log;
 
@@ -126,11 +127,11 @@ pub struct ToolbarHost {
 }
 
 impl ToolbarHost {
-    /// 启动工具条线程。`state` = daemon 全局状态（读主题）；`pet_sprites` = 默认宠
-    /// `PetSprites`（daemon 主循环装配一次传入，工具条线程独占；失败/缺失传空集）。
+    /// 启动工具条线程。`state` = daemon 全局状态（读主题）；`pet_art` = 桌宠形象
+    /// （皮肤 + 已解码分层素材 + L0 帧表兜底，daemon 主循环装配一次传入，工具条线程独占）。
     /// 返回宿主（线程就绪后注册窗口句柄，可直接 wake）。启动失败 → 记录日志，
     /// 宿主仍可用（wake 空操作）。
-    pub fn spawn(state: Arc<DaemonState>, pet_sprites: Arc<PetSprites>) -> Arc<ToolbarHost> {
+    pub fn spawn(state: Arc<DaemonState>, pet_art: Arc<PetArt>) -> Arc<ToolbarHost> {
         let shared = Arc::new(Mutex::new(Shared {
             visible: load_pref().visible,
             ..Default::default()
@@ -145,7 +146,7 @@ impl ToolbarHost {
         let t_shared = shared.clone();
         let t_state = state.clone();
         let t_icons = icons.clone();
-        let t_pet = pet_sprites.clone();
+        let t_pet = pet_art.clone();
         let t_pending = host.pending.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
@@ -264,7 +265,7 @@ fn toolbar_thread_main(
     shared: Arc<Mutex<Shared>>,
     state: Arc<DaemonState>,
     icons: Arc<ToolbarIcons>,
-    pet: Arc<PetSprites>,
+    pet: Arc<PetArt>,
     pending: Arc<Mutex<VecDeque<BarEvent>>>,
     tx: std::sync::mpsc::Sender<(usize, u32)>,
 ) {

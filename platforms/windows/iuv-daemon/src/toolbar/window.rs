@@ -6,13 +6,14 @@ use std::mem::size_of;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use iuv_core::{InitialMode, PunctMode, ScriptMode, WidthMode, PetModel};
-use iuv_ui::{
-    hit_test, pet_alpha_at, render_composite, CompositeSpec, PetRenderSpec, PetSprites,
-    TextRenderer, Theme, ToolbarIcons, ToolbarSpec, TB_GEAR, TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT,
-    TB_WIDTH, PET_OVERHANG, PET_ZONE_W,
-};
+use iuv_core::pet_physics::FAST_INTERVAL_MS;
+use iuv_core::{InitialMode, PetAnim, PetModel, PunctMode, ScriptMode, WidthMode};
 use iuv_ui::layout::Rect;
+use iuv_ui::{
+    hit_test, pet_alpha_at, pet_mask_hit, render_composite, CompositeSpec, LayeredPetSpec,
+    PetRenderSpec, PetSpec, TextRenderer, Theme, ToolbarIcons, ToolbarSpec, TB_GEAR, TB_LOGO,
+    TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH, PET_OVERHANG, PET_ZONE_W,
+};
 use iuv_win::{ctl_pipe_name, CtlClient, CtlCmd, CtlResult, PipeClient, Request};
 use iuv_win::UlwSurface;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -29,6 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_SETCURSOR, WM_TIMER,
 };
 
+use crate::pet_assets::PetArt;
 use super::prefs::{save_pref, ToolbarPref};
 use super::tooltip::TooltipWindow;
 use super::{
@@ -68,19 +70,34 @@ pub(super) struct ToolbarWindow {
     drag_offset: Option<(i32, i32)>,
     /// tooltip 窗口（悬停显示按钮说明）。
     tip: TooltipWindow,
-    /// M1 桌宠：宠物动画状态机（纯逻辑，无 I/O；工具条线程独占）。
+    /// 宠物动作状态机（离散动作语义：Idle/Typing/React/StateFlash；决定表情基线）。
     pet_model: PetModel,
-    /// M1 桌宠：默认宠精灵帧缓存（素材失败 → 空集；clip 缺失回退由 iuv-ui 处理）。
-    pet_sprites: Arc<PetSprites>,
-    /// M1 桌宠：宠物点击/拖拽判别（按下 = 记录光标屏坐标 + 矩形；> 4px 位移 → 拖拽）。
+    /// 少女形象素材（皮肤描述 + 已解码图层 + L0 帧表兜底）。
+    pet_art: Arc<PetArt>,
+    /// 连续物理（各图层弹簧摆动 / 呼吸 / 眨眼）。与 `pet_model` 并列，渲染时叠加。
+    pet_anim: PetAnim,
+    /// 宠物区 alpha mask（分层路径由 frame() 产出；供 O(1) 命中）。
+    pet_mask: Option<Vec<u8>>,
+    pet_mask_w: i32,
+    pet_mask_h: i32,
+    /// 当前定时器间隔（ms）；0 = 未启动。用于避免重复 SetTimer 重置计时。
+    pet_timer_ms: u32,
+    /// 上一帧窗口左上位置（拖拽位移 → 弹簧冲量）。
+    pet_last_pos: Option<(i32, i32)>,
+    /// 简易 LCG 随机状态（喂 `PetAnim::step` 的眨眼随机源；纯逻辑无外部依赖）。
+    pet_rand: u32,
+    /// 宠物点击/拖拽判别（按下 = 记录光标屏坐标 + 矩形；> 4px 位移 → 拖拽）。
     pet_down: Option<((i32, i32), Rect)>,
 }
 
 /// 动画定时器 id（Win32 范围 1..u32::MAX；0/1 留作系统预定义；选不与现有 hotkey id 冲突值）。
 const PET_TIMER_ID: usize = 0xBADC0DE;
 
-/// 动画 tick 间隔（ms）：30fps 上限（M1-IMPLEMENTATION §4.3）。
-const PET_TIMER_MS: u32 = 33;
+/// 拖拽位移 → 弹簧冲量的换算系数（每水平像素）。
+/// 值越大头发甩得越夸张；1.0 左右对 112px 的半身像观感自然。
+const PET_IMPULSE_PER_PX: f32 = 0.9;
+/// 点击互动注入的弹簧冲量（让头发弹一下，配合 React 动作）。
+const PET_CLICK_IMPULSE: f32 = 2.2;
 
 /// 宠物按下/拖拽判别阈值（px；§5.3 推荐判别版）。
 const PET_DRAG_THRESHOLD: i32 = 4;
@@ -93,7 +110,7 @@ impl ToolbarWindow {
         shared: Arc<Mutex<Shared>>,
         state: Arc<DaemonState>,
         icons: Arc<ToolbarIcons>,
-        pet_sprites: Arc<PetSprites>,
+        pet_art: Arc<PetArt>,
         pending: Arc<Mutex<VecDeque<BarEvent>>>,
     ) -> ToolbarWindow {
         let hwnd = create_window(CLASS_BAR);
@@ -137,7 +154,15 @@ impl ToolbarWindow {
             drag_offset: None,
             tip,
             pet_model: PetModel::new(initial_state),
-            pet_sprites,
+            pet_anim: PetAnim::new(&pet_art.skin),
+            pet_art,
+            pet_mask: None,
+            pet_mask_w: 0,
+            pet_mask_h: 0,
+            pet_timer_ms: 0,
+            pet_last_pos: None,
+            // 任意非零初值即可（LCG 会自行扩散）
+            pet_rand: 0x9E3779B9,
             pet_down: None,
         };
         if !hwnd.is_invalid() {
@@ -355,31 +380,42 @@ impl ToolbarWindow {
         }
     }
 
-    /// 同步动画定时器到 PetModel.needs_tick：true → SetTimer；false → KillTimer。
+    /// 同步动画定时器（**动态帧率**）：按当前需要的最小间隔 SetTimer，无需动画则 KillTimer。
+    ///
+    /// 帧率选择（省电契约：能停就停、能慢就慢）：
+    /// - 离散动作活跃（Typing/React/Flash）→ [`FAST_INTERVAL_MS`]（30fps）
+    /// - 仅连续物理（弹簧未收敛）→ `PetAnim::desired_interval_ms()`（30fps）
+    /// - 仅呼吸/待触发眨眼 → `PetAnim::desired_interval_ms()`（10fps，呼吸慢周期足够）
+    /// - 都不需要 → `KillTimer`（完全停帧，零 CPU）
+    ///
     /// §5.4：show/apply_event/TypingState/StateChanged/on_click 后必须调用。
-    /// WM_TIMER 推进后若 needs_tick 变 false 同样 KillTimer（空闲停帧，零 tick）。
     fn sync_pet_timer(&mut self) {
         if self.hwnd.is_invalid() {
             return;
         }
-        if self.pet_model.needs_tick() {
-            // SAFETY: SetTimer 在窗口创建线程调用；id 复用固定值（重复 SetTimer 同一 id
-            // 会重置计时器，符合预期）。
-            unsafe {
-                let _ = SetTimer(
-                    Some(self.hwnd),
-                    PET_TIMER_ID,
-                    PET_TIMER_MS,
-                    None,
-                );
-            }
+        let interval = if self.pet_model.needs_tick() {
+            // 动作态取 30fps 与物理建议值中的较小者（动作必须跟手）
+            FAST_INTERVAL_MS.min(self.pet_anim.desired_interval_ms())
+        } else if self.pet_anim.needs_tick() {
+            self.pet_anim.desired_interval_ms()
         } else {
             self.kill_pet_timer();
+            return;
+        };
+        // 同间隔已运行 → 不再 SetTimer（重复调用会重置计时，导致低帧率下永不触发）
+        if self.pet_timer_ms == interval {
+            return;
         }
+        // SAFETY: SetTimer 在窗口创建线程调用；id 复用固定值。
+        unsafe {
+            let _ = SetTimer(Some(self.hwnd), PET_TIMER_ID, interval, None);
+        }
+        self.pet_timer_ms = interval;
     }
 
     /// 关闭动画定时器（幂等：KillTimer 对未注册 id 静默返回 0/失败）。
     fn kill_pet_timer(&mut self) {
+        self.pet_timer_ms = 0;
         if self.hwnd.is_invalid() {
             return;
         }
@@ -396,9 +432,20 @@ impl ToolbarWindow {
         if x < pr.x || x >= pr.x + pr.w || y < pr.y || y >= pr.y + pr.h {
             return false;
         }
-        // alpha 阈值：素材中宠物像素 alpha > PET_HIT_ALPHA（0x20）视为可点
+        // 分层路径：mask O(1) 查表（所见即所点，天然支持各层独立旋转/缩放）
+        if let Some(mask) = self.pet_mask.as_ref() {
+            return pet_mask_hit(
+                mask,
+                self.pet_mask_w,
+                self.pet_mask_h,
+                (x - pr.x) as f32,
+                (y - pr.y) as f32,
+                PET_HIT_ALPHA,
+            );
+        }
+        // L0 帧表路径：逆缩放采样（单帧表无分层，可直接逆算）
         let a = pet_alpha_at(
-            &self.pet_sprites,
+            &self.pet_art.fallback,
             self.pet_model.clip(),
             self.pet_model.frame(),
             &pr,
@@ -477,28 +524,56 @@ impl ToolbarWindow {
             hover: self.hover,
             pressed: self.pressed,
         };
-        // 宠物规格：素材空集（is_empty）→ 整张 Surface 不画宠物（仅工具栏）。否则按
-        // PetModel 解析的 clip/frame 渲染。M1 单一默认宠；clips/frame 越界回退
-        // 由 iuv-ui::PetSprites::frame 承担。
-        let pet_spec = if self.pet_sprites.is_empty() {
-            None
-        } else {
-            Some(PetRenderSpec {
-                sprites: &self.pet_sprites,
+        // 宠物渲染三级选择：分层皮肤 → L0 帧表回退 → 不画宠物（仅工具栏）。
+        // 分三个分支写而非 Option<&_>，避免"可能未初始化"的借用错误。
+        let (surf, rows, pet_rect, mask) = if self.pet_art.is_layered() {
+            let spec = LayeredPetSpec {
+                skin: &self.pet_art.skin,
+                images: &self.pet_art.images,
+                anim: &self.pet_anim,
+                clip: self.pet_model.clip(),
+            };
+            let composite_spec = CompositeSpec {
+                toolbar: &toolbar_spec,
+                pet: Some(PetSpec::Layered(&spec)),
+            };
+            render_composite(&composite_spec, &self.theme, scale)
+        } else if !self.pet_art.fallback.is_empty() {
+            let spec = PetRenderSpec {
+                sprites: &self.pet_art.fallback,
                 clip: self.pet_model.clip(),
                 frame: self.pet_model.frame(),
-            })
+            };
+            let composite_spec = CompositeSpec {
+                toolbar: &toolbar_spec,
+                pet: Some(PetSpec::Sprites(&spec)),
+            };
+            render_composite(&composite_spec, &self.theme, scale)
+        } else {
+            let composite_spec = CompositeSpec {
+                toolbar: &toolbar_spec,
+                pet: None,
+            };
+            render_composite(&composite_spec, &self.theme, scale)
         };
-        let composite_spec = CompositeSpec {
-            toolbar: &toolbar_spec,
-            pet: pet_spec.as_ref(),
-        };
-        let (surf, rows, pet_rect) = render_composite(&composite_spec, &self.theme, scale);
         if surf.w == 0 || surf.h == 0 {
             return None;
         }
         self.rows = rows;
         self.pet_rect = pet_rect;
+        // 缓存分层路径的 alpha mask（帧表路径为 None → 命中改走 pet_alpha_at 逆缩放）
+        match (mask, pet_rect) {
+            (Some(m), Some(pr)) => {
+                self.pet_mask = Some(m);
+                self.pet_mask_w = pr.w;
+                self.pet_mask_h = pr.h;
+            }
+            _ => {
+                self.pet_mask = None;
+                self.pet_mask_w = 0;
+                self.pet_mask_h = 0;
+            }
+        }
         // 缓存复合几何（供 WM_NCHITTEST 不重复公式）
         self.composite_w = surf.w as i32;
         self.composite_h = surf.h as i32;
@@ -689,6 +764,8 @@ impl ToolbarWindow {
             return;
         }
         self.drag_offset = Some((cx - rc.left, cy - rc.top));
+        // 记录起始窗口位置：拖拽时据此算位移 → 注入弹簧冲量（头发甩动）
+        self.pet_last_pos = Some((rc.left, rc.top));
         // SAFETY: SetCapture 捕获鼠标（拖拽期间窗口持续收 WM_MOUSEMOVE）。
         let _ = unsafe { SetCapture(self.hwnd) };
     }
@@ -709,6 +786,17 @@ impl ToolbarWindow {
                 (nx, ny)
             }
         };
+        // 拖拽惯性：水平位移 → 弹簧冲量（头发/呆毛随甩动）。取水平分量即可——
+        // 桌面工具栏以横向拖动为主，且水平惯性最符合"甩"的直觉。
+        if let Some((lx, _ly)) = self.pet_last_pos {
+            let dx = nx - lx;
+            if dx != 0 {
+                self.pet_anim.impulse(dx as f32 * PET_IMPULSE_PER_PX);
+                // 物理被激活 → 需要把定时器拉回高帧率（或重新起 timer）
+                self.sync_pet_timer();
+            }
+        }
+        self.pet_last_pos = Some((nx, ny));
         // SAFETY: SWP_NOACTIVATE|NOSIZE|NOZORDER|NOCOPYBITS 仅移动（NOCOPYBITS 防移动时
         // 复制旧客户区位图产生残影）；layered 窗口内容由 DWM 缓存随动。
         let _ = unsafe {
@@ -727,6 +815,8 @@ impl ToolbarWindow {
     /// 拖拽结束（WM_LBUTTONUP）：释放捕获 + 位置 clamp 回工作区 + 持久化。
     fn end_drag(&mut self) {
         self.drag_offset = None;
+        // 拖拽结束：清位移基准（弹簧自行衰减收敛，收敛后定时器自动降频/停帧）
+        self.pet_last_pos = None;
         // SAFETY: ReleaseCapture 释放 SetCapture 的捕获。
         let _ = unsafe { ReleaseCapture() };
         // SAFETY: GetWindowRect 读最终位置。
@@ -757,6 +847,8 @@ impl ToolbarWindow {
     /// 打断任意动作 → React（一次性 10 帧）；自然回退到稳定态。
     fn on_pet_click(&mut self) {
         self.pet_model.on_click();
+        // 点击互动：给弹簧一个冲量，头发/呆毛跟着弹一下（Live2D 式反馈）
+        self.pet_anim.impulse(PET_CLICK_IMPULSE);
         self.sync_pet_timer();
         // 立即重绘（即使定时器也在跑，首帧不能等下一拍）
         if self.visible && self.drag_offset.is_none() {
@@ -767,7 +859,16 @@ impl ToolbarWindow {
     /// M1 桌宠：动画 tick 推进（WM_TIMER）。dt 用 33ms（SetTimer 周期）。
     /// 推进后若 needs_tick=false → KillTimer（空闲停帧，零 tick）。
     fn on_pet_tick(&mut self) {
-        self.pet_model.advance(PET_TIMER_MS);
+        // 用**实际**定时器间隔推进（30fps/10fps 动态切换），而非固定常量
+        let dt = if self.pet_timer_ms > 0 {
+            self.pet_timer_ms
+        } else {
+            FAST_INTERVAL_MS
+        };
+        self.pet_model.advance(dt);
+        // 眨眼随机源：LCG（纯整数运算，无外部依赖，保持 PetAnim 可单测）
+        self.pet_rand = self.pet_rand.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        self.pet_anim.step(dt, self.pet_rand);
         // 推进后：若空闲停帧则 KillTimer；否则保持定时器（继续推进）。
         self.sync_pet_timer();
         // 可见时重绘（一次性态推进关键帧；稳定态在 typing 循环时也需重绘）。

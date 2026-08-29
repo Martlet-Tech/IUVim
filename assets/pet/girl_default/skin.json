@@ -1,0 +1,75 @@
+{
+  "id": "girl_default",
+  "design_size": [
+    224,
+    256
+  ],
+  "layers": [
+    {
+      "id": "HairBack",
+      "anchor": [
+        0.5,
+        0.12
+      ],
+      "spring": {
+        "stiffness": 200,
+        "damping": 14,
+        "max_angle_deg": 3.0,
+        "influence": 0.6
+      }
+    },
+    {
+      "id": "Body",
+      "anchor": [
+        0.5,
+        1.0
+      ]
+    },
+    {
+      "id": "Head",
+      "anchor": [
+        0.5,
+        0.95
+      ]
+    },
+    {
+      "id": "Face",
+      "anchor": [
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "id": "HairFront",
+      "anchor": [
+        0.5,
+        0.1
+      ],
+      "spring": {
+        "stiffness": 180,
+        "damping": 12,
+        "max_angle_deg": 4.5,
+        "influence": 0.8
+      }
+    },
+    {
+      "id": "Ahoge",
+      "anchor": [
+        0.5,
+        0.05
+      ],
+      "spring": {
+        "stiffness": 120,
+        "damping": 8,
+        "max_angle_deg": 9.0,
+        "influence": 1.4
+      }
+    }
+  ],
+  "breath_amp": 0.012,
+  "breath_period_ms": 3500,
+  "blink_interval_ms": [
+    2600,
+    6400
+  ]
+}

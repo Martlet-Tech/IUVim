@@ -25,13 +25,14 @@ pub use layout::{
 };
 pub use menu::{menu_hit_test, MenuEntry};
 pub use pet::{
-    pet_alpha_at, render_pet_frame, PetSheetLayout, PetSprites,
+    blit_layer, pet_alpha_at, pet_mask_hit, render_pet_frame, render_pet_layered, LayerImages,
+    PetSheetLayout, PetSprites,
 };
 pub use render::{render_candidate, render_menu, render_tooltip, Surface};
 pub use toolbar::{
-    render_composite, render_toolbar, CompositeSpec, PetRenderSpec, ToolbarIcons, ToolbarSpec,
-    PET_DISPLAY, PET_OVERHANG, PET_ZONE_W, TB_GEAR, TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT,
-    TB_WIDTH,
+    render_composite, render_toolbar, CompositeSpec, LayeredPetSpec, PetRenderSpec, PetSpec,
+    ToolbarIcons, ToolbarSpec, PET_DISPLAY_H, PET_DISPLAY_W, PET_OVERHANG, PET_ZONE_W, TB_GEAR,
+    TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
 };
 pub use snapshot::{effect_to_snapshot, CaretRect, UiSnapshot};
 pub use text::TextRenderer;
