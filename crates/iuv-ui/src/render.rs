@@ -303,15 +303,87 @@ pub(crate) fn render_to_surface(theme: &Theme, scale: f32, cw: u32, ch: u32, dra
     }
     // 3) 内容（高亮行/文本/页码）
     draw(&mut pixmap);
+    pixmap_to_surface(pixmap)
+}
+
+/// Pixmap（premultiplied RGBA）→ Surface（premultiplied BGRA）。
+/// 在宠物复合渲染（toolbar.rs `render_composite`）中合成工具栏 + 宠物帧后
+/// 一次性转 BGRA 出口；也供一般任意合成路径使用。
+///
+/// 全部失败路径：空 Pixmap → 空 Surface（w=0/h=0）。不 panic。
+pub(crate) fn pixmap_to_surface(pixmap: Pixmap) -> Surface {
+    let w = pixmap.width();
+    let h = pixmap.height();
+    if w == 0 || h == 0 {
+        return Surface::empty();
+    }
+    let mut data = pixmap.take();
+    if data.is_empty() {
+        return Surface::empty();
+    }
     // tiny-skia 0.12 像素缓冲为 premultiplied RGBA（内存序 r,g,b,a）；
     // Surface 契约要求 premultiplied BGRA（Windows ULW DIB / D2D 直供）——交换每像素 R/B。
-    let data = pixmap.data();
-    let mut pixels = Vec::with_capacity(data.len());
-    pixels.extend_from_slice(data);
-    for px in pixels.chunks_exact_mut(4) {
+    for px in data.chunks_exact_mut(4) {
         px.swap(0, 2);
     }
-    Surface { w: cw, h: ch, pixels }
+    Surface {
+        w,
+        h,
+        pixels: data,
+    }
+}
+
+/// 渲染工具栏到 raw Pixmap（premultiplied RGBA）——供 `render_composite` 把工具栏作为
+/// 子层 blit 到宠物复合画布上。返回 (Pixmap, 按钮矩形列表，矩形=工具栏内容坐标)。
+///
+/// 与 `render_toolbar`（→ Surface）同源：圆角底 + 细边框 + 内容绘制；唯一区别是
+/// 出口 = Pixmap 而非 Surface（R/B 不交换，留给 composite 一次性处理）。
+pub(crate) fn render_toolbar_into_pixmap(
+    spec: &crate::toolbar::ToolbarSpec,
+    theme: &Theme,
+    scale: f32,
+) -> Option<(Pixmap, Vec<crate::layout::Rect>)> {
+    use crate::layout::Rect as LayoutRect;
+    use crate::toolbar::{TB_COUNT, TOOLBAR_BTN, TOOLBAR_GAP, TOOLBAR_PAD};
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let btn = (TOOLBAR_BTN * scale).ceil();
+    let gap = (TOOLBAR_GAP * scale).ceil();
+    let pad = (TOOLBAR_PAD * scale).ceil();
+    let content_w =
+        (btn * TB_COUNT as f32) + (gap * (TB_COUNT as f32 - 1.0)) + pad * 2.0;
+    let content_h = btn + pad * 2.0;
+    let mut rects = Vec::with_capacity(TB_COUNT);
+    for i in 0..TB_COUNT {
+        rects.push(LayoutRect {
+            x: (pad + i as f32 * (btn + gap)).round() as i32,
+            y: pad.round() as i32,
+            w: btn.round() as i32,
+            h: btn.round() as i32,
+        });
+    }
+    let cw = content_w as u32;
+    let ch = content_h as u32;
+    if cw == 0 || ch == 0 {
+        return None;
+    }
+    let mut pixmap = Pixmap::new(cw, ch)?;
+    let bw = scale.round().max(1.0);
+    let inset = bw / 2.0;
+    let radius = (theme.corner_radius * scale - inset).max(0.0);
+    let bg_path = crate::paint::rounded_rect_path(inset, inset, cw as f32 - bw, ch as f32 - bw, radius);
+    if let Some(path) = &bg_path {
+        crate::paint::fill_path(&mut pixmap, path, theme.bg);
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(theme.border[0], theme.border[1], theme.border[2], theme.border[3]);
+        let stroke = Stroke {
+            width: bw,
+            ..Stroke::default()
+        };
+        pixmap.stroke_path(path, &paint, &stroke, Transform::identity(), None);
+    }
+    // 内容：复用 toolbar.rs 的私有绘制逻辑——通过 export 一个内联绘制函数避免重复
+    crate::toolbar::draw_toolbar_content(&mut pixmap, spec, theme, &rects, scale);
+    Some((pixmap, rects))
 }
 
 #[cfg(test)]

@@ -120,6 +120,9 @@ pub(crate) struct TextService {
     /// 反向控制端点（32-toolbar §4.2/§4.3）：accept 线程 + 隐藏消息窗。Activate 起、
     /// Deactivate/Drop 停（懒建，每个实例一个）。
     ctl: RefCell<Option<CtlEndpoint>>,
+    /// M1 桌宠：上次 dispatch 后的"是否在打字中"状态（composition 存在 + 有候选 + 未 end）。
+    /// transition 时（true → false / false → true）发 `Typing` 信号驱动 daemon 宠物动画。
+    pub(crate) was_typing: Cell<bool>,
 }
 
 impl TextService {
@@ -185,6 +188,7 @@ impl TextService {
             // （32-toolbar §2.5：设置页默认值 = 新建实例时的初始值；热载不改运行实例）。
             runtime: Arc::new(Mutex::new(Config::load().initial_state)),
             ctl: RefCell::new(None),
+            was_typing: Cell::new(false),
         }
     }
 
@@ -472,6 +476,10 @@ impl TextService_Impl {
         self.cand_elem.borrow_mut().clear();
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
+        // M1 桌宠：Deactivate 强制结束打字 → 发 Typing(false)（守护进程解绑后无消费者，
+        // 信号通道在 daemon 不在线时静默丢弃——天然兜底；同时复位 was_typing 保证
+        // 再次 Activate 后首段会话能重新触发 Typing(true) transition）。
+        self.force_typing_stop();
 
         // 32-toolbar：停反向控制端点（accept 线程 + 隐藏窗）+ 失焦上报
         // （daemon 解绑 → 工具条隐藏）。同一实例再 Activate 会重发激活。
@@ -625,6 +633,9 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
     fn OnKillThreadFocus(&self) -> Result<()> {
         // 维度②：应用切出 → 失焦上报，daemon 立即隐藏（对齐搜狗"焦点离开瞬间消失"）。
         log_line("[focus] OnKillThreadFocus（应用切出 → 失焦上报）");
+        // M1 桌宠（QA P2-B）：切走必须复位打字态——否则 `was_typing` 卡 true，
+        // 回焦后首段会话不发 `Typing(true)` → 宠物一直 Idle（边沿状态机不自洽）。
+        self.force_typing_stop();
         if let Some(client) = self.daemon.borrow().as_ref() {
             let (pid, tid) = self.instance_id();
             client.focus_lost(pid, tid);

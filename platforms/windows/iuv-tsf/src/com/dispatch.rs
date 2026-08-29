@@ -27,6 +27,19 @@ impl TextService {
             &self.cand_elem,
             effect,
         );
+        // M1 桌宠（docs/pet/M1-IMPLEMENTATION.md §2.1 + §4.4）：组合状态 transition
+        // → Typing 信号。"正在打字" = composition 存在 + 候选非空 + 未 end（持续会话中）。
+        // 边沿检测避免每键重复发。
+        let composing_now = self.composition.borrow().is_some()
+            && !effect.candidates.is_empty()
+            && effect.end.is_none();
+        if composing_now != self.was_typing.get() {
+            self.was_typing.set(composing_now);
+            if let Some(client) = self.daemon.borrow().as_ref() {
+                let (pid, tid) = self.instance_id();
+                client.typing(pid, tid, composing_now);
+            }
+        }
         perf_record_with("dispatch", t, || {
             format!(
                 "cand={} all={}",

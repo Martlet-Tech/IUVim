@@ -1,0 +1,126 @@
+classDiagram
+    class ImeState {
+        +InitialMode mode
+        +WidthMode width
+        +ScriptMode script
+        +PunctMode punct
+    }
+    class PetClip {
+        <<enum>>
+        Idle
+        Typing
+        React
+        ModeCn
+        ModeEn
+        Width
+        Script
+        Punct
+    }
+    class PetMotion {
+        <<enum>>
+        Idle
+        Typing
+        React
+        StateFlash
+    }
+    class PetModel {
+        -ImeState look
+        -PetMotion motion
+        -bool typing
+        -u32 frame
+        -u32 accum_ms
+        -PetClip flash_kind
+        -u32 flash_left
+        +new(initial: ImeState) PetModel
+        +on_ime_state(s: ImeState) void
+        +on_typing(active: bool) void
+        +on_click() void
+        +advance(dt_ms: u32) void
+        +clip() PetClip
+        +frame() u32
+        +needs_tick() bool
+    }
+    class PetSprites {
+        +Vec~Pixmap~ frames
+        +HashMap~PetClip, Range~usize~~ clips
+        +frame(clip: PetClip, idx: u32) Option~&Pixmap~
+        +clip_len(clip: PetClip) u32
+    }
+    class PetSheetLayout {
+        +u32 frame_w
+        +u32 frame_h
+        +u32 rows
+        +u32 cols
+    }
+    class slice_frames {
+        <<function>>
+        +slice_frames(sheet: Pixmap, layout: PetSheetLayout) Vec~Pixmap~
+    }
+    class render_pet_frame {
+        <<function>>
+        +render_pet_frame(canvas, sprites, clip, frame, dst) bool
+        +pet_alpha_at(sprites, clip, frame, dst, px, py) u8
+    }
+    class PetRenderSpec {
+        +PetSprites sprites
+        +PetClip clip
+        +u32 frame
+    }
+    class CompositeSpec {
+        +ToolbarSpec toolbar
+        +Option~PetRenderSpec~ pet
+    }
+    class render_composite {
+        <<function>>
+        +render_composite(spec, theme, scale) (Surface, Vec~Rect~, Option~Rect~)
+    }
+    class ToolbarSignal {
+        <<enum iuv-win>>
+        FocusGained
+        FocusLost
+        StateChanged
+        Typing
+    }
+    class BarEvent {
+        <<enum daemon>>
+        FocusGained
+        FocusLost
+        StateChanged
+        TypingState
+    }
+    class ToolbarWindow {
+        -PetModel pet
+        -Option~PetSprites~ pet_sprites
+        -Option~Surface~ toolbar_cache
+        -Option~Surface~ pet_frame
+        -Option~LayoutRect~ pet_rect
+        -Option~Timer~ anim_timer
+        +frame() Option~Surface~
+        +on_pet_click() void
+        +hit_pet(x, y) bool
+        +on_anim_tick() void
+    }
+    class pet_assets {
+        <<daemon loader>>
+        +load_pet() Option~PetSprites~
+        +DEFAULT_SHEET include_bytes
+        +DEFAULT_LAYOUT PetSheetLayout
+    }
+
+    ImeState --> PetModel
+    PetModel --> PetClip
+    PetModel --> PetMotion
+    PetRenderSpec --> PetSprites
+    PetRenderSpec --> PetClip
+    PetSprites --> PetClip
+    PetSprites ..> slice_frames
+    PetSheetLayout ..> slice_frames
+    CompositeSpec --> render_composite
+    PetRenderSpec --> render_composite
+    ToolbarWindow --> PetModel
+    ToolbarWindow --> PetSprites
+    ToolbarWindow --> render_composite
+    pet_assets ..> slice_frames
+    pet_assets --> PetSprites
+    ToolbarSignal --> BarEvent
+    BarEvent --> ToolbarWindow

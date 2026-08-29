@@ -64,6 +64,11 @@ pub enum Response {
 /// 专用管道 `iuv-toolbar-signal`，与数据面（用户库写）物理隔离。
 /// 三消息 = 显隐决策唯一输入；TSF 实例获得焦点发 FocusGained、失去焦点发
 /// FocusLost、运行中四态变化发 StateChanged。pid/tid 仅作日志观察点。
+///
+/// M1 桌宠骨架扩展：新增 `Typing`（tag `0x24`）——组合开始（内容非空）→ `active=true`、
+/// 组合结束/提交/取消 → `active=false`，供 daemon 驱动宠物"打字敲键盘"动画。
+/// "打字"作为**事件**而非**状态**——不并入 ImeState，独立信号通道（避免污染
+/// 32-toolbar §5.1 的"实例运行时值"语义）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolbarSignal {
     /// 激活：「有一个实例持有者获得了焦点」+ 当前四态（供 daemon 渲染新工具栏）。
@@ -72,6 +77,9 @@ pub enum ToolbarSignal {
     FocusLost { pid: u32, tid: u32 },
     /// 态变更：会话中途四态变化（工具栏按钮/系统级切换后实例自报新态）。
     StateChanged { pid: u32, tid: u32, state: ImeState },
+    /// 打字中：组合开始（active=true）/ 结束-提交-取消（active=false）。
+    /// M1 桌宠专用，daemon 据此驱动宠物"敲键盘律动"动画 + 空闲停帧回退。
+    Typing { pid: u32, tid: u32, active: bool },
 }
 
 // ===== 32-status-toolbar.md 工具栏四态 + 反向控制通道 =====

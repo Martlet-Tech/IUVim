@@ -17,6 +17,7 @@ mod capture;
 mod config;
 mod hotkey;
 mod log;
+mod pet_assets;
 mod settings;
 mod state;
 mod toolbar;
@@ -115,7 +116,9 @@ fn run() -> i32 {
     state.publish();
 
     // ---- 5. 浮动工具栏宿主（32-status-toolbar.md §6：全局唯一看板，独立消息泵线程）----
-    let toolbar = ToolbarHost::spawn(state.clone());
+    // 桌宠形象：装配一次（外部皮肤目录 → 内置少女分层皮肤 → 像素狗 L0 兜底）。
+    let pet_art = std::sync::Arc::new(crate::pet_assets::load_pet_art());
+    let toolbar = ToolbarHost::spawn(state.clone(), pet_art);
 
     // ---- 6. 管道监听线程（写请求应用 + publish + 立即写盘）----
     spawn_pipe_thread(state.clone(), toolbar.clone());
