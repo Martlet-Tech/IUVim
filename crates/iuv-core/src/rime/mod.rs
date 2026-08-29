@@ -582,6 +582,13 @@ mod tests {
             }
             if let Some(sent) = poet::make_sentence(&wg, graph.farthest, "", e.lambda) {
                 println!("== best = {:?} weight={:.4}", sent.words, sent.weight);
+                // λ 灵敏度扫描（校准参考）：观察组句选词随 λ 的变化
+                println!("== lambda sweep ==");
+                for lam in [-20.0f64, -13.8155, -10.0, -7.0, -4.0, -2.0, -1.0, -0.5, 0.0] {
+                    if let Some(s) = poet::make_sentence(&wg, graph.farthest, "", lam) {
+                        println!("  λ={:>7.4} -> {:?} w={:.4}", lam, s.words, s.weight);
+                    }
+                }
             }
         }
         let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw });
