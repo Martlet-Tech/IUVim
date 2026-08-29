@@ -705,6 +705,9 @@ pub struct Translation { pub segmentation: Vec<Span>, pub candidates: Vec<Candid
 
 - `Config.engine: EngineChoice`（classic 默认 / rime），装载点消费（TSF load_engine、
   REPL --engine），切换需重载输入法。
+- rime 打分参数（39 号 W2 λ 校准，默认 = librime 原值）：`Config.rime_lambda: f64`
+  （组句每词长度惩罚，默认 ln(1e-6)）、`Config.rime_spelling_penalty: f64`
+  （简拼/补全边可信度罚分，默认 ln(0.05)）。仅 engine=rime 消费，重载生效。
 - `Engine::attach_core(Arc<dyn ImeEngine>)`：挂载后 start_session* 自动改产核心会话；
   词库经 `Engine::shared_dict()` Arc 共享——M2 调权/自造词/隐藏跨核心同源。
 

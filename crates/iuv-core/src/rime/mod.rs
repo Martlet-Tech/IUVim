@@ -472,4 +472,121 @@ mod tests {
         assert!(texts.contains(&"是".to_string()), "{texts:?}");
         assert!(!texts.contains(&"时候".to_string()), "前缀档不出词：{texts:?}");
     }
+
+    /// 真词库校准诊断（39 号 W2，λ 校准用）：dump 切分/音节图/桶/poet 词格/
+    /// 组句结果。需真词库，默认跳过：
+    /// `cargo test -p iuv-core real_dict --ignored -- --ignored --nocapture`
+    #[test]
+    #[ignore = "需真词库 data/iuv.imedic（仓库根运行）"]
+    fn real_dict_poet_graph_dump() {
+        let dict_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/iuv.imedic");
+        let dict = StdArc::new(iuv_data::load(std::path::Path::new(dict_path)).unwrap());
+        println!("== prefix probes ==");
+        for p in ["cheng'y", "cheng", "y"] {
+            let got: Vec<String> =
+                dict.prefix(p, 64).iter().map(|e| format!("{}:{}", e.word, e.weight)).collect();
+            println!("  prefix({p:?}) -> {got:?}");
+        }
+        let cfg = crate::Config {
+            engine: crate::config::EngineChoice::Rime,
+            ..Default::default()
+        };
+        let e = RimeEngine::new(dict.clone(), &cfg);
+        let raw = "shigechengy";
+        let lower = raw.to_lowercase();
+        let seg = e.ranked_seg(raw);
+        println!("== seg = {seg:?}");
+        let mut graph = syllabifier::build_graph(
+            &lower,
+            &e.syllables,
+            MAX_SYLLABLE_LEN,
+            e.spelling_penalty,
+            e.spelling_penalty,
+        );
+        // 复刻 translate 的 2b 补全边注入
+        {
+            let lens: Vec<usize> =
+                seg.iter().filter(|s| !s.is_empty()).map(|s| s.chars().count()).collect();
+            if lens.len() >= 2 {
+                let total: usize = lens.iter().sum();
+                let tail_start = total - lens[lens.len() - 1];
+                if let Some(last) = seg.iter().filter(|s| !s.is_empty()).last() {
+                    if !e.is_syllable(last)
+                        && e.syllables.iter().any(|syl| syl.starts_with(last.as_str()))
+                    {
+                        syllabifier::push_completion_edge(
+                            &mut graph,
+                            lower.len(),
+                            tail_start,
+                            last,
+                            e.spelling_penalty,
+                        );
+                    }
+                }
+            }
+        }
+        for (from, ends) in &graph.edges {
+            for (to, sps) in ends {
+                for sp in sps {
+                    println!(
+                        "  edge [{from:>2},{to:>2}) {:?} {:?} cred={:.4}",
+                        sp.syllable, sp.spelling_type, sp.credibility
+                    );
+                }
+            }
+        }
+        println!("== farthest = {}", graph.farthest);
+        let mut origins = std::collections::BTreeSet::new();
+        origins.insert(0);
+        for (_, to_map) in graph.edges.iter() {
+            for (to, sps) in to_map {
+                if sps.iter().any(|sp| sp.spelling_type == syllabifier::SpellingType::Normal) {
+                    origins.insert(*to);
+                }
+            }
+        }
+        let buckets = translator::collect_buckets(
+            &dict,
+            &graph,
+            MAX_WORD_SYLLABLES,
+            &origins,
+            e.blocked(),
+        );
+        for ((s, en), slot) in &buckets {
+            for be in slot.iter().take(5) {
+                println!(
+                    "  bucket [{s:>2},{en:>2}) {:?} w={:>7} exact={:?} class={} cred={:.4}",
+                    be.entry.word, be.entry.weight, be.exact, be.class, be.cred
+                );
+            }
+        }
+        let mut wg_filtered: translator::Buckets = buckets
+            .iter()
+            .map(|(k, slot)| {
+                (*k, slot.iter().filter(|b| b.class != 1).cloned().collect::<Vec<_>>())
+            })
+            .filter(|(_, slot)| !slot.is_empty())
+            .collect();
+        if let Some(wg) = translator::build_poet_graph(
+            &mut wg_filtered,
+            graph.farthest,
+            |w| e.lm.log_prob(None, "", w),
+        ) {
+            println!("== poet graph ==");
+            for (s, ends) in &wg {
+                for (en, entries) in ends {
+                    for g in entries {
+                        println!("  poet [{s:>2},{en:>2}) {:?} lw={:.4}", g.word, g.log_weight);
+                    }
+                }
+            }
+            if let Some(sent) = poet::make_sentence(&wg, graph.farthest, "", e.lambda) {
+                println!("== best = {:?} weight={:.4}", sent.words, sent.weight);
+            }
+        }
+        let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw });
+        for c in tr.candidates.iter().take(8) {
+            println!("  cand {:?}\t{:?}\tw={}\tscore={:.4}", c.text, c.kind, c.weight, c.score);
+        }
+    }
 }
