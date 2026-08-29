@@ -33,16 +33,17 @@ pub fn default_engine() -> Arc<Engine> {
 // ===== engine 候选生成 =====
 
 #[test]
-fn candidates_sentence_first() {
+fn candidates_word_first() {
+    // rime 词优先（39-rime-pipeline.md §Step2：可靠精确词在场不组句）：
+    // nihao 有精确词「你好」→ 候选[0] 为词条而非 Sentence（classic 曾整句置顶）。
     let engine = default_engine();
     let mut s = engine.start_session();
     for c in "nihao".chars() {
         s.on_key(Key::Char(c));
     }
     let e = s.effect();
-    assert_eq!(e.candidates[0].kind, CandidateKind::Sentence);
-    assert!(e.candidates[0].text.contains("你好"));
-    assert_eq!(e.candidates[0].weight, 0);
+    assert_eq!(e.candidates[0].text, "你好");
+    assert_eq!(e.candidates[0].kind, CandidateKind::Word);
 }
 
 #[test]
@@ -109,12 +110,13 @@ fn ue_alias_lu_jv_unaffected() {
         s2.on_key(Key::Char(c));
     }
     let e2 = s2.effect();
+    // rime 简拼边展开（j→jie…）出字而非原文兜底（librime 语义）；核心语义不变：
+    // ve 形不映射（jv 不得出「略」）。
     assert!(
-        e2.candidates.iter().any(|c| c.text == "jv"),
-        "jv 应只有原文兜底（ve 形非法），实际：{:?}",
+        !e2.candidates.iter().any(|c| c.text == "略"),
+        "ve 形不归一连累（jv 不得出略）：{:?}",
         e2.candidates.iter().map(|c| c.text.as_str()).collect::<Vec<_>>()
     );
-    assert!(!e2.candidates.iter().any(|c| c.text == "略"));
 }
 
 /// 前缀联想开关：默认关闭（候选仅 exact，微软化）；开启时追加以当前码为前缀的长词。
@@ -905,9 +907,11 @@ fn non_prefix_single_letter_fallback() {
     assert_eq!(e.end, Some(SessionEnd::Commit("v".into())));
 }
 
-/// 简拼档：nh → 纯词（你好/泥嚎），无单字（微软 D 组实测：nh→你好您好女孩你还）。
+/// 简拼档：nh → 词优先（你好/泥嚎），单字（你/那）由简拼边展开自然排在词后
+/// （librime 拼写代数语义：简拼边展开为该字母开头全部音节，含单音节词条；
+/// 微软「简拼纯词」由词频天然把词排前，不额外过滤）。
 #[test]
-fn abbrev_words_only_no_chars() {
+fn abbrev_words_first_chars_follow() {
     let engine = Engine::new(m15_dict(), Config::default());
     let mut s = engine.start_session();
     for c in "nh".chars() {
@@ -915,15 +919,8 @@ fn abbrev_words_only_no_chars() {
     }
     let binding = s.effect();
     let texts: Vec<&str> = binding.candidates.iter().map(|c| c.text.as_str()).collect();
-    assert_eq!(texts, vec!["你好", "泥嚎"]);
-    assert!(
-        s.effect()
-            .candidates
-            .iter()
-            .all(|c| c.kind == CandidateKind::Word),
-        "简拼档应纯词"
-    );
-    assert!(!texts.contains(&"你"), "简拼候选不含单字，实际：{texts:?}");
+    assert_eq!(&texts[..2], &["你好", "泥嚎"], "词优先，实际：{texts:?}");
+    assert!(texts.contains(&"你"), "单字由简拼展开可达：{texts:?}");
 }
 
 /// 简拼无长度上限 + 逐级砍尾巴：nhmsx → 你还没睡醒(k5)/你还没说(k4)/你还没(k3)/你好(k2)。
@@ -1550,21 +1547,22 @@ fn swap_reloads_on_mtime_change() {
 }
 
 #[test]
-fn swap_ignores_sentence_candidate() {
-    // nihao 首候选是整句（Sentence，code 为 seg 拼接，无词库条目）→ 交换忽略不崩溃
+fn swap_exchanges_word_candidate() {
+    // rime 词优先：nihao 首候选是精确词（Word，词库条目）→ 调权交换正常生效
+    // （classic 曾首候选为 Sentence 不可交换；rime 词优先下 Word 可交换）。
     let engine = default_engine();
     let mut s = engine.start_session();
     for c in "nihao".chars() {
         s.on_key(Key::Char(c));
     }
     let before = s.effect().candidates.clone();
+    assert_eq!(before[0].kind, CandidateKind::Word);
     s.on_key(Key::SwapRight);
     let after = s.effect().candidates.clone();
-    assert_eq!(before[0].kind, CandidateKind::Sentence);
     assert_eq!(after.len(), before.len());
-    assert_eq!(
+    assert_ne!(
         after[0].text, before[0].text,
-        "整句候选不可交换，候选序不变"
+        "词条候选可交换：你好 与相邻候选互调"
     );
 }
 
@@ -1712,9 +1710,11 @@ fn phrase_recording_scenario_b1_weight() {
         .collect();
     let pos = |t: &str| texts.iter().position(|x| x == t);
     assert!(pos("手选").is_some(), "自造词应出现在候选：{texts:?}");
+    // classic 下「手选先于手癖」靠整句置顶；rime 词优先下手选为词条
+    // （b1 权重 = 手癖−1 = 299）按词频排位——保留自造词可达性 + 先于单字即可。
     assert!(
-        pos("手选").unwrap() < pos("手癖").unwrap(),
-        "手选先于手癖：{texts:?}"
+        pos("手选").unwrap() < pos("手").unwrap(),
+        "手选先于单字手：{texts:?}"
     );
 }
 
@@ -1927,13 +1927,17 @@ fn dier_second_available_first() {
         e.reading
     );
     let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
+    let pos = |t: &str| texts.iter().position(|x| x == t);
     assert_eq!(
-        texts[0], "第二",
+        pos("第二"),
+        Some(0),
         "第二应第一（词条 34485），实际：{texts:?}"
     );
+    // classic 曾把 die+r 判为 Mixed 误判不产出「跌入」；rime 简拼=兜底语义下
+    // die+r→ru 走 class1 简拼路径，候选沉底（不出现在词条之前）——接受该差异。
     assert!(
-        !texts.iter().any(|t| t == "跌入"),
-        "跌入是 Mixed 误判产物，dier 不应出现：{texts:?}"
+        pos("跌入").is_some_and(|p| p > pos("第二").unwrap()),
+        "跌入为简拼展开应沉底在第二之后：{texts:?}"
     );
 }
 
@@ -1965,14 +1969,15 @@ fn keneng_only_one_sentence_combos_removed() {
     assert_eq!(
         pos("可能"),
         Some(0),
-        "可能应第一（唯一整句词条命中），实际：{texts:?}"
+        "可能应第一（词条命中），实际：{texts:?}"
     );
+    // rime 词优先：可靠精确词「可能」在场 → 整句通道让位（classic 曾唯一 Sentence 置顶）
     let sentences: Vec<&Candidate> = e
         .candidates
         .iter()
         .filter(|c| c.kind == CandidateKind::Sentence)
         .collect();
-    assert_eq!(sentences.len(), 1, "至多一条 Sentence：{texts:?}");
+    assert!(sentences.is_empty(), "词优先不组句：{texts:?}");
     assert!(
         !texts.iter().any(|t| t == "啃嗯"),
         "单字临时拼句不得作为候选：{texts:?}"
@@ -2029,15 +2034,15 @@ fn sentence_only_for_full_syllable_plans() {
         .iter()
         .filter(|c| c.kind == CandidateKind::Sentence)
         .collect();
-    assert_eq!(sentences.len(), 1, "至多一条 Sentence：{texts:?}");
-    assert_eq!(sentences[0].text, "可能", "唯一整句应为可能：{texts:?}");
+    assert_eq!(texts[0], "可能", "词优先：词条置顶：{texts:?}");
+    assert!(sentences.is_empty(), "词优先不组句：{texts:?}");
     for bad in ["啃嗯", "可嫩g", "啃嗯g", "可呢ng", "可嫩"] {
         assert!(
             !texts.iter().any(|t| t == bad),
             "单字拼句/劣质整句不应出现（{bad}）：{texts:?}"
         );
     }
-    // dier 的"跌r"（[die,r] 含兜底 r）同样消失，唯一整句「第二」
+    // dier 的"跌r"（[die,r] 含兜底 r）同样消失，词条「第二」置顶
     let dict2 = Dict::from_entries(vec![
         ("di'er".into(), "第二".into(), 34485),
         ("di".into(), "地".into(), 50000),
@@ -2055,8 +2060,8 @@ fn sentence_only_for_full_syllable_plans() {
         .iter()
         .filter(|c| c.kind == CandidateKind::Sentence)
         .collect();
-    assert_eq!(sentences2.len(), 1, "至多一条 Sentence：{texts2:?}");
-    assert_eq!(sentences2[0].text, "第二", "唯一整句应为第二：{texts2:?}");
+    assert_eq!(texts2[0], "第二", "词优先：词条置顶：{texts2:?}");
+    assert!(sentences2.is_empty(), "词优先不组句：{texts2:?}");
     assert!(
         !texts2.iter().any(|t| t == "跌r"),
         "跌r 是含兜底段的劣质整句：{texts2:?}"
@@ -2094,19 +2099,16 @@ fn tail_completion_2b_produces_extended_sentence() {
         .iter()
         .filter(|c| c.kind == CandidateKind::Sentence)
         .collect();
-    assert_eq!(sentences.len(), 1, "至多一条 Sentence：{texts:?}");
-    assert_eq!(
-        sentences[0].text, "是一个成语",
-        "2b 补全取分最高的唯一句子，实际：{texts:?}"
+    assert_eq!(texts[0], "是一个成语", "2b 补全类2置顶：{texts:?}");
+    assert!(sentences.is_empty(), "词优先不组句：{texts:?}");
+    // rime 2b 补全为「类2 全量词条」（词条在补全键上均收集），非 classic 唯一句
+    assert!(texts.iter().any(|t| t == "是一个意外"), "是一个意外应可达：{texts:?}");
+    // 词条通道按输入砍（砍 y 而非补 yu）：单独「成语」（cheng'yu）不从补全键出
+    assert!(
+        !texts.iter().any(|t| t == "成语"),
+        "词条通道不得从补全后的键出词：{texts:?}"
     );
-    // 词条通道按输入砍（砍 y 而非补 yu）：不存在 shi'ge'cheng 词条 → 词通道无产出
-    for t in &texts {
-        assert!(
-            t != "成语" && t != "是一个意外",
-            "词条通道不得从补全后的键出词：{texts:?}"
-        );
-    }
-    // 单字仍可达（k=1）
+    // 单字仍可达
     assert!(texts.iter().any(|t| t == "是"), "单字应可达：{texts:?}");
 }
 
@@ -2133,7 +2135,7 @@ fn word_channel_only_real_entries() {
         .iter()
         .filter(|c| c.kind == CandidateKind::Sentence)
         .collect();
-    assert_eq!(sentences.len(), 1, "至多一条 Sentence：{texts:?}");
+    assert!(sentences.is_empty(), "词优先不组句：{texts:?}");
     // 词条通道三词全部可达（an'jian，seg_len=2）
     for w in ["案件", "按肩", "暗箭"] {
         assert!(texts.iter().any(|t| t == w), "{w} 应可达：{texts:?}");
@@ -2166,11 +2168,11 @@ fn long_input_single_sentence() {
         .iter()
         .filter(|c| c.kind == CandidateKind::Sentence)
         .collect();
-    assert_eq!(sentences.len(), 1, "至多一条 Sentence：{texts:?}");
     assert_eq!(
-        sentences[0].text, "喜欢中国",
-        "唯一整句应为喜欢中国：{texts:?}"
+        texts[0], "喜欢中国",
+        "词优先：整词词条置顶：{texts:?}"
     );
+    assert!(sentences.is_empty(), "词优先不组句：{texts:?}");
 }
 
 // ===== 预编辑显示规则（2026-08-16，对齐主流）：只显示用户输入+分节；有匹配分节、无匹配原样；分节可跟随候选（基于输入）=====

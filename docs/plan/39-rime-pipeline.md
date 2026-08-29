@@ -1,6 +1,7 @@
 # 39 · 引擎 Rime 化改造（分节器/翻译器/过滤器隔离 + 统一打分 + 分段确认交互）
 
-> 状态：实施中（2026-08-26 起）。Step 1-3（统一打分/音节图/翻译器）已实现并部署，收尾项 = λ 打分校准与烘焙后删 classic。
+> 状态：**已结案（2026-08-29）**。Step 1-3 + λ 打分校准 + 烘焙后删 classic 全部完成
+> （删 classic 见附录 §16，git 留底；本文件 §15/§15A 为历史档案）。
 > 决策记录：本文档同时充当决策台账——所有方向性取舍（键位、许可、双引擎去留等）
 > 均由管理员拍板后记录在案，后续实施不得悄悄推翻。
 
@@ -226,7 +227,8 @@ TSF 契约、候选窗渲染、设置页。
 - **分歧裁决**：对拍发现任务书未覆盖的「rime 原生 vs iuv 现有行为」冲突时，
   执行方自行裁决并记录到本文档附录，倾向保守（保持现有 iuv 行为），重大分歧标记待复核。
 - **终点范围**：做到 Step 3 双引擎并存（Config 可切、会话已切分段确认、对拍报告完成）；
-  classic 引擎保留不删，删除等管理员确认。
+  classic 引擎保留不删，删除等管理员确认。**已兑现：2026-08-29 管理员确认删除 classic
+  （分支 feat/rime-single-core），附录 §16 落档。**
 - **资源位置**：librime 与小狼毫源码在 `D:\Downloads\input\{librime,weasel}`（只读参考）。
 
 ## 13. 对拍分歧裁决记录（Step 2 实施中逐项落档）
@@ -288,3 +290,55 @@ TSF 契约、候选窗渲染、设置页。
   `config.json rime_lambda / rime_spelling_penalty`（重载生效），无需改码。
 - 诊断工具：`cargo test -p iuv-core real_dict_poet_graph_dump -- --ignored --nocapture`
   （dump 切分/音节图/桶/poet 词格/组句 + λ 扫描）。
+
+## 16. 烘焙后删 classic（2026-08-29 结案，分支 feat/rime-single-core，git 留底）
+
+### 16.1 决策
+管理员确认：rime 已烘焙稳定（真词库部署打字无异常、λ 校准 12 条语料与 classic
+首屏全对齐），执行任务书 §2/§3/§6 预定的「删除 classic 引擎与过渡开关」。
+
+### 16.2 改动面
+- **删除**：`crates/iuv-core/src/classic.rs`（430 行，classic 候选核心 + `impl ImeEngine for Engine`）、
+  `Config.engine`/`EngineChoice` 过渡开关、`Engine::attach_core`/`alt_core`/`shared_dict`/
+  `is_syllable*`、`Session::new`/`with_runtime`、REPL `--engine` 开关与 core 参数贯穿链、
+  `scripts/compare-engines.ps1`（双引擎对拍脚本）。
+- **收敛**：`Engine` 构造时内部装配 `RimeEngine`（`ime: Arc<dyn ImeEngine>`），
+  `start_session*` 恒产出 rime 会话；`rank_plans` 自 classic 迁入 `api.rs` 共享实现。
+- **配置兼容**：`config/io.rs` 加 `migrate_engine` shim 清理旧 `"engine"` 键
+  （serde 本就忽略未知字段，此步保配置纯净；daemon save 全量重写亦自然清理）。
+- **测试**：`engine_switch.rs` 删 classic 默认行为测试、`rime_wired` 简化为默认装配；
+  `api_seam.rs` 改经 `RimeEngine` 测接口契约；会话层 18 项 classic 语义断言改写为
+  rime 语义（词优先/简拼展开/类别序，见 16.4）。workspace 全绿（约 354）+ cargo check 零警告。
+
+### 16.3 补齐的 rime 功能缺口（删 classic 时暴露，随本分支一并落地）
+- **üe 输入形归一**（24-ue-input-alias.md）：`build_graph` 前对输入做 lue→lve/nue→nve
+  归一（替换长度不变，图顶点坐标系安全）——此前只经 `Quanpin::segment` 归一，图查询侧
+  漏掉 `gonglue` 类输入形。
+- **candidate_prefix 前缀联想**（config 字段既有，默认关）：`RimeEngine` 增加字段并在
+  词条流后、去重前追加 `Dict::prefix` 联想词（classic `generate_candidates` 同款）。
+- **简拼键形拼接修复**（§13#2 裁决兑现）：`translator` 键串延长对单字母简拼边（字母串
+  自身族）改为**直拼** concat（`jj` 而非 `j'j`）——旧实现恒 join `'`，纯简拼输入命中
+  不了压缩式简拼键。
+- **大写保形**：`build_graph` 输入不再 `to_lowercase`——大写保形字符不产 Normal/简拼边
+  （作为不可达分隔），`Hello` 直接兜底原文、`niHAO` 仍从 ni 前缀出词，与 classic
+  大写保形语义一致（修前 `Hello` 会被 `he` 音节截胡出「河」等候选）。
+
+### 16.4 会话层测试改写对照（classic 语义 → rime 语义，均为有意设计差异）
+| classic 断言 | rime 行为 | 改写后 |
+|---|---|---|
+| 整句（Sentence）置顶 | **词优先**：可靠精确词在场不组句（§Step2/st.cc 闸门） | 断言词条置顶 + 无 Sentence |
+| 简拼档纯词（微软对齐） | 简拼边展开含单音节词条（librime 拼写代数） | 断言词优先 + 单字在后 |
+| `dier` 无「跌入」（Mixed 误判） | die+r→ru 走 class1 简拼沉底 | 断言「第二」第一 + 跌入沉底 |
+| 2b 补全唯一句 | 类2 补全全量词条置顶 | 断言类2 置顶 + 多词可达 |
+| `jv` 原文兜底 | j 简拼展开出字（如「界」） | 断言不出「略」（ve 形不映射） |
+| 自造词「手选」先于手癖（整句置顶） | 词条按 b1 权重排位 | 断言自造词可达 + 先于单字 |
+| 大写英文原样不分节 | 大写字符不可达分隔 → 兜底原文 | 修复后与 classic 一致，断言不变 |
+
+### 16.5 真词库回归基线（REPL 前 5 候选，2026-08-29 实测）
+语料：`nihao xian shigechengy haoshengy nhmsx nhao nihaoshijie sh zheshiming
+chuangqianmingyueguang zhongguorenmin xiexiedajia`（compare-engines.ps1 默认语料，
+脚本已删，本清单为回归基线）。12/12 首候选与 §15A 校准基线一致，含关键项：
+- `shigechengy` → **是个成员**（Sentence，λ 校准目标，与 classic 对齐）
+- `chuangqianmingyueguang` → **床前明月光**（整词词条，性能关键用例）
+- `haoshengy` → 好声音（类2 补全置顶，§15A 既定页内序）
+- `nhmsx` → 你还没（压缩简拼键 concat 修复后命中）

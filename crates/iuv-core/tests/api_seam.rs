@@ -1,7 +1,8 @@
 //! 顶层引擎接口（api.rs）契约测试。39-rime-pipeline.md §Step1。
 
 use iuv_core::api::{EngineCtx, ImeEngine, PendingInput};
-use iuv_core::{Config, Engine, Key};
+use iuv_core::{Config, Engine, Key, RimeEngine};
+use std::sync::Arc;
 
 fn ctx() -> EngineCtx<'static> {
     EngineCtx { preceding_text: "" }
@@ -18,12 +19,17 @@ fn jian_dict() -> iuv_data::Dict {
     ])
 }
 
+/// 接口契约测的是 rime 核心（classic 已删，rime 为唯一 ImeEngine 实现）。
+fn rime_engine(dict: iuv_data::Dict) -> Arc<RimeEngine> {
+    RimeEngine::new(Arc::new(dict), &Config::default())
+}
+
 /// 输入方向①：待输入串 → 分段视图 + 候选列表。
 #[test]
 fn translate_returns_segmentation_and_candidates() {
-    let e = Engine::new(jian_dict(), Config::default());
+    let e = rime_engine(jian_dict());
     let tr = e.translate(&ctx(), &PendingInput { raw: "nihao" });
-    assert_eq!(tr.segmentation.len(), 1, "classic 恒整串一段");
+    assert_eq!(tr.segmentation.len(), 1, "rime 打字期单活动段：segmentation 恒单段");
     assert_eq!(tr.segmentation[0].syllables, vec!["ni", "hao"]);
     assert!(tr
         .candidates
@@ -35,7 +41,7 @@ fn translate_returns_segmentation_and_candidates() {
 /// `jian` 导航到吉安时预编辑必须显示 `ji'an`）。
 #[test]
 fn preedit_follows_highlighted_candidate() {
-    let e = Engine::new(jian_dict(), Config::default());
+    let e = rime_engine(jian_dict());
     let tr = e.translate(&ctx(), &PendingInput { raw: "jian" });
     let jian = tr
         .candidates
@@ -83,7 +89,7 @@ fn session_composition_updates_on_navigation() {
 /// 强制撇号不跟随候选（规则 1）：raw 含 `'` 时恒按输入切分显示。
 #[test]
 fn preedit_respects_user_apostrophe() {
-    let e = Engine::new(jian_dict(), Config::default());
+    let e = rime_engine(jian_dict());
     let tr = e.translate(&ctx(), &PendingInput { raw: "ji'an" });
     let jian = tr
         .candidates

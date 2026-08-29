@@ -22,11 +22,22 @@ impl Config {
         let text = strip_bom(&text);
         let text = strip_jsonc_comments(&text); // 兼容带 // 注释的配置（安装器产出的默认文件）
         let v = match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(v) => migrate_initial_state(migrate_keymap(v)),
+            Ok(v) => migrate_engine(migrate_initial_state(migrate_keymap(v))),
             Err(_) => return Config::default(),
         };
         serde_json::from_value::<Config>(v).unwrap_or_default()
     }
+}
+
+/// 旧 `"engine"` 过渡开关迁移 shim（2026-08-29，39-rime-pipeline.md 收尾）：
+/// 双引擎过渡已结案——rime 为唯一候选核心，`Config.engine` 字段删除。
+/// 旧配置里的 `"engine": "classic"|"rime"` 键 serde 本就忽略（未知字段不报错），
+/// 此处显式清理保持配置纯净（daemon `save_config` 全量重写时也会自然清掉）。
+fn migrate_engine(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("engine");
+    }
+    v
 }
 
 /// 旧配置迁移 shim（2026-08-19，见 `docs/plan/28-initial-state-settings.md`）：

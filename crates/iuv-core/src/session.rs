@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 pub struct Session {
     /// 资源引擎（调权/隐藏/自造词/配置/简繁等资源操作）。
     engine: Arc<Engine>,
-    /// 候选生成核心（ImeEngine 接缝，39-rime-pipeline.md）：classic 或 rime。
+    /// 候选生成核心（ImeEngine 接缝，39-rime-pipeline.md 收尾后 = rime 唯一核心）。
     ime: Arc<dyn crate::api::ImeEngine>,
     /// 实例运行时四态（32-status-toolbar.md §5.1）：**live 读**——工具栏点简繁等
     /// 切换后 `effect()`/`to_output` 立即读取新值，当前候选/预编辑马上重渲，不重建会话。
@@ -29,23 +29,8 @@ pub struct Session {
 }
 
 impl Session {
-    /// 默认运行时 = 引擎配置 `initial_state`（REPL/测试路径；TSF 用 `with_runtime`）。
-    pub(crate) fn new(engine: Arc<Engine>) -> Session {
-        let runtime = engine.config().initial_state;
-        Session::with_runtime(engine, Arc::new(Mutex::new(runtime)))
-    }
-
-    /// 注入实例运行时态（32-status-toolbar.md §5.1：per-实例四态，live 读）。
-    pub(crate) fn with_runtime(
-        engine: Arc<Engine>,
-        runtime: Arc<Mutex<ImeState>>,
-    ) -> Session {
-        let ime = engine.clone() as Arc<dyn crate::api::ImeEngine>;
-        Session::over(engine, ime, runtime)
-    }
-
-    /// 挂自定义候选核心开会话（39-rime-pipeline.md Step2：rime 核心经此接入；
-    /// 资源操作仍走 classic Engine——共享同一 Dict 实例）。
+    /// 开会话：绑定候选生成核心（Engine 构造时装配的 rime 核心）与实例运行时态。
+    /// `runtime` 为 per-实例四态（32-status-toolbar.md §5.1，live 读）。
     pub fn over(
         engine: Arc<Engine>,
         ime: Arc<dyn crate::api::ImeEngine>,
@@ -480,8 +465,8 @@ impl Session {
         let page_cands = self.page_candidates().to_vec();
         // 混合预编辑（悬空显示）：已选词汉字 + 未选部分拼音分段。
         // 如选"床前"后：`床前ming'yue'guang`；commit 时由 end.text 全量替换上屏。
-        // 尾巴预编辑 = 引擎接口输出（preedit，五条显示规则已收编 classic 核心，
-        // 39-rime-pipeline.md §4）：导航跟随候选切分（jian→吉安 显 ji'an）、
+        // 尾巴预编辑 = 引擎接口输出（preedit，五条显示规则，39-rime-pipeline.md §4）：
+        // 导航跟随候选切分（jian→吉安 显 ji'an）、
         // 强制撇号/兜底/简拼各归其规则；会话层只拼已确认前文。
         let preceding = self.picked_text();
         let ctx = crate::api::EngineCtx { preceding_text: &preceding };

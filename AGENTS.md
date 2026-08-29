@@ -62,7 +62,7 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 | `platforms/{macos,linux}/` | 占位：IMK / Fcitx5·IBus 适配层 + 门面规划（README，见各目录） |
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |
 | `docs/status.md` | 工作状态台账：每项落地的根因/方案/改动/测试记录（AGENTS.md 指向此处） |
-| `scripts/` | download-dict / download-opencc / install / uninstall / dev-deploy（热部署） / iuv-common（共享库：提权/日志/ctfmon/延迟清理/Replace-InUseDll/Test-ArchRegistered） / clear-data（清用户数据）/ compare-engines（双引擎对拍）/ convert-main-icon（一次性 logo→ico，产物已入库，留作再生成） |
+| `scripts/` | download-dict / download-opencc / install / uninstall / dev-deploy（热部署） / iuv-common（共享库：提权/日志/ctfmon/延迟清理/Replace-InUseDll/Test-ArchRegistered） / clear-data（清用户数据） / convert-main-icon（一次性 logo→ico，产物已入库，留作再生成） |
 
 ## 常用命令
 

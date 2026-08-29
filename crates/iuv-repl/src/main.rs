@@ -6,11 +6,11 @@ use std::error::Error;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
-use iuv_core::{Config, Combo, Effect, Engine, ImeEngine, Key, Session, SessionEnd, RimeEngine};
+use iuv_core::{Config, Combo, Effect, Engine, Key, Session, SessionEnd};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (dict_path, batch_raw, rime) = match parse_args(&args) {
+    let (dict_path, batch_raw) = match parse_args(&args) {
         Some(x) => x,
         None => {
             print_usage();
@@ -20,31 +20,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dict = iuv_data::load(std::path::Path::new(&dict_path))
         .map_err(|e| format!("词典加载失败 {}：{}", dict_path, e))?;
     let engine = Engine::new(dict, Config::load());
-    // 39-rime-pipeline.md Step2：--engine rime 切换候选核心（词库共享，调权/屏蔽同源）
-    let core: Option<Arc<RimeEngine>> = if rime {
-        Some(RimeEngine::new(engine.shared_dict(), &engine.config()))
-    } else {
-        None
-    };
     match batch_raw {
-        Some(raw) => run_batch(&engine, core.as_ref(), &raw),
-        None => interactive(&engine, core.as_ref())?,
+        Some(raw) => run_batch(&engine, &raw),
+        None => interactive(&engine)?,
     }
     Ok(())
 }
 
-/// 命令行解析：`<dict.imedic> [--engine classic|rime] [--batch <拼音串>]`。
-fn parse_args(args: &[String]) -> Option<(String, Option<String>, bool)> {
+/// 命令行解析：`<dict.imedic> [--batch <拼音串>]`。
+fn parse_args(args: &[String]) -> Option<(String, Option<String>)> {
     let mut dict = None;
     let mut batch = None;
-    let mut rime = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--engine" if i + 1 < args.len() => {
-                rime = args[i + 1] == "rime";
-                i += 2;
-            }
             "--batch" if i + 1 < args.len() => {
                 batch = Some(args[i + 1].clone());
                 i += 2;
@@ -56,30 +45,20 @@ fn parse_args(args: &[String]) -> Option<(String, Option<String>, bool)> {
             _ => return None,
         }
     }
-    dict.map(|d| (d, batch, rime))
+    dict.map(|d| (d, batch))
 }
 
 fn print_usage() {
-    eprintln!("用法：iuv-repl <dict.imedic> [--engine classic|rime] [--batch <拼音串>]");
+    eprintln!("用法：iuv-repl <dict.imedic> [--batch <拼音串>]");
 }
 
-/// 开新会话（rime 核心存在则经 Session::over 挂载）。
-fn open_session(engine: &Arc<Engine>, core: Option<&Arc<RimeEngine>>) -> Session {
-    match core {
-        None => engine.start_session(),
-        Some(rime) => {
-            let runtime = Arc::new(std::sync::Mutex::new(engine.config().initial_state));
-            Session::over(
-                engine.clone(),
-                rime.clone() as Arc<dyn ImeEngine>,
-                runtime,
-            )
-        }
-    }
+/// 开新会话（Engine 内部已装配 rime 核心）。
+fn open_session(engine: &Arc<Engine>) -> Session {
+    engine.start_session()
 }
 
 /// 交互模式：提示符 `>` 逐行读取（任务书 §3.2）。
-fn interactive(engine: &Arc<Engine>, core: Option<&Arc<RimeEngine>>) -> io::Result<()> {
+fn interactive(engine: &Arc<Engine>) -> io::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut session: Option<Session> = None;
@@ -100,7 +79,7 @@ fn interactive(engine: &Arc<Engine>, core: Option<&Arc<RimeEngine>>) -> io::Resu
                     dispatch(&mut session, Key::Digit(n));
                 } else if is_pinyin(line) {
                     // 拼音串：新建 Session，逐字符喂入后打印最终 Effect
-                    let mut s = open_session(engine, core);
+                    let mut s = open_session(engine);
                     let mut e = s.effect();
                     for ch in line.chars() {
                         e = s.on_key(Key::Char(ch));
@@ -199,9 +178,9 @@ fn print_effect(e: &Effect) {
 }
 
 /// 批处理模式：打印 reading 行 + 全表候选（`序号<TAB>text<TAB>kind<TAB>weight<TAB>score`；
-/// score 为统一标量分（log 域），classic/未打分路径恒 0）。
-fn run_batch(engine: &Arc<Engine>, core: Option<&Arc<RimeEngine>>, raw: &str) {
-    let e = collect_all(engine, core, raw);
+/// score 为统一标量分（log 域，rime 词条/组句打分；兜底未打分候选为 0）。
+fn run_batch(engine: &Arc<Engine>, raw: &str) {
+    let e = collect_all(engine, raw);
     println!("{}", e.reading);
     for (i, c) in e.candidates.iter().enumerate() {
         println!("{}\t{}\t{:?}\t{}\t{:.4}", i + 1, c.text, c.kind, c.weight, c.score);
@@ -209,8 +188,8 @@ fn run_batch(engine: &Arc<Engine>, core: Option<&Arc<RimeEngine>>, raw: &str) {
 }
 
 /// 输入 raw 后逐页翻到底，收集全表候选（page 信息仍为最后一页）。
-fn collect_all(engine: &Arc<Engine>, core: Option<&Arc<RimeEngine>>, raw: &str) -> Effect {
-    let mut session = open_session(engine, core);
+fn collect_all(engine: &Arc<Engine>, raw: &str) -> Effect {
+    let mut session = open_session(engine);
     for ch in raw.chars() {
         session.on_key(Key::Char(ch));
     }
@@ -308,7 +287,7 @@ mod tests {
             ("ni'hao".into(), "逆豪".into(), 2000),
             ("ni'hao".into(), "你浩".into(), 1000),
         ]));
-        let e = collect_all(&engine, None, "nihao");
+        let e = collect_all(&engine, "nihao");
         assert_eq!(e.reading, "ni'hao");
         assert_eq!(e.candidates.len(), 8); // 整表跨页，证明 PageDown 生效
         assert_eq!(e.candidates[0].text, "你好");
@@ -317,32 +296,17 @@ mod tests {
     #[test]
     fn parse_args_forms() {
         assert_eq!(parse_args(&[]), None);
-        assert_eq!(
-            parse_args(&["a.imedic".into()]),
-            Some(("a.imedic".into(), None, false))
-        );
+        assert_eq!(parse_args(&["a.imedic".into()]), Some(("a.imedic".into(), None)));
         assert_eq!(
             parse_args(&["a".into(), "--batch".into(), "ni'hao".into()]),
-            Some(("a".into(), Some("ni'hao".into()), false))
+            Some(("a".into(), Some("ni'hao".into())))
         );
         assert_eq!(parse_args(&["a".into(), "x".into()]), None);
         assert_eq!(
             parse_args(&["a".into(), "--batch".into(), "ni'hao".into(), "extra".into()]),
             None
         );
-        assert_eq!(
-            parse_args(&["a".into(), "--engine".into(), "rime".into()]),
-            Some(("a".into(), None, true))
-        );
-        assert_eq!(
-            parse_args(&[
-                "a".into(),
-                "--engine".into(),
-                "classic".into(),
-                "--batch".into(),
-                "nh".into()
-            ]),
-            Some(("a".into(), Some("nh".into()), false))
-        );
+        // 39 号收尾：--engine 过渡开关已删，未知参数拒绝
+        assert_eq!(parse_args(&["a".into(), "--engine".into(), "rime".into()]), None);
     }
 }
