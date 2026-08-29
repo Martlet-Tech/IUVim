@@ -174,7 +174,7 @@ mod tests {
     /// 宠物矩形返回（命中用）。
     ///
     /// 关键不变量（与 M1-IMPLEMENTATION §5.1 一致）：
-    /// - 复合窗宽 = toolbar_w + zone_w（zone_w = PET_ZONE_W * scale）
+    /// - 复合窗宽 = toolbar_w（宠物居中挂正上方，不再向右追加宠物区）
     /// - 复合窗高 = toolbar_h + overhang（overhang = PET_OVERHANG * scale）
     /// - 按钮矩形 y 偏移 = overhang（栖木线 = 工具栏上沿）
     /// - 宠物矩形底边 = 工具栏上沿（y + h = overhang）
@@ -193,14 +193,13 @@ mod tests {
         };
         let (surf, rects, pet_rect, _mask) =
             render_composite(&composite, &crate::theme::theme_dark(), 1.0);
-        // 复合窗尺寸
-        let zone_w = (PET_ZONE_W * 1.0).ceil() as i32;
+        // 复合窗尺寸（宠物居中挂正上方，宽度不再追加宠物区）
         let overhang = (PET_OVERHANG * 1.0).ceil() as i32;
         let toolbar_w = (TOOLBAR_BTN * 1.0).ceil() as i32 * TB_COUNT as i32
             + (TOOLBAR_GAP * 1.0).ceil() as i32 * (TB_COUNT as i32 - 1)
             + (TOOLBAR_PAD * 1.0).ceil() as i32 * 2;
         let toolbar_h = (TOOLBAR_BTN * 1.0).ceil() as i32 + (TOOLBAR_PAD * 1.0).ceil() as i32 * 2;
-        assert_eq!(surf.w as i32, toolbar_w + zone_w);
+        assert_eq!(surf.w as i32, toolbar_w, "复合窗宽 = 工具栏宽（可贴屏幕右缘）");
         assert_eq!(surf.h as i32, toolbar_h + overhang);
         // 按钮矩形：y 全部一致 = pad + overhang（pad=6, overhang=136 @ scale=1 → 142）
         // 关键不变量：复合坐标下所有按钮 y 相同（横排布局）。
@@ -287,11 +286,13 @@ mod tests {
     }
 
     /// 复合渲染几何（少女形象 · 竖长半身像）：scale=1 时
-    ///   复合窗 = (toolbar_w + 128, toolbar_h + 136) = 340×178
+    ///   复合窗 = (toolbar_w, toolbar_h + 136) = 212×178（宠物居中挂正上方，宽度不追加）
     ///   按钮矩形 y 偏移 = 136 = PET_OVERHANG
-    ///   宠物显示矩形 = (220, 8, 112, 128)（底边 y+h=136 贴工具栏上沿）
+    ///   宠物显示矩形 = (50, 8, 112, 128)（x = (212-112)/2；底边 y+h=136 贴工具栏上沿）
     ///
-    /// 注：原 M1 §5.1 的 40×40 正方形几何已随少女形象升级为 112×128 竖长构图。
+    /// 注：原 M1 §5.1 的 40×40 正方形几何已随少女形象升级为 112×128 竖长构图；
+    /// 2026-08-30 起宠物由「右侧 128px 追加区」改为「工具栏正上方居中」——旧布局让复合窗
+    /// 比工具栏宽 128px，工具栏拖不到屏幕右边缘。
     #[test]
     fn render_composite_pet_rect_matches_geometry() {
         use std::collections::HashMap;
@@ -319,12 +320,13 @@ mod tests {
         };
         let (surf, rects, pet_rect, _) =
             render_composite(&composite, &crate::theme::theme_dark(), 1.0);
-        // 复合窗 340×178
-        assert_eq!(surf.w, 340, "scale=1 复合窗宽 = 212+128");
+        // 复合窗 212×178
+        assert_eq!(surf.w, 212, "scale=1 复合窗宽 = 工具栏宽（宠物居中挂上方，不追加宽度）");
         assert_eq!(surf.h, 178, "scale=1 复合窗高 = 42+136");
         // 宠物矩形（竖长半身像 @96dpi 基准）
         let pr = pet_rect.expect("pet_rect 必须返回（命中用）");
-        assert_eq!(pr.x, 220, "宠物 x = toolbar_w + (zone_w - display_w)/2 = 212 + 8");
+        assert_eq!(pr.x, 50, "宠物水平居中于工具栏：x = (212 - 112)/2");
+        assert_eq!(pr.x + pr.w, 162, "宠物右缘仍在工具栏内（≤212）");
         assert_eq!(pr.y, 8, "宠物 y = overhang - display_h = 136 - 128（底边贴工具栏上沿）");
         assert_eq!(pr.w, 112);
         assert_eq!(pr.h, 128);
@@ -464,8 +466,6 @@ fn draw_icon_scaled(canvas: &mut Pixmap, icon: &Pixmap, r: &LayoutRect, inset: f
 
 // ===== M1 桌宠骨架 · 复合渲染 =====
 
-/// 宠物区宽（@96dpi 基准；render 乘 scale）。工具栏右侧追加区，背景透明。
-pub const PET_ZONE_W: f32 = 128.0;
 /// 宠物栖木高度（@96dpi 基准）——工具栏上沿之上"挂"出多少像素。
 /// 视觉上宠物趴在上沿（底边 y = PET_OVERHANG 贴工具栏顶），符合 UIUX §4.1 栖木式吸附。
 pub const PET_OVERHANG: f32 = 136.0;
@@ -513,19 +513,27 @@ pub struct CompositeSpec<'a> {
     pub pet: Option<PetSpec<'a>>,
 }
 
-/// 计算宠物显示矩形（复合窗口坐标）。
-/// 居中于宠物区（水平方向），底部 y = PET_OVERHANG（贴工具栏上沿）。
-fn pet_display_rect(scale: f32) -> (i32, i32, u32, u32) {
-    let zone_w = (PET_ZONE_W * scale).ceil() as i32;
-    let display_w = (PET_DISPLAY_W * scale).ceil() as u32;
-    let display_h = (PET_DISPLAY_H * scale).ceil() as u32;
-    let overhang = (PET_OVERHANG * scale).ceil() as i32;
-    // 工具栏宽 = btn*6 + gap*5 + pad*2（与 render_toolbar 同源公式）
+/// 工具栏尺寸（@96dpi 基准 × scale）——与 `render_toolbar` 同源公式，抽出避免两三处重复。
+fn toolbar_size(scale: f32) -> (i32, i32) {
     let btn = (TOOLBAR_BTN * scale).ceil() as i32;
     let gap = (TOOLBAR_GAP * scale).ceil() as i32;
     let pad = (TOOLBAR_PAD * scale).ceil() as i32;
-    let toolbar_w = btn * TB_COUNT as i32 + gap * (TB_COUNT as i32 - 1) + pad * 2;
-    let x = toolbar_w + (zone_w - display_w as i32) / 2;
+    let w = btn * TB_COUNT as i32 + gap * (TB_COUNT as i32 - 1) + pad * 2;
+    let h = btn + pad * 2;
+    (w, h)
+}
+
+/// 计算宠物显示矩形（复合窗口坐标）。
+///
+/// 水平居中于**工具栏正上方**（x = (toolbar_w - display_w) / 2），底部 y = PET_OVERHANG
+/// （贴工具栏上沿）。宠物不再向右追加宽度——复合窗宽 = 工具栏宽，工具栏可贴到屏幕右边缘
+/// （旧版宠物挂在右侧 128px 追加区，窗口右边比工具栏宽出 128px，拖不到屏幕右缘）。
+fn pet_display_rect(scale: f32) -> (i32, i32, u32, u32) {
+    let display_w = (PET_DISPLAY_W * scale).ceil() as u32;
+    let display_h = (PET_DISPLAY_H * scale).ceil() as u32;
+    let overhang = (PET_OVERHANG * scale).ceil() as i32;
+    let (toolbar_w, _) = toolbar_size(scale);
+    let x = ((toolbar_w - display_w as i32) / 2).max(0);
     let y = overhang - display_h as i32; // 底部贴工具栏上沿
     (x, y, display_w, display_h)
 }
@@ -533,8 +541,8 @@ fn pet_display_rect(scale: f32) -> (i32, i32, u32, u32) {
 /// 复合渲染：工具栏 Surface + 宠物区 → 同一张 Surface。
 ///
 /// 返回：
-/// - `Surface`：合成 BGRA Surface，尺寸 = (toolbar_w + zone_w, toolbar_h + overhang)；
-///   工具栏位于下方，宠物挂在工具栏上沿之上（UIUX §4.1 栖木式）。
+/// - `Surface`：合成 BGRA Surface，尺寸 = (max(toolbar_w, 宠物宽), toolbar_h + overhang)；
+///   工具栏位于下方，宠物居中挂在工具栏上沿之上（UIUX §4.1 栖木式）。
 /// - `Vec<LayoutRect>`：按钮矩形，已偏移到**复合坐标**（y += overhang）——直接喂
 ///   `hit_test`（daemon 复合窗口的按钮命中零换算）。
 /// - `Option<LayoutRect>`：宠物显示矩形（命中 + 拖拽判别用）；`None` = 无宠物 spec。
@@ -552,15 +560,11 @@ pub fn render_composite(
     } else {
         1.0
     };
-    // 工具栏尺寸（与 render_toolbar 同款）
-    let btn = (TOOLBAR_BTN * scale).ceil() as i32;
-    let gap = (TOOLBAR_GAP * scale).ceil() as i32;
-    let pad = (TOOLBAR_PAD * scale).ceil() as i32;
-    let toolbar_w = btn * TB_COUNT as i32 + gap * (TB_COUNT as i32 - 1) + pad * 2;
-    let toolbar_h = btn + pad * 2;
-    let zone_w = (PET_ZONE_W * scale).ceil() as i32;
+    let (toolbar_w, toolbar_h) = toolbar_size(scale);
     let overhang = (PET_OVERHANG * scale).ceil() as i32;
-    let composite_w = toolbar_w + zone_w;
+    // 宠物居中挂在工具栏正上方（不向右追加宽度）→ 复合窗宽 = 工具栏宽；
+    // 仅当宠物显示宽意外超过工具栏宽时才取 max，避免宠物被裁掉。
+    let composite_w = toolbar_w.max((PET_DISPLAY_W * scale).ceil() as i32);
     let composite_h = toolbar_h + overhang;
     let pet_rect = if spec.pet.is_some() {
         let (x, y, w, h) = pet_display_rect(scale);

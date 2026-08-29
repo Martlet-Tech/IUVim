@@ -31,8 +31,8 @@ pub use pet::{
 pub use render::{render_candidate, render_menu, render_tooltip, Surface};
 pub use toolbar::{
     render_composite, render_toolbar, CompositeSpec, LayeredPetSpec, PetRenderSpec, PetSpec,
-    ToolbarIcons, ToolbarSpec, PET_DISPLAY_H, PET_DISPLAY_W, PET_OVERHANG, PET_ZONE_W, TB_GEAR,
-    TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
+    ToolbarIcons, ToolbarSpec, PET_DISPLAY_H, PET_DISPLAY_W, PET_OVERHANG, TB_GEAR, TB_LOGO,
+    TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
 };
 pub use snapshot::{effect_to_snapshot, CaretRect, UiSnapshot};
 pub use text::TextRenderer;

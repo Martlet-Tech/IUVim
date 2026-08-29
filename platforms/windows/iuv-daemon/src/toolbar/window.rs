@@ -12,7 +12,7 @@ use iuv_ui::layout::Rect;
 use iuv_ui::{
     hit_test, pet_alpha_at, pet_mask_hit, render_composite, CompositeSpec, LayeredPetSpec,
     PetRenderSpec, PetSpec, TextRenderer, Theme, ToolbarIcons, ToolbarSpec, TB_GEAR, TB_LOGO,
-    TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH, PET_OVERHANG, PET_ZONE_W,
+    TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH, PET_OVERHANG,
 };
 use iuv_win::{ctl_pipe_name, CtlClient, CtlCmd, CtlResult, PipeClient, Request};
 use iuv_win::UlwSurface;
@@ -509,8 +509,9 @@ impl ToolbarWindow {
         self.present(&surf, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
     }
 
-    /// 渲染当前帧 → Surface（**M1 复合**：工具栏 + 宠物区同窗） + 刷新按钮命中矩形 +
-    /// 宠物显示矩形。Surface 尺寸 = (toolbar_w + pet_zone_w, toolbar_h + pet_overhang)。
+    /// 渲染当前帧 → Surface（**M1 复合**：工具栏 + 宠物同窗） + 刷新按钮命中矩形 +
+    /// 宠物显示矩形。Surface 尺寸 = (toolbar_w, toolbar_h + pet_overhang)——宠物居中挂在
+    /// 工具栏正上方，不再向右追加宠物区宽度。
     fn frame(&mut self) -> Option<iuv_ui::Surface> {
         let scale = self.scale();
         let inst = {
@@ -577,9 +578,9 @@ impl ToolbarWindow {
         // 缓存复合几何（供 WM_NCHITTEST 不重复公式）
         self.composite_w = surf.w as i32;
         self.composite_h = surf.h as i32;
-        // toolbar_w/toolbar_h = composite_w - pet_zone_w;overhang = composite_h - toolbar_h
+        // 宠物居中挂工具栏正上方 → 复合窗宽 = 工具栏宽（宠物 112 < 工具栏 212，恒不更宽）
         self.overhang = (PET_OVERHANG * scale).ceil() as i32;
-        self.toolbar_w = self.composite_w - (PET_ZONE_W * scale).ceil() as i32;
+        self.toolbar_w = self.composite_w;
         self.toolbar_h = self.composite_h - self.overhang;
         self.radius = self.theme.corner_radius * scale;
         Some(surf)

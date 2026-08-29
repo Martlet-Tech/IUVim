@@ -3,7 +3,7 @@
 > 生成日期：2026-08-29
 > 状态：Phase 1 门禁后、M1 开工前
 > 基于：PRD v1.0 / ARCHITECTURE v1.0 / UIUX v1.0 + 现有代码摸底（toolbar.rs / render.rs / window.rs / toolbar_icons.rs / codec.rs 等）
-> 范围锁定：**只做 M1 桌宠骨架**——宠物挂工具栏（同窗右侧追加宠物区）、随四态（中英/全半角/简繁/标点/打字）状态驱动动画、基础互动（点击、拖拽复用）、1 只默认宠物、空闲停帧低功耗（30fps、<256px 精灵）。
+> 范围锁定：**只做 M1 桌宠骨架**——宠物挂工具栏（同窗，居中挂工具栏正上方）、随四态（中英/全半角/简繁/标点/打字）状态驱动动画、基础互动（点击、拖拽复用）、1 只默认宠物、空闲停帧低功耗（30fps、<256px 精灵）。
 > **明确不做**：M2 Lua 沙箱（iuv-pet-runtime crate）、M3 Steamworks 上架、宠物脱离工具栏独立放置、多宠同屏。
 
 ---
@@ -247,9 +247,9 @@ pub fn pet_alpha_at(sprites: &PetSprites, clip: PetClip, frame: u32,
                     dst: &LayoutRect, px: f32, py: f32) -> u8;   // 命中测试：逆缩放采样精灵 alpha
 
 // toolbar.rs 复合
-pub const PET_ZONE_W: f32 = 64.0;    // 宠物区宽（@96dpi 基准）
-pub const PET_OVERHANG: f32 = 52.0;  // 宠物栖木高度（工具栏上沿之上）
-pub const PET_DISPLAY: f32 = 40.0;   // 宠物显示边长（正方形，@96dpi 基准）
+pub const PET_OVERHANG: f32 = 136.0;   // 宠物栖木高度（工具栏上沿之上）
+pub const PET_DISPLAY_W: f32 = 112.0;  // 宠物显示宽（少女半身像，非正方形）
+pub const PET_DISPLAY_H: f32 = 128.0;  // 宠物显示高
 
 pub struct PetRenderSpec<'a> { pub sprites: &'a PetSprites, pub clip: PetClip, pub frame: u32 }
 pub struct CompositeSpec<'a> {
@@ -265,7 +265,7 @@ pub fn render_composite(spec: &CompositeSpec, theme: &Theme, scale: f32)
 
 - **定时器**：`SetTimer(hwnd, PET_TIMER_ID, 33ms, NULL)`（≈30fps 上限）。`WM_TIMER` → `PetModel::advance(33)` → 若 `!needs_tick()` → `KillTimer`（空闲停帧，零 tick）。
 - **脏区**：工具栏 Surface 缓存（`toolbar_cache: Option<Surface>`），仅在 hover/pressed/四态/主题变化时重渲染；动画 tick 只重渲宠物帧 + 合成（合成 = blit 缓存工具栏 + 新宠物帧），按钮区零重绘。
-- **合成实现**：`render_composite` = 复用 `render_toolbar`（工具栏 Surface，BGRA）+ `render_pet_frame`（宠物区 Surface，透明底，BGRA）+ Surface 级像素拷贝合成（premultiplied BGRA，alpha>0 直接覆盖；工具栏不透明白底覆盖、宠物半透明像素拷贝到透明底上，正确）。合成尺寸 `(toolbar_w + PET_ZONE_W, toolbar_h + PET_OVERHANG)`。
+- **合成实现**：`render_composite` = 复用 `render_toolbar`（工具栏 Surface，BGRA）+ `render_pet_frame`（宠物区 Surface，透明底，BGRA）+ Surface 级像素拷贝合成（premultiplied BGRA，alpha>0 直接覆盖；工具栏不透明白底覆盖、宠物半透明像素拷贝到透明底上，正确）。合成尺寸 `(max(toolbar_w, 宠物显示宽), toolbar_h + PET_OVERHANG)`——宠物居中挂在工具栏正上方，宽度不追加。
 - **上屏**：沿用现有 `present`（`ulw.upload`），窗口尺寸在首次 show 后恒定（动画只变像素，不变几何）。
 
 ### 4.4 帧表布局常量（默认宠，Kitty CC0 示例）
@@ -289,14 +289,17 @@ fn default_clips() -> HashMap<PetClip, Range<usize>> { /* 编译期常量表 */ 
 |----|------|---------------|
 | 工具栏宽 | `btn*6 + gap*5 + pad*2`（现有） | 212 |
 | 工具栏高 | `btn + pad*2`（现有） | 42 |
-| 宠物区宽 | `PET_ZONE_W` | 64 |
-| 栖木高度 | `PET_OVERHANG` | 52 |
-| 复合窗宽 | `212 + 64` | 276 |
-| 复合窗高 | `42 + 52` | 94 |
-| 工具栏区原点 | `(0, PET_OVERHANG)` | (0, 52) |
-| 宠物显示矩形 | `x = 212 + (64-40)/2, y = 52-40, w=h=40` | (224, 12, 40, 40) |
+| 栖木高度 | `PET_OVERHANG` | 136 |
+| 宠物显示宽/高 | `PET_DISPLAY_W / PET_DISPLAY_H`（少女半身像） | 112 / 128 |
+| 复合窗宽 | `max(212, 112)` = 工具栏宽（宠物居中挂上方，不追加宽度） | 212 |
+| 复合窗高 | `42 + 136` | 178 |
+| 工具栏区原点 | `(0, PET_OVERHANG)` | (0, 136) |
+| 宠物显示矩形 | `x = (212-112)/2, y = 136-128, w/h = 112/128` | (50, 8, 112, 128) |
 
-> 宠物底边 y=52 = 工具栏上沿（栖木线）：视觉上"趴在上沿"，符合 UIUX §4.1 栖木式吸附。宠物区背景透明（alpha=0），仅宠物像素不透明。
+> 宠物底边 y=136 = 工具栏上沿（栖木线）：视觉上"趴在上沿"，符合 UIUX §4.1 栖木式吸附。
+> 宠物**水平居中于工具栏**（非右侧追加区）——2026-08-30 改：旧版宠物挂在工具栏右侧
+> 128 px 追加区，复合窗比工具栏宽一截，工具栏拖不到屏幕右边缘。宠物区背景透明
+> （alpha=0），仅宠物像素不透明。
 
 ### 5.2 命中测试扩展（WM_NCHITTEST）
 
@@ -401,7 +404,7 @@ fn default_clips() -> HashMap<PetClip, Range<usize>> { /* 编译期常量表 */ 
 - **Surface = premultiplied BGRA**（u32 对齐、无 stride）；tiny-skia Pixmap = premultiplied RGBA——渲染管线内交换每像素 R/B；合成也在 BGRA 空间做像素拷贝。
 - **ImeState 是全仓唯一四态表示**（`iuv-core/src/config/runtime.rs`，字段序 mode/width/script/punct，`Clone + Copy`）；线编码 `[u8;4]`；加"打字"不并入 ImeState（是事件非状态），走独立 Typing 信号。
 - **信号帧格式**：`0x21` FocusGained / `0x22` FocusLost / `0x23` StateChanged / `0x24` Typing（新增）。
-- **工具栏几何常量**：`TOOLBAR_BTN=30 / GAP=4 / PAD=6 / TB_COUNT=6`（@96dpi 基准，render 乘 scale）；宠物常量 `PET_ZONE_W=64 / PET_OVERHANG=52 / PET_DISPLAY=40`。
+- **工具栏几何常量**：`TOOLBAR_BTN=30 / GAP=4 / PAD=6 / TB_COUNT=6`（@96dpi 基准，render 乘 scale）；宠物常量 `PET_OVERHANG=136 / PET_DISPLAY_W=112 / PET_DISPLAY_H=128`（2026-08-30 起删 `PET_ZONE_W`：宠物改挂工具栏正上方居中）。
 - **线程模型**：工具条线程独占 `ToolbarWindow` 全部状态（含 PetModel/PetSprites/定时器）；跨线程仅经 FIFO（`BarEvent`）+ `PostMessage(WM_APP_REFRESH)`；宠物状态零跨线程共享、零锁竞争。
 - **资产内嵌宏**：`asset!($f) = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../assets/", $f)`（daemon 与 iuv-ui 均适用）。
 - **素材合规**：`assets/pet/LICENSE.md` 必填（来源/作者/许可/商用修改授权）；默认宠 CC0。
@@ -410,7 +413,7 @@ fn default_clips() -> HashMap<PetClip, Range<usize>> { /* 编译期常量表 */ 
 
 ## 10. 验收标准（M1 出口，对齐 ARCHITECTURE §8）
 
-- [ ] 宠物挂工具栏右侧、栖木式吸附（底边贴工具栏上沿），与 6 按钮热区互不遮挡。
+- [ ] 宠物挂工具栏正上方居中、栖木式吸附（底边贴工具栏上沿），与 6 按钮热区互不遮挡；复合窗宽 = 工具栏宽（工具栏可拖到屏幕右边缘）。
 - [ ] 中英/全半角/简繁/标点切换有对应动画反馈（含缺素材回退不 panic）；打字中有 Typing 动画、停打回 Idle。
 - [ ] 点击宠物触发互动动画；宠物可拖拽移动整个复合窗口并持久化位置。
 - [ ] 空闲停帧（无定时器 tick）；动画 ≤30fps；常驻 CPU 增量 <1%（空闲时）。
