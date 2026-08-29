@@ -4,6 +4,7 @@
 > AGENTS.md 只保留导航与活跃事项速览并指向本文件；细节权威来源 = git log 与
 > `docs/plan/` 任务书。结案条目不删除（历史档案）。
 > **提交约定：允许提交 = 已测试通过**——台账不设也不回溯维护「待手测」状态。
+> 注：34~37 号任务书/评审文档已删除（对应结论已并入台账正文）；`docs/research/` 目录已删。
 
 ## 活跃事项速览
 
@@ -11,7 +12,7 @@
 
 - M3 整句增强(LMDG)/模糊音
 - 符号/emoji 候选、学习候选（微软对齐已知差距，见 M1.5 条目）
-- M7 键位热载（config 改后需重载输入法）
+- 39 号 rime 管线收尾：λ 打分校准与烘焙后删 classic（`docs/plan/39-rime-pipeline.md`）
 - M9 可自定义贴图皮肤框架（调研定稿/挂起；前置 M8 工具栏已多轮打磨，可重新评估）
 - 点子库：Tab 键用途（`29-tab-ideas.md`，暂不做）
 
@@ -42,7 +43,7 @@
   构建期简拼键逐级砍尾巴，纯词、任意长度、部分消费尾巴续接复用悬空机制）；多段混拼档（`nhao`
   简拼段运行时展开音节笛卡尔配对，单级 ≤2000 查询剪枝）。数据层：dictc 对 ≥2 音节词生成简拼键
   （同表混存，路由隔离，IMEDIC01 格式零改动、新旧词库双向兼容）+ `Dict::initial_top` 首字母桶
-  （每字母 top-500 词频序）。依据：`docs/research/msime-probe-checklist.txt` 微软实测清单
+  （每字母 top-500 词频序）。依据：微软实测清单（原 `docs/research/msime-probe-checklist.txt`，该目录已删）
   （A~H 全组）。已知差距（M3+）：符号/emoji 候选、学习候选（微软 Z 键与学习词条；
   候选翻页/每页 5 个/翻页键自定义已对齐——见 2cc189b/d1dcfb8/8f479f9）；排序用白霜
   词频与微软有数据级差异（M2 主动调权+自造词已部分缓解）。
@@ -430,3 +431,10 @@
   （连打几十个字母不上屏）下出现，日常打字碰不到，要治需做词库页面预热，收益/风险比不划算，
   暂不做。测试：workspace 全绿（355）。
 
+
+## 2026-08-29 · 全仓精简（死代码/重复实现/文档漂移，分支 refactor/code-cleanup）
+
+- [x] **根因**：多智能体轮番迭代后仓库出现四类债：①确认死代码（`Candidate.score` 全程计算无消费者、`Span.tags`、`Dict::effective_weight`、`OpenccTable::empty`、`UnigramLm._entry_count`、`MappedFile::len`、`Key`/`Effect`/`PageInfo`/`SessionEnd`/`Candidate` 的 serde 派生——IPC 走手工 codec、serde 只服务 Config，iuv-data 的 `serde` 依赖与 iuv-daemon 的 `windows-core` 依赖随之删除）；②重复实现（api.rs `strip` 与 lib.rs `strip_apostrophes`、rime/mod.rs 三个并行测试模块、iuv-tsf/ui/mod.rs 与 iuv-ui/snapshot.rs 逐字重复测试、tsf/daemon 两份近乎复制的文件日志器、两份 `strip_jsonc_comments`+keymap 迁移、三份用户数据目录解析、signal.rs 内联复制 pipe imp 原语、install/dev-deploy 两份 `Test-ArchRegistered`、langbar 菜单项 id/文案三处硬编码）；③文档漂移（README 仍宣传已否决的 Tauri 与已删除的 GDI；30→02 改号约 15 处断链；status.md 速览与台账矛盾；指向已删 34~37 号文档与 docs/research/ 的断链）；④scripts 文档缺失。
+- [x] **方案**：结构去重四件套——路径解析统一到新 `iuv_core::paths`（LOCALAPPDATA→APPDATA\Local→USERPROFILE\AppData\Local→HOME；TSF 侧兜底由幻路径 `C:\Users\Default\...` 改为 `%TEMP%\iuv`，两者在 env 缺失时都找不到真实词库，语义等价但不再误导）；文件日志器收敛到 `iuv_win::logger`（denylist `[tag]` 解析唯一实现，两进程行为由代码保证一致；iuv-win 原 fn 指针钩子机制删除，`log_line` 内惰性 init）；daemon 的 JSONC/BOM/keymap 迁移改调 iuv-core 公开实现（新增键位字段不再要改 3 处）；langbar 菜单收敛为常量表 + `handle_menu_id` 单一分发。零风险项：死代码删除、`tests2/tests3` 并入 `tests`、编译期音节助手（SYLLABLES/is_syllable/greedy_segment）自 dict.rs 移入 format.rs 并顺带对齐 lue→lve/nue→nve 归一（与 Quanpin 一致）、Sentence.weight 字段删除（原供已删的 score）。**classic 管线未动**（39 号计划书另行收尾）。
+- [x] **改动**：详见分支 diff；文档侧重写 README、修全部断链、更新 39/41 号任务书状态行、AGENTS.md scripts 清单补 download-opencc/clear-data/compare-engines/convert-main-icon、00-overview §5 索引标注归档去向。
+- [x] **测试**：workspace 全绿（351 通过/1 忽略；净减 4 个重复/死测试）；`cargo check` 零警告；iuv-tsf release 构建通过。**待手测**：dev-deploy 部署后打字链路、设置页（日志模块开关/恢复默认）、语言栏右键菜单、工具栏显隐——尤其 TSF 与 daemon 用户库路径合并后的首启。

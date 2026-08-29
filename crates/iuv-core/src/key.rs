@@ -131,21 +131,8 @@ impl Key {
     }
 }
 
-impl serde::Serialize for Key {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&self.name())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Key {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let raw = String::deserialize(d)?;
-        Key::from_name(&raw).ok_or_else(|| serde::de::Error::custom(format!("未知按键：{raw}")))
-    }
-}
-
 /// 翻页信息。
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PageInfo {
     pub page: usize,
     pub page_count: usize,
@@ -154,7 +141,7 @@ pub struct PageInfo {
 }
 
 /// 会话结束方式。
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionEnd {
     /// 上屏文本
     Commit(String),
@@ -163,7 +150,7 @@ pub enum SessionEnd {
 }
 
 /// 一次按键后的完整 UI 快照 + 副作用。TSF/REPL 只消费它，不读引擎内部。
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Effect {
     /// 内嵌预编辑文本：拼音分段（如 "ce'shi"，保留用户按下的强制分隔符 `'`，
     /// 与 reading 同值）——微软式：拼音留在预编辑，候选窗只放候选；

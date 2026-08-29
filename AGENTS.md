@@ -1,7 +1,7 @@
 # iuv 输入法（代号 iuvim，谐音"哎哟喂"）
 
 Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌控排序**——静态词频序默认稳定
-（肌肉记忆安全）+ Shift+←/→ 主动调权（绝对值覆盖，反复调整收敛，见 `docs/plan/18-m2-user-dict.md`）。
+（肌肉记忆安全）+ Shift+←/→ 主动调权（绝对值覆盖，反复调整收敛，见 `docs/closed/18-m2-user-dict.md`）。
 
 ## 仓库管理员想对读到这里的智能体说一句话:
 
@@ -46,7 +46,7 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 ## 开发入口
 
 **先读 `docs/plan/01-contract.md`（共享契约，接口唯一权威来源）**，再读对应模块任务书。
-执行流程（W0 骨架 → W1 并行实现 → W2 组装）见 `docs/plan/00-overview.md` §3 与 `20-assembly.md`。
+执行流程（W0 骨架 → W1 并行实现 → W2 组装）见 `docs/plan/00-overview.md` §3 与 `docs/closed/20-assembly.md`。
 
 ## 结构
 
@@ -62,7 +62,7 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 | `platforms/{macos,linux}/` | 占位：IMK / Fcitx5·IBus 适配层 + 门面规划（README，见各目录） |
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |
 | `docs/status.md` | 工作状态台账：每项落地的根因/方案/改动/测试记录（AGENTS.md 指向此处） |
-| `scripts/` | download-dict / install / uninstall / dev-deploy（热部署） / iuv-common（共享库：提权/日志/ctfmon/延迟清理/Replace-InUseDll） |
+| `scripts/` | download-dict / download-opencc / install / uninstall / dev-deploy（热部署） / iuv-common（共享库：提权/日志/ctfmon/延迟清理/Replace-InUseDll/Test-ArchRegistered） / clear-data（清用户数据）/ compare-engines（双引擎对拍）/ convert-main-icon（一次性 logo→ico，产物已入库，留作再生成） |
 
 ## 常用命令
 
@@ -80,4 +80,4 @@ scripts\dev-deploy.ps1     # 热部署：改完代码后免注销生效（默认
 
 - 依赖白名单制（`docs/plan/01-contract.md` §2），新增 crate 需主智能体批准
 - 文件属主矩阵（`docs/plan/01-contract.md` §6）：并行开发只改自己属主的文件
-- iuv-core 保持跨平台纯 Rust；iuv-tsf 内绝不 panic 到宿主进程；测试纪律见 `docs/plan/30-conventions.md`
+- iuv-core 保持跨平台纯 Rust；iuv-tsf 内绝不 panic 到宿主进程；测试纪律见 `docs/plan/02-conventions.md`

@@ -61,7 +61,7 @@ impl LayeredWindow {
             if RegisterClassExW(&class) == 0 {
                 let err = GetLastError();
                 if err != ERROR_CLASS_ALREADY_EXISTS {
-                    crate::log_line(&format!("[{log_tag}] RegisterClassExW 失败"));
+                    crate::logger::log_line(&format!("[{log_tag}] RegisterClassExW 失败"));
                 }
             }
         }
@@ -86,7 +86,7 @@ impl LayeredWindow {
         // SAFETY: GetModuleHandleW(None) 取当前进程实例句柄
         let hinst = unsafe { GetModuleHandleW(None) }.unwrap_or_default();
         if hinst.is_invalid() {
-            crate::log_line(&format!("[{log_tag}] GetModuleHandleW 失败"));
+            crate::logger::log_line(&format!("[{log_tag}] GetModuleHandleW 失败"));
             return false;
         }
         // SAFETY: 扩展样式由调用方给定（ULW 弹窗一般 TOPMOST|TOOLWINDOW[±NOACTIVATE]）；
@@ -108,7 +108,7 @@ impl LayeredWindow {
             )
         };
         let Ok(hwnd) = hwnd else {
-            crate::log_line(&format!("[{log_tag}] CreateWindowExW 失败"));
+            crate::logger::log_line(&format!("[{log_tag}] CreateWindowExW 失败"));
             return false;
         };
         // SAFETY: outer 在创建线程存活；Drop 先清零 GWLP_USERDATA 再销毁窗口。

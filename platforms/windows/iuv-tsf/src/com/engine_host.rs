@@ -114,20 +114,12 @@ fn load_engine() -> Option<Arc<Engine>> {
     }
 }
 
-/// %LOCALAPPDATA%\iuv\iuv.imedic（用户级数据，契约 §7）。
+/// <iuv 数据目录>\iuv.imedic（用户级数据，契约 §7）。目录链统一走 iuv-core
+/// [`iuv_core::paths`]（LOCALAPPDATA → APPDATA\Local → USERPROFILE → HOME）；
+/// 全部未设（宿主进程环境极端残缺）→ 兜底 %TEMP%\iuv（找不到已装词库，引擎空载可启动）。
 fn dict_path() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-        std::env::var("APPDATA")
-            .map(|a| {
-                PathBuf::from(a)
-                    .join("Local")
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .unwrap_or_else(|_| "C:\\Users\\Default\\AppData\\Local".to_owned())
-    });
-    PathBuf::from(base)
-        .join("iuv")
+    iuv_core::paths::iuv_dir()
+        .unwrap_or_else(|| std::env::temp_dir().join("iuv"))
         .join(crate::registration::DICT_FILENAME)
 }
 

@@ -20,14 +20,12 @@ pub struct PendingInput<'a> {
     pub raw: &'a str,
 }
 
-/// 分段视图的一段：音节序列 + 标签。
+/// 分段视图的一段：音节序列。
 ///
-/// `syllables` 保留空段（尾撇号 display 语义，与既有 seg 一致）；
-/// `tags` 决定哪些翻译器参与该段（rime 核心的 tag 机制；classic 恒 `["pinyin"]`）。
+/// `syllables` 保留空段（尾撇号 display 语义，与既有 seg 一致）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Span {
     pub syllables: Vec<String>,
-    pub tags: Vec<&'static str>,
 }
 
 /// translate 输出：分段视图 + 活动段候选列表。
@@ -76,7 +74,7 @@ pub(crate) fn preview_rules(
     if raw.contains('\'') {
         return display(seg);
     }
-    let plain = strip(raw);
+    let plain = crate::strip_apostrophes(raw);
     if c.text == plain {
         return plain;
     }
@@ -85,7 +83,7 @@ pub(crate) fn preview_rules(
     if !consumed_full {
         return display(seg);
     }
-    let code_plain = strip(&c.code);
+    let code_plain = crate::strip_apostrophes(&c.code);
     if code_plain == plain {
         let mut s = c.code.clone();
         if consumed < seg.len() {
@@ -95,10 +93,6 @@ pub(crate) fn preview_rules(
         return s;
     }
     display(seg)
-}
-
-fn strip(s: &str) -> String {
-    s.chars().filter(|c| *c != '\'').collect()
 }
 
 /// 单字桶查询的共享实现（classic `single_segment_candidates` 与 rime

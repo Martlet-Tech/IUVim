@@ -56,7 +56,7 @@ impl Default for InitialMode {
 pub enum WidthMode {
     /// 半角（默认）
     Half,
-    /// 全角（仅存默认值，行为后置）
+    /// 全角（2026-08-19 起行为已落地：punct.rs fullwidth + 会话 to_output 钩子）
     Full,
 }
 

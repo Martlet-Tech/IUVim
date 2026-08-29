@@ -270,35 +270,18 @@ impl LangBarItemButton {
     /// 菜单项：显示/隐藏工具栏 / 设置 / 关于（无"退出"——用户 2026-08-17 决策）；
     /// 工具栏项文案每次弹出前按当前偏好刷新（窗口复用，set_items 替换）。
     fn show_menu(&self, pt: &POINT) {
-        const MENU_TOOLBAR: u16 = 1;
-        const MENU_SETTINGS: u16 = 2;
-        const MENU_ABOUT: u16 = 3;
         let mut m = self.menu.borrow_mut();
         let items = vec![
             MenuEntry::new(self.toolbar_menu_label(), MENU_TOOLBAR),
-            MenuEntry::new("设置".to_string(), MENU_SETTINGS),
-            MenuEntry::new("关于".to_string(), MENU_ABOUT),
+            MenuEntry::new(MENU_SETTINGS_LABEL, MENU_SETTINGS),
+            MenuEntry::new(MENU_ABOUT_LABEL, MENU_ABOUT),
         ];
         if m.is_none() {
             let daemon = self.daemon.clone();
             *m = Some(crate::ui::menu_window::MenuWindow::new(
                 self.menu_theme.clone(),
                 items,
-                Some(Box::new(move |id| match id {
-                    MENU_TOOLBAR => {
-                        log_line("语言栏菜单：显示/隐藏工具栏 → 通知守护进程切换全局偏好");
-                        let _ = daemon.send_request(&Request::ToggleToolbar);
-                    }
-                    MENU_SETTINGS => {
-                        log_line("语言栏菜单：设置 → 通知守护进程打开设置页");
-                        let _ = daemon.send_request(&Request::OpenSettings);
-                    }
-                    MENU_ABOUT => {
-                        log_line("语言栏菜单：关于");
-                        show_about();
-                    }
-                    _ => log_line(&format!("语言栏菜单：未知项 {id}")),
-                })),
+                Some(Box::new(move |id| handle_menu_id(&daemon, id as u32))),
             ));
         } else if let Some(w) = m.as_mut() {
             w.set_items(items);
@@ -307,6 +290,34 @@ impl LangBarItemButton {
             log_line("语言栏菜单：右键弹出自绘菜单");
             w.show_at(pt.x, pt.y);
         }
+    }
+}
+
+// ---- 语言栏右键菜单（单一事实源）----
+
+/// 菜单项 id（自绘菜单 MenuWindow 用 u16；TSF 官方 InitMenu/OnMenuSelect 用 u32）。
+const MENU_TOOLBAR: u16 = 1;
+const MENU_SETTINGS: u16 = 2;
+const MENU_ABOUT: u16 = 3;
+const MENU_SETTINGS_LABEL: &str = "设置";
+const MENU_ABOUT_LABEL: &str = "关于";
+
+/// 菜单项分发（自绘菜单闭包与 OnMenuSelect 共用；id 语义与 [`MENU_TOOLBAR`] 等常量绑定）。
+fn handle_menu_id(daemon: &Arc<crate::daemon_client::DaemonClient>, id: u32) {
+    match id as u16 {
+        MENU_TOOLBAR => {
+            log_line("语言栏菜单：显示/隐藏工具栏 → 通知守护进程切换全局偏好");
+            let _ = daemon.send_request(&Request::ToggleToolbar);
+        }
+        MENU_SETTINGS => {
+            log_line("语言栏菜单：设置 → 通知守护进程打开设置页");
+            let _ = daemon.send_request(&Request::OpenSettings);
+        }
+        MENU_ABOUT => {
+            log_line("语言栏菜单：关于");
+            show_about();
+        }
+        _ => log_line(&format!("语言栏菜单：未知项 {id}")),
     }
 }
 
@@ -351,9 +362,6 @@ impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
         // 右键"中/英"按钮 → 语言栏上下文菜单（TSF 官方机制：语言栏弹菜单前调 InitMenu，
         // 我们经 ITfMenu::AddMenuItem 塞入自定义项；OnMenuSelect 分发）。
         // 2026-08-17 用户决策：入口全走语言栏菜单，无独立托盘图标。菜单项无"退出"。
-        const MENU_TOOLBAR: u32 = 1;
-        const MENU_SETTINGS: u32 = 2;
-        const MENU_ABOUT: u32 = 3;
         let Some(menu) = pmenu.as_ref() else {
             log_line("语言栏菜单：InitMenu 收到空 ITfMenu");
             return Ok(());
@@ -361,9 +369,9 @@ impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
         // 工具栏项文案按当前全局显隐偏好二选一（与自绘菜单一致）。
         let toolbar_label = self.toolbar_menu_label();
         let items: &[(String, u32)] = &[
-            (toolbar_label, MENU_TOOLBAR),
-            ("设置".to_string(), MENU_SETTINGS),
-            ("关于".to_string(), MENU_ABOUT),
+            (toolbar_label, MENU_TOOLBAR as u32),
+            (MENU_SETTINGS_LABEL.to_string(), MENU_SETTINGS as u32),
+            (MENU_ABOUT_LABEL.to_string(), MENU_ABOUT as u32),
         ];
         for (label, wid) in items {
             let text: Vec<u16> = label.encode_utf16().collect();
@@ -383,24 +391,7 @@ impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
     }
 
     fn OnMenuSelect(&self, wid: u32) -> Result<()> {
-        const MENU_TOOLBAR: u32 = 1;
-        const MENU_SETTINGS: u32 = 2;
-        const MENU_ABOUT: u32 = 3;
-        match wid {
-            MENU_TOOLBAR => {
-                log_line("语言栏菜单：显示/隐藏工具栏 → 通知守护进程切换全局偏好");
-                let _ = self.daemon.send_request(&Request::ToggleToolbar);
-            }
-            MENU_SETTINGS => {
-                log_line("语言栏菜单：设置 → 通知守护进程打开设置页");
-                let _ = self.daemon.send_request(&Request::OpenSettings);
-            }
-            MENU_ABOUT => {
-                log_line("语言栏菜单：关于");
-                show_about();
-            }
-            _ => log_line(&format!("语言栏菜单：未知项 {wid}")),
-        }
+        handle_menu_id(&self.daemon, wid);
         Ok(())
     }
 

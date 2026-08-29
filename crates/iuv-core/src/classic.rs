@@ -295,9 +295,7 @@ impl Engine {
     /// 消费端方案重排（2026-08-14）：方案[0] = 词频最优而非贪心——分节显示与主路径
     /// 跟随用户最可能打的词。排序键 = 方案 join 键 exact 词条最大权重（词条优先；
     /// 无词条 = 0），稳定排序保贪心原序。（原 session 显式调用，Step 1 收编进核心。）
-    /// 消费端方案重排（2026-08-14）：方案[0] = 词频最优而非贪心——分节显示与主路径
-    /// 跟随用户最可能打的词。排序键 = 方案 join 键 exact 词条最大权重（词条优先；
-    /// 无词条 = 0），稳定排序保贪心原序。共享实现见 [`rank_plans`]。
+    /// 共享实现见 [`rank_plans`]。
     pub(crate) fn rank_plans(&self, plans: Vec<Vec<String>>) -> Vec<Vec<String>> {
         rank_plans(&self.dict, plans)
     }
@@ -369,10 +367,7 @@ impl ImeEngine for Engine {
         let candidates = self.generate_candidates(pending.raw, &seg, &plans);
         crate::perf::record("onkey.generate", t);
         Translation {
-            segmentation: vec![Span {
-                syllables: seg,
-                tags: vec!["pinyin"],
-            }],
+            segmentation: vec![Span { syllables: seg }],
             candidates,
         }
     }

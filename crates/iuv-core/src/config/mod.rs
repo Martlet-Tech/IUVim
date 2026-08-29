@@ -15,7 +15,7 @@ mod io;
 mod runtime;
 
 pub use enums::{EngineChoice, InitialMode, Orientation, PunctMode, ScriptMode, ThemeChoice, WidthMode};
-pub use io::default_config_path;
+pub use io::{default_config_path, migrate_keymap, strip_bom, strip_jsonc_comments};
 pub use runtime::ImeState;
 
 /// 性能埋点日志模块名（日志形如 `[perf] render 1748us update`）。

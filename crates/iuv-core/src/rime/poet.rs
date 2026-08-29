@@ -73,11 +73,10 @@ impl Line {
     }
 }
 
-/// 组句结果：词文本序列 + 路径总权重。
+/// 组句结果：词文本序列。
 #[derive(Clone, Debug)]
 pub(crate) struct Sentence {
     pub words: Vec<String>,
-    pub weight: f64,
 }
 
 /// 单最优句（poet.cc MakeSentence，纯 DP）。
@@ -132,7 +131,7 @@ pub(crate) fn make_sentence(
     if line.is_empty() || line.end_pos != total_length {
         return None;
     }
-    Some(Sentence { words: line.path_words(&arena), weight: line.weight })
+    Some(Sentence { words: line.path_words(&arena) })
 }
 
 trait IntoId {

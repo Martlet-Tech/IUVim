@@ -148,7 +148,9 @@ pub struct MappedFile {
 
 impl std::fmt::Debug for MappedFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MappedFile").field("len", &self.len()).finish()
+        f.debug_struct("MappedFile")
+            .field("len", &self.as_bytes().len())
+            .finish()
     }
 }
 
@@ -174,7 +176,4 @@ impl MappedFile {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.as_bytes().len()
-    }
 }

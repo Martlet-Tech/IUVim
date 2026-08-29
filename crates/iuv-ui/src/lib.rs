@@ -5,7 +5,7 @@
 //! Windows 呈现层（ULW DIB / D2D 等）直接消费像素缓冲；macOS/Linux
 //! 平台层自行转格式。
 //!
-//! 设计约束（见 19-m4-cross-render.md §3 / 30-conventions.md）：
+//! 设计约束（见 19-m4-cross-render.md §3 / 02-conventions.md）：
 //! - 全部公开函数不 panic：字体缺失返回 0 尺寸、分配失败返回空 Surface，静默降级；
 //! - 布局/命中测试/定位为纯函数（自 gdi.rs 迁入，测试断言零改动随迁）；
 //! - 主题独立（light/dark 两套内置），调用方（config）决定用哪套。
@@ -30,5 +30,5 @@ pub use toolbar::{
     TB_WIDTH,
 };
 pub use snapshot::{effect_to_snapshot, CaretRect, UiSnapshot};
-pub use text::{TextRenderer, FONT_PX_96};
+pub use text::TextRenderer;
 pub use theme::{theme_dark, theme_light, Theme};

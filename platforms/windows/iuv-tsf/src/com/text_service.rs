@@ -13,7 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use iuv_core::{Config, ImeState, InitialMode, Key, PunctMode, ScriptMode, Session, WidthMode};
 use iuv_win::{CtlCmd, CtlResult};
@@ -125,9 +125,6 @@ pub(crate) struct TextService {
 impl TextService {
     pub(crate) fn new() -> Self {
         INSTANCE_COUNT.fetch_add(1, Ordering::SeqCst);
-        // iuv-win 共享呈现层日志钩子注入（一次即可，幂等）。
-        static LOGGER_SET: OnceLock<()> = OnceLock::new();
-        LOGGER_SET.get_or_init(|| iuv_win::set_logger(Some(crate::log::log_line)));
         let session = Rc::new(RefCell::new(None));
         let composition = Rc::new(RefCell::new(None));
         let caret = Rc::new(Cell::new(CaretRect::default()));

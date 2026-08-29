@@ -17,7 +17,6 @@ iuv-data = { workspace = true }
 iuv-ui = { workspace = true }
 iuv-win = { workspace = true }
 windows = { workspace = true }
-windows-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tiny-skia = { workspace = true }

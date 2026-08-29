@@ -38,6 +38,85 @@ pub fn load(path: &Path) -> io::Result<Dict> {
     Dict::from_file(file).map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
 }
 
+/// 标准汉语拼音音节表（无调，按字母序，供二分查找）。
+/// 数据来源：现代汉语拼音方案常用音节；不含语气词音节（m/n/ng/hm/hng 等）。
+pub(crate) static SYLLABLES: &[&str] = &[
+    "a", "ai", "an", "ang", "ao", "ba", "bai", "ban", "bang", "bao", "bei", "ben", "beng", "bi",
+    "bian", "biao", "bie", "bin", "bing", "bo", "bu", "ca", "cai", "can", "cang", "cao", "ce",
+    "cei", "cen", "ceng", "cha", "chai", "chan", "chang", "chao", "che", "chen", "cheng", "chi",
+    "chong", "chou", "chu", "chua", "chuai", "chuan", "chuang", "chui", "chun", "chuo", "ci",
+    "cong", "cou", "cu", "cuan", "cui", "cun", "cuo", "da", "dai", "dan", "dang", "dao", "de",
+    "dei", "den", "deng", "di", "dia", "dian", "diao", "die", "ding", "diu", "dong", "dou", "du",
+    "duan", "dui", "dun", "duo", "e", "ei", "en", "eng", "er", "fa", "fan", "fang", "fei", "fen",
+    "feng", "fo", "fou", "fu", "ga", "gai", "gan", "gang", "gao", "ge", "gei", "gen", "geng",
+    "gong", "gou", "gu", "gua", "guai", "guan", "guang", "gui", "gun", "guo", "ha", "hai", "han",
+    "hang", "hao", "he", "hei", "hen", "heng", "hong", "hou", "hu", "hua", "huai", "huan", "huang",
+    "hui", "hun", "huo", "ji", "jia", "jian", "jiang", "jiao", "jie", "jin", "jing", "jiong",
+    "jiu", "ju", "juan", "jue", "jun", "ka", "kai", "kan", "kang", "kao", "ke", "ken", "keng",
+    "kong", "kou", "ku", "kua", "kuai", "kuan", "kuang", "kui", "kun", "kuo", "la", "lai", "lan",
+    "lang", "lao", "le", "lei", "leng", "li", "lia", "lian", "liang", "liao", "lie", "lin", "ling",
+    "liu", "lo", "long", "lou", "lu", "luan", "lun", "luo", "lv", "lve", "ma", "mai", "man",
+    "mang", "mao", "me", "mei", "men", "meng", "mi", "mian", "miao", "mie", "min", "ming", "miu",
+    "mo", "mou", "mu", "na", "nai", "nan", "nang", "nao", "ne", "nei", "nen", "neng", "ni", "nian",
+    "niang", "niao", "nie", "nin", "ning", "niu", "nong", "nou", "nu", "nuan", "nuo", "nv", "nve",
+    "o", "ou", "pa", "pai", "pan", "pang", "pao", "pei", "pen", "peng", "pi", "pian", "piao",
+    "pie", "pin", "ping", "po", "pou", "pu", "qi", "qia", "qian", "qiang", "qiao", "qie", "qin",
+    "qing", "qiong", "qiu", "qu", "quan", "que", "qun", "ran", "rang", "rao", "re", "ren", "reng",
+    "ri", "rong", "rou", "ru", "ruan", "rui", "run", "ruo", "sa", "sai", "san", "sang", "sao",
+    "se", "sen", "seng", "sha", "shai", "shan", "shang", "shao", "she", "shei", "shen", "sheng",
+    "shi", "shou", "shu", "shua", "shuai", "shuan", "shuang", "shui", "shun", "shuo", "si", "song",
+    "sou", "su", "suan", "sui", "sun", "suo", "ta", "tai", "tan", "tang", "tao", "te", "teng",
+    "ti", "tian", "tiao", "tie", "ting", "tong", "tou", "tu", "tuan", "tui", "tun", "tuo", "wa",
+    "wai", "wan", "wang", "wei", "wen", "weng", "wo", "wu", "xi", "xia", "xian", "xiang", "xiao",
+    "xie", "xin", "xing", "xiong", "xiu", "xu", "xuan", "xue", "xun", "ya", "yan", "yang", "yao",
+    "ye", "yi", "yin", "ying", "yo", "yong", "you", "yu", "yuan", "yue", "yun", "za", "zai", "zan",
+    "zang", "zao", "ze", "zei", "zen", "zeng", "zha", "zhai", "zhan", "zhang", "zhao", "zhe",
+    "zhei", "zhen", "zheng", "zhi", "zhong", "zhou", "zhu", "zhua", "zhuai", "zhuan", "zhuang",
+    "zhui", "zhun", "zhuo", "zi", "zong", "zou", "zu", "zuan", "zui", "zun", "zuo",
+];
+
+/// 判定一段字符串是否为标准合法音节（二分查找）。
+pub(crate) fn is_syllable(s: &str) -> bool {
+    SYLLABLES.binary_search(&s).is_ok()
+}
+
+/// 贪心最长匹配切分（与 Quanpin 同一规则）：返回 (音节序列, 音节数)。
+/// `'` 为强制分隔（不产生段）；匹配失败的单字母原样保留，保证对任意输入不 panic。
+/// üe 去点输入形归一（lue→lve、nue→nve，同 Quanpin 的 24-ue-input-alias.md 规则）。
+pub(crate) fn greedy_segment(code: &str) -> Vec<String> {
+    let b = code.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\'' {
+            i += 1; // 强制分隔，不产生段
+            continue;
+        }
+        let rem = b.len() - i;
+        let mut matched = false;
+        // 最长音节不超过 6 个字符（zhuang/chuang）
+        for len in (1..=rem.min(6)).rev() {
+            if is_syllable(&code[i..i + len]) {
+                let syl = &code[i..i + len];
+                let syl = match syl {
+                    "lue" => "lve",
+                    "nue" => "nve",
+                    _ => syl,
+                };
+                out.push(syl.to_string());
+                i += len;
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            out.push(code[i..i + 1].to_string());
+            i += 1;
+        }
+    }
+    out
+}
+
 /// 写入 IMEDIC02。records 不要求有序——本函数内部排序并保证排序不变量
 /// （code 升序；同 code 按 weight 降序、同 weight 按 word 升序）。
 pub fn write(records: &[Entry], writer: impl io::Write) -> io::Result<()> {
@@ -56,13 +135,13 @@ pub fn write(records: &[Entry], writer: impl io::Write) -> io::Result<()> {
     let mut syllable_set = std::collections::BTreeSet::new();
     for r in &records {
         total += r.weight as u64;
-        let seg = crate::dict::greedy_segment(&r.code);
+        let seg = greedy_segment(&r.code);
         // 仅全为合法音节的词条计入词长（英文条目如 "abc" 不算拼音词）
-        if seg.iter().all(|s| crate::dict::is_syllable(s)) {
+        if seg.iter().all(|s| is_syllable(s)) {
             max_word_syllables = max_word_syllables.max(seg.len());
         }
         for s in &seg {
-            if crate::dict::is_syllable(s) {
+            if is_syllable(s) {
                 syllable_set.insert(s.clone());
             }
         }

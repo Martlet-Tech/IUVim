@@ -13,7 +13,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 /// 词条。`code` 为 squashed 全拼（无空格全小写，音节间 `'` 分隔），与查询键同形。
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub word: String,
     pub code: String,
@@ -79,78 +79,6 @@ impl Default for Dict {
             user: Mutex::new(None),
         }
     }
-}
-
-/// 标准汉语拼音音节表（无调，按字母序，供二分查找）。
-/// 数据来源：现代汉语拼音方案常用音节；不含语气词音节（m/n/ng/hm/hng 等）。
-pub(crate) static SYLLABLES: &[&str] = &[
-    "a", "ai", "an", "ang", "ao", "ba", "bai", "ban", "bang", "bao", "bei", "ben", "beng", "bi",
-    "bian", "biao", "bie", "bin", "bing", "bo", "bu", "ca", "cai", "can", "cang", "cao", "ce",
-    "cei", "cen", "ceng", "cha", "chai", "chan", "chang", "chao", "che", "chen", "cheng", "chi",
-    "chong", "chou", "chu", "chua", "chuai", "chuan", "chuang", "chui", "chun", "chuo", "ci",
-    "cong", "cou", "cu", "cuan", "cui", "cun", "cuo", "da", "dai", "dan", "dang", "dao", "de",
-    "dei", "den", "deng", "di", "dia", "dian", "diao", "die", "ding", "diu", "dong", "dou", "du",
-    "duan", "dui", "dun", "duo", "e", "ei", "en", "eng", "er", "fa", "fan", "fang", "fei", "fen",
-    "feng", "fo", "fou", "fu", "ga", "gai", "gan", "gang", "gao", "ge", "gei", "gen", "geng",
-    "gong", "gou", "gu", "gua", "guai", "guan", "guang", "gui", "gun", "guo", "ha", "hai", "han",
-    "hang", "hao", "he", "hei", "hen", "heng", "hong", "hou", "hu", "hua", "huai", "huan", "huang",
-    "hui", "hun", "huo", "ji", "jia", "jian", "jiang", "jiao", "jie", "jin", "jing", "jiong",
-    "jiu", "ju", "juan", "jue", "jun", "ka", "kai", "kan", "kang", "kao", "ke", "ken", "keng",
-    "kong", "kou", "ku", "kua", "kuai", "kuan", "kuang", "kui", "kun", "kuo", "la", "lai", "lan",
-    "lang", "lao", "le", "lei", "leng", "li", "lia", "lian", "liang", "liao", "lie", "lin", "ling",
-    "liu", "lo", "long", "lou", "lu", "luan", "lun", "luo", "lv", "lve", "ma", "mai", "man",
-    "mang", "mao", "me", "mei", "men", "meng", "mi", "mian", "miao", "mie", "min", "ming", "miu",
-    "mo", "mou", "mu", "na", "nai", "nan", "nang", "nao", "ne", "nei", "nen", "neng", "ni", "nian",
-    "niang", "niao", "nie", "nin", "ning", "niu", "nong", "nou", "nu", "nuan", "nuo", "nv", "nve",
-    "o", "ou", "pa", "pai", "pan", "pang", "pao", "pei", "pen", "peng", "pi", "pian", "piao",
-    "pie", "pin", "ping", "po", "pou", "pu", "qi", "qia", "qian", "qiang", "qiao", "qie", "qin",
-    "qing", "qiong", "qiu", "qu", "quan", "que", "qun", "ran", "rang", "rao", "re", "ren", "reng",
-    "ri", "rong", "rou", "ru", "ruan", "rui", "run", "ruo", "sa", "sai", "san", "sang", "sao",
-    "se", "sen", "seng", "sha", "shai", "shan", "shang", "shao", "she", "shei", "shen", "sheng",
-    "shi", "shou", "shu", "shua", "shuai", "shuan", "shuang", "shui", "shun", "shuo", "si", "song",
-    "sou", "su", "suan", "sui", "sun", "suo", "ta", "tai", "tan", "tang", "tao", "te", "teng",
-    "ti", "tian", "tiao", "tie", "ting", "tong", "tou", "tu", "tuan", "tui", "tun", "tuo", "wa",
-    "wai", "wan", "wang", "wei", "wen", "weng", "wo", "wu", "xi", "xia", "xian", "xiang", "xiao",
-    "xie", "xin", "xing", "xiong", "xiu", "xu", "xuan", "xue", "xun", "ya", "yan", "yang", "yao",
-    "ye", "yi", "yin", "ying", "yo", "yong", "you", "yu", "yuan", "yue", "yun", "za", "zai", "zan",
-    "zang", "zao", "ze", "zei", "zen", "zeng", "zha", "zhai", "zhan", "zhang", "zhao", "zhe",
-    "zhei", "zhen", "zheng", "zhi", "zhong", "zhou", "zhu", "zhua", "zhuai", "zhuan", "zhuang",
-    "zhui", "zhun", "zhuo", "zi", "zong", "zou", "zu", "zuan", "zui", "zun", "zuo",
-];
-
-/// 判定一段字符串是否为标准合法音节（二分查找）。
-pub(crate) fn is_syllable(s: &str) -> bool {
-    SYLLABLES.binary_search(&s).is_ok()
-}
-
-/// 贪心最长匹配切分（与 Quanpin 同一规则）：返回 (音节序列, 音节数)。
-/// `'` 为强制分隔（不产生段）；匹配失败的单字母原样保留，保证对任意输入不 panic。
-pub(crate) fn greedy_segment(code: &str) -> Vec<String> {
-    let b = code.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'\'' {
-            i += 1; // 强制分隔，不产生段
-            continue;
-        }
-        let rem = b.len() - i;
-        let mut matched = false;
-        // 最长音节不超过 6 个字符（zhuang/chuang）
-        for len in (1..=rem.min(6)).rev() {
-            if is_syllable(&code[i..i + len]) {
-                out.push(code[i..i + len].to_string());
-                i += len;
-                matched = true;
-                break;
-            }
-        }
-        if !matched {
-            out.push(code[i..i + 1].to_string());
-            i += 1;
-        }
-    }
-    out
 }
 
 // ===== 字节级读取（视图已由 from_file 全量校验，索引操作安全）=====
@@ -319,8 +247,8 @@ impl Dict {
         self.exact_raw(squashed_code)
     }
 
-    /// 基础库精确查询（不过屏蔽/覆盖/独有条目——供 effective_weight 等需要
-    /// "词条真实存在性"的内部语义使用；外部一律走 exact 的叠加视图）。
+    /// 基础库精确查询（不过屏蔽/覆盖/独有条目——内部"词条真实存在性"语义；
+    /// 外部一律走 exact 的叠加视图）。
     fn exact_raw(&self, squashed_code: &str) -> Vec<Entry> {
         let target = squashed_code.as_bytes();
         let n = self.index.len() / 4;
@@ -484,24 +412,6 @@ impl Dict {
     /// 当前用户覆盖表（未装配 → None）。
     pub fn user(&self) -> Option<Arc<UserDict>> {
         self.user.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// 词条有效权重：用户覆盖值优先（含自造词——覆盖表对词条来源不区分），
-    /// 否则基本库权重。均无 → None。屏蔽不影响（展示层语义，词条本身仍在）。
-    pub fn effective_weight(&self, code: &str, word: &str) -> Option<u32> {
-        let user = self.user();
-        if let Some(adj) = user.as_ref().and_then(|u| {
-            u.adjusted(code)
-                .iter()
-                .find(|(w, _)| w == word)
-                .map(|(_, a)| *a)
-        }) {
-            return Some(adj);
-        }
-        self.exact_raw(code)
-            .into_iter()
-            .find(|e| e.word == word)
-            .map(|e| e.weight)
     }
 
     /// 应用用户覆盖 + 稳定排序（同 weight 保持输入原序）。未装配 → 快速路径原样返回。
@@ -760,12 +670,6 @@ mod tests {
         let words: Vec<&str> = de.iter().map(|e| e.word.as_str()).collect();
         assert_eq!(words, vec!["得", "的", "地"]);
         assert_eq!(de[0].weight, 100000);
-        // effective_weight：覆盖值优先、未覆盖回基本库、不存在词条为 None
-        assert_eq!(d.effective_weight("de", "得"), Some(100000));
-        assert_eq!(d.effective_weight("de", "地"), Some(0));
-        assert_eq!(d.effective_weight("de", "的"), Some(200));
-        assert_eq!(d.effective_weight("nihao", "你好"), Some(8000));
-        assert_eq!(d.effective_weight("nihao", "不存在词"), None);
         // exact_single 继承 merge（单段档路径）
         let d2 = Dict::from_entries(vec![
             ("de".into(), "的".into(), 100),
@@ -832,7 +736,6 @@ mod tests {
         let hits = d.exact("zhang'wei'wei");
         let texts: Vec<&str> = hits.iter().map(|e| e.word.as_str()).collect();
         assert_eq!(texts, vec!["张威威", "张葳葳", "张薇薇"]);
-        assert_eq!(d.effective_weight("zhang'wei'wei", "张葳葳"), Some(5000));
         // 单字组（wei）的独有条目同样追加
         let wei = d.exact("wei");
         assert!(wei.iter().any(|e| e.word == "葳"));
@@ -854,8 +757,6 @@ mod tests {
         let hits = d.exact("shou'xuan");
         let texts: Vec<&str> = hits.iter().map(|e| e.word.as_str()).collect();
         assert_eq!(texts, vec!["首选", "手选"], "手癣被屏蔽，其余保序");
-        // effective_weight 语义：词仍存在（隐藏优先级在展示层）
-        assert_eq!(d.effective_weight("shou'xuan", "手癣"), Some(300));
         // 屏蔽 + 覆盖叠加：被屏蔽的条目即使有覆盖也不出现
         let user = crate::userdict::UserDict::empty()
             .block("shou'xuan", "手癣")

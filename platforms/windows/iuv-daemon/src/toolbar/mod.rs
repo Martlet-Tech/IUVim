@@ -124,7 +124,6 @@ impl ToolbarHost {
     /// 启动工具条线程。`state` = daemon 全局状态（读主题）。返回宿主（线程就绪后
     /// 注册窗口句柄，可直接 wake）。启动失败 → 记录日志，宿主仍可用（wake 空操作）。
     pub fn spawn(state: Arc<DaemonState>) -> Arc<ToolbarHost> {
-        iuv_win::set_logger(Some(log::log_line));
         let shared = Arc::new(Mutex::new(Shared {
             visible: load_pref().visible,
             ..Default::default()

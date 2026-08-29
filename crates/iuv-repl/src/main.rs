@@ -198,12 +198,12 @@ fn print_effect(e: &Effect) {
     }
 }
 
-/// 批处理模式：打印 reading 行 + 全表候选（`序号<TAB>text<TAB>kind<TAB>weight<TAB>score`）。
+/// 批处理模式：打印 reading 行 + 全表候选（`序号<TAB>text<TAB>kind<TAB>weight`）。
 fn run_batch(engine: &Arc<Engine>, core: Option<&Arc<RimeEngine>>, raw: &str) {
     let e = collect_all(engine, core, raw);
     println!("{}", e.reading);
     for (i, c) in e.candidates.iter().enumerate() {
-        println!("{}\t{}\t{:?}\t{}\t{:.4}", i + 1, c.text, c.kind, c.weight, c.score);
+        println!("{}\t{}\t{:?}\t{}", i + 1, c.text, c.kind, c.weight);
     }
 }
 

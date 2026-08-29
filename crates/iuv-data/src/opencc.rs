@@ -37,11 +37,6 @@ pub struct OpenccTable {
 }
 
 impl OpenccTable {
-    /// 空表（未装配/降级；转换返回原文）。
-    pub fn empty() -> OpenccTable {
-        OpenccTable::default()
-    }
-
     /// 从文件加载 IUVOCC01。缺失/损坏 → `Err`（调用方决定降级为空表，不阻断引擎）。
     pub fn load(path: &Path) -> io::Result<OpenccTable> {
         let data = std::fs::read(path)
@@ -300,12 +295,6 @@ mod tests {
         // 短语内单字未命中也不拆分：以后 → 以後；单独后 → 后（首值）。
         let t = sample();
         assert_eq!(t.convert("以后后"), "以後后");
-    }
-
-    #[test]
-    fn empty_table_passthrough() {
-        let t = OpenccTable::empty();
-        assert_eq!(t.convert("你好后"), "你好后");
     }
 
     #[test]

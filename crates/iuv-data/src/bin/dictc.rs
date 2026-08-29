@@ -1,5 +1,4 @@
 //! dictc：词库编译 CLI。契约 01-contract.md §3 与任务书 10 §3.3。
-//! 【Agent A】W1 实现。
 //! 用法：
 //!   dictc <output.imedic> <input1.dict.yaml> [input2...]      # 拼音词库 → IMEDIC02
 //!   dictc opencc <output.opencc> <STPhrases.txt> <STCharacters.txt>  # OpenCC 简繁表 → IUVOCC01

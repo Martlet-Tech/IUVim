@@ -1,7 +1,7 @@
 //! 候选类型。W0 完整实现，冻结。
 
 /// 候选种类。M3+ 可扩：English / Symbol…
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CandidateKind {
     Sentence,
     Word,
@@ -9,7 +9,7 @@ pub enum CandidateKind {
 }
 
 /// 一个候选。
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
     pub text: String,
     pub kind: CandidateKind,
@@ -19,11 +19,6 @@ pub struct Candidate {
     pub weight: u32,
     /// 该候选消费的音节段数（所在前缀级 k；续接选词时推进用，M1 后期契约演进）
     pub seg_len: usize,
-    /// 统一标量分（39-rime-pipeline.md §Step1）：log 域可跨层级比较。
-    /// classic 现阶段仅整句填 Viterbi 路径分、其余 0（排序仍按生成序，统一打分
-    /// 在 rime 核心落地后启用）；构造器默认 0.0，既有调用点零改动。
-    #[serde(default)]
-    pub score: f64,
 }
 
 impl CandidateKind {
@@ -52,7 +47,6 @@ impl Candidate {
             code: code.into(),
             weight,
             seg_len,
-            score: 0.0,
         }
     }
 
@@ -65,7 +59,6 @@ impl Candidate {
             code: e.code.clone(),
             weight: e.weight,
             seg_len,
-            score: 0.0,
         }
     }
 }

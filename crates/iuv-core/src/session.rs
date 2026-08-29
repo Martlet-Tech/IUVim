@@ -238,7 +238,6 @@ impl Session {
             // 其余可打印符号键（未被 keymap 占用——占用键已在桥层重映射为翻页等）：
             // 进入字面尾巴。预编辑显示 拼音+尾巴、提交原样上屏（issue「d冒号表现不一致」：
             // 旧实现放行给应用，Word/记事本/Excel 插入位置各异 → :d / d: / 的:）。
-            // TODO(用户自定义按键映射)：落地时收编集 = 可打印符号 − 用户已定义功能键。
             Key::Char(c) => self.tail.push(c),
             // 防御性忽略：Tab/Delete/Home/End/Insert/F1-F12 正常情况下经组合查表被归一化为
             // 会话动作（或未绑定放行给应用），不该直达会话；兜底忽略不扰动 composition。
@@ -364,7 +363,6 @@ impl Session {
             code: c.code.clone(),
             weight: c.weight,
             seg_len: c.seg_len,
-            score: c.score,
         }
     }
 
@@ -506,7 +504,7 @@ impl Session {
         // 显示边界简→繁（31-script-traditional.md）：composition/reading（预编辑，含
         // picked 汉字 + 拼音尾巴）与候选文本统一转换；内部 self.all/picked 恒简体
         // （commit/自造词/调权/屏蔽键不变）。原文兜底候选（纯拼音 window 等）转换
-        // 恒等，与 gdi.rs「text == 预编辑原文去撇号」判定不冲突。
+        // 恒等；「text == 预编辑原文去撇号」的原文兜底判定（preview_rules 规则 2）不受转换影响。
         let preview_disp = self.convert_script(&preview);
         Effect {
             composition: preview_disp.clone(),

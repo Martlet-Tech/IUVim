@@ -758,7 +758,7 @@ fn static_order_is_deterministic() {
     assert_eq!(a.effect().candidates, b.effect().candidates);
 }
 
-// ===== M1.5 三路路由（微软实测对齐，docs/research/msime-probe-checklist.txt）=====
+// ===== M1.5 三路路由（微软实测对齐）=====
 
 /// M1.5 词典：模拟 dictc 产物——全拼键 + 简拼键同表（简拼键为 dictc 自动生成，
 /// 引擎测试里手工给出等价数据）。

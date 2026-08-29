@@ -156,13 +156,11 @@ fn run() -> i32 {
     0
 }
 
-/// 用户库文件路径：%LOCALAPPDATA%\iuv\iuv.user.imedic。
+/// 用户库文件路径：<iuv 数据目录>\iuv.user.imedic（目录链统一走 iuv-core [`iuv_core::paths`]）。
 fn user_dict_path() -> Option<PathBuf> {
-    let base = std::env::var("LOCALAPPDATA")
-        .ok()
-        .or_else(|| std::env::var("APPDATA").ok().map(|a| format!("{a}\\Local")))
-        .or_else(|| std::env::var("HOME").ok())?;
-    Some(PathBuf::from(base).join("iuv").join(USER_DICT_FILENAME))
+    Some(
+        iuv_core::paths::iuv_dir()?.join(USER_DICT_FILENAME),
+    )
 }
 
 /// 获取具名互斥（bInitialOwner=true）：已存在且非废弃（另一实例活跃）→ None。

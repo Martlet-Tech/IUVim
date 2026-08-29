@@ -41,7 +41,7 @@ impl Engine {
     /// 默认装配：Quanpin + UnigramLm。
     pub fn new(dict: Dict, config: Config) -> Arc<Engine> {
         let syllables = dict.syllables().clone();
-        let lm = UnigramLm::new(dict.total_weight(), dict.entry_count());
+        let lm = UnigramLm::new(dict.total_weight());
         Self::with_parts(
             dict,
             config,

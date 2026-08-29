@@ -1,7 +1,7 @@
 # 29 · 点子库：Tab 键用途（整句翻译 / 自动补全）
 
 > 状态：**规划中，未动手**（2026-08-19 记录）。前置阅读：`01-contract.md`、`13-mod-iuv-tsf-core.md`、
-> `22-m6-daemon.md`、`23-m8-plugin.md`、`30-conventions.md`。
+> `22-m6-daemon.md`、`23-m8-plugin.md`、`02-conventions.md`。
 > 背景：Tab 键（VK_TAB）当前**完全未映射**——`map_key` 未识别键返回 None（放行给应用），
 > 无 `Key::Tab`、无会话内分支、契约无记载。用户提了两个利用方向：**整句翻译**（在线 API）与
 > **自动补全**（选词续打）。两者都想占用 Tab 且是**不同手势**，需要先定语义，暂不实现。

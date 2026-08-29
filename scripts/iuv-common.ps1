@@ -370,3 +370,25 @@ if (`$ok) { Unregister-ScheduledTask -TaskName `$tn -Confirm:`$false -ErrorActio
     Trace-Script "Register-DelayedOps: 任务已注册 $tn (AtStartup + AtLogOn)"
     return $true
 }
+
+function Test-ArchRegistered {
+    # TSF DLL 注册状态检查（install 与 dev-deploy 共用，2026-08-29 下沉）。
+    # CLSID 存在 + InprocServer32 指向本 DLL + TIP 键存在；
+    # 传 -ProfileDesc 时额外要求显示名一致（区分大小写：-cne/-ceq，-ne 会把 iuv/IUV 判等）。
+    param(
+        [string]$ClsidKey,
+        [string]$TipKey,
+        [string]$DllPath,
+        [string]$ProfileDesc
+    )
+    $p = $null
+    if (Test-Path "$ClsidKey\InprocServer32") {
+        $p = (Get-ItemProperty -Path "$ClsidKey\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
+    }
+    $ok = ((Test-Path $ClsidKey) -and (Test-Path $TipKey) -and $p -eq $DllPath)
+    if ($ok -and $ProfileDesc) {
+        $d = (Get-ItemProperty -Path $ClsidKey -ErrorAction SilentlyContinue).'(default)'
+        $ok = ($d -cne $null -and $d -ceq $ProfileDesc)
+    }
+    return $ok
+}

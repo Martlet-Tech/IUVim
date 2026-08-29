@@ -288,15 +288,6 @@ if (Test-Path $daemonSrc) {
 # 曾因只查 key 存在与否而跳过 regsvr32，导致注册表仍指向旧路径的旧 DLL
 # （项目改名前的 C:\Program Files\InputIME），热部署永远不生效。现与 install.ps1
 # 同款校验：InprocServer32 默认值必须等于本安装的 destDll（每架构独立判定）。
-function Test-ArchRegistered {
-    param([string]$ClsidKey, [string]$TipKey, [string]$DllPath)
-    $p = $null
-    if (Test-Path "$ClsidKey\InprocServer32") {
-        $p = (Get-ItemProperty -Path "$ClsidKey\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
-    }
-    return ((Test-Path $ClsidKey) -and (Test-Path $TipKey) -and $p -eq $DllPath)
-}
-
 $archRegs = @(
     @{ Dll = $destDll;  Regsvr = "$env:windir\System32\regsvr32.exe"; Clsid = $clsidKey;   Tip = $tipKey },
     @{ Dll = $destDll32; Regsvr = $regsvr32Path;                       Clsid = $clsidKey32; Tip = $tipKey32 }

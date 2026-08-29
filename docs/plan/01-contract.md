@@ -494,7 +494,7 @@ Abbrev / Mixed / Empty），`generate_candidates` 按档位 match 分派；
 无任何音节前缀时才单字母兜底（`qaz`/`v` 等，保证有解）。`nh` 非任何音节前缀 → 仍拆
 `n`/`h` 两段（简拼档）。
 
-**路由（M1.5，微软实测对齐，见 docs/research/msime-probe-checklist.txt）**：
+**路由（M1.5，微软实测对齐；实测清单文件已删）**：
 
 | 输入 | 判定 | 候选 |
 |---|---|---|

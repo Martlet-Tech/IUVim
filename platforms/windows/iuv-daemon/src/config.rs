@@ -81,13 +81,9 @@ impl Default for DaemonConfig {
     }
 }
 
-/// 配置路径：%LOCALAPPDATA%\iuv\config.json（跨平台：无 LOCALAPPDATA 时返回 None）。
+/// 配置路径：<iuv 数据目录>\config.json（与词库同目录；目录链复用 iuv-core `paths`）。
 pub fn config_path() -> Option<PathBuf> {
-    let base = std::env::var("LOCALAPPDATA")
-        .ok()
-        .or_else(|| std::env::var("APPDATA").ok().map(|a| format!("{a}\\Local")))
-        .or_else(|| std::env::var("HOME").ok())?;
-    Some(PathBuf::from(base).join("iuv").join("config.json"))
+    iuv_core::default_config_path()
 }
 
 /// 读取配置（容忍缺失/坏 JSON/未知值 → 默认）。绝不失败。
@@ -99,8 +95,8 @@ pub fn load_config() -> DaemonConfig {
         Ok(t) => t,
         Err(_) => return DaemonConfig::default(),
     };
-    let text = text.trim_start_matches('\u{FEFF}'); // UTF-8 BOM
-    let text = strip_jsonc_comments(text); // 兼容安装器产出的带注释配置
+    let text = iuv_core::strip_bom(&text);
+    let text = iuv_core::strip_jsonc_comments(text); // 兼容安装器产出的带注释配置
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
         return DaemonConfig::default();
     };
@@ -146,45 +142,13 @@ pub fn load_config() -> DaemonConfig {
             .filter_map(|x| x.as_str().map(String::from))
             .collect();
     }
-    // keymap 读取：先做旧格式迁移（数组 → 两槽对象，与 iuv-core io.rs 同规），再反序列化。
-    // 旧格式 `{"page_prev": ["PageUp", ",", "Up"]}` 由旧版写入；新格式为两槽对象。
+    // keymap 读取：先做旧格式迁移（数组 → 两槽对象，复用 iuv-core `migrate_keymap`），
+    // 再反序列化。旧格式 `{"page_prev": ["PageUp", ",", "Up"]}` 由旧版写入；新格式为两槽对象。
+    let v = iuv_core::migrate_keymap(v);
     if let Some(node) = v.get("keymap") {
-        let migrated = migrate_legacy_keymap(node.clone());
-        cfg.keymap = serde_json::from_value(migrated).unwrap_or_default();
+        cfg.keymap = serde_json::from_value(node.clone()).unwrap_or_default();
     }
     cfg
-}
-
-/// 旧 keymap 数组格式 → 两槽对象（与 iuv-core `migrate_keymap` 同规；取前两键作主/备）。
-fn migrate_legacy_keymap(v: serde_json::Value) -> serde_json::Value {
-    let Some(km) = v.as_object() else { return v };
-    let mut out = km.clone();
-    for field in [
-        "page_prev",
-        "page_next",
-        "candidate_prev",
-        "candidate_next",
-        "swap_left",
-        "swap_right",
-        "hide_candidate",
-        "toggle_mode",
-        "toggle_width",
-        "toggle_script",
-        "toggle_punct",
-        "open_settings",
-        "toggle_toolbar",
-    ] {
-        let Some(arr) = km.get(field).and_then(|x| x.as_array()) else {
-            continue; // 缺字段 / 已是对象 → 跳过
-        };
-        let names: Vec<String> =
-            arr.iter().filter_map(|x| x.as_str().map(String::from)).take(2).collect();
-        out.insert(
-            field.into(),
-            serde_json::json!({ "primary": names.first(), "secondary": names.get(1) }),
-        );
-    }
-    serde_json::Value::Object(out)
 }
 
 /// 解析 `initial_state` 节点（复用 iuv-core 类型与 serde 规则：缺字段补默认、未知值回退默认）。
@@ -203,10 +167,7 @@ pub fn save_config(cfg: &DaemonConfig) -> io::Result<()> {
     // 读现有（剥 BOM/注释；失败 → 空对象）。保留未知字段：keymap/max_candidates 等。
     let mut root: serde_json::Value = std::fs::read_to_string(&path)
         .ok()
-        .map(|t| {
-            let t = t.trim_start_matches('\u{FEFF}');
-            strip_jsonc_comments(t)
-        })
+        .map(|t| iuv_core::strip_jsonc_comments(iuv_core::strip_bom(&t)))
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
     if let Some(obj) = root.as_object_mut() {
@@ -281,43 +242,6 @@ pub fn save_config(cfg: &DaemonConfig) -> io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
-/// 剥 JSONC 行注释（`//` 到行尾）：字符串内不剥（含 `\"` 转义），行尾 CR 保留。
-/// 与 iuv-core `Config` 读取逻辑同款（serde_json 不支持注释）。
-fn strip_jsonc_comments(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut in_str = false;
-    let mut prev_escape = false;
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if in_str {
-            out.push(c as char);
-            if prev_escape {
-                prev_escape = false;
-            } else if c == b'\\' {
-                prev_escape = true;
-            } else if c == b'"' {
-                in_str = false;
-            }
-            i += 1;
-        } else if c == b'"' {
-            in_str = true;
-            out.push(c as char);
-            i += 1;
-        } else if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            // 跳到行尾（保留换行符，行号不漂移）
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-        } else {
-            out.push(c as char);
-            i += 1;
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,11 +254,11 @@ mod tests {
     fn strip_comments_keeps_strings() {
         let src = r#"{"a": "http://x", "theme": "dark"}"#;
         assert_eq!(
-            strip_jsonc_comments(src),
+            iuv_core::strip_jsonc_comments(src),
             r#"{"a": "http://x", "theme": "dark"}"#
         );
         let src2 = "{\"a\": 1 // 注释\n}";
-        assert_eq!(strip_jsonc_comments(src2), "{\"a\": 1 \n}");
+        assert_eq!(iuv_core::strip_jsonc_comments(src2), "{\"a\": 1 \n}");
     }
 
     #[test]

@@ -1623,14 +1623,12 @@ dependencies = [
  "serde_json",
  "tiny-skia 0.12.0",
  "windows",
- "windows-core",
 ]
 
 [[package]]
 name = "iuv-data"
 version = "0.1.0"
 dependencies = [
- "serde",
  "windows",
  "windows-core",
 ]

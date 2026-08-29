@@ -6,7 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-serde = { workspace = true }
 windows-core = "0.62"
 
 [target.'cfg(windows)'.dependencies]

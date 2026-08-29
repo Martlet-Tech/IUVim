@@ -242,23 +242,12 @@ if (-not (Test-Path $configPath)) {
 
 # ---- 5. 注册（x64 native 视图 + x86 WOW6432Node 视图；各自未注册/路径不符才重注册）----
 # 两个架构各自判断：系统按进程架构自动加载对应 DLL，注册要独立校验。
-function Test-ArchRegistered {
-    param([string]$ClsidKey, [string]$TipKey, [string]$DllPath)
-    $p = $null
-    if (Test-Path "$ClsidKey\InprocServer32") {
-        $p = (Get-ItemProperty -Path "$ClsidKey\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
-    }
-    # 显示名比较必须区分大小写（-cne；-ne 大小写不敏感会把 iuv/IUV 判为相等）。
-    $d = (Get-ItemProperty -Path $ClsidKey -ErrorAction SilentlyContinue).'(default)'
-    return ((Test-Path $ClsidKey) -and (Test-Path $TipKey) -and $p -eq $DllPath -and $d -cne $null -and $d -ceq $profileDesc)
-}
-
 $archRegs = @(
     @{ Reg32 = $false; Dll = $destDll;  Regsvr = "$env:windir\System32\regsvr32.exe"; Clsid = $clsidKey;   Tip = $tipKey },
     @{ Reg32 = $true;  Dll = $destDll32; Regsvr = $regsvr32Path;                       Clsid = $clsidKey32; Tip = $tipKey32 }
 )
 foreach ($ar in $archRegs) {
-    if (Test-ArchRegistered -ClsidKey $ar.Clsid -TipKey $ar.Tip -DllPath $ar.Dll) {
+    if (Test-ArchRegistered -ClsidKey $ar.Clsid -TipKey $ar.Tip -DllPath $ar.Dll -ProfileDesc $profileDesc) {
         Trace-Script "install: 已注册，跳过 regsvr32（$($ar.Dll)）"
         Write-Host "已注册（跳过 regsvr32）：$($ar.Dll)"
         continue

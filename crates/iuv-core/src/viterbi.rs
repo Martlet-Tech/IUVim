@@ -67,9 +67,8 @@ pub fn best_sentence_scored(
     path.reverse();
     let text = path.join("");
     // Sentence 权重恒 0（契约 candidate.rs）；seg_len = 组句段数（消费全部 vseg 段）。
-    // score = 路径总 log_prob（Step1 起上浮到候选，39-rime-pipeline.md；排序未消费）。
-    let mut cand = Candidate::new(text, CandidateKind::Sentence, seg.join("'"), 0, seg.len());
-    cand.score = dp[n].0;
+    // 路径总 log_prob 作为返回值供消费端排序，不上浮到候选（排序未统一前候选不带分）。
+    let cand = Candidate::new(text, CandidateKind::Sentence, seg.join("'"), 0, seg.len());
     Some((cand, dp[n].0))
 }
 
@@ -102,7 +101,7 @@ mod tests {
     #[test]
     fn sentence_prefers_high_freq_path() {
         let d = dict();
-        let lm = UnigramLm::new(d.total_weight(), d.entry_count());
+        let lm = UnigramLm::new(d.total_weight());
         // "shijie": 世界(6000) vs 世(3000)+界(2500)。世界更高频。
         let s = seg("shijie");
         let c = best_sentence_scored(&d, &s, &lm, &Config::default()).unwrap().0;
@@ -118,7 +117,7 @@ mod tests {
     #[test]
     fn oov_syllable_falls_back() {
         let d = dict();
-        let lm = UnigramLm::new(d.total_weight(), d.entry_count());
+        let lm = UnigramLm::new(d.total_weight());
         let s = seg("wode");
         let c = best_sentence_scored(&d, &s, &lm, &Config::default()).unwrap().0;
         // "wo" 无词条 → 兜底原样 "wo"；"de" → "的"
@@ -129,7 +128,7 @@ mod tests {
     #[test]
     fn single_syllable_no_sentence() {
         let d = dict();
-        let lm = UnigramLm::new(d.total_weight(), d.entry_count());
+        let lm = UnigramLm::new(d.total_weight());
         let s = seg("de");
         assert!(best_sentence_scored(&d, &s, &lm, &Config::default()).is_none());
     }

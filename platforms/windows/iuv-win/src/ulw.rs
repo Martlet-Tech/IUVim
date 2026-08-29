@@ -89,7 +89,7 @@ impl UlwSurface {
         };
         let hdc_dst = unsafe { GetDC(None) };
         if hdc_dst.is_invalid() {
-            crate::log_line(&format!("{log_prefix} GetDC(桌面) 失败"));
+            crate::logger::log_line(&format!("{log_prefix} GetDC(桌面) 失败"));
             return false;
         }
         let r = unsafe {
@@ -108,7 +108,7 @@ impl UlwSurface {
         // SAFETY: GetDC/ReleaseDC 配对
         let _ = unsafe { ReleaseDC(None, hdc_dst) };
         if r.is_err() {
-            crate::log_line(&format!(
+            crate::logger::log_line(&format!(
                 "{log_prefix} UpdateLayeredWindow 失败：{:?}",
                 r.unwrap_err()
             ));
@@ -138,7 +138,7 @@ impl UlwSurface {
         // SAFETY: CreateCompatibleDC(None) 以桌面 DC 为模板创建内存 DC。
         let hdc = unsafe { CreateCompatibleDC(None) };
         if hdc.is_invalid() {
-            crate::log_line(&format!("{log_prefix} CreateCompatibleDC 失败"));
+            crate::logger::log_line(&format!("{log_prefix} CreateCompatibleDC 失败"));
             return false;
         }
         // 32bpp 自顶向下（biHeight 负数）；内存序 = BGRA little-endian，与 iuv-ui 一致。
@@ -161,7 +161,7 @@ impl UlwSurface {
         } {
             Ok(d) => d,
             Err(e) => {
-                crate::log_line(&format!("{log_prefix} CreateDIBSection 失败：{e:?}"));
+                crate::logger::log_line(&format!("{log_prefix} CreateDIBSection 失败：{e:?}"));
                 // SAFETY: DC 未选中任何对象，可立即删除。
                 unsafe {
                     let _ = DeleteDC(hdc);
@@ -170,7 +170,7 @@ impl UlwSurface {
             }
         };
         if bits.is_null() {
-            crate::log_line(&format!("{log_prefix} CreateDIBSection 返回空位图指针"));
+            crate::logger::log_line(&format!("{log_prefix} CreateDIBSection 返回空位图指针"));
             // SAFETY: DIB 成功但无像素指针（理论不发生）：释放后降级。
             unsafe {
                 let _ = DeleteObject(dib.into());

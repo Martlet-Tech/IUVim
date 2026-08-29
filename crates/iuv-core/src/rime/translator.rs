@@ -262,15 +262,13 @@ pub(crate) fn build_poet_graph(
     Some(wg)
 }
 
-/// 由 Poet 结果构造整句候选（score = 路径总权重；seg_len 置大数 = 全消费）。
+/// 由 Poet 结果构造整句候选（seg_len 置大数 = 全消费）。
 pub(crate) fn sentence_candidate(s: &poet::Sentence, display_code: String) -> crate::Candidate {
-    let mut c = crate::Candidate::new(
+    crate::Candidate::new(
         s.words.concat(),
         crate::CandidateKind::Sentence,
         display_code,
         0,
         999,
-    );
-    c.score = s.weight;
-    c
+    )
 }

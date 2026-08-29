@@ -1,5 +1,5 @@
-//! 候选窗抽象与 Effect → UiSnapshot 映射。W0 完整实现，冻结。
-//! MVP 实现 = GdiCandidateWindow（Agent E）；M4 起 = CandwinCandidateWindow
+//! 候选窗抽象与 Effect → UiSnapshot 映射。
+//! MVP 实现 = GdiCandidateWindow（已删）；M4 起 = CandwinCandidateWindow
 //! （ULW 呈现 + iuv-ui 绘图，见 19-m4-cross-render.md），类型与快照自 iuv-ui 迁出。
 
 pub mod candwin;
@@ -18,35 +18,4 @@ pub trait CandidateUi {
     /// 抑制显示：`candidate_owner_apps` 命中（app 自绘候选栏）时静默——show/update 空操作，
     /// 开启瞬间隐藏已显示窗口；false 恢复。引擎/元素/交互逻辑不受影响。
     fn set_suppressed(&mut self, suppressed: bool);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use iuv_core::{Candidate, CandidateKind, Effect, PageInfo};
-
-    #[test]
-    fn effect_to_snapshot_maps_fields() {
-        let mut e = Effect::default();
-        e.reading = "ni'hao".into();
-        let cands = vec![
-            Candidate::new("你好", CandidateKind::Word, "nihao", 1, 2),
-            Candidate::new("泥嚎", CandidateKind::Word, "nihao", 2, 2),
-        ];
-        e.candidates = cands.clone();
-        e.all_candidates = cands;
-        e.selected = 1;
-        e.page = PageInfo {
-            page: 0,
-            page_count: 2,
-            page_size: 5,
-            total: 7,
-        };
-        let snap = effect_to_snapshot(&e);
-        assert_eq!(snap.reading, "ni'hao");
-        assert_eq!(snap.candidates, vec!["你好", "泥嚎"]);
-        assert_eq!(snap.all_candidates, vec!["你好", "泥嚎"]);
-        assert_eq!(snap.selected, 1);
-        assert_eq!(snap.page.page_count, 2);
-    }
 }

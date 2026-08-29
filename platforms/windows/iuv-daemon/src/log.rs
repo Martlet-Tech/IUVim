@@ -1,59 +1,22 @@
-//! 守护进程文件日志：`%TEMP%\input-iuv-daemon.log`（契约 30-conventions.md §3）。
-//! 全错误路径必记；日志写失败静默忽略（日志不允许影响守护进程行为）。
+//! 守护进程文件日志门面：`%TEMP%\input-iuv-daemon.log`（契约 02-conventions.md §3）。
+//! 实现 = [`iuv_win::logger`] 共享文件日志（2026-08-29 与 iuv-tsf 的复制实现收敛）；
+//! 本文件只保留 daemon 特有的清日志与 panic 钩子。
 
 use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
 
-use windows::Win32::System::Threading::GetCurrentProcessId;
-
-/// 禁用日志模块集（denylist，见 26-log-modules.md）。空 = 全记录（默认）。
-/// 由启动配置加载/设置页 apply 调 `set_log_modules_disabled` 替换。
-static DISABLED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
-
-fn disabled() -> &'static Mutex<std::collections::HashSet<String>> {
-    DISABLED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+/// 共享日志装配（file name 一次定死，无宿主模块名前缀；`log_line` 内惰性调用）。
+pub fn init() {
+    iuv_win::logger::init_logger("input-iuv-daemon.log", false);
 }
 
-/// 替换禁用日志模块集（空 = 全记录）。
-pub fn set_log_modules_disabled(modules: &[String]) {
-    let mut set = disabled().lock().unwrap_or_else(|p| p.into_inner());
-    set.clear();
-    set.extend(modules.iter().cloned());
-}
+pub use iuv_win::logger::{set_log_modules_disabled, temp_dir};
 
-/// 按消息前缀 `[tag]` 判断是否被禁用；无 tag 恒放行。禁用集为空走快路径。
-fn module_disabled(msg: &str) -> bool {
-    let set = disabled().lock().unwrap_or_else(|p| p.into_inner());
-    if set.is_empty() {
-        return false;
-    }
-    if let Some(rest) = msg.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            return set.contains(&rest[..end]);
-        }
-    }
-    false
-}
-
-/// 追加一行日志（时间戳 + pid）。模块被禁用时整行丢弃。
+/// 共享日志转发（首次调用惰性装配）。
 pub fn log_line(msg: &str) {
-    if module_disabled(msg) {
-        return;
-    }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let line = format!("[{}.{:03}] pid={} {msg}\n", now.as_secs(), now.subsec_millis(), process_id());
-    if let Some(path) = log_path() {
-        let _ = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .and_then(|mut f| f.write_all(line.as_bytes()));
-    }
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(init);
+    iuv_win::logger::log_line(msg);
 }
 
 /// 清空 `%TEMP%` 下 4 个 iuv 相关日志文件（truncate 而非删除：文件保留，持有方继续追加）。
@@ -84,23 +47,6 @@ pub fn clear_logs() -> (usize, usize) {
     }
     log_line(&format!("[log] 清除日志完成：成功 {ok}、失败 {fail}"));
     (ok, fail)
-}
-
-/// %TEMP%\input-iuv-daemon.log（TEMP 缺失时回退 TMP）。
-fn log_path() -> Option<PathBuf> {
-    temp_dir().map(|dir| dir.join("input-iuv-daemon.log"))
-}
-
-fn temp_dir() -> Option<PathBuf> {
-    std::env::var("TEMP")
-        .or_else(|_| std::env::var("TMP"))
-        .ok()
-        .map(PathBuf::from)
-}
-
-fn process_id() -> u32 {
-    // SAFETY: 纯查询系统 API，无指针参数，无副作用。
-    unsafe { GetCurrentProcessId() }
 }
 
 /// 安装 panic 钩子：panic 信息落日志（守护进程"绝不 panic"纪律——即使发生也留痕）。

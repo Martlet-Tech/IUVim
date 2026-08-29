@@ -5,23 +5,16 @@
 //! 服务端 thread-per-connection（daemon 侧每连接一线程），循环读帧直至对端断开。
 //! 无应答帧（fire-and-forget over 可靠长连接；断线由下次写入的 Err 自然暴露）。
 //!
-//! 帧格式复用 `codec::to_frame/parse_frame`（u32 LE 长度前缀 + 载荷）。
+//! 帧格式复用 `codec::to_frame/parse_frame`（u32 LE 长度前缀 + 载荷）；
+//! 管道创建/连接/读写原语全部复用 `pipe.rs::imp`（2026-08-29 收敛内联复制）。
 
 use std::io;
 
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{
-    CloseHandle, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
-};
-use windows::Win32::Storage::FileSystem::{CreateFileW, PIPE_ACCESS_DUPLEX, OPEN_EXISTING};
-use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, WaitNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
-};
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 
 use super::codec::{decode_signal, encode_signal};
 use super::msg::ToolbarSignal;
-use super::pipe::{imp, PIPE_CONNECT_TIMEOUT_MS, PIPE_FRAME_MAX};
+use super::pipe::imp;
 
 /// 信号管道名（与数据面 `iuv-userdict` 并列；单用户桌面足够）。
 const SIGNAL_PIPE_NAME: &str = r"\\.\pipe\iuv-toolbar-signal";
@@ -36,38 +29,13 @@ impl SignalServer {
     /// 调用方 accept 循环每轮新建实例 → 连接后交独立线程 `recv_loop`，实现并发多连接。
     pub fn accept() -> io::Result<SignalServer> {
         let name = imp::name_wide(SIGNAL_PIPE_NAME);
-        // SAFETY: 消息模式 + 阻塞；缓冲 64KB 内单帧。返回 HANDLE（非 Result）。
-        let handle = unsafe {
-            CreateNamedPipeW(
-                PCWSTR(name.as_ptr()),
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-                PIPE_UNLIMITED_INSTANCES,
-                PIPE_FRAME_MAX as u32,
-                PIPE_FRAME_MAX as u32,
-                0,
-                None,
-            )
-        };
-        if handle.is_invalid() {
-            let e = unsafe { windows::Win32::Foundation::GetLastError() };
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("创建信号管道失败: {}", e.0),
-            ));
-        }
-        // SAFETY: 阻塞等待客户端 ConnectNamedPipe（非重叠）。
-        let r = unsafe { ConnectNamedPipe(handle, None) };
-        if let Err(_e) = r {
-            let code = unsafe { windows::Win32::Foundation::GetLastError() };
-            if code != ERROR_PIPE_CONNECTED {
-                // SAFETY: 等待失败，关闭本实例句柄后返回错误（accept 循环重试）。
-                let _ = unsafe { CloseHandle(handle) };
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("等待信号客户端连接失败: {}", code.0),
-                ));
-            }
+        let handle = imp::create_server(&name).map_err(|e| {
+            io::Error::new(e.kind(), format!("信号管道：{e}"))
+        })?;
+        if let Err(e) = imp::connect_server(handle) {
+            // SAFETY: 等待失败，关闭本实例句柄后返回错误（accept 循环重试）。
+            let _ = unsafe { CloseHandle(handle) };
+            return Err(io::Error::new(e.kind(), format!("信号管道：{e}")));
         }
         Ok(SignalServer { handle })
     }
@@ -100,40 +68,9 @@ impl SignalClient {
     /// 下次发送前重新 connect——持久连接的自然生命周期，非兜底机制）。
     pub fn connect() -> io::Result<SignalClient> {
         let name = imp::name_wide(SIGNAL_PIPE_NAME);
-        loop {
-            // SAFETY: name 以 NUL 结尾；管道句柄读写复用。
-            let result = unsafe {
-                CreateFileW(
-                    PCWSTR(name.as_ptr()),
-                    (GENERIC_READ | GENERIC_WRITE).0,
-                    windows::Win32::Storage::FileSystem::FILE_SHARE_MODE(0),
-                    None,
-                    OPEN_EXISTING,
-                    Default::default(),
-                    None,
-                )
-            };
-            if let Ok(handle) = result {
-                return Ok(SignalClient { handle });
-            }
-            let e = unsafe { windows::Win32::Foundation::GetLastError() };
-            if e == ERROR_PIPE_BUSY {
-                // SAFETY: name 以 NUL 结尾；等待超时视为 daemon 不在线。
-                let ok =
-                    unsafe { WaitNamedPipeW(PCWSTR(name.as_ptr()), PIPE_CONNECT_TIMEOUT_MS) };
-                if !ok.as_bool() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "信号管道忙且超时（daemon 不在线）",
-                    ));
-                }
-                continue; // 管道可用了，重试 CreateFileW
-            }
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("信号管道不可达: {}", e.0),
-            ));
-        }
+        let handle = imp::connect_client(&name)
+            .map_err(|e| io::Error::new(e.kind(), format!("信号管道：{e}")))?;
+        Ok(SignalClient { handle })
     }
 
     /// 发送一条信号（无应答帧）。失败 → `Err`（调用方弃缓存连接，下次发送重连）。

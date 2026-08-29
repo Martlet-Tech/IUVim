@@ -41,7 +41,7 @@ impl RimeEngine {
     /// M2 用户库调权/屏蔽跨核心一致）。
     pub fn new(dict: Arc<Dict>, config: &crate::Config) -> Arc<RimeEngine> {
         let syllables = dict.syllables().clone();
-        let lm = crate::UnigramLm::new(dict.total_weight(), dict.entry_count());
+        let lm = crate::UnigramLm::new(dict.total_weight());
         Arc::new(RimeEngine {
             dict,
             schema: crate::schema::Quanpin::new(syllables.clone()),
@@ -66,17 +66,13 @@ impl RimeEngine {
         let n_seg = seg.iter().filter(|s| !s.is_empty()).count().max(1);
         let cands: Vec<crate::Candidate> = crate::api::single_char_entries(&self.dict, &plain)
             .into_iter()
-            .map(|e| {
-                let mut c = crate::Candidate::for_entry(&e, crate::CandidateKind::Char, 1usize.min(n_seg));
-                c.score = self.lm.log_prob(None, "", e.weight);
-                c
-            })
+            .map(|e| crate::Candidate::for_entry(&e, crate::CandidateKind::Char, 1usize.min(n_seg)))
             .collect();
         if cands.is_empty() {
             return self.fallback_translation(pending, seg);
         }
         Translation {
-            segmentation: vec![Span { syllables: seg.to_vec(), tags: vec!["pinyin"] }],
+            segmentation: vec![Span { syllables: seg.to_vec() }],
             candidates: cands,
         }
     }
@@ -234,9 +230,7 @@ impl ImeEngine for RimeEngine {
                         // 预测匹配（尾前缀补全）覆盖全输入 → 恒全消费
                         let seg_len = if be.exact { consumed_parts(end) } else { 999 };
                         let kind = crate::CandidateKind::for_word(&be.entry.word);
-                        let mut c = crate::Candidate::for_entry(&be.entry, kind, seg_len);
-                        c.score = self.lm.log_prob(None, &be.entry.word, be.entry.weight);
-                        cands.push(c);
+                        cands.push(crate::Candidate::for_entry(&be.entry, kind, seg_len));
                     }
                 }
             }
@@ -282,7 +276,7 @@ impl ImeEngine for RimeEngine {
         }
 
         Translation {
-            segmentation: vec![Span { syllables: seg, tags: vec!["pinyin"] }],
+            segmentation: vec![Span { syllables: seg }],
             candidates: cands,
         }
     }
@@ -431,23 +425,6 @@ mod tests {
         let nihao = tr.candidates.iter().find(|c| c.text == "你好").unwrap();
         assert_eq!(nihao.seg_len, 2);
     }
-}
-
-#[cfg(test)]
-mod tests2 {
-    use super::*;
-    use crate::api::ImeEngine;
-    use std::sync::Arc as StdArc;
-
-    fn engine(items: Vec<(&str, &str, u32)>) -> StdArc<RimeEngine> {
-        let d = Dict::from_entries(
-            items
-                .into_iter()
-                .map(|(c, w, wt)| (c.to_string(), w.to_string(), wt))
-                .collect(),
-        );
-        RimeEngine::new(StdArc::new(d), &crate::Config::default())
-    }
 
     /// 简拼键（构建期首字母串）：nhmsx → 你还没睡醒。
     #[test]
@@ -459,23 +436,6 @@ mod tests2 {
         let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw: "nhmsx" });
         let texts: Vec<String> = tr.candidates.iter().map(|c| c.text.clone()).collect();
         assert_eq!(texts.first().map(String::as_str), Some("你还没睡醒"), "{texts:?}");
-    }
-}
-
-#[cfg(test)]
-mod tests3 {
-    use super::*;
-    use crate::api::ImeEngine;
-    use std::sync::Arc as StdArc;
-
-    fn engine(items: Vec<(&str, &str, u32)>) -> StdArc<RimeEngine> {
-        let d = Dict::from_entries(
-            items
-                .into_iter()
-                .map(|(c, w, wt)| (c.to_string(), w.to_string(), wt))
-                .collect(),
-        );
-        RimeEngine::new(StdArc::new(d), &crate::Config::default())
     }
 
     /// 微软对齐政策：严格音节前缀（sh）→ 纯单字（exact 命中的 shi 键单字）。
