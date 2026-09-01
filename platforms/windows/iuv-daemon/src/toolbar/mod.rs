@@ -27,6 +27,7 @@
 //! P2.6 拆分：宿主/线程骨架（本文件）+ 窗口 `window.rs` + tooltip `tooltip.rs` +
 //! 持久化 `prefs.rs`。
 
+mod fullscreen;
 mod prefs;
 mod tooltip;
 mod window;
@@ -279,12 +280,14 @@ fn toolbar_thread_main(
         .unwrap_or_else(|p| p.into_inner())
         .keymap
         .clone();
-    let win = Box::new(ToolbarWindow::new(shared, state, icons, pet, pending));
+    let mut win = Box::new(ToolbarWindow::new(shared, state, icons, pet, pending));
     if win.hwnd.is_invalid() {
         log::log_line("[toolbar] 建窗失败，工具条线程退出");
         return;
     }
     let hwnd = win.hwnd;
+    // 全屏轮询定时器（1s）：窗口就绪后启动，常驻至窗口销毁（Drop 内 KillTimer 配对）。
+    win.start_fs_timer();
     // SAFETY: win 为 Box（地址稳定），线程存活期间有效；wnd_proc 经 GWLP_USERDATA 取回。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*win as *const ToolbarWindow as isize) };
     {

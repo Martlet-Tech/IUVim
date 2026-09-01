@@ -38,6 +38,7 @@ use super::{
     default_pos, in_rounded_rect, BarEvent, Shared, ToolbarInstance, CLASS_BAR, WM_APP_REFRESH,
     WM_MOUSELEAVE,
 };
+use super::fullscreen;
 use crate::log;
 use crate::state::DaemonState;
 /// 工具条窗口（仅工具条线程触碰；wnd_proc 经 GWLP_USERDATA 取回）。
@@ -88,10 +89,17 @@ pub(super) struct ToolbarWindow {
     pet_rand: u32,
     /// 宠物点击/拖拽判别（按下 = 记录光标屏坐标 + 矩形；> 4px 位移 → 拖拽）。
     pet_down: Option<((i32, i32), Rect)>,
+    /// 全屏抑制（显隐第三维度）：前台窗口覆盖所在显示器整屏 → true，抑制工具栏显示。
+    /// 由 1 秒轮询翻转；探测失败时保持上一次值不动（不猜，见 `fullscreen` 模块文档）。
+    fullscreen: bool,
+    /// 全屏轮询定时器是否已启动（SetTimer/KillTimer 配对用；窗口存活期常驻）。
+    fs_timer_on: bool,
 }
 
 /// 动画定时器 id（Win32 范围 1..u32::MAX；0/1 留作系统预定义；选不与现有 hotkey id 冲突值）。
 const PET_TIMER_ID: usize = 0xBADC0DE;
+/// 全屏轮询定时器 id（与 PET_TIMER_ID 区分，WM_TIMER 按 wparam 分派）。
+const FS_TIMER_ID: usize = 0xBADC0DF;
 
 /// 拖拽位移 → 弹簧冲量的换算系数（每水平像素）。
 /// 值越大头发甩得越夸张；1.0 左右对 112px 的半身像观感自然。
@@ -164,6 +172,8 @@ impl ToolbarWindow {
             // 任意非零初值即可（LCG 会自行扩散）
             pet_rand: 0x9E3779B9,
             pet_down: None,
+            fullscreen: false,
+            fs_timer_on: false,
         };
         if !hwnd.is_invalid() {
             w.text = Some(TextRenderer::new());
@@ -235,7 +245,6 @@ impl ToolbarWindow {
                     ToolbarInstance { state, active: true },
                 );
                 let was_bound = sh.focused == Some((pid, tid));
-                let pref_visible = sh.visible;
                 let prior_focused = sh.focused;
                 sh.focused = Some((pid, tid));
                 drop(sh);
@@ -251,10 +260,10 @@ impl ToolbarWindow {
                     self.sync_pet_timer();
                 }
                 log::log_line(&format!("[toolbar] 激活（{pid}:{tid}）"));
-                if !pref_visible {
-                    // 偏好关闭：只绑定实例不显示（§32「切回 iuv → 按偏好重新显示」；
-                    // 重开走 ToggleVisible 分支的绑定活跃恢复）。
-                    log::log_line("[toolbar] 工具条 → 保持隐藏（偏好关闭，仅绑定）");
+                if !self.should_show() {
+                    // 偏好关闭 或 全屏抑制中：只绑定实例不显示（偏好关闭语义见 §32；
+                    // 全屏期间即便收到焦点信号也不显示，退出全屏后由轮询翻转恢复）。
+                    log::log_line("[toolbar] 工具条 → 保持隐藏（偏好关闭或全屏中，仅绑定）");
                 } else if !self.visible {
                     log::log_line(&format!(
                         "[toolbar] 工具条 → 显示（绑定 {pid}:{tid}）"
@@ -331,17 +340,11 @@ impl ToolbarWindow {
                     if self.visible {
                         self.hide();
                     }
-                } else {
-                    // 重开偏好：绑定实例仍活跃 → 立即恢复显示。
-                    let bound_active = {
-                        let sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                        sh.focused
-                            .is_some_and(|f| sh.instances.get(&f).is_some_and(|i| i.active))
-                    };
-                    if bound_active && !self.visible {
-                        log::log_line("[toolbar] 工具条 → 显示（偏好重开，绑定实例活跃）");
-                        self.show();
-                    }
+                } else if self.should_show() && !self.visible {
+                    // 重开偏好：三维齐备（偏好开 + 绑定活跃 + 非全屏）→ 立即恢复显示。
+                    // 走 should_show() 统一判定：全屏中重开偏好不显示，退出全屏后由轮询恢复。
+                    log::log_line("[toolbar] 工具条 → 显示（偏好重开，绑定实例活跃）");
+                    self.show();
                 }
             }
             BarEvent::HotkeysChanged => {
@@ -878,12 +881,101 @@ impl ToolbarWindow {
             self.repaint();
         }
     }
+
+    // ===== 全屏抑制（显隐第三维度）=====
+
+    /// 显隐三维收敛（**只读判定，无副作用**）：
+    /// `用户偏好 visible` && `焦点绑定实例活跃` && `!全屏抑制`。
+    ///
+    /// 三维度彼此正交、来源互不相同：
+    /// - 偏好 = 语言栏菜单开关（`Shared::visible`，持久化到 toolbar.json）
+    /// - 焦点 = TSF 信号（**唯一真相源**，见 40-toolbar-show-hide-governance.md）
+    /// - 全屏 = 1 秒轮询（慢速维度，容忍延迟，绝不参与焦点判定）
+    ///
+    /// 判定集中于此一处，各事件分支只负责维护状态、末了统一收敛，避免三维各自为政打架。
+    fn should_show(&self) -> bool {
+        // 先取配置（短锁）再取共享态：避免嵌套持锁，且本函数每 tick 都会调用。
+        // 全屏抑制：设置页关闭该功能时此维度恒不生效。
+        let hide_on_fs = self
+            .state
+            .config
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .hide_on_fullscreen;
+        if hide_on_fs && self.fullscreen {
+            return false;
+        }
+        let sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+        if !sh.visible {
+            return false;
+        }
+        sh.focused
+            .is_some_and(|f| sh.instances.get(&f).is_some_and(|i| i.active))
+    }
+
+    /// 启动全屏轮询定时器（工具条线程调用一次，常驻至窗口销毁）。
+    pub(super) fn start_fs_timer(&mut self) {
+        if self.hwnd.is_invalid() || self.fs_timer_on {
+            return;
+        }
+        // SAFETY: SetTimer 在窗口创建线程调用；id 固定，周期见 `fullscreen::PROBE_INTERVAL_MS`。
+        unsafe {
+            let _ = SetTimer(
+                Some(self.hwnd),
+                FS_TIMER_ID,
+                fullscreen::PROBE_INTERVAL_MS,
+                None,
+            );
+        }
+        self.fs_timer_on = true;
+    }
+
+    /// 关闭全屏轮询定时器（幂等：未注册 id 静默忽略）。
+    fn kill_fs_timer(&mut self) {
+        self.fs_timer_on = false;
+        if self.hwnd.is_invalid() {
+            return;
+        }
+        // SAFETY: KillTimer 在窗口创建线程调用。
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), FS_TIMER_ID);
+        }
+    }
+
+    /// 全屏轮询 tick：探测 → 更新抑制态 → 按三维判定收敛显隐。
+    ///
+    /// 日志只在**全屏态翻转**时记（避免每秒刷日志）；收敛则每 tick 都做但**幂等**——
+    /// 目标态与当前 `visible` 一致即零动作（不重绘、不动定时器）。每 tick 都收敛是必要的：
+    /// 设置页翻转 `hide_on_fullscreen` 开关时全屏态并未变化，若只在翻转时收敛，
+    /// 关掉开关后工具栏要等到下次进出全屏才恢复。
+    fn on_fullscreen_tick(&mut self) {
+        let Some(now) = fullscreen::probe() else {
+            // 探测失败 / 无前台窗口（锁屏等）：保持上一次状态不动——最安全的中立行为
+            return;
+        };
+        if now != self.fullscreen {
+            self.fullscreen = now;
+            log::log_line(&format!("[toolbar] 全屏抑制 → {now}"));
+        }
+        // 三维收敛：进入全屏 → 隐藏（桌宠同窗随之隐藏且停帧）；
+        // 退出全屏 / 关掉开关 → 三维齐备则立即恢复（窗口存活未关闭，重显瞬时）。
+        let target = self.should_show();
+        if target == self.visible {
+            return;
+        }
+        if target {
+            self.show();
+        } else {
+            self.hide();
+        }
+    }
 }
 
 impl Drop for ToolbarWindow {
     fn drop(&mut self) {
         // 防定时器在窗口销毁后触发，触碰已释放的 ToolbarWindow（§5.4）。
         self.kill_pet_timer();
+        self.kill_fs_timer();
         if !self.hwnd.is_invalid() {
             // SAFETY: 先清零 GWLP_USERDATA，杜绝 wnd_proc 访问到即将释放的 self。
             let _ = unsafe { SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0) };
@@ -927,6 +1019,11 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
             if wparam.0 == PET_TIMER_ID {
                 if let Some(w) = get_bar_mut(hwnd) {
                     w.on_pet_tick();
+                }
+            } else if wparam.0 == FS_TIMER_ID {
+                // 全屏轮询（1s）：仅状态翻转时收敛显隐（on_fullscreen_tick 内部守卫）。
+                if let Some(w) = get_bar_mut(hwnd) {
+                    w.on_fullscreen_tick();
                 }
             }
             LRESULT(0)

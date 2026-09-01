@@ -325,6 +325,8 @@ struct SettingsApp {
     passthrough: String,
     /// 候选自绘名单文本编辑（每行一个 exe 名）。
     candidate_owner: String,
+    /// 全屏时自动隐藏工具栏与桌宠（高级页勾选；默认 true）。daemon 消费，非 iuv-core 契约。
+    hide_on_fullscreen: bool,
     /// 快捷键映射（41-keymap-settings.md §3）：会话内 7 + 全局 6，各主/备两槽。
     /// 会话组 TSF 消费（config_epoch 热载）；全局组 daemon RegisterHotKey 消费。
     keymap: iuv_core::Keymap,
@@ -377,6 +379,7 @@ impl SettingsApp {
             initial: cfg.initial_state,
             passthrough: cfg.passthrough_apps.join("\n"),
             candidate_owner: cfg.candidate_owner_apps.join("\n"),
+            hide_on_fullscreen: cfg.hide_on_fullscreen,
             keymap: cfg.keymap,
             capture: None,
             capturing: false,
@@ -1032,6 +1035,19 @@ impl SettingsApp {
                 ui.small("默认 = 预置知名游戏");
             });
         });
+        ui.add_space(10.0);
+        // 全屏隐藏（工具栏显隐第三维度）：与上面两个名单同属「应用/场景适配」语义。
+        card(ui, |ui| {
+            ui.strong("全屏行为");
+            ui.add_space(4.0);
+            ui.checkbox(
+                &mut self.hide_on_fullscreen,
+                "全屏时自动隐藏工具栏与桌宠",
+            );
+            ui.small(
+                "看视频、打游戏等全屏场景自动隐藏，退出全屏后自动恢复。改动点「确定/应用」生效。",
+            );
+        });
     }
 
     /// 开发者：清除日志 + 日志模块开关（仅 dev 构建）。
@@ -1133,6 +1149,7 @@ impl SettingsApp {
             candidate_owner_apps: cand_owners.clone(),
             disabled_log_modules: self.disabled_log.clone(),
             keymap: self.keymap.clone(),
+            hide_on_fullscreen: self.hide_on_fullscreen,
         }) {
             Ok(()) => {
                 {
@@ -1145,6 +1162,8 @@ impl SettingsApp {
                     c.candidate_owner_apps = cand_owners;
                     c.disabled_log_modules = self.disabled_log.clone();
                     c.keymap = self.keymap.clone();
+                    // 全屏隐藏：内存态即时生效（工具条线程下一次 should_show 判定即读到）。
+                    c.hide_on_fullscreen = self.hide_on_fullscreen;
                 }
                 self.state.bump_config_epoch();
                 msgs.push("配置已保存并广播 config_epoch（会话进程检测后重载）".into());

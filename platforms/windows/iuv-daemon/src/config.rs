@@ -64,6 +64,9 @@ pub struct DaemonConfig {
     /// 快捷键映射（41-keymap-settings.md §3）：会话内 7 组 + 全局热键 6 组，各主/备两槽。
     /// 会话组 TSF 消费（config_epoch 热载已通）；全局组 daemon `RegisterHotKey` 消费。
     pub keymap: iuv_core::Keymap,
+    /// 全屏时自动隐藏工具栏与桌宠（默认 true = 开启；对齐 QQ 输入法行为）。
+    /// 判定 = 前台窗口矩形覆盖所在显示器整屏。Windows daemon 专属行为，非 iuv-core 契约。
+    pub hide_on_fullscreen: bool,
 }
 
 impl Default for DaemonConfig {
@@ -77,6 +80,7 @@ impl Default for DaemonConfig {
             candidate_owner_apps: Vec::new(),
             disabled_log_modules: Vec::new(),
             keymap: iuv_core::Keymap::default(),
+            hide_on_fullscreen: true,
         }
     }
 }
@@ -148,6 +152,10 @@ pub fn load_config() -> DaemonConfig {
     if let Some(node) = v.get("keymap") {
         cfg.keymap = serde_json::from_value(node.clone()).unwrap_or_default();
     }
+    // 全屏隐藏：缺失即默认 true（老 config.json 零迁移成本）
+    if let Some(b) = v.get("hide_on_fullscreen").and_then(|x| x.as_bool()) {
+        cfg.hide_on_fullscreen = b;
+    }
     cfg
 }
 
@@ -215,6 +223,10 @@ pub fn save_config(cfg: &DaemonConfig) -> io::Result<()> {
             serde_json::to_value(&cfg.keymap)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?,
         );
+        obj.insert(
+            "hide_on_fullscreen".into(),
+            serde_json::Value::Bool(cfg.hide_on_fullscreen),
+        );
         // 旧顶层 english_punctuation 键清理（迁移后由新 initial_state.punct 取代）。
         obj.remove("english_punctuation");
     } else {
@@ -227,6 +239,7 @@ pub fn save_config(cfg: &DaemonConfig) -> io::Result<()> {
             "passthrough_apps": cfg.passthrough_apps,
             "candidate_owner_apps": cfg.candidate_owner_apps,
             "disabled_log_modules": cfg.disabled_log_modules,
+            "hide_on_fullscreen": cfg.hide_on_fullscreen,
         });
     }
     let text = serde_json::to_string_pretty(&root)
@@ -293,6 +306,7 @@ mod tests {
                 toggle_mode: iuv_core::TwoSlot::from(iuv_core::Combo::plain(iuv_core::Key::F5)),
                 ..iuv_core::Keymap::default()
             },
+            hide_on_fullscreen: false,
         })
         .unwrap();
         // 未知字段保留
@@ -326,6 +340,7 @@ mod tests {
         assert_eq!(cfg.passthrough_apps, vec!["notepad.exe".to_string()]);
         assert_eq!(cfg.candidate_owner_apps, vec!["wow.exe".to_string()]);
         assert_eq!(cfg.disabled_log_modules, vec!["uielem".to_string()]);
+        assert!(!cfg.hide_on_fullscreen, "false 往返");
         // keymap 往返：F5 全局热键读回
         assert_eq!(
             cfg.keymap.toggle_mode.primary,
@@ -443,6 +458,30 @@ mod tests {
         assert!(cfg.passthrough_apps.is_empty());
         assert!(cfg.candidate_owner_apps.is_empty(), "缺省候选自绘名单为空（恒自绘）");
         assert!(cfg.disabled_log_modules.is_empty(), "缺省字段默认全记录");
+        assert!(cfg.hide_on_fullscreen, "缺省全屏隐藏开启");
+        let _ = std::env::remove_var("LOCALAPPDATA");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 全屏隐藏开关：缺省 true（老配置零迁移）+ false 读写往返。
+    #[test]
+    fn hide_on_fullscreen_default_and_roundtrip() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("iuv-daemon-config-fs-{}", std::process::id()));
+        let iuv_dir = dir.join("iuv");
+        std::fs::create_dir_all(&iuv_dir).unwrap();
+        std::env::set_var("LOCALAPPDATA", &dir);
+        // 老配置无该键 → 默认 true
+        std::fs::write(iuv_dir.join("config.json"), r#"{ "theme": "dark" }"#).unwrap();
+        assert!(load_config().hide_on_fullscreen, "缺失时默认 true");
+        // 显式 false 读回
+        std::fs::write(iuv_dir.join("config.json"), r#"{ "hide_on_fullscreen": false }"#).unwrap();
+        assert!(!load_config().hide_on_fullscreen, "false 读回 false");
+        // 保存 false → 读回 false（非默认值不被默认覆盖）
+        let mut cfg = DaemonConfig::default();
+        cfg.hide_on_fullscreen = false;
+        save_config(&cfg).unwrap();
+        assert!(!load_config().hide_on_fullscreen, "false 保存后读回 false");
         let _ = std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }
