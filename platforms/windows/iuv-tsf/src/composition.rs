@@ -66,8 +66,16 @@ impl Composition {
         &self.context
     }
 
-    /// 更新预编辑文本为 `text`（必要时先 StartComposition）。
-    /// 返回新光标矩形（屏幕坐标）；失败返回 None 且保持原文本不变。
+    /// 更新预编辑文本为 `text`（必要时先 StartComposition），并返回新**锚点矩形**
+    /// （composition 起点，屏幕坐标）；量取失败返回 None（调用方沿用旧锚点，文本照常更新）。
+    ///
+    /// 47 号治本：锚点量取**只有一条路径**——写会话结束后调用 [`Self::query_caret`]
+    /// （只读会话，与布局跟随同一份代码）。写会话内直接 `GetTextExt` 拿到的是"刚 SetText
+    /// 完、宿主布局尚未稳定"的**字形盒**（真机实测 h=21），而布局跟随稍后量到的是稳定后的
+    /// **行盒**（h=23）；`position_in_area` 的下方偏移取 `caret.y + caret.h`，于是首键
+    /// `show` 之后必然被 `move_to` 往下挪 2px——"候选栏出现瞬间下沉一下"。统一到只读路径后
+    /// 两路矩形逐字段相同，下沉与去重失效一并消失（也顺带消掉了上一版"写会话内量出尾端"
+    /// 导致的闪烁：那次是两路 x 差 316px 触发跳变藏窗）。
     pub fn set_text(&self, text: &str) -> Result<Option<CaretRect>> {
         let session = SetTextSession {
             context: self.context.clone(),
@@ -75,17 +83,28 @@ impl Composition {
             comp_slot: self.comp.clone(),
             terminated: self.terminated.clone(),
             text: text.to_owned(),
-            caret_probe_fails: self.caret_probe_fails.clone(),
             started: RefCell::new(None),
-            caret: RefCell::new(None),
         };
-        let com = ComObject::new(session);
-        let sess: ITfEditSession = com.to_interface();
-        self.request(&sess)?;
-        if let Some(started) = com.started.borrow_mut().take() {
-            *self.comp.borrow_mut() = Some(started);
+        {
+            let com = ComObject::new(session);
+            let sess: ITfEditSession = com.to_interface();
+            self.request(&sess)?;
+            // 先落成语句级绑定：`borrow_mut()` 的临时量若跨 `if let` 存活，
+            // `com` 会被判定为"still borrowed"而不能在本作用域内析构（E0597）。
+            let started = com.started.borrow_mut().take();
+            if let Some(started) = started {
+                *self.comp.borrow_mut() = Some(started);
+            }
+            // com/sess 随手释放：锚点量取要发起**新的**只读 edit session，
+            // 不带着上一个会话的对象继续（同一个 context 上不并存两个未结束的会话）。
         }
-        let caret = *com.caret.borrow();
+        let caret = self.query_caret();
+        if let Some(r) = caret {
+            log_line(&format!(
+                "[caret] 锚点（composition 起点，写会话后只读量取）：x={} y={} w={} h={}",
+                r.x, r.y, r.w, r.h
+            ));
+        }
         Ok(caret)
     }
 
@@ -134,14 +153,18 @@ impl Composition {
         inner.ok()
     }
 
-    /// 只读量取当前锚点矩形（屏幕坐标；composition **起点**，与打字路径同一口径）。
-    /// 布局跟随用：宿主窗口拖拽/缩放/滚动后重定位候选窗（锚点随文档平移）。
-    /// 失败（文档锁定/无 view/clipped/全零矩形）一律 None，调用方保持原位。
+    /// 只读量取当前锚点矩形（屏幕坐标；composition **起点**）。
+    ///
+    /// **唯一锚点量取路径**（47 号治本）：既供打字路径 [`Self::set_text`] 取首键定位锚点，
+    /// 也供布局跟随（宿主窗口拖拽/缩放/滚动后重定位候选窗，锚点随文档平移）——两处同源
+    /// 同口径，矩形逐字段一致，不会再出现"两路各量一个盒"造成的抖动/下沉。
+    ///
+    /// 失败（文档锁定/无 view/clipped/全零矩形）一律 None，调用方保持原位/沿用旧锚点。
     /// SYNC|READ：回调不在编辑锁内时同步完成；被锁即失败——正好跳过打字路径
     /// 自身触发布局变化时的重复量取。
     pub(crate) fn query_caret(&self) -> Option<CaretRect> {
-        // 宿主不支持光标量取（打字路径已连续失败达上限）：整体早退，不再为每次布局
-        // 事件发起一个注定失败的只读 edit session。返回 None → 调用方保持原位。
+        // 宿主不支持光标量取（连续失败达上限）：整体早退，不再为每次按键/布局事件
+        // 发起一个注定失败的只读 edit session。返回 None → 调用方保持原位/沿用旧锚点。
         if self.caret_probe_fails.get() >= CARET_PROBE_FAIL_LIMIT {
             return None;
         }
@@ -188,7 +211,11 @@ impl ITfCompositionSink_Impl for CompositionSink_Impl {
     }
 }
 
-/// 同步 edit session：更新预编辑文本（必要时新建 composition）并量取光标矩形。
+/// 同步 edit session：更新预编辑文本（必要时新建 composition）。
+///
+/// 47 号起**不再在此量取锚点**：写会话内 `GetTextExt` 量到的是宿主布局尚未稳定的字形盒
+/// （真机实测 h=21），与布局跟随量到的行盒（h=23）差一个高度，会让候选窗在出现瞬间下沉。
+/// 量取统一移到写会话之后由 [`Composition::query_caret`] 完成（唯一路径）。
 #[implement(ITfEditSession)]
 struct SetTextSession {
     context: ITfContext,
@@ -199,12 +226,8 @@ struct SetTextSession {
     /// 终止标志（StartComposition 成功时复位）。
     terminated: Rc<Cell<bool>>,
     text: String,
-    /// 光标量取连续失败计数（与 Composition 共享）：达上限后跳过 GetTextExt。
-    caret_probe_fails: Rc<Cell<u8>>,
     /// 输出：本次新建的 composition。
     started: RefCell<Option<ITfComposition>>,
-    /// 输出：新锚点矩形（composition 起点，屏幕坐标；47 号）。
-    caret: RefCell<Option<CaretRect>>,
 }
 
 impl ITfEditSession_Impl for SetTextSession_Impl {
@@ -272,85 +295,10 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
             self.context.SetSelection(ec, &sel)
         })?;
 
-        // 候选窗锚点 = composition **起点**（47 号：定位语义由"跟随尾端"反转为"锚定会话起点"）：
-        // 选区收尾保持尾端不变（光标仍落在预编辑末尾，输入法正常行为），但**量取矩形改用
-        // 起点**——起点在打字期恒定（预编辑从它向右/向下生长，折行也只移动尾端），故候选窗
-        // 与预编辑同原点、逐键不抖动；而拖拽/滚动/缩放时起点随文档平移，布局跟随路径
-        // （RepositionSession，同为起点折叠）照旧把它同步过去。
-        // 量取锚点的 range 必须**新建**：上面那个 range 已被 `Collapse(TF_ANCHOR_END)`
-        // 退化成"尾端一个点"——退化区间没有跨度，对它再 `Collapse(TF_ANCHOR_START)`
-        // 是原地不动，量出来的仍是最初折叠到的尾端。2026-09-10 真机日志实锤：复用它会
-        // 得到随预编辑逐键右移的 x（len=32→1868，len=45→1959），而布局跟随路径
-        // （RepositionSession 用新 range 折叠起点）恒定读到起点 1643——两路差 316px >
-        // JUMP_THRESHOLD(150px)，跳变检测于是每隔一键误判"输入点远跳"→ 藏窗 →
-        // 下一键又 show（日志里 render show 与 update 交替），候选窗出现/消失闪烁。
-        // 故与 RepositionSession 同款：另取 composition 的新 range 折叠起点后量取。
-        // SAFETY: 标准 TSF 调用，ec 为当前读写 cookie；GetRange 与上面那次同源。
-        let anchor = trace_step("comp.GetRange(anchor)", || unsafe { comp.GetRange() })?;
-        trace_step("anchor.Collapse(TF_ANCHOR_START)", || unsafe {
-            anchor.Collapse(ec, TF_ANCHOR_START)
-        })?;
+        // 选区收尾保持尾端不变（光标仍落在预编辑末尾，输入法正常行为）；锚点**不在这里量取**
+        // ——写会话内 GetTextExt 拿到的是宿主尚未稳定的字形盒，与布局跟随的行盒不一致。
+        // 锚点统一由写会话之后的 `Composition::query_caret` 量取（唯一路径），详见 `set_text`。
 
-        // 量取锚点矩形（composition 起点，屏幕坐标）。
-        // 宿主不支持时直接跳过：Electron/Chromium 实测 GetTextExt 恒失败（0x80040206），
-        // 每键白跑一次跨进程调用 + 一条失败日志；候选窗位置改由布局跟随
-        // （OnLayoutChange → query_caret）兜底。
-        if self.caret_probe_fails.get() >= CARET_PROBE_FAIL_LIMIT {
-            return Ok(());
-        }
-        // SAFETY: GetActiveView 由 TSF 保证在 edit session 内可调用。
-        let view = match trace_step("context.GetActiveView", || unsafe { self.context.GetActiveView() }) {
-            Ok(v) => v,
-            Err(e) => {
-                log_line(&format!("[edit] GetActiveView 失败：{e}，跳过光标量取"));
-                return Ok(());
-            }
-        };
-        let mut rc = RECT::default();
-        let mut clipped = BOOL(0);
-        // SAFETY: GetTextExt 由 TSF 保证在 edit session 内可调用；输出缓冲在调用前初始化。
-        let ext = trace_step("view.GetTextExt", || unsafe {
-            view.GetTextExt(ec, &anchor, &mut rc, &mut clipped)
-        });
-        // 成败都维护失败计数，达上限后本分支不再进入（见上方早退）。
-        // clipped 不计失败：宿主是支持的，只是文本此刻在视口外。
-        match &ext {
-            Ok(()) if clipped.as_bool() => {}
-            Ok(()) => self.caret_probe_fails.set(0),
-            Err(_) => {
-                let fails = self.caret_probe_fails.get().saturating_add(1);
-                self.caret_probe_fails.set(fails);
-                if fails == CARET_PROBE_FAIL_LIMIT {
-                    log_line(&format!(
-                        "[caret] GetTextExt 连续失败 {fails} 次：判定宿主不支持，\
-后续按键跳过量取（候选窗位置由布局跟随兜底）"
-                    ));
-                }
-            }
-        }
-        log_line(&format!(
-            "[caret] GetTextExt（锚点=composition 起点）：rc=({},{},{},{}) clipped={} err={:?}",
-            rc.left, rc.top, rc.right, rc.bottom, clipped.0,
-            ext.as_ref().err().map(|e| e.code())
-        ));
-        if ext.is_ok() && !clipped.as_bool() {
-            // GetTextExt 返回屏幕坐标（MSDN：bounding box, in screen coordinates），
-            // 不再做 ClientToScreen 转换（历史 bug：双重转换导致候选框偏移窗口原点）。
-            if rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0 {
-                // MSDN：文档窗口最小化或文本不可见时返回 {0,0,0,0}。
-                log_line("[caret] GetTextExt 返回全 0 矩形（文本不可见），跳过光标量取");
-                return Ok(());
-            }
-            let rect = CaretRect {
-                // y 用行顶（rc.top）：position_in_area 按"y=顶、h=行高"计算下方位置，
-                // 若直接用 rc.bottom 会重复加一次行高，候选框被推下一行。
-                x: rc.left,
-                y: rc.top,
-                w: rc.right - rc.left,
-                h: rc.bottom - rc.top,
-            };
-            *self.caret.borrow_mut() = Some(rect);
-        }
         Ok(())
     }
 }
@@ -374,7 +322,8 @@ fn trace_step<T>(name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
 }
 
 /// 同步只读 edit session：量取 composition **起点**（候选窗锚点）矩形（屏幕坐标）。
-/// 只读不写：布局跟随路径（query_caret）专用，绝不扰动应用文档。
+/// 只读不写：`query_caret` 专用（打字首键 show 与布局跟随**共用**这一条路径），
+/// 绝不扰动应用文档。
 #[implement(ITfEditSession)]
 struct RepositionSession {
     context: ITfContext,
