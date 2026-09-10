@@ -3,8 +3,10 @@
 //! 46 号 §3.1 重写：**切分决策 = 词库整跨词反查 + 贪心兜底**（api::best_seg 合成），
 //! 本模块只产出贪心切分（O(n·L)，无枚举）。原「全枚举全部方案 + rank_plans 词频
 //! 重排」模型已删除——其最优方案选取语义由反查段在词库侧闭式承载。
-//! `'` 为用户强制分隔（硬边界，空段保留以便 display 显示尾/连续 `'`）；
-//! 每段内部取最长合法音节（无任何音节匹配时取最长音节前缀兜底，保证永不失败）。
+//! `'` 为用户强制分隔（硬边界，空段保留以便 display 显示尾/连续 `'`）。
+//! 段内规则（2026-09-10 修订，见 [`Quanpin::greedy_group`]）：**优先「完整音节链 +
+//! 可选尾段」的切法**（正是组句闸门认可的形态），做不到再退回纯最长音节匹配 +
+//! 音节前缀/单字母兜底（保证永不失败）。
 
 use std::collections::BTreeSet;
 
@@ -30,9 +32,9 @@ pub fn normalize_input(raw: &str) -> String {
     raw.replace("lue", "lve").replace("nue", "nve")
 }
 
-/// 原始字母串 → 贪心切分（音节序列）。
-/// 全拼：`'` 为强制分隔（硬边界，空段保留）；段内最长音节优先，无匹配取最长
-/// 音节前缀兜底（再无则单字母），保证永不失败。
+/// 原始字母串 → 切分（音节序列）。
+/// 全拼：`'` 为强制分隔（硬边界，空段保留）；段内优先「完整音节链 + 可选尾段」，
+/// 无此切法时退回最长音节优先 + 音节前缀/单字母兜底，保证永不失败。
 pub trait InputSchema: Send + Sync {
     fn segment(&self, raw: &str) -> Vec<String>;
     /// 切分 → 显示串：以 ' 连接（空段保留：`["x",""]` → `"x'"`）
@@ -51,10 +53,23 @@ impl Quanpin {
         Quanpin { syllables, max_len }
     }
 
-    /// 段内贪心切分：每位置取最长合法音节；无任何音节匹配时取最长音节前缀
-    /// 兜底（再无则单字母）。与删除前的 enumerate_inner 首方案（DFS 首叶）
-    /// 逐字节等价（对拍绿后才删的枚举，46 号任务书 §6.1）。
+    /// 段内切分：先试「完整音节链（+ 尾段）」形态，失败退回纯最长匹配。
+    ///
+    /// 2026-09-10（46 号后续，真机 + REPL 复现）：纯最长匹配会撞进 `den`（扽 dèn）这类
+    /// **合法但极生僻**的音节，把本该属于后一个音节的字母吃掉——`zhendeniubi` →
+    /// `zhen|den|i|u|bi`，段中冒出非音节 `i`/`u`；而组句闸门（`rime/mod.rs`
+    /// `rest_all_syllables`）要求「除末段外全是完整音节」，于是**长句候选整条被关掉**，
+    /// 只剩首段词（实测 `zhecixiugaishizhendeniubi` 坍缩成 这次/这词/这/着/者）。
+    /// 带回溯选出 `zhen|de|niu|bi` 即让闸门保持打开；不存在这样的切法（简拼、大写保形、
+    /// `sh`/`zho` 这类前缀串）时退回原纯最长匹配，行为与改造前逐字节一致。
     fn greedy_group(&self, s: &str) -> Vec<String> {
+        self.syllable_chain(s)
+            .unwrap_or_else(|| self.longest_match_group(s))
+    }
+
+    /// 纯最长匹配（2026-09-10 前的原实现，现为兜底路径）：每位置取最长合法音节；
+    /// 无任何音节匹配时取最长音节前缀兜底（再无则单字母），保证永不失败。
+    fn longest_match_group(&self, s: &str) -> Vec<String> {
         let b = s.as_bytes();
         let mut out = Vec::new();
         let mut pos = 0usize;
@@ -85,6 +100,65 @@ impl Quanpin {
             }
         }
         out
+    }
+
+    /// 「完整音节链 + 可选尾段」切分：除末段外**全部是完整音节**，末段允许是未闭合
+    /// 音节（某音节的真前缀）或单字母——正是组句闸门认可的形态。
+    /// 最长优先 DFS + 失败位置记忆化，复杂度 O(n·L)（与纯最长匹配同阶，无回溯爆炸）。
+    /// 不存在这样的切法返回 None（调用方退回纯最长匹配）。
+    fn syllable_chain(&self, s: &str) -> Option<Vec<String>> {
+        let b = s.as_bytes();
+        let mut failed = vec![false; b.len() + 1];
+        let mut picked: Vec<&str> = Vec::new();
+        if self.chain_dfs(s, b, 0, &mut failed, &mut picked) {
+            Some(picked.iter().map(|p| canonical(p).to_string()).collect())
+        } else {
+            None
+        }
+    }
+
+    /// 链式 DFS：`pos` 处优先吃**最长**完整音节；走不通时把「剩余全部」当尾段
+    /// （要求已有至少一个音节段，且剩余是合法尾段）。`failed` 记失败位置以剪枝。
+    fn chain_dfs<'a>(
+        &self,
+        s: &'a str,
+        b: &[u8],
+        pos: usize,
+        failed: &mut [bool],
+        picked: &mut Vec<&'a str>,
+    ) -> bool {
+        if pos == b.len() {
+            return !picked.is_empty();
+        }
+        if failed[pos] {
+            return false;
+        }
+        let upper = (b.len() - pos).min(self.max_len);
+        for len in (1..=upper).rev() {
+            let piece = &s[pos..pos + len];
+            if self.syllables.contains(piece) {
+                picked.push(piece);
+                if self.chain_dfs(s, b, pos + len, failed, picked) {
+                    return true;
+                }
+                picked.pop();
+            }
+        }
+        // 尾段：打字过程中末段常常正是未闭合音节（`zh`/`yo`）或单字母（大写保形），
+        // 不能因为它不是完整音节就否定整条链——闸门同样只要求「除末段外」是音节。
+        if !picked.is_empty() && self.is_valid_tail(&s[pos..]) {
+            picked.push(&s[pos..]);
+            return true;
+        }
+        failed[pos] = true;
+        false
+    }
+
+    /// 合法尾段：完整音节 / 某音节的真前缀 / 单字母（与兜底口径一致）。
+    fn is_valid_tail(&self, part: &str) -> bool {
+        part.len() == 1
+            || self.syllables.contains(part)
+            || self.syllables.iter().any(|syl| syl.starts_with(part))
     }
 }
 
@@ -285,6 +359,42 @@ mod tests {
         for (raw, want) in cases {
             assert_eq!(q.segment(raw), want.to_vec(), "切分漂移: {raw:?}");
         }
+    }
+
+    /// 2026-09-10 回归钉子（真机 + REPL 双复现）：`den`（扽 dèn）是**合法**音节，
+    /// 纯最长匹配会吃掉 `de` 的 n → `zhen|den|i|u|bi`，段中冒出非音节 `i`/`u` →
+    /// 组句闸门（`rime/mod.rs` `rest_all_syllables`「除末段外全是完整音节」）关闭 →
+    /// 长句候选整条消失、只剩首段词（用户实测 `zhecixiugaishizhendeniubi` 坍缩）。
+    /// 带回溯必须选出 `zhen|de|niu|bi` 保住闸门。
+    #[test]
+    fn seg_backtracks_to_keep_syllable_chain() {
+        let d = Dict::from_entries(vec![
+            ("zhen".into(), "真".into(), 5000),
+            ("de".into(), "的".into(), 90000),
+            ("den".into(), "扽".into(), 28), // 生僻但合法：最长匹配陷阱
+            ("niu".into(), "牛".into(), 4000),
+            ("bi".into(), "比".into(), 3000),
+        ]);
+        let q = Quanpin::new(d.syllables().clone());
+        assert_eq!(
+            q.segment("zhendeniubi"),
+            vec!["zhen", "de", "niu", "bi"],
+            "应回溯保住「除末段外全是完整音节」的链"
+        );
+        // 对照：纯最长匹配（兜底路径）确实会踩陷阱——两实现并存，差异可见。
+        assert_eq!(
+            q.longest_match_group("zhendeniubi"),
+            vec!["zhen", "den", "i", "u", "bi"],
+            "纯最长匹配的陷阱行为（仅作对照，不进生产路径）"
+        );
+
+        // 无此链可走时行为逐字节不变（简拼/大写/前缀串仍走原兜底）。
+        let q2 = quanpin();
+        assert_eq!(q2.segment("sh"), vec!["sh"]);
+        assert_eq!(q2.segment("nh"), vec!["n", "h"]);
+        assert_eq!(q2.segment("nhao"), vec!["n", "hao"]);
+        assert_eq!(q2.segment("niHAO"), vec!["ni", "H", "A", "O"]);
+        assert_eq!(q2.segment("qaz"), vec!["q", "a", "z"]);
     }
 
     /// 结构不变量 + 幂等（对固定语料与 LCG 伪随机串；真随机串无期望值可比，

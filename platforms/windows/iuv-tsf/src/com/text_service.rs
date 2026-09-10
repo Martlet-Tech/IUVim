@@ -97,7 +97,9 @@ pub(crate) struct TextService {
     /// 候选窗：CandwinCandidateWindow（M4：ULW 呈现，iuv-ui 绘图）。Rc 共享：同上。
     /// 具体类型（非 `Box<dyn>`）：M6 配置热载需直调 `set_theme`；交互/效果应用同槽。
     pub(crate) ui: Rc<RefCell<CandwinCandidateWindow>>,
-    /// 上一次光标矩形（GetTextExt 失败时复用；首次用屏幕中央）。Rc 共享：同上。
+    /// 最近一次**锚点**矩形（composition 起点；47 号起语义由"尾端光标"反转为
+    /// "会话起点"——起点打字期恒定，候选窗因此不再随预编辑延长而抖动）。
+    /// GetTextExt 失败时复用旧值；首次用屏幕中央。Rc 共享：同上。
     pub(crate) caret: Rc<Cell<CaretRect>>,
     /// Shift 临时英文模式（会话非 active 时 Shift 切换）。
     /// `Arc` 共享：语言栏"中/英"图标与按键路径读同一状态。
@@ -466,6 +468,18 @@ impl TextService_Impl {
             client.ensure_daemon();
         }
 
+        // 47 号：激活即尝试挂布局 sink。`OnSetFocus` 只在**焦点变化**时送达、且 TSF
+        // 不会重放历史事件——"窗口先有焦点、之后才切到本输入法"（Ctrl+Space / 语言栏）
+        // 的场景里，那个事件已发给上一个 TIP，sink 会整场缺席（真机日志实测：该场景
+        // 0 条 follow、候选窗钉在会话起点）。这里用当前焦点文档补挂，覆盖该窗口期；
+        // 首键路径还有一次懒挂兜底。无焦点文档 / 失败都不影响输入主体。
+        // SAFETY: GetFocus 为 TSF 标准查询（返回当前焦点文档，可为空）；GetTop 同上。
+        if let Ok(dim) = unsafe { ptim.GetFocus() } {
+            if let Ok(ctx) = unsafe { dim.GetTop() } {
+                self.advise_layout(&ctx, "Activate");
+            }
+        }
+
         Ok(())
     }
 
@@ -536,9 +550,12 @@ impl TextService_Impl {
 
     // ---- 布局跟随（ITfTextLayoutSink）：候选窗随宿主视图移动/缩放/滚动平移 ----
 
-    /// 焦点文档就绪时挂布局 sink。幂等：同 context 直接跳过；换 context 先卸旧挂新。
-    /// 失败仅记日志（跟随缺失不影响输入主体）。
-    fn advise_layout(&self, pic: &ITfContext) {
+    /// 布局 sink 挂载。幂等：已挂在**同一 context** 直接返回（不重复日志）；
+    /// 换 context 先卸旧挂新。失败仅记日志（跟随缺失不影响输入主体）。
+    ///
+    /// `origin` 只用于日志（`OnSetFocus` / `Activate` / `首键`）——**成功也留一行**：
+    /// "没挂上"这类缺陷此前只能靠"整场没有 follow 行"反推（47 号归因实况）。
+    fn advise_layout(&self, pic: &ITfContext, origin: &'static str) {
         if let Some((ctx, _)) = self.layout_sink.borrow().as_ref() {
             if std::ptr::eq(ctx.as_raw(), pic.as_raw()) {
                 return;
@@ -548,15 +565,20 @@ impl TextService_Impl {
         let source: ITfSource = match pic.cast() {
             Ok(s) => s,
             Err(e) => {
-                log_line(&format!("[follow] ITfSource QI 失败：{e:?}（无跟随）"));
+                log_line(&format!("[follow] ITfSource QI 失败（来源={origin}）：{e:?}（无跟随）"));
                 return;
             }
         };
         let sink: ITfTextLayoutSink = self.to_object().to_interface();
         // SAFETY: 标准 TSF advise；sink 为本 COM 对象自身，deactivate 卸载。
         match unsafe { source.AdviseSink(&<ITfTextLayoutSink as Interface>::IID, &sink) } {
-            Ok(cookie) => *self.layout_sink.borrow_mut() = Some((pic.clone(), cookie)),
-            Err(e) => log_line(&format!("[follow] AdviseSink 失败：{e:?}（无跟随）")),
+            Ok(cookie) => {
+                *self.layout_sink.borrow_mut() = Some((pic.clone(), cookie));
+                log_line(&format!("[follow] 布局 sink 已挂载（来源={origin}）"));
+            }
+            Err(e) => {
+                log_line(&format!("[follow] AdviseSink 失败（来源={origin}）：{e:?}（无跟随）"));
+            }
         }
     }
 
@@ -570,8 +592,9 @@ impl TextService_Impl {
         }
     }
 
-    /// 布局变化处理：仅组词中响应（槽空/异 context 秒退）；只读会话重查光标 →
-    /// 更新共享 caret（跳变检测基线连续）→ move_to 平移（隐藏态 no-op 不复活窗口）。
+    /// 布局变化处理：仅组词中响应（槽空/异 context 秒退）；只读会话重查**锚点**
+    /// （composition 起点）→ 更新共享 caret（跳变检测基线连续）→ 锚点位移才 move_to
+    /// 平移（隐藏态 no-op 不复活窗口）。
     fn follow_layout(&self, pic: &ITfContext) {
         let rect = {
             let slot = self.composition.borrow();
@@ -588,14 +611,27 @@ impl TextService_Impl {
         let Some(rect) = rect else {
             return; // 文档锁定/clipped/全零矩形：保持原位
         };
+        let prev = self.caret.get();
         self.caret.set(rect);
+        // 47 号锚定后：打字期锚点坐标恒定（宿主仍每键发 layout 事件），锚点未动即跳过
+        // SetWindowPos——这是锚定语义下才有的真实去重（2026-08-29 曾在"跟随尾端"语义下
+        // 以收益测不出来撤销，那时坐标每键都在变）。
+        //
+        // 去重**只比锚点左上角 (x, y)，不比盒尺寸**：同一个锚点在"刚写完预编辑"与"宿主
+        // 布局稳定后"量到的盒高不同（真机实测 w/h = 23/21 字形盒 → 0/23 行盒，x/y 完全
+        // 相同）。比全字段会让首键 `show` 之后必然多一次移动，而 `position_in_area` 的
+        // 下方偏移含 `caret.h`，于是候选窗在出现瞬间往下挪 2px（用户实测的"出现即下沉"）。
+        // 锚点位移才是真正需要跟文档平移的事件，故只认 (x, y)。
+        if rect.x == prev.x && rect.y == prev.y {
+            return;
+        }
         // try_borrow_mut：回调可能嵌在按键路径 ui 更新中途同步触发，
         // 抢不到借用即跳过（下一次布局事件自然补上）。
         if let Ok(mut w) = self.ui.try_borrow_mut() {
             w.move_to(rect);
         }
         log_line(&format!(
-            "[follow] 布局变化跟随：caret=({},{},{},{})",
+            "[follow] 锚点平移：caret=({},{},{},{})",
             rect.x, rect.y, rect.w, rect.h
         ));
     }
@@ -667,6 +703,13 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
 
     fn OnKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         guard(|| {
+            // 47 号：首键懒挂兜底——覆盖"Activate 时无焦点文档 / 文档随后才就绪"的窗口期。
+            // advise_layout 幂等（同 context 直接返回），这里只多一次 is_none() 判断。
+            if let Some(ctx) = pic.as_ref() {
+                if self.layout_sink.borrow().is_none() {
+                    self.advise_layout(ctx, "首键");
+                }
+            }
             Ok(BOOL(i32::from(self.handle_key_down(
                 pic.unwrap(),
                 wparam,
@@ -720,7 +763,7 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
             // （0xC0000409，2026-08-23 记事本连崩根因），必须 as_ref() 判空。
             if let Some(dim) = pdimfocus.as_ref() {
                 if let Ok(ctx) = unsafe { dim.GetTop() } {
-                    self.advise_layout(&ctx);
+                    self.advise_layout(&ctx, "OnSetFocus");
                 }
             }
             Ok(())
