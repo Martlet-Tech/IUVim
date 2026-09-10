@@ -9,7 +9,7 @@ pub mod opencc;
 mod userdict;
 
 pub use compile::{compile_files, CompileStats};
-pub use dict::{Dict, Entry, INITIAL_BUCKET_SIZE};
+pub use dict::{Dict, DictCursor, Entry, INITIAL_BUCKET_SIZE};
 pub use format::load;
 pub use opencc::OpenccTable;
 pub use userdict::UserDict;

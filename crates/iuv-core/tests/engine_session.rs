@@ -1906,8 +1906,8 @@ fn hide_candidate_selected_follows_position() {
 #[test]
 fn dier_second_available_first() {
     // dier 贪心 [die,r]（r 是音节前缀被误判 Mixed 展开出"跌入"）；
-    // 修复：classify 看全部方案（[di,er] 全完整 → FullPinyin）+ rank_plans
-    // （di'er 词条权重最高 → 方案[0]）→ 「第二」第一，分节 di'er。
+    // 46 号后：切分由词库反查裁决（di'er 词条权重 34485 最高 → 反查胜出）
+    // → 「第二」第一，分节 di'er（与旧 rank_plans 语义一致）。
     let dict = Dict::from_entries(vec![
         ("di'er".into(), "第二".into(), 34485),
         ("di".into(), "地".into(), 50000),
@@ -1985,8 +1985,10 @@ fn keneng_only_one_sentence_combos_removed() {
 }
 
 #[test]
-fn rank_plans_prefers_weightiest_plan() {
-    // fenge 顺带受益：贪心 [feng,e]（风额）→ 词频重排 [fen,ge]（分割 8000）第一
+fn best_seg_prefers_weightiest_code() {
+    // 46 号 §3.1：旧 rank_plans（枚举方案按 join 键词频重排）的语义由词库
+    // 整跨词反查闭式承载——贪心 [feng,e]（风额）之外存在词库码 fen'ge
+    // （分割 8000）→ 反查胜出，分节 fen'ge。
     let dict = Dict::from_entries(vec![
         ("feng'e".into(), "风额".into(), 1),
         ("fen'ge".into(), "分割".into(), 8000),
@@ -2004,8 +2006,50 @@ fn rank_plans_prefers_weightiest_plan() {
     assert_eq!(e.reading, "fen'ge", "分节应 fen'ge，实际：{}", e.reading);
     let texts: Vec<String> = e.candidates.iter().map(|c| c.text.clone()).collect();
     // unigram LM 特性：组合单字分可能高于词条（"分个" 在 "分割" 前）——M3 语言模型治本；
-    // 本次保证：分节正确 + 分割可达（旧贪心 [feng,e] 下分割在词条路径第二，仍可达）。
+    // 本次保证：分节正确 + 分割可达（贪心 [feng,e] 下分割在词条路径第二，仍可达）。
     assert!(texts.iter().any(|t| t == "分割"), "分割应可达：{texts:?}");
+}
+
+/// 46 号 §3.1 **关键决策一**：贪心方案必须纳入比较集。
+/// 反查段构建期已滤掉「等于运行时贪心码形」的键（死数据），运行时若只比较变体，
+/// 就会出现「先(9000) 输给 西安(800)」的漂移——本节两个反向用例把它钉死。
+#[test]
+fn best_seg_compares_greedy_plan() {
+    let feed = |dict: Dict| {
+        let engine = Engine::new(dict, Config::default());
+        let mut s = engine.start_session();
+        for c in "xian".chars() {
+            s.on_key(Key::Char(c));
+        }
+        s.effect().reading
+    };
+
+    // ① 先 9000 > 西安 800 → 贪心 [xian] 胜出（旧 rank_plans 同结果）
+    let greedy_wins = feed(Dict::from_entries(vec![
+        ("xian".into(), "先".into(), 9000),
+        ("xi'an".into(), "西安".into(), 800),
+        ("xi".into(), "西".into(), 100),
+        ("an".into(), "安".into(), 100),
+    ]));
+    assert_eq!(greedy_wins, "xian", "先更重 → 保贪心分节（不可漂移成 xi'an）");
+
+    // ② 西安 6091 > 先 500 → 反查变体胜出
+    let variant_wins = feed(Dict::from_entries(vec![
+        ("xian".into(), "先".into(), 500),
+        ("xi'an".into(), "西安".into(), 6091),
+        ("xi".into(), "西".into(), 100),
+        ("an".into(), "安".into(), 100),
+    ]));
+    assert_eq!(variant_wins, "xi'an", "西安更重 → 反查胜出");
+
+    // ③ 平局保贪心（= 旧稳定排序语义）
+    let tie = feed(Dict::from_entries(vec![
+        ("xian".into(), "先".into(), 1000),
+        ("xi'an".into(), "西安".into(), 1000),
+        ("xi".into(), "西".into(), 100),
+        ("an".into(), "安".into(), 100),
+    ]));
+    assert_eq!(tie, "xian", "同权重保贪心原序");
 }
 
 #[test]

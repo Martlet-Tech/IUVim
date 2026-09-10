@@ -95,7 +95,9 @@ mod tests {
 
     fn seg(raw: &str) -> Vec<String> {
         let d = dict();
-        Quanpin::new(d.syllables().clone()).segment(raw)[0].clone()
+        // 46 号 §3.1：InputSchema::segment 已直接返回贪心切分（原「取方案枚举首方案」
+        // 的 `[0]` 下标随枚举一并删除）。
+        Quanpin::new(d.syllables().clone()).segment(raw)
     }
 
     #[test]

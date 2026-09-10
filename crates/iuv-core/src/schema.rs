@@ -1,21 +1,41 @@
 //! 全拼切分。契约 01-contract.md §4 schema.rs。
 //!
-//! segment 输出二维数组：第一维 = 所有可能的切分方案，第二维 = 各方案的音节序列。
+//! 46 号 §3.1 重写：**切分决策 = 词库整跨词反查 + 贪心兜底**（api::best_seg 合成），
+//! 本模块只产出贪心切分（O(n·L)，无枚举）。原「全枚举全部方案 + rank_plans 词频
+//! 重排」模型已删除——其最优方案选取语义由反查段在词库侧闭式承载。
 //! `'` 为用户强制分隔（硬边界，空段保留以便 display 显示尾/连续 `'`）；
-//! 每段内部递归枚举全部合法音节切分（有合法音节前缀时不兜底单字母，无则兜底保证有解）。
-//! 方案按贪心优先排序（方案[0] = 贪心/强制切分，供 viterbi 整句与 display 使用）。
+//! 每段内部取最长合法音节（无任何音节匹配时取最长音节前缀兜底，保证永不失败）。
 
 use std::collections::BTreeSet;
 
-/// 切分方案总数上限：超限只保留贪心方案（退化为单一切分，防长输入组合爆炸）。
-const MAX_PLANS: usize = 128;
+/// üe 去点输入形 → 词库规范形（v=ü，GB《通用键盘表示规范》）。
+/// lue→lve、nue→nve：唯一归一单点，seg/plans/viterbi 键/dict 查询
+/// 全部消费规范形（24-ue-input-alias.md）。
+fn canonical(syl: &str) -> &str {
+    match syl {
+        "lue" => "lve",
+        "nue" => "nve",
+        _ => syl,
+    }
+}
 
-/// 原始字母串 → 全部可能切分方案（每方案 = 音节序列）。
-/// 全拼：`'` 为强制分隔（硬边界，空段保留）；其余段内枚举合法音节切分。
-/// 非法前缀按单字母原样保留，保证永不失败（无合法音节时兜底）。
+/// 输入串归一（**长度不变**，46 号 §3.1 反查键与切分共用的唯一口径）：
+/// 仅 üe 去点输入形 lue→lve / nue→nve；**不做大小写折叠**——大写保形要求
+/// `niHAO` 原样进序列（大写不被音节表命中，切/查都自然落空 → 贪心兜底），
+/// 若在此小写化会让预编辑显示从 `ni'H'A'O` 退化为 `ni'hao`。
+pub fn normalize_input(raw: &str) -> String {
+    if !raw.contains("lue") && !raw.contains("nue") {
+        return raw.to_string();
+    }
+    raw.replace("lue", "lve").replace("nue", "nve")
+}
+
+/// 原始字母串 → 贪心切分（音节序列）。
+/// 全拼：`'` 为强制分隔（硬边界，空段保留）；段内最长音节优先，无匹配取最长
+/// 音节前缀兜底（再无则单字母），保证永不失败。
 pub trait InputSchema: Send + Sync {
-    fn segment(&self, raw: &str) -> Vec<Vec<String>>;
-    /// 单个方案 → 显示串：以 ' 连接
+    fn segment(&self, raw: &str) -> Vec<String>;
+    /// 切分 → 显示串：以 ' 连接（空段保留：`["x",""]` → `"x'"`）
     fn display(&self, seg: &[String]) -> String;
 }
 
@@ -31,90 +51,55 @@ impl Quanpin {
         Quanpin { syllables, max_len }
     }
 
-    /// 段内枚举：把 `s` 切成合法音节序列的全部方案（含单字母兜底，保证完整消费）。
-    /// 顺序 = 贪心优先（递归时最长音节先试，方案[0] 即贪心切分）。
-    fn enumerate_inner(&self, s: &str) -> Vec<Vec<String>> {
+    /// 段内贪心切分：每位置取最长合法音节；无任何音节匹配时取最长音节前缀
+    /// 兜底（再无则单字母）。与删除前的 enumerate_inner 首方案（DFS 首叶）
+    /// 逐字节等价（对拍绿后才删的枚举，46 号任务书 §6.1）。
+    fn greedy_group(&self, s: &str) -> Vec<String> {
+        let b = s.as_bytes();
         let mut out = Vec::new();
-        let mut cur = Vec::new();
-        self.backtrack(s, 0, &mut cur, &mut out);
-        out
-    }
-
-    fn backtrack(
-        &self,
-        s: &str,
-        pos: usize,
-        cur: &mut Vec<String>,
-        out: &mut Vec<Vec<String>>,
-    ) {
-        if pos == s.len() {
-            out.push(cur.clone());
-            return;
-        }
-        let rem = s.len() - pos;
-        let mut matched = false;
-        for len in (1..=rem.min(self.max_len)).rev() {
-            if self.syllables.contains(&s[pos..pos + len]) {
-                matched = true;
-                let syl = &s[pos..pos + len];
-                // üe 去点输入形 → 词库规范形（v=ü，GB《通用键盘表示规范》）。
-                // lue→lve、nue→nve：唯一归一单点，seg/plans/viterbi 键/dict 查询
-                // 全部消费规范形（24-ue-input-alias.md）。
-                let canon = match syl {
-                    "lue" => "lve",
-                    "nue" => "nve",
-                    _ => syl,
-                };
-                cur.push(canon.to_string());
-                self.backtrack(s, pos + len, cur, out);
-                cur.pop();
-            }
-        }
-        if !matched {
-            // 无合法音节 → 最长音节前缀兜底（微软对齐：`sh` 是 sha/shan/shi… 的前缀，
-            // 整体为一段而非 s'h 两段；`zho`/`zhon` 同理）。无任何前缀才单字母兜底，
-            // 保证有解永不失败（如 `qaz` 的 q 处仅 "q" 自身是前缀）。
-            let mut plen = 1usize;
-            for len in (1..=rem.min(self.max_len)).rev() {
-                if self.syllables.iter().any(|syl| syl.starts_with(&s[pos..pos + len])) {
-                    plen = len;
+        let mut pos = 0usize;
+        while pos < b.len() {
+            let rem = b.len() - pos;
+            let upper = rem.min(self.max_len);
+            let mut matched = false;
+            for len in (1..=upper).rev() {
+                if self.syllables.contains(&s[pos..pos + len]) {
+                    matched = true;
+                    out.push(canonical(&s[pos..pos + len]).to_string());
+                    pos += len;
                     break;
                 }
             }
-            cur.push(s[pos..pos + plen].to_string());
-            self.backtrack(s, pos + plen, cur, out);
-            cur.pop();
+            if !matched {
+                // 微软对齐：`sh` 是 sha/shan/shi… 的前缀，整体为一段而非 s'h 两段；
+                // `zho`/`zhon` 同理。无任何前缀才单字母兜底，保证有解永不失败。
+                let mut plen = 1usize;
+                for len in (1..=upper).rev() {
+                    if self.syllables.iter().any(|syl| syl.starts_with(&s[pos..pos + len])) {
+                        plen = len;
+                        break;
+                    }
+                }
+                out.push(s[pos..pos + plen].to_string());
+                pos += plen;
+            }
         }
+        out
     }
 }
 
 impl InputSchema for Quanpin {
-    fn segment(&self, raw: &str) -> Vec<Vec<String>> {
-        // 1. `'` 硬切分（空段保留：尾/连续 `'` 需在 display 中显示）
-        let groups: Vec<&str> = raw.split('\'').collect();
-        // 2. 各段枚举笛卡尔积 → 全部方案（方案[0] = 逐段贪心 = 贪心/强制切分）
-        let mut plans: Vec<Vec<String>> = vec![Vec::new()];
-        for g in groups {
-            let inner = if g.is_empty() {
-                vec![vec![String::new()]]
+    fn segment(&self, raw: &str) -> Vec<String> {
+        // `'` 硬切分（空段保留：尾/连续 `'` 需在 display 中显示），逐段贪心
+        let mut out = Vec::new();
+        for g in raw.split('\'') {
+            if g.is_empty() {
+                out.push(String::new());
             } else {
-                self.enumerate_inner(g)
-            };
-            let mut next = Vec::with_capacity(plans.len() * inner.len());
-            for plan in &plans {
-                for seg in &inner {
-                    let mut p = plan.clone();
-                    p.extend(seg.clone());
-                    next.push(p);
-                }
-            }
-            plans = next;
-            if plans.len() > MAX_PLANS {
-                // 超限：只保留贪心方案（plans[0]），退化为单一切分。
-                plans.truncate(1);
+                out.extend(self.greedy_group(g));
             }
         }
-        plans
+        out
     }
 
     fn display(&self, seg: &[String]) -> String {
@@ -127,6 +112,8 @@ mod tests {
     use super::*;
     use iuv_data::Dict;
 
+    /// 测试音节集：覆盖基本切分、üe 归一、词频重排敏感串（fenge/dier/keneng）
+    /// 与兜底段（sh/zho/nh）所需的全部音节。
     fn quanpin() -> Quanpin {
         let d = Dict::from_entries(vec![
             ("ni'hao".into(), "你好".into(), 8000),
@@ -138,6 +125,14 @@ mod tests {
             ("gong".into(), "攻".into(), 500),
             ("lve".into(), "略".into(), 400),
             ("nve".into(), "虐".into(), 300),
+            ("fen'ge".into(), "分割".into(), 8000),
+            ("feng".into(), "风".into(), 5000),
+            ("e".into(), "额".into(), 3000),
+            ("di'er".into(), "第二".into(), 6000),
+            ("die".into(), "跌".into(), 1000),
+            ("ken".into(), "啃".into(), 500),
+            ("eng".into(), "嗯".into(), 400),
+            ("pu".into(), "普".into(), 200),
         ]);
         Quanpin::new(d.syllables().clone())
     }
@@ -145,59 +140,61 @@ mod tests {
     #[test]
     fn seg_basic() {
         let q = quanpin();
-        assert_eq!(q.segment("nihao"), vec![vec!["ni", "hao"]]);
+        assert_eq!(q.segment("nihao"), vec!["ni", "hao"]);
     }
 
     #[test]
-    fn seg_apostrophe_forced_single_plan() {
+    fn seg_apostrophe_forced_split() {
         let q = quanpin();
-        // `'` 硬边界：只有一种方案。
-        assert_eq!(q.segment("xi'an"), vec![vec!["xi", "an"]]);
+        // `'` 硬边界：用户强制分隔恒保留（不再产生第二方案——方案枚举已删，
+        // 「xi'an 更优」这类判断改由词库反查段在 api::best_seg 裁决）。
+        assert_eq!(q.segment("xi'an"), vec!["xi", "an"]);
     }
 
     #[test]
-    fn seg_enumerates_xian() {
+    fn seg_longest_syllable_wins() {
         let q = quanpin();
-        // 无撇号：枚举 [xian]（贪心，方案[0]）与 [xi,an]。
-        assert_eq!(q.segment("xian"), vec![vec!["xian"], vec!["xi", "an"]]);
+        // 贪心 = 最长音节优先：xian 是合法音节 → 单段（西安靠反查段胜出）。
+        assert_eq!(q.segment("xian"), vec!["xian"]);
     }
 
     #[test]
     fn seg_invalid_char_fallback() {
         let q = quanpin();
         // 无合法音节前缀时：最长音节前缀兜底（q 仅 "q" 自身是前缀 → 单字母）
-        assert_eq!(q.segment("qaz"), vec![vec!["q", "a", "z"]]);
+        assert_eq!(q.segment("qaz"), vec!["q", "a", "z"]);
         // 非法起始不 panic。
-        assert_eq!(q.segment("xn"), vec![vec!["x", "n"]]);
+        assert_eq!(q.segment("xn"), vec!["x", "n"]);
+        assert_eq!(q.segment("input"), vec!["i", "n", "pu", "t"]);
     }
 
     #[test]
     fn seg_longest_prefix_fallback_single_segment() {
         let q = quanpin();
         // 微软对齐：`sh` 是 sha/shan/shi… 的前缀 → 整体一段，而非 s'h 两段。
-        assert_eq!(q.segment("sh"), vec![vec!["sh"]]);
+        assert_eq!(q.segment("sh"), vec!["sh"]);
         // `zho`/`zhon` 是 zhong/zhou 的前缀 → 单段。
-        assert_eq!(q.segment("zho"), vec![vec!["zho"]]);
-        assert_eq!(q.segment("zhon"), vec![vec!["zhon"]]);
+        assert_eq!(q.segment("zho"), vec!["zho"]);
+        assert_eq!(q.segment("zhon"), vec!["zhon"]);
     }
 
     #[test]
     fn seg_abbrev_not_prefix_keeps_single_letters() {
         let q = quanpin();
         // `nh` 不是任何音节的前缀（无音节以 nh 开头）→ 仍拆为 n/h 两段（简拼档）。
-        assert_eq!(q.segment("nh"), vec![vec!["n", "h"]]);
+        assert_eq!(q.segment("nh"), vec!["n", "h"]);
         // 前缀段（n）之后继续正常切分完整音节（hao）。
-        assert_eq!(q.segment("nhao"), vec![vec!["n", "hao"]]);
+        assert_eq!(q.segment("nhao"), vec!["n", "hao"]);
     }
 
     #[test]
     fn seg_keeps_empty_groups_for_display() {
         let q = quanpin();
         // 尾/连续 `'`：空段保留，display 时 join 出来。
-        assert_eq!(q.segment("x'"), vec![vec!["x", ""]]);
-        assert_eq!(q.segment("x''y"), vec![vec!["x", "", "y"]]);
-        assert_eq!(q.display(&q.segment("x'")[0]), "x'");
-        assert_eq!(q.display(&q.segment("x''y")[0]), "x''y");
+        assert_eq!(q.segment("x'"), vec!["x", ""]);
+        assert_eq!(q.segment("x''y"), vec!["x", "", "y"]);
+        assert_eq!(q.display(&q.segment("x'")), "x'");
+        assert_eq!(q.display(&q.segment("x''y")), "x''y");
     }
 
     #[test]
@@ -211,18 +208,18 @@ mod tests {
     #[test]
     fn seg_ue_alias_canonical() {
         let q = quanpin();
-        assert_eq!(q.segment("lue"), vec![vec!["lve"]]);
-        assert_eq!(q.segment("nue"), vec![vec!["nve"]]);
-        assert_eq!(q.segment("gonglue"), vec![vec!["gong", "lve"]]);
+        assert_eq!(q.segment("lue"), vec!["lve"]);
+        assert_eq!(q.segment("nue"), vec!["nve"]);
+        assert_eq!(q.segment("gonglue"), vec!["gong", "lve"]);
     }
 
     #[test]
     fn seg_ue_regression() {
         let q = quanpin();
         // 规范形直通（不二次改写）。
-        assert_eq!(q.segment("gonglve"), vec![vec!["gong", "lve"]]);
-        assert_eq!(q.segment("lve"), vec![vec!["lve"]]);
-        assert_eq!(q.segment("nve"), vec![vec!["nve"]]);
+        assert_eq!(q.segment("gonglve"), vec!["gong", "lve"]);
+        assert_eq!(q.segment("lve"), vec!["lve"]);
+        assert_eq!(q.segment("nve"), vec!["nve"]);
         // j/q/x/y 侧 jue/que/xue/yue 是正字法音节，保持原样（ve 形非法，不映射）。
         let d = Dict::from_entries(vec![
             ("jue".into(), "决".into(), 1000),
@@ -231,9 +228,121 @@ mod tests {
             ("yue".into(), "月".into(), 1000),
         ]);
         let q2 = Quanpin::new(d.syllables().clone());
-        assert_eq!(q2.segment("jue"), vec![vec!["jue"]]);
-        assert_eq!(q2.segment("que"), vec![vec!["que"]]);
-        assert_eq!(q2.segment("xue"), vec![vec!["xue"]]);
-        assert_eq!(q2.segment("yue"), vec![vec!["yue"]]);
+        assert_eq!(q2.segment("jue"), vec!["jue"]);
+        assert_eq!(q2.segment("que"), vec!["que"]);
+        assert_eq!(q2.segment("xue"), vec!["xue"]);
+        assert_eq!(q2.segment("yue"), vec!["yue"]);
+    }
+
+    /// 46 号 §3.1：归一单点只做 üe 别名，**绝不做大小写折叠**（大写保形）。
+    #[test]
+    fn normalize_input_only_ue_alias() {
+        assert_eq!(normalize_input("gonglue"), "gonglve");
+        assert_eq!(normalize_input("nue"), "nve");
+        // 规范形幂等（不二次改写）。
+        assert_eq!(normalize_input("gonglve"), "gonglve");
+        // 大小写原样（niHAO 的 H/A/O 必须保留，否则预编辑与上屏都失真）。
+        assert_eq!(normalize_input("niHAO"), "niHAO");
+        assert_eq!(normalize_input("LUE"), "LUE");
+        // 撇号不动。
+        assert_eq!(normalize_input("xi'an"), "xi'an");
+        assert_eq!(normalize_input("lue'"), "lve'");
+    }
+
+    /// 46 号 §6.1 对拍钉子的替代（枚举已删，无法再与 `enumerate_inner` 对拍）：
+    /// 固定语料冻结**黄金期望值**，任何切分口径漂移在此暴露。
+    #[test]
+    fn greedy_golden_corpus() {
+        let q = quanpin();
+        let cases: &[(&str, &[&str])] = &[
+            ("nihao", &["ni", "hao"]),
+            ("xian", &["xian"]),
+            ("xi'an", &["xi", "an"]),
+            // 词频重排敏感串的**贪心**形（旧 rank_plans 会改成 fen'ge/di'er/ke'neng）
+            ("fenge", &["feng", "e"]),
+            ("dier", &["die", "r"]),
+            ("keneng", &["ken", "eng"]),
+            // 兜底段
+            ("qaz", &["q", "a", "z"]),
+            ("xn", &["x", "n"]),
+            ("sh", &["sh"]),
+            ("zho", &["zho"]),
+            ("zhon", &["zhon"]),
+            ("nh", &["n", "h"]),
+            ("nhao", &["n", "hao"]),
+            ("input", &["i", "n", "pu", "t"]),
+            // 大写保形（大写不被音节表命中 → 单字母兜底段）
+            ("niHAO", &["ni", "H", "A", "O"]),
+            // 撇号/空段
+            ("x'", &["x", ""]),
+            ("x''y", &["x", "", "y"]),
+            // üe 归一
+            ("lue", &["lve"]),
+            ("nue", &["nve"]),
+            ("gonglue", &["gong", "lve"]),
+            ("gonglve", &["gong", "lve"]),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(q.segment(raw), want.to_vec(), "切分漂移: {raw:?}");
+        }
+    }
+
+    /// 结构不变量 + 幂等（对固定语料与 LCG 伪随机串；真随机串无期望值可比，
+    /// 用可证明的性质替代——覆盖「重建性 / 段非空 / 兜底合法 / 幂等」四性质）。
+    #[test]
+    fn greedy_structural_invariants() {
+        let q = quanpin();
+        let check = |s: &str| {
+            let seg = q.segment(s);
+            // ① 重建性：各段拼接 == 输入去撇号（撇号是硬边界，不进入段内容）
+            assert_eq!(
+                seg.concat(),
+                normalize_input(s).replace('\'', ""),
+                "重建性被破坏: {s:?} -> {seg:?}"
+            );
+            for part in &seg {
+                // ② 段非空（空段唯一来源：撇号切分 / 空输入 `segment("") == [""]`）
+                assert!(
+                    !part.is_empty() || s.contains('\'') || s.is_empty(),
+                    "出现空段: {s:?} -> {seg:?}"
+                );
+                if part.is_empty() {
+                    continue;
+                }
+                // ③ 兜底合法：非音节段必为「某音节的真前缀」，否则必为单字母
+                assert!(
+                    q.syllables.contains(part)
+                        || part.len() == 1
+                        || q.syllables.iter().any(|syl| syl.starts_with(part.as_str())),
+                    "非法段: {s:?} -> {seg:?}"
+                );
+            }
+            // ④ 幂等：对无撇号输入再切一次结果不变（段内容 = 规范形，重切稳定）
+            if !s.contains('\'') {
+                assert_eq!(q.segment(&seg.concat()), seg, "幂等被破坏: {s:?}");
+            }
+        };
+
+        for s in [
+            "nihao", "xian", "shigechengy", "nhao", "nhmsx", "qaz", "xn", "sh", "zho", "zhon",
+            "lue", "nue", "gonglue", "gonglve", "jue", "chuangqianmingyueguang", "", "x'", "x''y",
+            "beiguofengguangqianlibingfengwanlixuepiaowangchang",
+        ] {
+            check(s);
+        }
+
+        // LCG 伪随机（确定性、零依赖）：拼音字母表上的短串（含大量歧义/孤点），len 1..=24
+        const ALPHABET: &[u8] = b"aeioubpmfdtnlgkhjqxzhcsrwy";
+        let mut seed: u64 = 0x46_4c4f_57_45_52;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for _ in 0..400 {
+            let len = 1 + next() % 24;
+            let s: String =
+                (0..len).map(|_| ALPHABET[next() % ALPHABET.len()] as char).collect();
+            check(&s);
+        }
     }
 }

@@ -48,16 +48,17 @@ fn preedit_follows_highlighted_candidate() {
         .iter()
         .find(|c| c.text == "吉安")
         .expect("吉安应在候选中");
+    // 46 号 §3.1：切分由词库反查裁决（吉安 6091 > 间 5000）→ [ji, an]；
+    // §3.3：会话层 seg 就是这个值，preedit 只做显示。
+    let seg = tr.segmentation[0].syllables.clone();
+    assert_eq!(seg, vec!["ji", "an"], "反查应裁决为 ji'an 的分节");
     assert_eq!(
-        e.preedit(&ctx(), &PendingInput { raw: "jian" }, Some(jian)),
+        e.preedit("jian", &seg, Some(jian)),
         "ji'an",
         "预编辑应跟随候选切分为 ji'an"
     );
-    // 无高亮：返回方案重排后的默认切分（吉安权重最高 → [ji,an] 排方案[0]）
-    assert_eq!(
-        e.preedit(&ctx(), &PendingInput { raw: "jian" }, None),
-        "ji'an",
-    );
+    // 无高亮：返回切分决策的默认显示
+    assert_eq!(e.preedit("jian", &seg, None), "ji'an");
 }
 
 /// 会话层端到端：键入 jian、导航到吉安，effect().composition 显示 ji'an。
@@ -96,8 +97,9 @@ fn preedit_respects_user_apostrophe() {
         .iter()
         .find(|c| c.text == "吉安")
         .expect("吉安应在候选中");
+    let seg = tr.segmentation[0].syllables.clone();
     assert_eq!(
-        e.preedit(&ctx(), &PendingInput { raw: "ji'an" }, Some(jian)),
+        e.preedit("ji'an", &seg, Some(jian)),
         "ji'an",
         "用户撇号参与分节，显示不变"
     );

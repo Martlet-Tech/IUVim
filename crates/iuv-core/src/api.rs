@@ -45,12 +45,12 @@ pub trait ImeEngine: Send + Sync {
 
     /// 输入方向②：当前高亮候选 → 该候选视角下的预编辑显示串（只含未消费尾巴，
     /// 已确认前文由会话层拼接）。`selected = None` 时返回默认切分显示。
-    fn preedit(
-        &self,
-        ctx: &EngineCtx,
-        pending: &PendingInput,
-        selected: Option<&Candidate>,
-    ) -> String;
+    ///
+    /// 46 号 §3.3 职责重划：**seg 由调用方提供**（= `session.self.seg`，
+    /// 即 translate 产出的分段视图首段），本调用只做纯显示。旧签名内部自行重算
+    /// 切分，实测这是每键与 translate 同量级的第二遍开销（长串哨兵累计约 5.9s）。
+    /// 实现方在 `seg` 为空时可自行兜底（回落贪心），保证空分段不导致显示丢失。
+    fn preedit(&self, raw: &str, seg: &[String], selected: Option<&Candidate>) -> String;
 }
 
 use crate::{Candidate, CandidateKind};
@@ -123,21 +123,71 @@ pub(crate) fn raw_fallback_candidate(plain: &str, seg_len: usize) -> Candidate {
     Candidate::new(plain, kind, plain, 0, seg_len)
 }
 
-/// 方案词频重排的共享实现（rime `ranked_seg` 使用，2026-08-26 自 classic 平移）：
-/// 按方案 join 键 exact 词条最大权重降序，稳定保贪心原序。
-pub(crate) fn rank_plans(dict: &iuv_data::Dict, plans: Vec<Vec<String>>) -> Vec<Vec<String>> {
-    if plans.len() <= 1 {
-        return plans;
+/// 切分决策唯一入口（46 号 §3.1）：**词库整跨词反查优先，否则贪心**。
+///
+/// 语义等价性论证（对照删除前的 `rank_plans`）：旧实现给每个枚举方案打
+/// `exact(方案 join 键).first().weight`，得 0 分者在稳定排序下保持枚举原序
+/// （枚举首方案 = 贪心），非零分 ⇔ 方案 join 键恰是词库某码。故最优方案 =
+/// 「码去撇号 == raw 归一形、且分隔掩码覆盖用户撇号」的码中有效权重最高者，
+/// 否则贪心——一次 O(log n + 码长) 反查，无需枚举。
+///
+/// 三处必须与旧语义逐字对齐的细节（46 号任务书 §3.1 未写明，实现补齐）：
+/// 1. **贪心方案也参战**：反查段构建期已滤掉「等于运行时贪心码形」的键（死数据），
+///    若只比较变体，`先`(xian, 9000) vs `西安`(xi'an, 800) 这类输入会从 `xian`
+///    漂移成 `xi'an`。故贪心码权重一并比较，**严格大于**才切换（平局保贪心，
+///    与旧稳定排序同义）。
+/// 2. **归一口径**：[`crate::schema::normalize_input`]（仅 lue→lve / nue→nve，
+///    长度不变、**不折叠大小写**——大写保形靠它，否则 `niHAO` 会变 `ni'hao`）。
+/// 3. **撇号与空段**：`seps` = 用户强制撇号在去撇号 concat 坐标系的字节偏移，
+///    只有分隔掩码覆盖它的码才合法；raw 含空段（尾/连续 `'`，仅服务 display）
+///    时 concat 语义失真 → 直接贪心。
+///
+/// 有效权重统一走 `exact().first()`（merged 视图：叠加屏蔽/调权，与旧实现同源）。
+/// 反查段缺失（旧词库）时反查恒空 → 自然退化贪心，不 panic、不阻塞。
+pub(crate) fn best_seg(
+    dict: &iuv_data::Dict,
+    schema: &dyn crate::schema::InputSchema,
+    raw: &str,
+) -> Vec<String> {
+    let greedy = schema.segment(raw);
+    let normalized = crate::schema::normalize_input(raw);
+    if normalized.is_empty() {
+        return greedy;
     }
-    let mut scored: Vec<(u32, usize)> = plans
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let key = p.join("'");
-            let w = dict.exact(&key).first().map(|e| e.weight).unwrap_or(0);
-            (w, i)
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    scored.into_iter().map(|(_, i)| plans[i].clone()).collect()
+    // 去撇号 + 记录强制撇号偏移；空段（尾/连续 `'`）→ 反查无意义，直接贪心。
+    let mut concat = String::with_capacity(normalized.len());
+    let mut seps: Vec<usize> = Vec::new();
+    for (i, part) in normalized.split('\'').enumerate() {
+        if part.is_empty() {
+            return greedy;
+        }
+        if i > 0 {
+            seps.push(concat.len());
+        }
+        concat.push_str(part);
+    }
+
+    let greedy_weight = code_weight(dict, &greedy.join("'"));
+    let mut best: Option<(u32, Vec<String>)> = None;
+    for code in dict.reverse_candidates(&concat, &seps) {
+        let w = code_weight(dict, &code);
+        // 0 权重变体等价于「词库里没有这个词」（被屏蔽/无词条）——不参战。
+        if w == 0 {
+            continue;
+        }
+        // 同权重保构建序（构建期已固化 weight 降序 + 码序升序）。
+        if best.as_ref().is_some_and(|(bw, _)| w <= *bw) {
+            continue;
+        }
+        best = Some((w, code.split('\'').map(str::to_string).collect()));
+    }
+    match best {
+        Some((w, seg)) if w > greedy_weight => seg,
+        _ => greedy,
+    }
+}
+
+/// 码的有效权重（merged 视图的最高词条权重；无词条 = 0）。
+fn code_weight(dict: &iuv_data::Dict, code: &str) -> u32 {
+    dict.exact(code).first().map(|e| e.weight).unwrap_or(0)
 }

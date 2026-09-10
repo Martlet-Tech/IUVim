@@ -3,11 +3,12 @@
 //! 接口契约 01-contract.md §3（`exact` 系列返回物化 `Vec<Entry>`）。
 
 use crate::format::{
-    self, FILE_HEADER_LEN, MAGIC, SEG_BUCKETS, SEG_HEADER_LEN, SEG_INDEX, SEG_META, SEG_RECORDS,
+    self, greedy_join, reachable_split, FILE_HEADER_LEN, MAGIC, SEG_BUCKETS, SEG_HEADER_LEN,
+    SEG_INDEX, SEG_META, SEG_RECORDS, SEG_REVERSE,
 };
 use crate::mmap::MappedFile;
 use crate::userdict::UserDict;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
@@ -37,10 +38,15 @@ pub struct Dict {
     records: Range<usize>,
     /// 段2 首字母桶（桶记录内联于此段）
     buckets: Range<usize>,
+    /// 段5 整跨词反查（46 号 §3.1，可选段；None = 旧词库无此段）
+    reverse: Option<Range<usize>>,
     total: u64,
     entry_count: usize,
     max_word_syllables: usize,
     syllables: BTreeSet<String>,
+    /// 用户库整跨词反查（46 号 §3.1：set_user 时从 cover_iter 派生，
+    /// concat → 可达且非贪心码形的码表）。格式不动、daemon 不动，纯查询侧派生。
+    user_reverse: Mutex<HashMap<String, Vec<String>>>,
     /// 用户权重覆盖表（M2 主动调权，18-m2-user-dict.md）。None = 未装配；
     /// Arc 写时复制（swap 整体替换），查询只 clone 引用（无锁读）。
     user: Mutex<Option<Arc<UserDict>>>,
@@ -54,10 +60,17 @@ impl Clone for Dict {
             index: self.index.clone(),
             records: self.records.clone(),
             buckets: self.buckets.clone(),
+            reverse: self.reverse.clone(),
             total: self.total,
             entry_count: self.entry_count,
             max_word_syllables: self.max_word_syllables,
             syllables: self.syllables.clone(),
+            user_reverse: Mutex::new(
+                self.user_reverse
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+            ),
             user: Mutex::new(self.user.lock().unwrap_or_else(|e| e.into_inner()).clone()),
         }
     }
@@ -72,10 +85,12 @@ impl Default for Dict {
             index: 0..0,
             records: 0..0,
             buckets: 0..0,
+            reverse: None,
             total: 0,
             entry_count: 0,
             max_word_syllables: 0,
             syllables: BTreeSet::new(),
+            user_reverse: Mutex::new(HashMap::new()),
             user: Mutex::new(None),
         }
     }
@@ -206,16 +221,56 @@ impl Dict {
             return Err(bad(format!("桶段应含 26 个桶，实际 {count}")));
         }
 
+        // ---- 段5 整跨词反查（可选段，46 号 §3.1）：K | var_area_off | K×u32 键头偏移 | 键头区 | 变体区 ----
+        let reverse = match seg_of(&segs, SEG_REVERSE) {
+            Some(r) => {
+                if r.len() < 8 {
+                    return Err(bad("反查段过短".into()));
+                }
+                let k = u32_at(bytes, r.start) as usize;
+                let var_area_off = u32_at(bytes, r.start + 4) as usize;
+                if r.len() < 8 + k * 4 {
+                    return Err(bad("反查段键偏移数组截断".into()));
+                }
+                if var_area_off < 8 + k * 4 || var_area_off > r.len() {
+                    return Err(bad("反查段变体区偏移非法".into()));
+                }
+                for i in 0..k {
+                    let off = u32_at(bytes, r.start + 8 + i * 4) as usize;
+                    if off >= var_area_off {
+                        return Err(bad("反查段键头偏移越界".into()));
+                    }
+                    let klen = bytes[r.start + off] as usize;
+                    if off + 1 + klen + 4 + 2 > var_area_off {
+                        return Err(bad("反查段键头越界".into()));
+                    }
+                }
+                // 变体区逐条边界扫描（u8 code_len | code | u32 weight）
+                let mut pos = r.start + var_area_off;
+                while pos < r.end {
+                    let cl = bytes[pos] as usize;
+                    if pos + 1 + cl + 4 > r.end {
+                        return Err(bad("反查段变体截断".into()));
+                    }
+                    pos += 1 + cl + 4;
+                }
+                Some(r)
+            }
+            None => None,
+        };
+
         Ok(Dict {
             file: Arc::new(file),
             bucket_dir,
             index: index.clone(),
             records: records.clone(),
             buckets: buckets.clone(),
+            reverse,
             total,
             entry_count,
             max_word_syllables,
             syllables,
+            user_reverse: Mutex::new(HashMap::new()),
             user: Mutex::new(None),
         })
     }
@@ -324,11 +379,11 @@ impl Dict {
     }
 
     /// 前缀补全：返回 squashed 以 prefix 开头（且不等于 prefix）的词条，
-    /// 跨编码按 weight 降序，最多 limit 条。实现为范围物化 + 权重降序排序 +
-    /// 截断——排序必须在截断**之前**（码序前 64/20 条 ≠ 高频前 64/20 条，
+    /// 跨编码按 weight 降序，最多 limit 条。实现为范围物化 + top-k 选择 + 权重
+    /// 降序排序 + 截断——排序必须在截断**之前**（码序前 64/20 条 ≠ 高频前 64/20 条，
     /// cheng'y 的 64 截断曾把高频「成员」排挤到窗外，2026-08-29 λ 校准实测）。
     /// 无用户库时同样保证权重序（此前排序只在 merged 有用户库分支里发生，
-    /// REPL/对拍与生产行为隐性分叉）。如开启后性能不达标再改归并取 top-k。
+    /// REPL/对拍与生产行为隐性分叉）。top-k 选择已于 46 号 §3.4 落地（原 TODO）。
     pub fn prefix(&self, squashed_prefix: &str, limit: usize) -> Vec<Entry> {
         if limit == 0 || squashed_prefix.is_empty() {
             return Vec::new();
@@ -346,9 +401,15 @@ impl Dict {
             }
             out.push(self.entry_at(self.index_off(i)));
         }
-        out.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word)));
+        // 46 号 §3.4：top-k 选择替代全量排序（兑现本函数留档 TODO；语义不变）。
+        // 顺序红线（8/29 校准教训）：**先 merged（屏蔽/调权/追加）后选优截断**，
+        // 否则用户覆盖权重救不回已被截掉的词条。
         out = self.merged("", out);
-        out.truncate(limit);
+        if out.len() > limit {
+            out.select_nth_unstable_by(limit - 1, worse_first());
+            out.truncate(limit);
+        }
+        out.sort_by(worse_first());
         out
     }
 
@@ -409,7 +470,33 @@ impl Dict {
     // ===== 用户权重覆盖表（M2 主动调权，18-m2-user-dict.md）=====
 
     /// 装配用户覆盖表（Arc 引用；调整时整体替换，查询零锁）。
+    /// 46 号 §3.1：同处派生用户库整跨词反查（cover_iter → 可达且非贪心的码形，
+    /// 按 concat 分组）——用户库格式与 daemon 均不动，纯查询侧派生索引。
     pub fn set_user(&self, user: Arc<UserDict>) {
+        let mut code_adj: HashMap<&str, u32> = HashMap::new();
+        for (code, _word, adj) in user.cover_iter() {
+            code_adj.entry(code).and_modify(|w| *w = (*w).max(adj)).or_insert(adj);
+        }
+        let mut pairs: Vec<(String, String, u32)> = code_adj
+            .into_iter()
+            .filter_map(|(code, adj)| {
+                let segs = reachable_split(code, &self.syllables)?;
+                let concat: String = segs.concat();
+                if greedy_join(&concat, &self.syllables) == code {
+                    return None; // 唯一变体 = 贪心码形：决策恒等贪心，死数据
+                }
+                Some((concat, code.to_string(), adj))
+            })
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0).then(b.2.cmp(&a.2)).then(a.1.cmp(&b.1)));
+        let mut rev: HashMap<String, Vec<String>> = HashMap::new();
+        for (concat, code, _) in pairs {
+            let slot = rev.entry(concat).or_default();
+            if slot.last() != Some(&code) {
+                slot.push(code);
+            }
+        }
+        *self.user_reverse.lock().unwrap_or_else(|e| e.into_inner()) = rev;
         *self.user.lock().unwrap_or_else(|e| e.into_inner()) = Some(user);
     }
 
@@ -454,6 +541,185 @@ impl Dict {
         entries
     }
 
+    // ===== 整跨词反查 + 词典游标（46 号 §3.1/§3.2）=====
+
+    /// 整跨词反查：`concat` = raw 去撇号归一形；`seps` = 用户强制撇号在 concat
+    /// 坐标系的字节偏移（升序）。返回分隔掩码 ⊇ seps 的码——基础库变体按构建期
+    /// 权重降序在前，用户库独有码随后（有效权重由调用方经 `exact` 统一裁决）。
+    /// 旧词库无反查段 → 恒空（引擎自然走贪心）。
+    pub fn reverse_candidates(&self, concat: &str, seps: &[usize]) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(r) = &self.reverse {
+            let bytes = self.file.as_bytes();
+            let k = u32_at(bytes, r.start) as usize;
+            let target = concat.as_bytes();
+            let (mut lo, mut hi) = (0usize, k);
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                if self.reverse_key(r, mid).0 < target {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            if lo < k {
+                let (key, var_off, var_count) = self.reverse_key(r, lo);
+                if key == target {
+                    // 变体区偏移为变体区相对；var_area_off 在段头第 2 个 u32
+                    let var_area_off = u32_at(bytes, r.start + 4) as usize;
+                    let base = r.start + var_area_off + var_off;
+                    for j in 0..var_count {
+                        let (code, _w) = self.reverse_var(base, j);
+                        if seps_cover(&code, seps) {
+                            out.push(code);
+                        }
+                    }
+                }
+            }
+        }
+        let urev = self.user_reverse.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(codes) = urev.get(concat) {
+            for code in codes {
+                if seps_cover(code, seps) && !out.contains(code) {
+                    out.push(code.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// 第 i 个键头（键字节, 变体区相对偏移, 变体数）。
+    /// 键头布局：u8 klen | key | u32 var_off | u16 var_count。
+    fn reverse_key(&self, r: &Range<usize>, i: usize) -> (&[u8], usize, usize) {
+        let bytes = self.file.as_bytes();
+        let off = u32_at(bytes, r.start + 8 + i * 4) as usize;
+        let h = r.start + off;
+        let klen = bytes[h] as usize;
+        let key = &bytes[h + 1..h + 1 + klen];
+        let var_off = u32_at(bytes, h + 1 + klen) as usize;
+        let var_count = u16::from_le_bytes([
+            bytes[h + 1 + klen + 4],
+            bytes[h + 1 + klen + 5],
+        ]) as usize;
+        (key, var_off, var_count)
+    }
+
+    /// 变体区第 j 条（从 base 顺序走——变体定长前缀 + 变长 code，条数恒小）。
+    fn reverse_var(&self, base: usize, j: usize) -> (String, u32) {
+        let bytes = self.file.as_bytes();
+        let mut pos = base;
+        for _ in 0..j {
+            pos += 1 + bytes[pos] as usize + 4;
+        }
+        let cl = bytes[pos] as usize;
+        let code = std::str::from_utf8(&bytes[pos + 1..pos + 1 + cl])
+            .expect("词库已校验反查变体 code 边界")
+            .to_string();
+        let w = u32::from_le_bytes([
+            bytes[pos + 1 + cl],
+            bytes[pos + 2 + cl],
+            bytes[pos + 3 + cl],
+            bytes[pos + 4 + cl],
+        ]);
+        (code, w)
+    }
+
+    // ===== 词典游标（46 号 §3.2，对齐 librime Table 游标语义）=====
+
+    /// 根游标（空前缀 = 全表）。
+    pub fn cursor(&self) -> DictCursor {
+        DictCursor { lo: 0, hi: self.index.len() / 4, plen: 0 }
+    }
+
+    /// 从游标步进一个键片段：音节（join 键族传 `\'`+音节）、简拼字母（concat
+    /// 键族直拼）、补全段字节均可——片段就是「追加到累计前缀后的字节」。
+    /// 返回 None = 无码以新前缀开头（exhausted 剪枝）；步进内二分只在
+    /// 父区间内收缩（越深越窄），比较用区间内码的 rest（`code[plen..]`），零分配。
+    pub fn cursor_step(&self, c: DictCursor, seg: &[u8]) -> Option<DictCursor> {
+        if c.lo >= c.hi {
+            return None;
+        }
+        // lo'：区间内第一个 rest ≥ seg
+        let (mut lo, mut hi) = (c.lo, c.hi);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.rest_at(mid, c.plen) < seg {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        // hi'：lo' 起第一个 rest 不以 seg 开头（同前缀码区在码序下连续）
+        let mut a = lo;
+        let mut b = c.hi;
+        while a < b {
+            let mid = (a + b) / 2;
+            if self.rest_at(mid, c.plen).starts_with(seg) {
+                a = mid + 1;
+            } else {
+                b = mid;
+            }
+        }
+        if lo >= a {
+            return None;
+        }
+        Some(DictCursor { lo, hi: a, plen: c.plen + seg.len() })
+    }
+
+    /// 区间内存在码 == 累计前缀（等长码是区间内 lex 最小码，居首）。
+    pub fn cursor_has_code(&self, c: DictCursor) -> bool {
+        c.lo < c.hi && self.code_at(self.index_off(c.lo)).len() == c.plen
+    }
+
+    /// 区间内存在严格更长的码（BFS 可继续；区间内 lex 最大码即最长——
+    /// 全部码共享前缀 plen，lex 更大者必更长）。
+    pub fn cursor_deeper(&self, c: DictCursor) -> bool {
+        c.lo < c.hi && self.code_at(self.index_off(c.hi - 1)).len() > c.plen
+    }
+
+    /// 物化等长码条目（≡ `exact`(累计前缀)）；码内 weight 降序由排序不变量
+    /// 保证，叠加用户视图（屏蔽/调权/独有条目）后返回。
+    pub fn cursor_exact(&self, c: DictCursor) -> Vec<Entry> {
+        let mut out = Vec::new();
+        for i in c.lo..c.hi {
+            let e = self.entry_at(self.index_off(i));
+            if e.code.len() != c.plen {
+                break;
+            }
+            out.push(e);
+        }
+        let code = out.first().map(|e| e.code.clone()).unwrap_or_default();
+        self.merged(&code, out)
+    }
+
+    /// 物化严格更长前缀条目（≡ `prefix`(累计前缀, limit)）。
+    /// 46 号 §3.4：top-k 选择替代「全范围收集 + 全量排序」（语义不变；
+    /// 顺序红线同 prefix：先 merged 后选优截断）。
+    pub fn cursor_longer(&self, c: DictCursor, limit: usize) -> Vec<Entry> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for i in c.lo..c.hi {
+            let e = self.entry_at(self.index_off(i));
+            if e.code.len() != c.plen {
+                out.push(e);
+            }
+        }
+        out = self.merged("", out);
+        if out.len() > limit {
+            out.select_nth_unstable_by(limit - 1, worse_first());
+            out.truncate(limit);
+        }
+        out.sort_by(worse_first());
+        out
+    }
+
+    /// 区间内码的 rest 切片（`code[plen..]`；区间不变量保证码长 ≥ plen）。
+    fn rest_at(&self, i: usize, plen: usize) -> &[u8] {
+        &self.code_at(self.index_off(i))[plen..]
+    }
+
     // ===== 内部：索引二分 / 记录物化（视图已校验，索引直接）=====
 
     /// 第一个 code >= target 的索引位置（二分）。
@@ -471,7 +737,6 @@ impl Dict {
         }
         lo
     }
-
     /// 第一个 code > target 的索引位置（二分）。
     fn upper_bound(&self, target: &[u8]) -> usize {
         let n = self.index.len() / 4;
@@ -521,9 +786,41 @@ impl Dict {
     }
 }
 
+/// 词典游标（46 号 §3.2）：码序区间 [lo, hi)（记录索引下标）+ 累计前缀字节长。
+/// 区间语义 = 全部以「累计前缀」开头的码；前缀本身不存字符串——步进比较只用
+/// 区间内码的 rest（`code[plen..]`），零分配零全局二分（对齐 librime Table 游标）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DictCursor {
+    pub(crate) lo: usize,
+    pub(crate) hi: usize,
+    pub(crate) plen: usize,
+}
+
 /// 段表查找指定类型段。
 fn seg_of(segs: &[(u8, Range<usize>)], ty: u8) -> Option<Range<usize>> {
     segs.iter().find(|(t, _)| *t == ty).map(|(_, r)| r.clone())
+}
+
+/// 候选优序比较器（更优在前）：weight 降序、word 升序。
+fn worse_first() -> impl Fn(&Entry, &Entry) -> std::cmp::Ordering {
+    |a: &Entry, b: &Entry| b.weight.cmp(&a.weight).then(a.word.cmp(&b.word))
+}
+
+/// 码的撇号偏移集（concat 坐标）是否覆盖用户强制撇号集（46 号 §3.1 掩码过滤）。
+fn seps_cover(code: &str, seps: &[usize]) -> bool {
+    if seps.is_empty() {
+        return true;
+    }
+    let mut code_seps = Vec::with_capacity(seps.len());
+    let mut n = 0usize;
+    for b in code.bytes() {
+        if b == b'\'' {
+            code_seps.push(n);
+        } else {
+            n += 1;
+        }
+    }
+    seps.iter().all(|s| code_seps.contains(s))
 }
 
 /// 单条记录从当前位置起的字节长度（越界 → Err，消息含细节）。
@@ -580,6 +877,63 @@ mod tests {
         assert!(hits.iter().any(|e| e.word == "你好"));
         assert_eq!(d.prefix("nihao", 10).len(), 0);
         assert_eq!(d.prefix("", 10).len(), 0);
+    }
+
+    /// 46 号 §3.2：游标步进 / 等长命中 / 严格更长 / exhaustion / 等长码簇。
+    #[test]
+    fn cursor_walk_exact_and_deeper() {
+        let d = Dict::from_entries(vec![
+            ("ni".into(), "你".into(), 9000),
+            ("ni'hao".into(), "你好".into(), 8000),
+            ("ni'hao'a".into(), "你好啊".into(), 5),
+            ("de".into(), "的".into(), 100000),
+            ("de".into(), "得".into(), 300),
+            ("de".into(), "地".into(), 200),
+        ]);
+        let root = d.cursor();
+        let ni = d.cursor_step(root, b"ni").expect("ni 前缀应有码");
+        assert!(d.cursor_has_code(ni), "单音节码 ni 等长命中");
+        assert!(d.cursor_deeper(ni), "ni'hao/a 更长码存在");
+        let nihao = d.cursor_step(ni, b"'hao").expect("ni'hao 应有码");
+        assert!(d.cursor_has_code(nihao));
+        let exact = d.cursor_exact(nihao);
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].word, "你好");
+        assert!(d.cursor_deeper(nihao));
+        // 长度-lex 交错（ni'hao'a 与 ni'hao）：子区间收缩正确
+        let a = d.cursor_step(nihao, b"'a").expect("ni'hao'a 应有码");
+        assert_eq!(d.cursor_exact(a)[0].word, "你好啊");
+        // 等长码簇（de 的 的/得/地）与 exhaustion
+        let de = d.cursor_step(root, b"de").expect("de 应有码");
+        assert_eq!(d.cursor_exact(de).len(), 3);
+        assert!(d.cursor_step(de, b"'z").is_none());
+    }
+
+    /// 46 号 §3.1：反查掩码过滤与贪心码形过滤（唯一可达码形 = 贪心 → 不入段）。
+    #[test]
+    fn reverse_candidates_mask_and_greedy_filter() {
+        let d = sample();
+        // concat "xian"：非贪心变体 xi'an（xian 即贪心码形，按 §3.1 过滤不入段）
+        assert_eq!(d.reverse_candidates("xian", &[]), vec!["xi'an".to_string()]);
+        // 用户强制撇号掩码：xi'an 的撇号在 concat 偏移 2
+        assert_eq!(d.reverse_candidates("xian", &[2]), vec!["xi'an".to_string()]);
+        // 掩码不满足：期望空
+        assert!(d.reverse_candidates("xian", &[1]).is_empty());
+        // 唯一可达码形 = 贪心（nihao）／码不可达（hahaha）→ 不入段
+        assert!(d.reverse_candidates("nihao", &[]).is_empty());
+        assert!(d.reverse_candidates("hahaha", &[]).is_empty());
+    }
+
+    /// 46 号 §3.1：用户库独有码形经 set_user 派生反查可达。
+    #[test]
+    fn user_reverse_candidates() {
+        let d = sample();
+        let user = crate::userdict::UserDict::empty().set_entry("xi'an'hao", "西安好", 100);
+        d.set_user(Arc::new(user));
+        let all = d.reverse_candidates("xianhao", &[]);
+        assert!(all.contains(&"xi'an'hao".to_string()), "{all:?}");
+        // 贪心码形仍被过滤
+        assert!(!all.contains(&"xian'hao".to_string()));
     }
 
     #[test]

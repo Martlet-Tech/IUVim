@@ -94,11 +94,10 @@ impl RimeEngine {
         }
     }
 
-    /// 分段视图首段 = 方案词频重排后的贪心切分（与会话层既有 seg 口径一致，
-    /// 保证部分消费推进的段数语义稳定）。
+    /// 分段视图首段 = 切分决策唯一入口的结果（46 号 §3.1：词库整跨词反查
+    /// 优先，否则贪心；与会话层既有 seg 口径一致，保证部分消费推进的段数语义稳定）。
     fn ranked_seg(&self, raw: &str) -> Vec<String> {
-        let plans = crate::api::rank_plans(&self.dict, self.schema.segment(raw));
-        plans.into_iter().next().unwrap_or_default()
+        crate::api::best_seg(&self.dict, &self.schema, raw)
     }
 
     /// 原文兜底候选（"不认识"语义）。
@@ -125,10 +124,8 @@ impl ImeEngine for RimeEngine {
         // 归一单点——替换长度不变（3→3），图顶点坐标系安全。
         // 以下 perf 细分仅在 `perf_probe` 开启时计时（关闭时每个 tick 只是一次原子读），
         // 用于定位 onkey 尖峰；`buckets` 是其中唯一真正访问词库 mmap 的一步。
-        let lower = pending
-            .raw
-            .replace("lue", "lve")
-            .replace("nue", "nve");
+        // üe 归一收敛到 schema 的唯一点（与 best_seg 反查键严格同口径）。
+        let lower = crate::schema::normalize_input(pending.raw);
         let t = crate::perf::tick();
         let seg = self.ranked_seg(pending.raw);
         crate::perf::record("onkey.seg", t);
@@ -322,17 +319,23 @@ impl ImeEngine for RimeEngine {
         }
     }
 
-    /// 预编辑显示：与 classic 共用五规则（api::preview_rules），seg = 重排后贪心切分。
-    fn preedit(
-        &self,
-        _ctx: &EngineCtx,
-        pending: &PendingInput,
-        selected: Option<&crate::Candidate>,
-    ) -> String {
-        let seg = self.ranked_seg(pending.raw);
+    /// 预编辑显示：纯显示调用（46 号 §3.3）——`seg` 由调用方提供
+    /// （session.self.seg = translate 产出的分段视图首段），不再自行重算切分
+    /// （旧实现每键多跑一次全量切分，是长串卡顿的第二大来源）。
+    /// `seg` 为空（translate 走原文兜底路径，分段视图为空）时回落一次贪心：
+    /// 规则 1（raw 含 `'`）优先于规则 2（原文兜底），此时没有 seg 会显示为空串，
+    /// 与改造前 `ranked_seg` 的显示不一致（实测 `x'`/`i'` 这类以兜底段开头的输入）。
+    fn preedit(&self, raw: &str, seg: &[String], selected: Option<&crate::Candidate>) -> String {
+        let fallback;
+        let seg = if seg.is_empty() {
+            fallback = self.schema.segment(raw);
+            fallback.as_slice()
+        } else {
+            seg
+        };
         crate::api::preview_rules(
-            pending.raw,
-            &seg,
+            raw,
+            seg,
             &|s| self.is_syllable(s),
             &|s| self.schema.display(s),
             selected,
@@ -446,10 +449,10 @@ mod tests {
         ]);
         let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw: "jian" });
         let jian = tr.candidates.iter().find(|c| c.text == "吉安").expect("吉安应在候选中");
-        assert_eq!(
-            e.preedit(&EngineCtx { preceding_text: "" }, &PendingInput { raw: "jian" }, Some(jian)),
-            "ji'an"
-        );
+        // 46 号 §3.3：seg 由调用方给（= translate 分段视图首段）；jam 权重 6091
+        // > 间 5000，反查应选 [ji, an]。
+        assert_eq!(tr.segmentation[0].syllables, vec!["ji", "an"]);
+        assert_eq!(e.preedit("jian", &tr.segmentation[0].syllables, Some(jian)), "ji'an");
     }
 
     /// 部分消费推进：nihao 选「你」（parts=1 < 贪心段数 2）→ seg_len=1。
@@ -613,4 +616,5 @@ mod tests {
             println!("  cand {:?}\t{:?}\tw={}\tscore={:.4}", c.text, c.kind, c.weight, c.score);
         }
     }
+
 }

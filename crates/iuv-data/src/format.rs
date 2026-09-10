@@ -10,6 +10,9 @@
 //! 段2 首字母桶: 26 × { u8 字母 | u32 记录数 | 记录 × N }（单字，weight 降序，≤INITIAL_BUCKET_SIZE/桶）
 //! 段3 记录索引: record_count × u32 记录体段内偏移（按 code 升序）
 //! 段4 记录体:   record_count × { u8 code_len | code | u16 word_len | word | u32 weight }
+//! 段5 整跨词反查(46号, 可选): u32 键数 K | K × u32 键头偏移 | 键头区
+//!            键头: u8 key_len | key(concat) | u32 变体区偏移 | u16 变体数
+//!            变体: u8 code_len | code | u32 weight（组内 weight 降序）
 //! ```
 //! 记录排序不变量（code 升序、组内 weight 降序）由写端保证；加载只做简单边界检查
 //! （不校验排序/单调性——数据出自自家 dictc，防的是截断与坏字节）。
@@ -17,17 +20,19 @@
 
 use crate::mmap::MappedFile;
 use crate::{Dict, Entry, INITIAL_BUCKET_SIZE};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 /// 文件头 magic。
 pub const MAGIC: &[u8; 8] = b"IMEDIC02";
 
-// 段类型（1..=4 为当前必需段；未知段加载时忽略）
+// 段类型（1..=5；5 为 46 号整跨词反查可选段；未知段加载时忽略）
 pub(crate) const SEG_META: u8 = 1;
 pub(crate) const SEG_BUCKETS: u8 = 2;
 pub(crate) const SEG_INDEX: u8 = 3;
 pub(crate) const SEG_RECORDS: u8 = 4;
+pub(crate) const SEG_REVERSE: u8 = 5;
 pub(crate) const SEG_HEADER_LEN: usize = 1 + 4 + 4; // u8 类型 | u32 偏移 | u32 长度
 pub(crate) const FILE_HEADER_LEN: usize = 8 + 4; // magic | u32 段数
 
@@ -150,6 +155,8 @@ pub fn write(records: &[Entry], writer: impl io::Write) -> io::Result<()> {
     // 非标准音节，只作输入识别；运行时 Quanpin 靠它切出 lüe/nüe 路径并归一为 v 形。
     syllable_set.insert("lue".to_string());
     syllable_set.insert("nue".to_string());
+    // ---- 段5 整跨词反查（46 号 §3.1；需最终音节集，先于音节表 Vec 装配）----
+    let reverse_seg = build_reverse(&records, &syllable_set);
     syllables.extend(syllable_set);
 
     // ---- 首字母桶（单遍收集副本 + 桶内排序截断；只收单字：word 单字且 code 无 `'`）----
@@ -209,11 +216,12 @@ pub fn write(records: &[Entry], writer: impl io::Write) -> io::Result<()> {
     };
 
     // ---- 段表 + 文件头（偏移在组装后计算）----
-    let segs: [(&[u8], u8); 4] = [
+    let segs: [(&[u8], u8); 5] = [
         (&meta, SEG_META),
         (&bucket_seg, SEG_BUCKETS),
         (&index_seg, SEG_INDEX),
         (&records_seg, SEG_RECORDS),
+        (&reverse_seg, SEG_REVERSE),
     ];
     let mut offset = FILE_HEADER_LEN + segs.len() * SEG_HEADER_LEN;
     let mut header = Vec::with_capacity(FILE_HEADER_LEN + segs.len() * SEG_HEADER_LEN);
@@ -248,4 +256,159 @@ fn write_record(buf: &mut Vec<u8>, e: &Entry) -> io::Result<()> {
     buf.extend_from_slice(word);
     buf.extend_from_slice(&e.weight.to_le_bytes());
     Ok(())
+}
+
+// ===== 段5 整跨词反查（46 号 §3.1）=====
+
+/// 语义等价性（与 iuv-core `rank_plans` 逐条对齐，见 46 号任务书 §3.1）：
+/// 最优切分 = 「码去撇号 == raw 归一形且分隔掩码 ⊇ 用户强制撇号」的码中
+/// 有效权重最高者；无则贪心。键 = concat（去撇号）；变体 = 该 concat 下
+/// **枚举可达**的码（每段为合法音节，或该位置无任何音节匹配时的最长音节
+/// 前缀兜底段——不可达的码永远不会成为方案的 join 键，不入段）。
+/// 只存「存在变体 ≠ 运行时贪心码形」的键——其余键的决策恒等于贪心，存了也是死数据。
+fn build_reverse(records: &[Entry], syllables: &BTreeSet<String>) -> Vec<u8> {
+    let mut map: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
+    for e in records {
+        let Some(segs) = reachable_split(&e.code, syllables) else {
+            continue;
+        };
+        let concat: String = segs.concat();
+        map.entry(concat)
+            .or_default()
+            .entry(e.code.clone())
+            .and_modify(|w| *w = (*w).max(e.weight))
+            .or_insert(e.weight);
+    }
+    let mut keys: Vec<(String, Vec<(String, u32)>)> = map
+        .into_iter()
+        .filter_map(|(concat, codes)| {
+            let greedy = greedy_join(&concat, syllables);
+            let mut vars: Vec<(String, u32)> =
+                codes.into_iter().filter(|(c, _)| *c != greedy).collect();
+            if vars.is_empty() {
+                return None;
+            }
+            vars.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            Some((concat, vars))
+        })
+        .collect();
+    // BTreeMap 迭代序 = concat 字节序（运行时二分依赖升序）
+    keys.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+
+    let mut offsets = Vec::with_capacity(keys.len() * 4);
+    let mut headers = Vec::new();
+    let mut vars_area = Vec::new();
+    for (concat, vars) in &keys {
+        // 键头偏移统一为**段相对**（8 + K×4 偏移数组 + 已生成键头字节），运行时二分直接用
+        offsets.push((8 + keys.len() * 4 + headers.len()) as u32);
+        let kb = concat.as_bytes();
+        headers.push(kb.len() as u8);
+        headers.extend_from_slice(kb);
+        headers.extend_from_slice(&(vars_area.len() as u32).to_le_bytes());
+        headers.extend_from_slice(&(vars.len() as u16).to_le_bytes());
+        for (c, w) in vars {
+            let cb = c.as_bytes();
+            vars_area.push(cb.len() as u8);
+            vars_area.extend_from_slice(cb);
+            vars_area.extend_from_slice(&w.to_le_bytes());
+        }
+    }
+    let mut seg = Vec::with_capacity(8 + offsets.len() * 4 + headers.len() + vars_area.len());
+    seg.extend_from_slice(&(keys.len() as u32).to_le_bytes());
+    // 变体区起点（相对段起）：8 + 键偏移数组 + 键头区
+    let var_area_off = 8 + offsets.len() * 4 + headers.len();
+    seg.extend_from_slice(&(var_area_off as u32).to_le_bytes());
+    for off in &offsets {
+        seg.extend_from_slice(&off.to_le_bytes());
+    }
+    seg.extend_from_slice(&headers);
+    seg.extend_from_slice(&vars_area);
+    seg
+}
+
+/// 码的切分是否为 Quanpin 枚举可达路径（46 号 §3.1 构建端过滤器）：
+/// 每段 = 合法音节；或（该位置**无任何音节匹配**时的）最长音节前缀兜底段。
+/// 规则与 iuv-core schema.rs 的 enumerate/backtrack 逐条同规（含 üe 归一前
+/// 的原始码形——码形为词库规范形，恒合法音节，无需归一）。
+pub(crate) fn reachable_split<'a>(
+    code: &'a str,
+    syllables: &BTreeSet<String>,
+) -> Option<Vec<&'a str>> {
+    let b = code.as_bytes();
+    let mut segs: Vec<&'a str> = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        let end = code[pos..].find('\'').map(|i| pos + i).unwrap_or(b.len());
+        let part = &code[pos..end];
+        if part.is_empty() {
+            return None; // 空段（连续/尾撇号）不是任何方案的 join 形
+        }
+        let rem = b.len() - pos;
+        let upper = rem.min(6);
+        if syllables.contains(part) {
+            pos = end + 1;
+            segs.push(part);
+        } else {
+            // 兜底段可达条件：该位置无任何音节匹配，且 part = 最长音节前缀兜底
+            let any_syllable_here = (1..=upper).any(|l| syllables.contains(&code[pos..pos + l]));
+            if any_syllable_here {
+                return None;
+            }
+            let mut plen = 1usize;
+            for len in (1..=upper).rev() {
+                if syllables.iter().any(|syl| syl.starts_with(&code[pos..pos + len])) {
+                    plen = len;
+                    break;
+                }
+            }
+            if part.len() != plen {
+                return None;
+            }
+            pos = end + 1;
+            segs.push(part);
+        }
+        if end == b.len() {
+            break;
+        }
+    }
+    Some(segs)
+}
+
+/// 运行时贪心（Quanpin 同规：最长音节；无匹配取最长音节前缀兜底）的 join 码形。
+/// 与 format::greedy_segment 的差异：后者兜底恒单字母（音节表用途），此处必须
+/// 与 iuv-core Quanpin::greedy_group 逐字节一致（46 号 §3.1 决策等价性）。
+pub(crate) fn greedy_join(concat: &str, syllables: &BTreeSet<String>) -> String {
+    let b = concat.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len() + 4);
+    let mut pos = 0usize;
+    while pos < b.len() {
+        let upper = (b.len() - pos).min(6);
+        let mut matched = false;
+        for len in (1..=upper).rev() {
+            if syllables.contains(&concat[pos..pos + len]) {
+                if !out.is_empty() {
+                    out.push(b'\'');
+                }
+                out.extend_from_slice(concat[pos..pos + len].as_bytes());
+                pos += len;
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            let mut plen = 1usize;
+            for len in (1..=upper).rev() {
+                if syllables.iter().any(|syl| syl.starts_with(&concat[pos..pos + len])) {
+                    plen = len;
+                    break;
+                }
+            }
+            if !out.is_empty() {
+                out.push(b'\'');
+            }
+            out.extend_from_slice(concat[pos..pos + plen].as_bytes());
+            pos += plen;
+        }
+    }
+    String::from_utf8(out).expect("ASCII 音节拼接")
 }

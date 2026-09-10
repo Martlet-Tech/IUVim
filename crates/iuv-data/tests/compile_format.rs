@@ -206,7 +206,7 @@ fn unknown_segment_ignored() {
     let mut v = Vec::new();
     iuv_data::format::write(&records, &mut v).unwrap();
     let seg_count = u32::from_le_bytes([v[8], v[9], v[10], v[11]]) as usize;
-    assert_eq!(seg_count, 4);
+    assert_eq!(seg_count, 5); // 46 号起含段5 整跨词反查
     let seg_hdr = 9usize; // u8 类型 | u32 偏移 | u32 长度
     // 段表后插入一条未知段条目（9 字节）
     let table_end = 12 + seg_count * seg_hdr;

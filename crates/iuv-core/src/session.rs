@@ -468,11 +468,10 @@ impl Session {
         // 尾巴预编辑 = 引擎接口输出（preedit，五条显示规则，39-rime-pipeline.md §4）：
         // 导航跟随候选切分（jian→吉安 显 ji'an）、
         // 强制撇号/兜底/简拼各归其规则；会话层只拼已确认前文。
-        let preceding = self.picked_text();
-        let ctx = crate::api::EngineCtx { preceding_text: &preceding };
+        // 46 号 §3.3：seg 直接复用 recompute 存下的分段视图（不再让引擎二次切分）。
         let tail_preview = self.ime.preedit(
-            &ctx,
-            &crate::api::PendingInput { raw: &self.raw },
+            &self.raw,
+            &self.seg,
             if page_cands.is_empty() {
                 None
             } else {
