@@ -12,8 +12,8 @@ use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
     ITfContextComposition, ITfEditSession, ITfEditSession_Impl, TF_ANCHOR_END,
-    TF_DEFAULT_SELECTION, TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION,
-    TF_SELECTIONSTYLE,
+    TF_ANCHOR_START, TF_DEFAULT_SELECTION, TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC,
+    TF_SELECTION, TF_SELECTIONSTYLE,
 };
 use windows_core::{implement, BOOL, ComObject, Interface, Result};
 
@@ -134,8 +134,8 @@ impl Composition {
         inner.ok()
     }
 
-    /// 只读量取当前光标矩形（屏幕坐标；composition 尾端锚点，与打字路径一致）。
-    /// 布局跟随用：宿主窗口拖拽/缩放/滚动后重定位候选窗。
+    /// 只读量取当前锚点矩形（屏幕坐标；composition **起点**，与打字路径同一口径）。
+    /// 布局跟随用：宿主窗口拖拽/缩放/滚动后重定位候选窗（锚点随文档平移）。
     /// 失败（文档锁定/无 view/clipped/全零矩形）一律 None，调用方保持原位。
     /// SYNC|READ：回调不在编辑锁内时同步完成；被锁即失败——正好跳过打字路径
     /// 自身触发布局变化时的重复量取。
@@ -203,7 +203,7 @@ struct SetTextSession {
     caret_probe_fails: Rc<Cell<u8>>,
     /// 输出：本次新建的 composition。
     started: RefCell<Option<ITfComposition>>,
-    /// 输出：新光标矩形（屏幕坐标）。
+    /// 输出：新锚点矩形（composition 起点，屏幕坐标；47 号）。
     caret: RefCell<Option<CaretRect>>,
 }
 
@@ -272,7 +272,26 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
             self.context.SetSelection(ec, &sel)
         })?;
 
-        // 量取光标矩形（composition 文本的尾端，屏幕坐标）。
+        // 候选窗锚点 = composition **起点**（47 号：定位语义由"跟随尾端"反转为"锚定会话起点"）：
+        // 选区收尾保持尾端不变（光标仍落在预编辑末尾，输入法正常行为），但**量取矩形改用
+        // 起点**——起点在打字期恒定（预编辑从它向右/向下生长，折行也只移动尾端），故候选窗
+        // 与预编辑同原点、逐键不抖动；而拖拽/滚动/缩放时起点随文档平移，布局跟随路径
+        // （RepositionSession，同为起点折叠）照旧把它同步过去。
+        // 量取锚点的 range 必须**新建**：上面那个 range 已被 `Collapse(TF_ANCHOR_END)`
+        // 退化成"尾端一个点"——退化区间没有跨度，对它再 `Collapse(TF_ANCHOR_START)`
+        // 是原地不动，量出来的仍是最初折叠到的尾端。2026-09-10 真机日志实锤：复用它会
+        // 得到随预编辑逐键右移的 x（len=32→1868，len=45→1959），而布局跟随路径
+        // （RepositionSession 用新 range 折叠起点）恒定读到起点 1643——两路差 316px >
+        // JUMP_THRESHOLD(150px)，跳变检测于是每隔一键误判"输入点远跳"→ 藏窗 →
+        // 下一键又 show（日志里 render show 与 update 交替），候选窗出现/消失闪烁。
+        // 故与 RepositionSession 同款：另取 composition 的新 range 折叠起点后量取。
+        // SAFETY: 标准 TSF 调用，ec 为当前读写 cookie；GetRange 与上面那次同源。
+        let anchor = trace_step("comp.GetRange(anchor)", || unsafe { comp.GetRange() })?;
+        trace_step("anchor.Collapse(TF_ANCHOR_START)", || unsafe {
+            anchor.Collapse(ec, TF_ANCHOR_START)
+        })?;
+
+        // 量取锚点矩形（composition 起点，屏幕坐标）。
         // 宿主不支持时直接跳过：Electron/Chromium 实测 GetTextExt 恒失败（0x80040206），
         // 每键白跑一次跨进程调用 + 一条失败日志；候选窗位置改由布局跟随
         // （OnLayoutChange → query_caret）兜底。
@@ -291,7 +310,7 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
         let mut clipped = BOOL(0);
         // SAFETY: GetTextExt 由 TSF 保证在 edit session 内可调用；输出缓冲在调用前初始化。
         let ext = trace_step("view.GetTextExt", || unsafe {
-            view.GetTextExt(ec, &range, &mut rc, &mut clipped)
+            view.GetTextExt(ec, &anchor, &mut rc, &mut clipped)
         });
         // 成败都维护失败计数，达上限后本分支不再进入（见上方早退）。
         // clipped 不计失败：宿主是支持的，只是文本此刻在视口外。
@@ -310,7 +329,7 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
             }
         }
         log_line(&format!(
-            "[caret] GetTextExt：rc=({},{},{},{}) clipped={} err={:?}",
+            "[caret] GetTextExt（锚点=composition 起点）：rc=({},{},{},{}) clipped={} err={:?}",
             rc.left, rc.top, rc.right, rc.bottom, clipped.0,
             ext.as_ref().err().map(|e| e.code())
         ));
@@ -354,7 +373,7 @@ fn trace_step<T>(name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
     }
 }
 
-/// 同步只读 edit session：量取 composition 尾端光标矩形（屏幕坐标）。
+/// 同步只读 edit session：量取 composition **起点**（候选窗锚点）矩形（屏幕坐标）。
 /// 只读不写：布局跟随路径（query_caret）专用，绝不扰动应用文档。
 #[implement(ITfEditSession)]
 struct RepositionSession {
@@ -362,7 +381,7 @@ struct RepositionSession {
     comp: ITfComposition,
     /// 光标量取连续失败计数（与 Composition 共享）。
     caret_probe_fails: Rc<Cell<u8>>,
-    /// 输出：光标矩形（None = 量取失败/clipped/文本不可见）。
+    /// 输出：锚点矩形（composition 起点；None = 量取失败/clipped/文本不可见）。
     caret: RefCell<Option<CaretRect>>,
 }
 
@@ -372,10 +391,12 @@ impl ITfEditSession_Impl for RepositionSession_Impl {
         let range = trace_step("reposition: comp.GetRange", || unsafe {
             self.comp.GetRange()
         })?;
-        // 与 SetTextSession 打字路径同锚点：尾端折叠（候选窗跟预编辑尾端）。
+        // 与 SetTextSession 打字路径同锚点：**起点**折叠（候选窗锚定会话起点；47 号）。
+        // 拖拽/滚动/缩放改变的是整个文档的布局，起点随之平移 → 窗口跟着平移；
+        // 打字只移动尾端、起点不动 → 窗口原地不动（不抖动）。
         // SAFETY: 标准 TSF 调用，ec 为当前只读 cookie。
-        trace_step("reposition: range.Collapse(TF_ANCHOR_END)", || unsafe {
-            range.Collapse(ec, TF_ANCHOR_END)
+        trace_step("reposition: range.Collapse(TF_ANCHOR_START)", || unsafe {
+            range.Collapse(ec, TF_ANCHOR_START)
         })?;
         // SAFETY: GetActiveView 由 TSF 保证在 edit session 内可调用。
         let view = trace_step("reposition: context.GetActiveView", || unsafe {
