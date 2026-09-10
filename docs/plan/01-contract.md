@@ -716,3 +716,38 @@ pub struct Translation { pub segmentation: Vec<Span>, pub candidates: Vec<Candid
 - 预编辑显示规则收编为 `api::preview_rules` 五规则共用实现（行为不变）。
 - rime 核心候选流：补全(全跨)置顶 → 纯全拼桶 → 含简拼桶（详见任务书 §13 裁决表）；
   词优先（可靠精确词在场不组句）、简拼边展开含单音节词条、大写保形字符不参与匹配。
+
+## 9. 段内切分规则补充（2026-09-10 增补）
+
+> 本节为**增量补充**：§4 原文（「贪心切分」）保持不动，下述是其「段内怎么切」的细化，
+> 绝大多数输入下与原文等价（逐字节 A/B 见 §9.3）。
+
+### 9.1 规则（两段式）
+
+1. **优先「完整音节链 + 可选尾段」**：除末段外**全部是完整音节**，末段允许是未闭合音节
+   （某音节的**真前缀**，如 `zh`/`yo`）或单字母（大写保形）——即 rime 组句闸门
+   `rest_all_syllables`（`rime/mod.rs`：`ne[..len-1].all(is_syllable)`）认可的形态。
+   实现 = 最长优先 DFS + **失败位置记忆化**，复杂度仍 O(n·L)。
+2. **退回**：不存在这样的切法（简拼 `nhmsx`、大写保形 `niHAO`、`sh`/`zho` 这类前缀串）时，
+   退回原「最长音节优先 + 音节前缀/单字母兜底」，行为与补充前**逐字节一致**。
+
+### 9.2 动机（真机 + REPL 双向复现）
+
+纯最长匹配会撞进 `den`（扽 dèn）这类**合法但生僻**的音节，吃掉本该属于后一个音节的字母：
+`zhendeniubi` → `zhen|den|i|u|bi`，**段中**出现非音节 `i`/`u` → 组句闸门关闭 →
+**长句候选整条消失**、只剩首段词（实测 `zhecixiugaishizhendeniubi` 坍缩成 这次/这词/这/着/者）。
+补充后切为 `zhen|de|niu|bi`，闸门保持打开、句候选回到第 1 位（`这次修改时真的牛逼 Sentence`）。
+
+**归因澄清**：该缺陷在 46 号重构**前后输出逐字节相同**（`d0baaac` worktree 对照），非 46 号引入；
+46 号把「整跨词反查」搬进词库侧，与本规则无耦合。
+
+### 9.3 影响面与验证
+
+- **影响面**：28 条语料 A/B（39 号 §15A 十二条 + 两条长哨兵 + `dier`/`fenge`/`keneng`/`xian`/
+  `nhmsx`/`niHAO`/`qingnixiangyong` 等）**仅上述形态发生变化**，其余逐字节不变；
+  `api::best_seg` 的整跨词反查优先级不变（反查只补「整串成词」情形）。
+- **代码**：`crates/iuv-core/src/schema.rs` —— `greedy_group`（入口）/ `syllable_chain` /
+  `chain_dfs` / `is_valid_tail`；原实现保留为 `longest_match_group`（兜底路径）。
+- **回归钉子**：`schema::tests::seg_backtracks_to_keep_syllable_chain`（含与纯最长匹配的对照断言）。
+- **遗留（未处理）**：`zhendeni` 这类「尾段是单字母」的中途态仍是 `zhen|den|i`（与补充前一致、
+  闸门仍开、候选不变）；要让生僻音节也让位需给音节引入频率权重，属另一档改动。
