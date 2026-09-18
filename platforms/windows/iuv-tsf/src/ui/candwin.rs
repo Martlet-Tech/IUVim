@@ -45,7 +45,7 @@ const WM_MOUSELEAVE: u32 = 675;
 
 const CLASS_NAME: PCWSTR = w!("IuvCandidateWindow");
 
-/// 主字号（px @96dpi）；dpi 缩放由每帧 scale 处理。
+// 主字号（px @96dpi）；dpi 缩放由每帧 scale 处理。
 
 /// ULW 自绘候选窗：无边框、置顶、不抢焦点、真透明圆角/阴影。
 /// `new(theme)` 不建窗；首次 `show` 懒建（窗口必须建在调用线程）。

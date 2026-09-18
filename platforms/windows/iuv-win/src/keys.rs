@@ -1,5 +1,5 @@
 //! Windows 按键映射辅助（41-keymap-settings.md）：vk ↔ `iuv_core::Key` 基础键映射
-//! + `Combo` 构造/拆解。TSF（route_key 组合键查表）与 daemon（WH_KEYBOARD_LL 录入、
+//! 及 `Combo` 构造/拆解。TSF（route_key 组合键查表）与 daemon（WH_KEYBOARD_LL 录入、
 //! `RegisterHotKey` 注册）共用——两进程对同一物理键的语义必须一致。
 
 use iuv_core::{Combo, Key};
@@ -109,9 +109,7 @@ pub fn base_key_to_vk(base: &Key) -> Option<u16> {
                     windows::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW(*c as u16)
                 };
                 let vk = (r as u16) & 0xFF;
-                if vk == 0 && *c != ' ' {
-                    None
-                } else if vk == 0xFF {
+                if (vk == 0 && *c != ' ') || vk == 0xFF {
                     None
                 } else {
                     Some(vk)

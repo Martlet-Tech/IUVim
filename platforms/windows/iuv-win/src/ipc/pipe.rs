@@ -81,8 +81,7 @@ pub(super) mod imp {
         };
         if handle.is_invalid() {
             let e = unsafe { windows::Win32::Foundation::GetLastError() };
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 format!("创建命名管道失败: {}", e.0),
             ));
         }
@@ -96,8 +95,7 @@ pub(super) mod imp {
         if let Err(_e) = r {
             let code = unsafe { windows::Win32::Foundation::GetLastError() };
             if code != ERROR_PIPE_CONNECTED {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     format!("等待客户端连接失败: {}", code.0),
                 ));
             }
@@ -150,7 +148,7 @@ pub(super) mod imp {
         let mut read: u32 = 0;
         // SAFETY: buf 可写，read 输出实际字节数；同步（无 OVERLAPPED）。
         unsafe { ReadFile(handle, Some(&mut buf), Some(&mut read), None) }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("读管道失败: {}", e.code())))?;
+            .map_err(|e| io::Error::other(format!("读管道失败: {}", e.code())))?;
         buf.truncate(read as usize);
         let payload = parse_frame(&buf)?;
         Ok(payload.to_vec())
@@ -161,7 +159,7 @@ pub(super) mod imp {
         let mut written: u32 = 0;
         // SAFETY: frame 只读；written 输出实际字节数；同步。
         unsafe { WriteFile(handle, Some(&frame), Some(&mut written), None) }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("写管道失败: {}", e.code())))?;
+            .map_err(|e| io::Error::other(format!("写管道失败: {}", e.code())))?;
         if written as usize != frame.len() {
             return Err(bad(&format!("写管道字节数不符 {written} != {}", frame.len())));
         }
@@ -216,7 +214,7 @@ impl PipeClient {
 
     /// 发请求 → 收响应（单次会话）。
     pub fn request(&self, req: &Request) -> io::Result<Response> {
-        let _ = imp::write_frame(self.handle, &encode_request(req))?;
+        imp::write_frame(self.handle, &encode_request(req))?;
         let resp_payload = imp::read_frame(self.handle)?;
         decode_response(&resp_payload)
     }
@@ -254,8 +252,7 @@ impl PipeServer {
         };
         if handle.is_invalid() {
             let e = unsafe { windows::Win32::Foundation::GetLastError() };
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 format!("创建命名管道失败: {}", e.0),
             ));
         }
@@ -266,8 +263,7 @@ impl PipeServer {
             if code != ERROR_PIPE_CONNECTED {
                 // SAFETY: 等待失败，关闭管道句柄。
                 let _ = unsafe { CloseHandle(handle) };
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     format!("等待客户端连接失败: {}", code.0),
                 ));
             }

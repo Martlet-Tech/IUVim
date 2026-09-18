@@ -646,7 +646,7 @@ impl ToolbarWindow {
                         _ => return,
                     }
                 };
-                self.dispatch_state_toggle(&label, &cmd, pid, tid);
+                self.dispatch_state_toggle(label, &cmd, pid, tid);
             }
         }
     }
@@ -696,7 +696,7 @@ impl ToolbarWindow {
             log::log_line(&format!("[hotkey] {label} 但无 focused 实例，忽略"));
             return;
         };
-        self.dispatch_state_toggle(&label, &target_cmd, pid, tid);
+        self.dispatch_state_toggle(label, &target_cmd, pid, tid);
     }
 
     /// 读当前 focused 实例四态（无实例 → 默认四态）。
@@ -1041,7 +1041,7 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_HOTKEY => {
             // 全局热键触发（41-keymap-settings.md §4）：wParam 低 16 位 = 热键 id。
-            let id = (wparam.0 & 0xFFFF) as usize;
+            let id = wparam.0 & 0xFFFF;
             if let Some((action, _secondary)) = crate::hotkey::hotkey_from_id(id) {
                 if let Some(w) = get_bar_mut(hwnd) {
                     w.on_hotkey(action);
@@ -1054,7 +1054,7 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
             // logo/空白/宠物区透明 = 箭头；非客户区走类默认（箭头）。lparam 不含坐标，取
             // GetCursorPos − 窗口原点得客户区坐标（同 WM_NCHITTEST 臂手法）。
             // 拖拽捕获期间系统不发本消息，无需特判。
-            if (lparam.0 as u32 & 0xFFFF) == HTCLIENT as u32 {
+            if (lparam.0 as u32 & 0xFFFF) == HTCLIENT {
                 let cursor_kind = get_bar_mut(hwnd).map(|w| {
                     let (sx, sy) = cursor_screen();
                     let mut rc = RECT::default();

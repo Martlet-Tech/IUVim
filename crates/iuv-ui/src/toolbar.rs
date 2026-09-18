@@ -164,6 +164,223 @@ fn toolbar_icon<'a>(spec: &'a ToolbarSpec, i: usize) -> Option<&'a Pixmap> {
         _ => None,
     }
 }
+/// 缩放 = 预缩放到目标尺寸的临时 Pixmap + identity 绘制（语义直白，避免 transform
+/// 叠加歧义）；分配失败静默跳过（按钮留空，不 panic）。
+/// 2026-08-21 修：缩放变换用 `from_scale` 而非 `from_bbox`——`from_bbox` 把源坐标
+/// (0..iw) 映射到 (0..iw*scale)，目标画布只有 dw 大小 → 只采样源图左上角 ~1 像素
+/// （图标居中、四角透明 → 整片空白，实测 32-toolbar 图标全空）。
+fn draw_icon_scaled(canvas: &mut Pixmap, icon: &Pixmap, r: &LayoutRect, inset: f32) {
+    let avail = (r.w as f32 - inset * 2.0).min(r.h as f32 - inset * 2.0);
+    if avail <= 0.0 {
+        return;
+    }
+    let iw = icon.width() as f32;
+    let ih = icon.height() as f32;
+    if iw <= 0.0 || ih <= 0.0 {
+        return;
+    }
+    let scale = (avail / iw).min(avail / ih);
+    let dw = (iw * scale).round().max(1.0);
+    let dh = (ih * scale).round().max(1.0);
+    let Some(mut dst) = Pixmap::new(dw as u32, dh as u32) else {
+        return; // 分配失败：静默跳过
+    };
+    let paint = PixmapPaint {
+        opacity: 1.0,
+        quality: FilterQuality::Bilinear,
+        ..Default::default()
+    };
+    // from_scale(dw/iw, dh/ih)：源图标 (iw×ih) 等比缩放到目标尺寸 (dw×dh) 的左上角原点。
+    dst.draw_pixmap(
+        0,
+        0,
+        icon.as_ref(),
+        &paint,
+        Transform::from_scale(dw / iw, dh / ih),
+        None,
+    );
+    let x = (r.x as f32 + (r.w as f32 - dw) / 2.0).round() as i32;
+    let y = (r.y as f32 + (r.h as f32 - dh) / 2.0).round() as i32;
+    let paint2 = PixmapPaint::default();
+    canvas.draw_pixmap(x, y, dst.as_ref(), &paint2, Transform::identity(), None);
+}
+
+// ===== M1 桌宠骨架 · 复合渲染 =====
+
+/// 宠物栖木高度（@96dpi 基准）——工具栏上沿之上"挂"出多少像素。
+/// 视觉上宠物趴在上沿（底边 y = PET_OVERHANG 贴工具栏顶），符合 UIUX §4.1 栖木式吸附。
+pub const PET_OVERHANG: f32 = 136.0;
+/// 宠物显示宽度（@96dpi 基准；render 乘 scale 后 ceil）。
+/// 少女半身像是竖长构图，故宽高分离（原像素狗为正方形 40×40）。
+pub const PET_DISPLAY_W: f32 = 112.0;
+/// 宠物显示高度（@96dpi 基准；render 乘 scale 后 ceil）。
+pub const PET_DISPLAY_H: f32 = 128.0;
+
+/// 单张帧表渲染规格（纹理 + 当前 clip + 当前帧）——像素狗 / L0 回退路径。
+pub struct PetRenderSpec<'a> {
+    pub sprites: &'a PetSprites,
+    pub clip: PetClip,
+    pub frame: u32,
+}
+
+/// 分层皮肤渲染规格（少女形象）。
+///
+/// 表情由两路叠加决定：`anim.is_blinking()` 优先（闭眼覆盖一切），
+/// 否则用 `clip.face()` 给出的动作表情基线。
+pub struct LayeredPetSpec<'a> {
+    /// 皮肤描述（图层 z-order、锚点、摆动参数）
+    pub skin: &'a PetSkin,
+    /// 已解码的图层位图
+    pub images: &'a LayerImages,
+    /// 连续物理状态（各层摆角、呼吸、眨眼）
+    pub anim: &'a PetAnim,
+    /// 离散动作（决定表情基线）
+    pub clip: PetClip,
+}
+
+/// 宠物渲染方式二选一。
+pub enum PetSpec<'a> {
+    /// 单张帧表（像素狗 / 素材缺失时的 L0 回退）
+    Sprites(&'a PetRenderSpec<'a>),
+    /// 分层皮肤（少女形象，带物理摆动与表情切换）
+    Layered(&'a LayeredPetSpec<'a>),
+}
+
+/// 复合渲染规格：工具栏 + 可选宠物。
+pub struct CompositeSpec<'a> {
+    /// 复用现有 `ToolbarSpec`（图标 + 四态 + 悬停/按下）
+    pub toolbar: &'a ToolbarSpec<'a>,
+    /// `None` = 不画宠物（工具栏区保留，几何不变）
+    pub pet: Option<PetSpec<'a>>,
+}
+
+/// 工具栏尺寸（@96dpi 基准 × scale）——与 `render_toolbar` 同源公式，抽出避免两三处重复。
+fn toolbar_size(scale: f32) -> (i32, i32) {
+    let btn = (TOOLBAR_BTN * scale).ceil() as i32;
+    let gap = (TOOLBAR_GAP * scale).ceil() as i32;
+    let pad = (TOOLBAR_PAD * scale).ceil() as i32;
+    let w = btn * TB_COUNT as i32 + gap * (TB_COUNT as i32 - 1) + pad * 2;
+    let h = btn + pad * 2;
+    (w, h)
+}
+
+/// 计算宠物显示矩形（复合窗口坐标）。
+///
+/// 水平居中于**工具栏正上方**（x = (toolbar_w - display_w) / 2），底部 y = PET_OVERHANG
+/// （贴工具栏上沿）。宠物不再向右追加宽度——复合窗宽 = 工具栏宽，工具栏可贴到屏幕右边缘
+/// （旧版宠物挂在右侧 128px 追加区，窗口右边比工具栏宽出 128px，拖不到屏幕右缘）。
+fn pet_display_rect(scale: f32) -> (i32, i32, u32, u32) {
+    let display_w = (PET_DISPLAY_W * scale).ceil() as u32;
+    let display_h = (PET_DISPLAY_H * scale).ceil() as u32;
+    let overhang = (PET_OVERHANG * scale).ceil() as i32;
+    let (toolbar_w, _) = toolbar_size(scale);
+    let x = ((toolbar_w - display_w as i32) / 2).max(0);
+    let y = overhang - display_h as i32; // 底部贴工具栏上沿
+    (x, y, display_w, display_h)
+}
+
+/// 复合渲染：工具栏 Surface + 宠物区 → 同一张 Surface。
+///
+/// 返回：
+/// - `Surface`：合成 BGRA Surface，尺寸 = (max(toolbar_w, 宠物宽), toolbar_h + overhang)；
+///   工具栏位于下方，宠物居中挂在工具栏上沿之上（UIUX §4.1 栖木式）。
+/// - `Vec<LayoutRect>`：按钮矩形，已偏移到**复合坐标**（y += overhang）——直接喂
+///   `hit_test`（daemon 复合窗口的按钮命中零换算）。
+/// - `Option<LayoutRect>`：宠物显示矩形（命中 + 拖拽判别用）；`None` = 无宠物 spec。
+/// - `Option<Vec<u8>>`：宠物区 alpha mask（**仅分层路径返回**，长度 `w*h`），供 daemon 做
+///   O(1) 点击命中。单张帧表路径返回 `None`（其命中沿用 `pet_alpha_at` 逆缩放）。
+///
+/// 失败路径：素材缺失/分配失败 → 返回空 Surface（窗口后续 SkipTimer 与原逻辑一致）。
+pub fn render_composite(
+    spec: &CompositeSpec,
+    theme: &Theme,
+    scale: f32,
+) -> (Surface, Vec<LayoutRect>, Option<LayoutRect>, Option<Vec<u8>>) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let (toolbar_w, toolbar_h) = toolbar_size(scale);
+    let overhang = (PET_OVERHANG * scale).ceil() as i32;
+    // 宠物居中挂在工具栏正上方（不向右追加宽度）→ 复合窗宽 = 工具栏宽；
+    // 仅当宠物显示宽意外超过工具栏宽时才取 max，避免宠物被裁掉。
+    let composite_w = toolbar_w.max((PET_DISPLAY_W * scale).ceil() as i32);
+    let composite_h = toolbar_h + overhang;
+    let pet_rect = if spec.pet.is_some() {
+        let (x, y, w, h) = pet_display_rect(scale);
+        Some(LayoutRect { x, y, w: w as i32, h: h as i32 })
+    } else {
+        None
+    };
+
+    // 复合画布：透明 BG (alpha=0) —— 仅工具栏区与宠物像素不透明，其余点击穿透
+    let mut composite = match Pixmap::new(composite_w.max(0) as u32, composite_h.max(0) as u32) {
+        Some(p) => p,
+        None => {
+            return (Surface::empty(), Vec::new(), pet_rect, None);
+        }
+    };
+    composite.fill(Color::TRANSPARENT);
+
+    // 工具栏内容 blit 到 (0, overhang)
+    if let Some((toolbar_pix, mut toolbar_rects)) =
+        render_toolbar_into_pixmap(spec.toolbar, theme, scale)
+    {
+        let blit_paint = PixmapPaint::default();
+        composite.draw_pixmap(
+            0,
+            overhang,
+            toolbar_pix.as_ref(),
+            &blit_paint,
+            Transform::identity(),
+            None,
+        );
+        // 按钮矩形偏移到复合坐标
+        for r in toolbar_rects.iter_mut() {
+            r.y += overhang;
+        }
+        // 宠物渲染：单张帧表 / 分层皮肤 两条路径
+        let pet_mask = if let (Some(pet), Some(pr)) = (spec.pet.as_ref(), pet_rect) {
+            match pet {
+                PetSpec::Sprites(sprite_spec) => {
+                    let _ = render_pet_frame(
+                        &mut composite,
+                        sprite_spec.sprites,
+                        sprite_spec.clip,
+                        sprite_spec.frame,
+                        &pr,
+                    );
+                    None
+                }
+                PetSpec::Layered(layered) => {
+                    // 闭眼优先于动作表情基线
+                    let expr = if layered.anim.is_blinking() {
+                        FaceExpr::Blink
+                    } else {
+                        layered.clip.face()
+                    };
+                    render_pet_layered(
+                        &mut composite,
+                        layered.skin,
+                        layered.images,
+                        expr,
+                        layered.anim,
+                        &pr,
+                    )
+                }
+            }
+        } else {
+            None
+        };
+        // 复合 Pixmap → Surface（一次性 R/B 交换）
+        let surf = pixmap_to_surface(composite);
+        return (surf, toolbar_rects, pet_rect, pet_mask);
+    }
+
+    // 工具栏渲染失败：仍返回空 Surface（daemon 仍能感知失败并重试）
+    (Surface::empty(), Vec::new(), pet_rect, None)
+}
 
 #[cfg(test)]
 mod tests {
@@ -422,221 +639,4 @@ mod tests {
         px.save_png(&out).expect("预览 PNG 应保存成功");
         eprintln!("[preview] {}", out.display());
     }
-}
-/// 缩放 = 预缩放到目标尺寸的临时 Pixmap + identity 绘制（语义直白，避免 transform
-/// 叠加歧义）；分配失败静默跳过（按钮留空，不 panic）。
-/// 2026-08-21 修：缩放变换用 `from_scale` 而非 `from_bbox`——`from_bbox` 把源坐标
-/// (0..iw) 映射到 (0..iw*scale)，目标画布只有 dw 大小 → 只采样源图左上角 ~1 像素
-/// （图标居中、四角透明 → 整片空白，实测 32-toolbar 图标全空）。
-fn draw_icon_scaled(canvas: &mut Pixmap, icon: &Pixmap, r: &LayoutRect, inset: f32) {
-    let avail = (r.w as f32 - inset * 2.0).min(r.h as f32 - inset * 2.0);
-    if avail <= 0.0 {
-        return;
-    }
-    let iw = icon.width() as f32;
-    let ih = icon.height() as f32;
-    if iw <= 0.0 || ih <= 0.0 {
-        return;
-    }
-    let scale = (avail / iw).min(avail / ih);
-    let dw = (iw * scale).round().max(1.0);
-    let dh = (ih * scale).round().max(1.0);
-    let Some(mut dst) = Pixmap::new(dw as u32, dh as u32) else {
-        return; // 分配失败：静默跳过
-    };
-    let paint = PixmapPaint {
-        opacity: 1.0,
-        quality: FilterQuality::Bilinear,
-        ..Default::default()
-    };
-    // from_scale(dw/iw, dh/ih)：源图标 (iw×ih) 等比缩放到目标尺寸 (dw×dh) 的左上角原点。
-    dst.draw_pixmap(
-        0,
-        0,
-        icon.as_ref(),
-        &paint,
-        Transform::from_scale(dw / iw, dh / ih),
-        None,
-    );
-    let x = (r.x as f32 + (r.w as f32 - dw) / 2.0).round() as i32;
-    let y = (r.y as f32 + (r.h as f32 - dh) / 2.0).round() as i32;
-    let paint2 = PixmapPaint::default();
-    canvas.draw_pixmap(x, y, dst.as_ref(), &paint2, Transform::identity(), None);
-}
-
-// ===== M1 桌宠骨架 · 复合渲染 =====
-
-/// 宠物栖木高度（@96dpi 基准）——工具栏上沿之上"挂"出多少像素。
-/// 视觉上宠物趴在上沿（底边 y = PET_OVERHANG 贴工具栏顶），符合 UIUX §4.1 栖木式吸附。
-pub const PET_OVERHANG: f32 = 136.0;
-/// 宠物显示宽度（@96dpi 基准；render 乘 scale 后 ceil）。
-/// 少女半身像是竖长构图，故宽高分离（原像素狗为正方形 40×40）。
-pub const PET_DISPLAY_W: f32 = 112.0;
-/// 宠物显示高度（@96dpi 基准；render 乘 scale 后 ceil）。
-pub const PET_DISPLAY_H: f32 = 128.0;
-
-/// 单张帧表渲染规格（纹理 + 当前 clip + 当前帧）——像素狗 / L0 回退路径。
-pub struct PetRenderSpec<'a> {
-    pub sprites: &'a PetSprites,
-    pub clip: PetClip,
-    pub frame: u32,
-}
-
-/// 分层皮肤渲染规格（少女形象）。
-///
-/// 表情由两路叠加决定：`anim.is_blinking()` 优先（闭眼覆盖一切），
-/// 否则用 `clip.face()` 给出的动作表情基线。
-pub struct LayeredPetSpec<'a> {
-    /// 皮肤描述（图层 z-order、锚点、摆动参数）
-    pub skin: &'a PetSkin,
-    /// 已解码的图层位图
-    pub images: &'a LayerImages,
-    /// 连续物理状态（各层摆角、呼吸、眨眼）
-    pub anim: &'a PetAnim,
-    /// 离散动作（决定表情基线）
-    pub clip: PetClip,
-}
-
-/// 宠物渲染方式二选一。
-pub enum PetSpec<'a> {
-    /// 单张帧表（像素狗 / 素材缺失时的 L0 回退）
-    Sprites(&'a PetRenderSpec<'a>),
-    /// 分层皮肤（少女形象，带物理摆动与表情切换）
-    Layered(&'a LayeredPetSpec<'a>),
-}
-
-/// 复合渲染规格：工具栏 + 可选宠物。
-pub struct CompositeSpec<'a> {
-    /// 复用现有 `ToolbarSpec`（图标 + 四态 + 悬停/按下）
-    pub toolbar: &'a ToolbarSpec<'a>,
-    /// `None` = 不画宠物（工具栏区保留，几何不变）
-    pub pet: Option<PetSpec<'a>>,
-}
-
-/// 工具栏尺寸（@96dpi 基准 × scale）——与 `render_toolbar` 同源公式，抽出避免两三处重复。
-fn toolbar_size(scale: f32) -> (i32, i32) {
-    let btn = (TOOLBAR_BTN * scale).ceil() as i32;
-    let gap = (TOOLBAR_GAP * scale).ceil() as i32;
-    let pad = (TOOLBAR_PAD * scale).ceil() as i32;
-    let w = btn * TB_COUNT as i32 + gap * (TB_COUNT as i32 - 1) + pad * 2;
-    let h = btn + pad * 2;
-    (w, h)
-}
-
-/// 计算宠物显示矩形（复合窗口坐标）。
-///
-/// 水平居中于**工具栏正上方**（x = (toolbar_w - display_w) / 2），底部 y = PET_OVERHANG
-/// （贴工具栏上沿）。宠物不再向右追加宽度——复合窗宽 = 工具栏宽，工具栏可贴到屏幕右边缘
-/// （旧版宠物挂在右侧 128px 追加区，窗口右边比工具栏宽出 128px，拖不到屏幕右缘）。
-fn pet_display_rect(scale: f32) -> (i32, i32, u32, u32) {
-    let display_w = (PET_DISPLAY_W * scale).ceil() as u32;
-    let display_h = (PET_DISPLAY_H * scale).ceil() as u32;
-    let overhang = (PET_OVERHANG * scale).ceil() as i32;
-    let (toolbar_w, _) = toolbar_size(scale);
-    let x = ((toolbar_w - display_w as i32) / 2).max(0);
-    let y = overhang - display_h as i32; // 底部贴工具栏上沿
-    (x, y, display_w, display_h)
-}
-
-/// 复合渲染：工具栏 Surface + 宠物区 → 同一张 Surface。
-///
-/// 返回：
-/// - `Surface`：合成 BGRA Surface，尺寸 = (max(toolbar_w, 宠物宽), toolbar_h + overhang)；
-///   工具栏位于下方，宠物居中挂在工具栏上沿之上（UIUX §4.1 栖木式）。
-/// - `Vec<LayoutRect>`：按钮矩形，已偏移到**复合坐标**（y += overhang）——直接喂
-///   `hit_test`（daemon 复合窗口的按钮命中零换算）。
-/// - `Option<LayoutRect>`：宠物显示矩形（命中 + 拖拽判别用）；`None` = 无宠物 spec。
-/// - `Option<Vec<u8>>`：宠物区 alpha mask（**仅分层路径返回**，长度 `w*h`），供 daemon 做
-///   O(1) 点击命中。单张帧表路径返回 `None`（其命中沿用 `pet_alpha_at` 逆缩放）。
-///
-/// 失败路径：素材缺失/分配失败 → 返回空 Surface（窗口后续 SkipTimer 与原逻辑一致）。
-pub fn render_composite(
-    spec: &CompositeSpec,
-    theme: &Theme,
-    scale: f32,
-) -> (Surface, Vec<LayoutRect>, Option<LayoutRect>, Option<Vec<u8>>) {
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
-    let (toolbar_w, toolbar_h) = toolbar_size(scale);
-    let overhang = (PET_OVERHANG * scale).ceil() as i32;
-    // 宠物居中挂在工具栏正上方（不向右追加宽度）→ 复合窗宽 = 工具栏宽；
-    // 仅当宠物显示宽意外超过工具栏宽时才取 max，避免宠物被裁掉。
-    let composite_w = toolbar_w.max((PET_DISPLAY_W * scale).ceil() as i32);
-    let composite_h = toolbar_h + overhang;
-    let pet_rect = if spec.pet.is_some() {
-        let (x, y, w, h) = pet_display_rect(scale);
-        Some(LayoutRect { x, y, w: w as i32, h: h as i32 })
-    } else {
-        None
-    };
-
-    // 复合画布：透明 BG (alpha=0) —— 仅工具栏区与宠物像素不透明，其余点击穿透
-    let mut composite = match Pixmap::new(composite_w.max(0) as u32, composite_h.max(0) as u32) {
-        Some(p) => p,
-        None => {
-            return (Surface::empty(), Vec::new(), pet_rect, None);
-        }
-    };
-    composite.fill(Color::TRANSPARENT);
-
-    // 工具栏内容 blit 到 (0, overhang)
-    if let Some((toolbar_pix, mut toolbar_rects)) =
-        render_toolbar_into_pixmap(spec.toolbar, theme, scale)
-    {
-        let blit_paint = PixmapPaint::default();
-        composite.draw_pixmap(
-            0,
-            overhang,
-            toolbar_pix.as_ref(),
-            &blit_paint,
-            Transform::identity(),
-            None,
-        );
-        // 按钮矩形偏移到复合坐标
-        for r in toolbar_rects.iter_mut() {
-            r.y += overhang;
-        }
-        // 宠物渲染：单张帧表 / 分层皮肤 两条路径
-        let pet_mask = if let (Some(pet), Some(pr)) = (spec.pet.as_ref(), pet_rect) {
-            match pet {
-                PetSpec::Sprites(sprite_spec) => {
-                    let _ = render_pet_frame(
-                        &mut composite,
-                        sprite_spec.sprites,
-                        sprite_spec.clip,
-                        sprite_spec.frame,
-                        &pr,
-                    );
-                    None
-                }
-                PetSpec::Layered(layered) => {
-                    // 闭眼优先于动作表情基线
-                    let expr = if layered.anim.is_blinking() {
-                        FaceExpr::Blink
-                    } else {
-                        layered.clip.face()
-                    };
-                    render_pet_layered(
-                        &mut composite,
-                        layered.skin,
-                        layered.images,
-                        expr,
-                        layered.anim,
-                        &pr,
-                    )
-                }
-            }
-        } else {
-            None
-        };
-        // 复合 Pixmap → Surface（一次性 R/B 交换）
-        let surf = pixmap_to_surface(composite);
-        return (surf, toolbar_rects, pet_rect, pet_mask);
-    }
-
-    // 工具栏渲染失败：仍返回空 Surface（daemon 仍能感知失败并重试）
-    (Surface::empty(), Vec::new(), pet_rect, None)
 }

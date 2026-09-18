@@ -36,6 +36,12 @@ pub struct UlwSurface {
 // bits 指针不跨线程传递。
 unsafe impl Send for UlwSurface {}
 
+impl Default for UlwSurface {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UlwSurface {
     /// 空缓存（首次 upload 时按 Surface 尺寸懒建）。
     pub fn new() -> Self {
@@ -51,6 +57,7 @@ impl UlwSurface {
     /// 上屏：确保 DIB 匹配 surf 尺寸 → 拷贝 premultiplied BGRA → UpdateLayeredWindow
     /// （一次调用同时定位 ptDst + 定尺寸 psize + per-pixel alpha 合成）。
     /// `log_prefix`：日志前缀（如 "[candwin]" / "[menuwin]" / "[toolbar]"），失败记日志不 panic。
+    #[allow(clippy::too_many_arguments)]
     pub fn upload(
         &mut self,
         hwnd: HWND,
@@ -107,11 +114,8 @@ impl UlwSurface {
         };
         // SAFETY: GetDC/ReleaseDC 配对
         let _ = unsafe { ReleaseDC(None, hdc_dst) };
-        if r.is_err() {
-            crate::logger::log_line(&format!(
-                "{log_prefix} UpdateLayeredWindow 失败：{:?}",
-                r.unwrap_err()
-            ));
+        if let Err(e) = r {
+            crate::logger::log_line(&format!("{log_prefix} UpdateLayeredWindow 失败：{e:?}"));
             return false;
         }
         true

@@ -227,10 +227,10 @@ fn spawn_signal_pipe_thread(toolbar: Arc<ToolbarHost>) {
                     let toolbar = toolbar.clone();
                     let worker = std::thread::Builder::new()
                         .name("iuv-signal-conn".to_string())
-                        .spawn(move || loop {
-                            match server.recv() {
-                                Ok(sig) => toolbar.handle_signal(&sig),
-                                Err(_) => break, // 对端断开 / 帧错 → 结束本连接线程
+                        .spawn(move || {
+                            // 对端断开 / 帧错 → 结束本连接线程
+                            while let Ok(sig) = server.recv() {
+                                toolbar.handle_signal(&sig);
                             }
                         });
                     if let Err(e) = worker {

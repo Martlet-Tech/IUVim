@@ -1,5 +1,5 @@
 //! 实例四态（`initial_state` 配置节点 + 运行时值）：28-initial-state-settings.md
-//! + 32-status-toolbar.md §5.1。P2.1 从 config/mod.rs 拆出，P3.3 合并
+//! 与 32-status-toolbar.md §5.1。P2.1 从 config/mod.rs 拆出，P3.3 合并
 //! `InitialState`/`RuntimeState` 为单类型 `ImeState`（字段同构无发散，删机械 From/重复 Default）。
 
 use crate::config::{InitialMode, PunctMode, ScriptMode, WidthMode};

@@ -140,6 +140,7 @@ pub fn hit_test(rects: &[Rect], x: i32, y: i32) -> Option<usize> {
 /// update 原位修正：候选内容变化导致窗口变高/变宽时，
 /// - 当前位置 + 新高度超出工作区底 → 用最近一次 caret 重新定位（下方放不下自动翻到光标上方）
 /// - 当前位置 + 新宽度超出工作区右缘 → 左移内收，保证完整可见
+///
 /// 无 caret 兜底贴工作区底；未超屏保持原位。
 pub fn update_position(
     current: (i32, i32),
@@ -228,7 +229,7 @@ mod tests {
         let (w, h, rects) = layout(&s, &fake_measurer, &fake_measurer, Orientation::Vertical);
         assert_eq!(rects.len(), 2, "2 候选，reading 不渲染");
         assert_eq!(w, 40 + PAD_X * 2, "最宽行 '1.你好'=4 字");
-        assert_eq!(h, PAD_Y * 2 + 20 * 2 + ROW_GAP * 1);
+        assert_eq!(h, PAD_Y * 2 + 20 * 2 + ROW_GAP);
         assert_eq!(
             rects[0],
             Rect {
@@ -239,7 +240,7 @@ mod tests {
             }
         );
         assert_eq!(rects[1].x, PAD_X);
-        assert_eq!(rects[1].y, PAD_Y + (20 + ROW_GAP) * 1);
+        assert_eq!(rects[1].y, PAD_Y + 20 + ROW_GAP);
     }
 
     #[test]

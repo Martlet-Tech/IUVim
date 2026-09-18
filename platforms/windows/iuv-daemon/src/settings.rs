@@ -299,7 +299,7 @@ impl Slot {
 }
 
 /// 取两槽的 &mut Combo 位置。
-fn slot_combo_mut<'a>(slot: &'a mut iuv_core::TwoSlot, which: Slot) -> &'a mut Option<iuv_core::Combo> {
+fn slot_combo_mut(slot: &mut iuv_core::TwoSlot, which: Slot) -> &mut Option<iuv_core::Combo> {
     match which {
         Slot::Primary => &mut slot.primary,
         Slot::Secondary => &mut slot.secondary,
@@ -428,11 +428,11 @@ impl SettingsApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("确定").clicked() {
                     self.apply();
-                    let _ = ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 if ui.button("取消").clicked() {
                     // 丢弃未保存改动（SettingsApp 状态随窗口销毁）。
-                    let _ = ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 if ui.button("应用").clicked() {
                     self.apply();
@@ -713,7 +713,7 @@ impl SettingsApp {
         self.capturing = true;
         self.keymap_warn = None;
         self.toolbar.set_capture_mode(true);
-        log::log_line(&format!("[capture] 进入录入模式（等待组合键）"));
+        log::log_line("[capture] 进入录入模式（等待组合键）");
     }
 
     /// 每帧从 egui 事件流消费按键：capturing 态下遇到 pressed 按键 → 处理 → 回填。
@@ -1144,7 +1144,7 @@ impl SettingsApp {
             theme: theme.to_string(),
             candidate_orientation: orientation.to_string(),
             page_size: self.page_size,
-            initial_state: self.initial.clone(),
+            initial_state: self.initial,
             passthrough_apps: apps.clone(),
             candidate_owner_apps: cand_owners.clone(),
             disabled_log_modules: self.disabled_log.clone(),
@@ -1157,7 +1157,7 @@ impl SettingsApp {
                     c.theme = theme.to_string();
                     c.candidate_orientation = orientation.to_string();
                     c.page_size = self.page_size;
-                    c.initial_state = self.initial.clone();
+                    c.initial_state = self.initial;
                     c.passthrough_apps = apps;
                     c.candidate_owner_apps = cand_owners;
                     c.disabled_log_modules = self.disabled_log.clone();
@@ -1196,7 +1196,7 @@ impl eframe::App for SettingsApp {
     /// `focus_existing_window()` 的 Win32 直操路径。
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.state.close_settings.swap(false, Ordering::AcqRel) {
-            let _ = ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         // 录入轮询：捕获完成 → 校验回填（41-keymap-settings.md §5）。
         self.poll_capture(ctx);

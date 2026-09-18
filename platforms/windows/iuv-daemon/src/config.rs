@@ -188,7 +188,7 @@ pub fn save_config(cfg: &DaemonConfig) -> io::Result<()> {
         obj.insert("page_size".into(), serde_json::Value::from(ps as u64));
         obj.insert(
             "initial_state".into(),
-            serde_json::to_value(&cfg.initial_state)
+            serde_json::to_value(cfg.initial_state)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?,
         );
         obj.insert(
@@ -347,7 +347,7 @@ mod tests {
             Some(iuv_core::Combo::plain(iuv_core::Key::F5))
         );
         assert_eq!(cfg.keymap.page_prev.primary, Some(iuv_core::Combo::plain(iuv_core::Key::PageUp)));
-        let _ = std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -372,7 +372,7 @@ mod tests {
         );
         assert_eq!(cfg.initial_state.mode, iuv_core::InitialMode::Chinese, "其余默认");
         assert_eq!(cfg.theme, "dark");
-        let _ = std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -390,7 +390,7 @@ mod tests {
         std::fs::write(iuv_dir.join("config.json"), r#"{ "page_size": 12 }"#).unwrap();
         let cfg = load_config();
         assert_eq!(cfg.page_size, 9, "12 钳回上界 9");
-        let _ = std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -436,7 +436,7 @@ mod tests {
         );
         // 其余字段保持默认
         assert_eq!(cfg.keymap.page_next.primary, Some(Combo::plain(iuv_core::Key::PageDown)));
-        let _ = std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -459,7 +459,7 @@ mod tests {
         assert!(cfg.candidate_owner_apps.is_empty(), "缺省候选自绘名单为空（恒自绘）");
         assert!(cfg.disabled_log_modules.is_empty(), "缺省字段默认全记录");
         assert!(cfg.hide_on_fullscreen, "缺省全屏隐藏开启");
-        let _ = std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -478,11 +478,13 @@ mod tests {
         std::fs::write(iuv_dir.join("config.json"), r#"{ "hide_on_fullscreen": false }"#).unwrap();
         assert!(!load_config().hide_on_fullscreen, "false 读回 false");
         // 保存 false → 读回 false（非默认值不被默认覆盖）
-        let mut cfg = DaemonConfig::default();
-        cfg.hide_on_fullscreen = false;
+        let cfg = DaemonConfig {
+            hide_on_fullscreen: false,
+            ..Default::default()
+        };
         save_config(&cfg).unwrap();
         assert!(!load_config().hide_on_fullscreen, "false 保存后读回 false");
-        let _ = std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -494,13 +496,13 @@ mod tests {
         assert!(DEFAULT_CANDIDATE_OWNER_APPS.contains(&"wow.exe"));
         assert!(DEFAULT_PASSTHROUGH_APPS.contains(&"Cyberpunk2077.exe"));
         for (name, list) in [
-            ("候选自绘", &DEFAULT_CANDIDATE_OWNER_APPS[..]),
-            ("按键直通", &DEFAULT_PASSTHROUGH_APPS[..]),
+            ("候选自绘", DEFAULT_CANDIDATE_OWNER_APPS),
+            ("按键直通", DEFAULT_PASSTHROUGH_APPS),
         ] {
             assert!(!list.is_empty(), "{name}默认名单不应为空");
             assert!(
                 list.iter()
-                    .all(|s| s.ends_with(".exe") && s.chars().all(|c| c.is_ascii())),
+                    .all(|s| s.ends_with(".exe") && s.is_ascii()),
                 "{name}名单须为 ASCII .exe 名：{list:?}"
             );
             assert!(

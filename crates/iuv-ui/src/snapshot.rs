@@ -47,20 +47,22 @@ mod tests {
 
     #[test]
     fn effect_to_snapshot_maps_fields() {
-        let mut e = Effect::default();
-        e.reading = "ni'hao".into();
         let cands = vec![
             Candidate::new("你好", CandidateKind::Word, "nihao", 1, 2),
             Candidate::new("泥嚎", CandidateKind::Word, "nihao", 2, 2),
         ];
-        e.candidates = cands.clone();
-        e.all_candidates = cands;
-        e.selected = 1;
-        e.page = PageInfo {
-            page: 0,
-            page_count: 2,
-            page_size: 5,
-            total: 7,
+        let e = Effect {
+            reading: "ni'hao".into(),
+            candidates: cands.clone(),
+            all_candidates: cands,
+            selected: 1,
+            page: PageInfo {
+                page: 0,
+                page_count: 2,
+                page_size: 5,
+                total: 7,
+            },
+            ..Default::default()
         };
         let snap = effect_to_snapshot(&e);
         assert_eq!(snap.reading, "ni'hao");

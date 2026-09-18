@@ -9,6 +9,7 @@
 //! - **Completion** 尾前缀补全——仅当图解释不到输入末尾时补一条 [farthest, len)
 //!   边，内容 = 剩余串（非音节），查询侧走前缀查询展开（librime syllabifier.cc:207-248，
 //!   cred += ln(0.05)，:26-29 权重阶梯）。
+//!
 //! 模糊音/纠错（fuzzy/correction）留 M3。
 
 use std::collections::{BTreeMap, BTreeSet};

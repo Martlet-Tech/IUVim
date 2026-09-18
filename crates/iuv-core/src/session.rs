@@ -274,7 +274,7 @@ impl Session {
             text.push_str(&c.text);
             // M2 自造词（18-m2-user-dict.md）：逐字选择（picked 全部单字）+ 整串 ≥2 字
             // → 引擎记录（场景 0/a/b 权重判定在 engine::record_phrase 内）。
-            if self.picked.len() >= 1
+            if !self.picked.is_empty()
                 && self.picked.iter().all(|(t, _)| t.chars().count() == 1)
                 && c.text.chars().count() == 1
                 && text.chars().count() >= 2

@@ -153,7 +153,7 @@ impl ToolbarHost {
         let spawned = std::thread::Builder::new()
             .name("iuv-toolbar".to_string())
             .spawn(move || toolbar_thread_main(t_shared, t_state, t_icons, t_pet, t_pending, tx));
-        let _spawned = match spawned {
+        match spawned {
             Ok(_h) => {
                 log::log_line("[toolbar] 工具条线程已启动");
             }

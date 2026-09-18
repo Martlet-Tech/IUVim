@@ -389,7 +389,7 @@ pub(crate) fn greedy_join(concat: &str, syllables: &BTreeSet<String>) -> String 
                 if !out.is_empty() {
                     out.push(b'\'');
                 }
-                out.extend_from_slice(concat[pos..pos + len].as_bytes());
+                out.extend_from_slice(&concat.as_bytes()[pos..pos + len]);
                 pos += len;
                 matched = true;
                 break;
@@ -406,7 +406,7 @@ pub(crate) fn greedy_join(concat: &str, syllables: &BTreeSet<String>) -> String 
             if !out.is_empty() {
                 out.push(b'\'');
             }
-            out.extend_from_slice(concat[pos..pos + plen].as_bytes());
+            out.extend_from_slice(&concat.as_bytes()[pos..pos + plen]);
             pos += plen;
         }
     }

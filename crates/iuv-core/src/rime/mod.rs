@@ -154,7 +154,7 @@ impl ImeEngine for RimeEngine {
             if n_ne >= 2 {
                 let total: usize = lens.iter().sum();
                 let tail_start = total - lens[n_ne - 1];
-                if let Some(last) = seg.iter().filter(|s| !s.is_empty()).last() {
+                if let Some(last) = seg.iter().rfind(|s| !s.is_empty()) {
                     if !self.is_syllable(last)
                         && self.syllables.iter().any(|syl| syl.starts_with(last.as_str()))
                     {
@@ -271,7 +271,7 @@ impl ImeEngine for RimeEngine {
             ne.len() >= 2 && ne[..ne.len() - 1].iter().all(|s| self.is_syllable(s))
         };
         if rest_all_syllables {
-            let mut wg_filtered: translator::Buckets = buckets
+            let wg_filtered: translator::Buckets = buckets
                 .iter()
                 .map(|(k, slot)| {
                     (*k, slot.iter().filter(|b| b.class != 1).cloned().collect::<Vec<_>>())
@@ -279,7 +279,7 @@ impl ImeEngine for RimeEngine {
                 .filter(|(_, slot)| !slot.is_empty())
                 .collect();
             if let Some(wg) = translator::build_poet_graph(
-                &mut wg_filtered,
+                &wg_filtered,
                 graph.farthest,
                 |w| self.lm.log_prob(None, "", w),
             ) {
@@ -530,7 +530,7 @@ mod tests {
             if lens.len() >= 2 {
                 let total: usize = lens.iter().sum();
                 let tail_start = total - lens[lens.len() - 1];
-                if let Some(last) = seg.iter().filter(|s| !s.is_empty()).last() {
+                if let Some(last) = seg.iter().rfind(|s| !s.is_empty()) {
                     if !e.is_syllable(last)
                         && e.syllables.iter().any(|syl| syl.starts_with(last.as_str()))
                     {
@@ -580,7 +580,7 @@ mod tests {
                 );
             }
         }
-        let mut wg_filtered: translator::Buckets = buckets
+        let wg_filtered: translator::Buckets = buckets
             .iter()
             .map(|(k, slot)| {
                 (*k, slot.iter().filter(|b| b.class != 1).cloned().collect::<Vec<_>>())
@@ -588,7 +588,7 @@ mod tests {
             .filter(|(_, slot)| !slot.is_empty())
             .collect();
         if let Some(wg) = translator::build_poet_graph(
-            &mut wg_filtered,
+            &wg_filtered,
             graph.farthest,
             |w| e.lm.log_prob(None, "", w),
         ) {

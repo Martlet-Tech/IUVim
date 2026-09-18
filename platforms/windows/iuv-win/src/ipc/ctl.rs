@@ -75,7 +75,7 @@ impl CtlClient {
 
     /// 发命令 → 收结果（单次会话；成功后调用方断开连接，贴合按需连接风格）。
     pub fn request(&self, cmd: &CtlCmd) -> io::Result<CtlResult> {
-        let _ = imp::write_frame(self.handle, &encode_ctl_cmd(cmd))?;
+        imp::write_frame(self.handle, &encode_ctl_cmd(cmd))?;
         let resp_payload = imp::read_frame(self.handle)?;
         decode_ctl_result(&resp_payload)
     }

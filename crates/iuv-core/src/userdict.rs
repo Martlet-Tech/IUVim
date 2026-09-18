@@ -290,9 +290,9 @@ mod tests {
         // a：无命中 → 8000
         let e = Engine::new(
             dict_of(vec![
-                ("zhang".into(), "张", 90000),
-                ("wei".into(), "威", 1000),
-                ("wei".into(), "葳", 50),
+                ("zhang", "张", 90000),
+                ("wei", "威", 1000),
+                ("wei", "葳", 50),
             ]),
             Config::default(),
         );
@@ -306,8 +306,8 @@ mod tests {
         // b1：n=2 < page_size=5 → 手癣(300)−1 = 299
         let e = Engine::new(
             dict_of(vec![
-                ("shou'xuan".into(), "首选", 8000),
-                ("shou'xuan".into(), "手癣", 300),
+                ("shou'xuan", "首选", 8000),
+                ("shou'xuan", "手癣", 300),
             ]),
             Config::default(),
         );
@@ -321,12 +321,12 @@ mod tests {
         // b2：n=6 >= page_size=5 → avg(中芯3000, 众心1000) = 2000
         let e = Engine::new(
             dict_of(vec![
-                ("zhong'xin".into(), "中心", 9000),
-                ("zhong'xin".into(), "衷心", 7000),
-                ("zhong'xin".into(), "钟鑫", 5000),
-                ("zhong'xin".into(), "中芯", 3000),
-                ("zhong'xin".into(), "众心", 1000),
-                ("zhong'xin".into(), "忠信", 800),
+                ("zhong'xin", "中心", 9000),
+                ("zhong'xin", "衷心", 7000),
+                ("zhong'xin", "钟鑫", 5000),
+                ("zhong'xin", "中芯", 3000),
+                ("zhong'xin", "众心", 1000),
+                ("zhong'xin", "忠信", 800),
             ]),
             Config::default(),
         );
@@ -339,7 +339,7 @@ mod tests {
 
         // 场景 0：词库已有 → 跳过（不记录）
         let e = Engine::new(
-            dict_of(vec![("zhang'wei'wei".into(), "张威威", 6000)]),
+            dict_of(vec![("zhang'wei'wei", "张威威", 6000)]),
             Config::default(),
         );
         e.record_phrase("zhang'wei'wei", "张威威");
@@ -353,8 +353,8 @@ mod tests {
         assert!(user_weight(&e, "zhang'wei'wei", "张威威").is_none());
         let e2 = Engine::new(
             dict_of(vec![
-                ("shou'xuan".into(), "首选", 8000),
-                ("shou'xuan".into(), "手癣", 300),
+                ("shou'xuan", "首选", 8000),
+                ("shou'xuan", "手癣", 300),
             ]),
             Config::default(),
         );
@@ -372,8 +372,8 @@ mod tests {
         // 用户库有条目（自造词）→ 隐藏 = 删除条目
         let e = Engine::new(
             dict_of(vec![
-                ("shou'xuan".into(), "首选", 8000),
-                ("shou'xuan".into(), "手癣", 300),
+                ("shou'xuan", "首选", 8000),
+                ("shou'xuan", "手癣", 300),
             ]),
             Config::default(),
         );
@@ -415,7 +415,7 @@ mod tests {
     }
 
     fn swap_dict() -> Dict {
-        dict_of(vec![("de".into(), "的", 100000), ("de".into(), "得", 300)])
+        dict_of(vec![("de", "的", 100000), ("de", "得", 300)])
     }
 
     /// 远端接受 → 跳过本地写盘（内存态照常替换 + mutation 构造正确）。
@@ -485,7 +485,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("iuv-remote-ops-{}.imedic", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let e = Engine::new(
-            dict_of(vec![("shou'xuan".into(), "首选", 8000)]),
+            dict_of(vec![("shou'xuan", "首选", 8000)]),
             Config::default(),
         );
         let _ = e.attach_user_dict(path.clone());

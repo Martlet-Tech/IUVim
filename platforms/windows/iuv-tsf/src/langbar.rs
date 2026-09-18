@@ -279,7 +279,7 @@ impl LangBarItemButton {
         if m.is_none() {
             let daemon = self.daemon.clone();
             *m = Some(crate::ui::menu_window::MenuWindow::new(
-                self.menu_theme.clone(),
+                self.menu_theme,
                 items,
                 Some(Box::new(move |id| handle_menu_id(&daemon, id as u32))),
             ));

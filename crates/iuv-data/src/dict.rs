@@ -188,7 +188,7 @@ impl Dict {
         // ---- 段4 记录体：逐条边界扫描（防截断/坏字节；不校验排序）----
         let mut pos = records.start;
         while pos < records.end {
-            let step = record_step(&bytes[pos..records.end]).map_err(|m| bad(m))?;
+            let step = record_step(&bytes[pos..records.end]).map_err(&bad)?;
             pos += step;
         }
 
@@ -212,7 +212,7 @@ impl Dict {
             bucket_dir.push((letter, (pos + 5 - buckets.start) as u32, n as u32));
             pos += 5;
             for _ in 0..n {
-                let step = record_step(&bytes[pos..buckets.end]).map_err(|m| bad(m))?;
+                let step = record_step(&bytes[pos..buckets.end]).map_err(&bad)?;
                 pos += step;
             }
             count += 1;
@@ -754,7 +754,7 @@ impl Dict {
     }
 
     fn index_off(&self, i: usize) -> usize {
-        u32_at(&self.file.as_bytes(), self.index.start + i * 4) as usize
+        u32_at(self.file.as_bytes(), self.index.start + i * 4) as usize
     }
 
     /// 记录 code 字节（相对记录体段起点）。
@@ -826,7 +826,7 @@ fn seps_cover(code: &str, seps: &[usize]) -> bool {
 /// 单条记录从当前位置起的字节长度（越界 → Err，消息含细节）。
 /// 记录：u8 code_len | code | u16 word_len | word | u32 weight。
 fn record_step(rest: &[u8]) -> Result<usize, String> {
-    if rest.len() < 1 {
+    if rest.is_empty() {
         return Err("记录体截断（缺 code_len）".into());
     }
     let code_len = rest[0] as usize;

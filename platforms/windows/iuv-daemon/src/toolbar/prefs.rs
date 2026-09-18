@@ -40,7 +40,7 @@ pub(super) fn load_pref() -> ToolbarPref {
         Some(mut p) => {
             if let Some((x, y)) = p.pos {
                 // 越界判据：明显超出 Win32 虚拟桌面合理范围（-10000..40000）。
-                if x < -10000 || x > 40000 || y < -10000 || y > 40000 {
+                if !(-10000..=40000).contains(&x) || !(-10000..=40000).contains(&y) {
                     p.pos = None;
                 }
             }

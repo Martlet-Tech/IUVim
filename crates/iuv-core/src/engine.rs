@@ -116,7 +116,7 @@ mod tests {
     }
 
     fn swap_dict() -> Dict {
-        dict_of(vec![("de".into(), "的", 100000), ("de".into(), "得", 300)])
+        dict_of(vec![("de", "的", 100000), ("de", "得", 300)])
     }
 
     /// set_config：配置热载替换引擎配置（M6 config_epoch 触发路径）。

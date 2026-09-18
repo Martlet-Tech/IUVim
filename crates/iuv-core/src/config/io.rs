@@ -20,7 +20,7 @@ impl Config {
             Err(_) => return Config::default(),
         };
         let text = strip_bom(&text);
-        let text = strip_jsonc_comments(&text); // 兼容带 // 注释的配置（安装器产出的默认文件）
+        let text = strip_jsonc_comments(text); // 兼容带 // 注释的配置（安装器产出的默认文件）
         let v = match serde_json::from_str::<serde_json::Value>(&text) {
             Ok(v) => migrate_engine(migrate_initial_state(migrate_keymap(v))),
             Err(_) => return Config::default(),

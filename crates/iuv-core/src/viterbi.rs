@@ -62,7 +62,7 @@ pub fn best_sentence_scored(
         let (_, word, prev, _w) = &dp[k];
         let word = word.clone()?;
         path.push(word);
-        k = prev.clone()?;
+        k = (*prev)?;
     }
     path.reverse();
     let text = path.join("");

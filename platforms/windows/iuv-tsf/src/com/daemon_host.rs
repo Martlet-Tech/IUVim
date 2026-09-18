@@ -22,7 +22,7 @@ impl TextService {
         let Some(engine) = engine() else { return };
         if let Some(client) = self.daemon.borrow().as_ref() {
             client.poll(
-                &engine,
+                engine,
                 |engine| self.apply_config_hot_reload(engine),
                 || self.signal_focus_gained(),
             );
@@ -49,7 +49,7 @@ impl TextService {
 
     /// M6 配置热载（config_epoch 变化触发，DaemonClient::poll 回调）：
     /// 重载 config.json → 引擎配置（page_size/passthrough_apps/theme/keymap 等读取点随新值生效）
-    /// + 候选窗主题即时切换（set_theme，下帧 paint 生效）。
+    /// 及候选窗主题即时切换（set_theme，下帧 paint 生效）。
     /// 会话快捷键（keymap）热载：route_key 每键读 `engine.config().keymap` 查表，
     /// set_config 替换后即生效（41-keymap-settings.md §2；全局热键由 daemon 侧重注册）。
     pub(crate) fn apply_config_hot_reload(&self, engine: &Arc<Engine>) {

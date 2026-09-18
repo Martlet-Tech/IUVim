@@ -769,10 +769,10 @@ mod tests {
         let mut t = renderer();
         let surf = render_tooltip("简体/繁体", &theme_light(), 1.0, &mut t);
         assert!(surf.w > 0 && surf.h > 0);
-        assert!(surf.pixels.len() % 4 == 0);
+        assert!(surf.pixels.len().is_multiple_of(4));
         // 空标签不 panic（极小表面）
         let empty = render_tooltip("", &theme_light(), 1.0, &mut t);
-        assert!(empty.pixels.len() % 4 == 0);
+        assert!(empty.pixels.len().is_multiple_of(4));
     }
 
     /// 构造合成图标：四角透明 + 中心不透明（模拟真实图标"居中 + 透明边距"）。
@@ -800,8 +800,10 @@ mod tests {
     fn render_toolbar_icon_visible_not_corner_crop() {
         // 回归：from_bbox 曾导致图标只采样左上角 1 像素（透明 → 整片空白）。
         // from_scale 应把"中心不透明"的图标完整缩小绘制 → 按钮中心采样不透明。
-        let mut icons = ToolbarIcons::default();
-        icons.logo = Some(center_icon(284, 282, 200));
+        let icons = ToolbarIcons {
+            logo: Some(center_icon(284, 282, 200)),
+            ..Default::default()
+        };
         let spec = ToolbarSpec {
             icons: &icons,
             state: ImeState::default(),

@@ -839,7 +839,7 @@ mod tests {
         let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
         assert!(blit_layer(&mut canvas, &src, &dst, (0.5, 0.5), 45.0));
         let center = ((8 * 16 + 8) * 4 + 3) as usize;
-        let corner = ((1 * 16 + 1) * 4 + 3) as usize;
+        let corner = ((16 + 1) * 4 + 3) as usize;
         assert!(canvas.data()[center] > 200, "旋转后中心应仍有内容");
         assert!(canvas.data()[corner] < 128, "旋转后角落应空出，实际 {}", canvas.data()[corner]);
     }
@@ -926,7 +926,7 @@ mod tests {
             .expect("应返回 mask");
         assert_eq!(mask.len(), 16 * 16, "mask 长度应等于 dst 面积");
         // 左半 (x=2) 透明、右半 (x=13) 不透明
-        assert!(pet_mask_hit(&mask, 16, 16, 2.0, 8.0, 0x20) == false, "左侧应透明");
+        assert!(!pet_mask_hit(&mask, 16, 16, 2.0, 8.0, 0x20), "左侧应透明");
         assert!(pet_mask_hit(&mask, 16, 16, 13.0, 8.0, 0x20), "右侧应命中");
     }
 
@@ -967,7 +967,7 @@ mod tests {
         let mut canvas_a = Pixmap::new(16, 16).unwrap();
         render_pet_layered(&mut canvas_a, &skin, &imgs, FaceExpr::Normal, &anim, &dst);
         let top_row_alpha = |c: &Pixmap| {
-            let idx = ((1 * 16 + 8) * 4 + 3) as usize;
+            let idx = ((16 + 8) * 4 + 3) as usize;
             c.data()[idx]
         };
         let before = top_row_alpha(&canvas_a);

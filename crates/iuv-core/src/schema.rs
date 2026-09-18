@@ -443,7 +443,7 @@ mod tests {
 
         // LCG 伪随机（确定性、零依赖）：拼音字母表上的短串（含大量歧义/孤点），len 1..=24
         const ALPHABET: &[u8] = b"aeioubpmfdtnlgkhjqxzhcsrwy";
-        let mut seed: u64 = 0x46_4c4f_57_45_52;
+        let mut seed: u64 = 0x464c_4f57_4552;
         let mut next = || {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             (seed >> 33) as usize

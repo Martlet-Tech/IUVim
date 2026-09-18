@@ -249,7 +249,7 @@ fn tail_cutting_lists_all_levels_longest_first() {
         let at = texts
             .iter()
             .position(|t| t == want)
-            .expect(&format!("候选应含 {want}，实际：{texts:?}"));
+            .unwrap_or_else(|| panic!("候选应含 {want}，实际：{texts:?}"));
         assert!(at >= pos, "{want} 应排在更早层级之后，实际：{texts:?}");
         pos = at;
     }
@@ -1028,7 +1028,7 @@ fn single_segment_no_truncation() {
     let mut items: Vec<(String, String, u32)> = Vec::new();
     for i in 0..40u32 {
         let w = char::from_u32(0x4e00 + i).unwrap().to_string(); // 40 个唯一单字
-        items.push((format!("shi"), w, 1000 - i));
+        items.push(("shi".to_string(), w, 1000 - i));
     }
     let dict = Dict::from_entries(items);
     let cfg = Config {
@@ -1592,8 +1592,10 @@ fn multisegment_k1_single_chars_full_pool() {
         ));
     }
     items.push(("wei".into(), "葳".into(), 50));
-    let mut cfg = Config::default();
-    cfg.page_size = 100; // 一页全显，断言免翻页
+    let cfg = Config {
+        page_size: 100, // 一页全显，断言免翻页
+        ..Default::default()
+    };
     let engine = Engine::new(Dict::from_entries(items), cfg);
 
     // zhangweiwei：k3 词 2 + k2 词 1 + k1 zhang 单字全量 3 = 6 候选；张 = 第 4 位

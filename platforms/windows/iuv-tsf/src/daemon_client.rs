@@ -106,8 +106,10 @@ impl DaemonClient {
             .chain(Some(0))
             .collect();
         // SAFETY: STARTUPINFOW/PROCESS_INFORMATION 全程存活；cmdline 可写缓冲（系统可改）。
-        let mut si = STARTUPINFOW::default();
-        si.cb = size_of::<STARTUPINFOW>() as u32;
+        let si = STARTUPINFOW {
+            cb: size_of::<STARTUPINFOW>() as u32,
+            ..Default::default()
+        };
         let mut pi = PROCESS_INFORMATION::default();
         let r = unsafe {
             CreateProcessW(

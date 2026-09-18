@@ -27,6 +27,7 @@ pub(crate) fn fill_rounded(
 
 /// 虚线圆角矩形框（悬停高亮用）：内缩 1px 防跨行压邻行/文本；
 /// dash 规格 [4,3]（4px 线 + 3px 空，物理像素）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn stroke_rounded_dashed(
     pixmap: &mut Pixmap,
     x: f32,
@@ -76,7 +77,7 @@ pub(crate) fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Optio
         pb.push_rect(rect);
         return pb.finish();
     }
-    const K: f32 = 0.55228475;
+    const K: f32 = 0.552_284_8;
     pb.move_to(x + r, y);
     pb.line_to(x + w - r, y);
     pb.cubic_to(x + w - r * K, y, x + w, y + r * K, x + w, y + r);

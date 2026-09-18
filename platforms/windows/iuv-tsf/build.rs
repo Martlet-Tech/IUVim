@@ -5,6 +5,7 @@
 //! - `icon.ico` → ID "1"：DLL/输入法图标（应用图标）
 //! - `zh.ico`   → ID "101"：语言栏"中"图标（LoadImageW + MAKEINTRESOURCE(101)）
 //! - `en.ico`   → ID "102"：语言栏"英"图标（LoadImageW + MAKEINTRESOURCE(102)）
+//!
 //! ID 对齐 Weasel（IDI_ZH=101/IDI_EN=102 同语义），契约 01 §5.1。
 
 fn main() {
