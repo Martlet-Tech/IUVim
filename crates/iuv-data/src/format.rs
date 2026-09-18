@@ -356,7 +356,10 @@ pub(crate) fn reachable_split<'a>(
             }
             let mut plen = 1usize;
             for len in (1..=upper).rev() {
-                if syllables.iter().any(|syl| syl.starts_with(&code[pos..pos + len])) {
+                if syllables
+                    .iter()
+                    .any(|syl| syl.starts_with(&code[pos..pos + len]))
+                {
                     plen = len;
                     break;
                 }
@@ -398,7 +401,10 @@ pub(crate) fn greedy_join(concat: &str, syllables: &BTreeSet<String>) -> String 
         if !matched {
             let mut plen = 1usize;
             for len in (1..=upper).rev() {
-                if syllables.iter().any(|syl| syl.starts_with(&concat[pos..pos + len])) {
+                if syllables
+                    .iter()
+                    .any(|syl| syl.starts_with(&concat[pos..pos + len]))
+                {
                     plen = len;
                     break;
                 }

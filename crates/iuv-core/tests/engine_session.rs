@@ -101,7 +101,10 @@ fn ue_alias_lu_jv_unaffected() {
     assert!(
         e.candidates.iter().any(|c| c.text == "路"),
         "lu 应出「路」（lu≠lv），实际：{:?}",
-        e.candidates.iter().map(|c| c.text.as_str()).collect::<Vec<_>>()
+        e.candidates
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
     );
     assert!(!e.candidates.iter().any(|c| c.text == "律"));
 
@@ -115,7 +118,10 @@ fn ue_alias_lu_jv_unaffected() {
     assert!(
         !e2.candidates.iter().any(|c| c.text == "略"),
         "ve 形不归一连累（jv 不得出略）：{:?}",
-        e2.candidates.iter().map(|c| c.text.as_str()).collect::<Vec<_>>()
+        e2.candidates
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -2033,7 +2039,10 @@ fn best_seg_compares_greedy_plan() {
         ("xi".into(), "西".into(), 100),
         ("an".into(), "安".into(), 100),
     ]));
-    assert_eq!(greedy_wins, "xian", "先更重 → 保贪心分节（不可漂移成 xi'an）");
+    assert_eq!(
+        greedy_wins, "xian",
+        "先更重 → 保贪心分节（不可漂移成 xi'an）"
+    );
 
     // ② 西安 6091 > 先 500 → 反查变体胜出
     let variant_wins = feed(Dict::from_entries(vec![
@@ -2148,7 +2157,10 @@ fn tail_completion_2b_produces_extended_sentence() {
     assert_eq!(texts[0], "是一个成语", "2b 补全类2置顶：{texts:?}");
     assert!(sentences.is_empty(), "词优先不组句：{texts:?}");
     // rime 2b 补全为「类2 全量词条」（词条在补全键上均收集），非 classic 唯一句
-    assert!(texts.iter().any(|t| t == "是一个意外"), "是一个意外应可达：{texts:?}");
+    assert!(
+        texts.iter().any(|t| t == "是一个意外"),
+        "是一个意外应可达：{texts:?}"
+    );
     // 词条通道按输入砍（砍 y 而非补 yu）：单独「成语」（cheng'yu）不从补全键出
     assert!(
         !texts.iter().any(|t| t == "成语"),
@@ -2188,7 +2200,10 @@ fn word_channel_only_real_entries() {
     }
     // 非词库拼法（按键/案肩 等方案级临时词）不得出现
     for bad in ["按键", "案肩", "安j"] {
-        assert!(!texts.iter().any(|t| t == bad), "不应出现（{bad}）：{texts:?}");
+        assert!(
+            !texts.iter().any(|t| t == bad),
+            "不应出现（{bad}）：{texts:?}"
+        );
     }
 }
 
@@ -2214,10 +2229,7 @@ fn long_input_single_sentence() {
         .iter()
         .filter(|c| c.kind == CandidateKind::Sentence)
         .collect();
-    assert_eq!(
-        texts[0], "喜欢中国",
-        "词优先：整词词条置顶：{texts:?}"
-    );
+    assert_eq!(texts[0], "喜欢中国", "词优先：整词词条置顶：{texts:?}");
     assert!(sentences.is_empty(), "词优先不组句：{texts:?}");
 }
 
@@ -2310,7 +2322,11 @@ fn editorial_preview_uses_schema_display() {
         s2.on_key(Key::Char(c));
     }
     let e2 = s2.effect();
-    assert_eq!(e2.reading, "n'h", "简拼预编辑 = 切分显示，实际：{}", e2.reading);
+    assert_eq!(
+        e2.reading, "n'h",
+        "简拼预编辑 = 切分显示，实际：{}",
+        e2.reading
+    );
 }
 
 #[test]
@@ -2370,7 +2386,8 @@ fn preview_editorial_rules_aligned_with_mainstream() {
         assert!(guard < 10, "候选应含西安");
     }
     assert_eq!(
-        s2.effect().reading, "xi'an",
+        s2.effect().reading,
+        "xi'an",
         "西安跟随切分 xi'an，实际：{}",
         s2.effect().reading
     );
@@ -2383,7 +2400,8 @@ fn preview_editorial_rules_aligned_with_mainstream() {
         s3.on_key(Key::Char(c));
     }
     assert_eq!(
-        s3.effect().reading, "input",
+        s3.effect().reading,
+        "input",
         "无匹配原样不分节，实际：{}",
         s3.effect().reading
     );
@@ -2401,7 +2419,8 @@ fn preview_editorial_rules_aligned_with_mainstream() {
         s4.on_key(Key::Char(c));
     }
     assert_eq!(
-        s4.effect().reading, "zhu'jin'cheng",
+        s4.effect().reading,
+        "zhu'jin'cheng",
         "用户'保留参与分节，实际：{}",
         s4.effect().reading
     );
@@ -2422,7 +2441,10 @@ fn full_width_enter_commits_fullwidth_raw() {
     for c in "nihao".chars() {
         s.on_key(Key::Char(c));
     }
-    assert!(s.effect().candidates.iter().any(|c| c.text == "你好"), "有候选才验证 Enter 原文上屏");
+    assert!(
+        s.effect().candidates.iter().any(|c| c.text == "你好"),
+        "有候选才验证 Enter 原文上屏"
+    );
     // pending_text（flush 路径）活动期即全角
     assert_eq!(s.pending_text(), "ｎｉｈａｏ", "flush 原文上屏应全角");
     let e = s.on_key(Key::Enter);
@@ -2458,7 +2480,10 @@ fn full_width_space_candidate_vs_fallback() {
     for c in "window".chars() {
         s2.on_key(Key::Char(c));
     }
-    assert!(s2.effect().candidates.iter().all(|c| c.text != "你好"), "window 应无候选");
+    assert!(
+        s2.effect().candidates.iter().all(|c| c.text != "你好"),
+        "window 应无候选"
+    );
     let e2 = s2.on_key(Key::Space);
     assert_eq!(e2.end, Some(SessionEnd::Commit("ｗｉｎｄｏｗ".into())));
 }
@@ -2493,9 +2518,9 @@ fn traditional_candidates_converted() {
     };
     let engine = Engine::new(dict, cfg);
     let table = iuv_data::opencc::from_text("", "网\t網\n").unwrap();
-    engine.attach_script_converter(Some(std::sync::Arc::new(
-        iuv_core::ScriptConverter::new(table),
-    )));
+    engine.attach_script_converter(Some(std::sync::Arc::new(iuv_core::ScriptConverter::new(
+        table,
+    ))));
     let mut s = engine.start_session();
     for c in "wang".chars() {
         s.on_key(Key::Char(c));
@@ -2520,9 +2545,9 @@ fn traditional_single_char_converted() {
     };
     let engine = Engine::new(dict, cfg);
     let table = iuv_data::opencc::from_text("", "网\t網\n").unwrap();
-    engine.attach_script_converter(Some(std::sync::Arc::new(
-        iuv_core::ScriptConverter::new(table),
-    )));
+    engine.attach_script_converter(Some(std::sync::Arc::new(iuv_core::ScriptConverter::new(
+        table,
+    ))));
     let mut s = engine.start_session();
     for c in "wang".chars() {
         s.on_key(Key::Char(c));
@@ -2545,9 +2570,9 @@ fn traditional_commit_converted() {
     };
     let engine = Engine::new(dict, cfg);
     let table = iuv_data::opencc::from_text("以后\t以後\n", "").unwrap();
-    engine.attach_script_converter(Some(std::sync::Arc::new(
-        iuv_core::ScriptConverter::new(table),
-    )));
+    engine.attach_script_converter(Some(std::sync::Arc::new(iuv_core::ScriptConverter::new(
+        table,
+    ))));
     let mut s = engine.start_session();
     for c in "yihou".chars() {
         s.on_key(Key::Char(c));
@@ -2573,9 +2598,9 @@ fn traditional_selfmade_records_simplified() {
     };
     let engine = Engine::new(dict, cfg);
     let table = iuv_data::opencc::from_text("网络\t網絡\n", "网\t網\n络\t絡\n").unwrap();
-    engine.attach_script_converter(Some(std::sync::Arc::new(
-        iuv_core::ScriptConverter::new(table),
-    )));
+    engine.attach_script_converter(Some(std::sync::Arc::new(iuv_core::ScriptConverter::new(
+        table,
+    ))));
     let mut s = engine.start_session();
     for c in "wangluo".chars() {
         s.on_key(Key::Char(c));
@@ -2618,9 +2643,9 @@ fn simplified_mode_converter_inert() {
     let dict = Dict::from_entries(vec![("yi'hou".into(), "以后".into(), 8000)]);
     let engine = Engine::new(dict, Config::default());
     let table = iuv_data::opencc::from_text("以后\t以後\n", "").unwrap();
-    engine.attach_script_converter(Some(std::sync::Arc::new(
-        iuv_core::ScriptConverter::new(table),
-    )));
+    engine.attach_script_converter(Some(std::sync::Arc::new(iuv_core::ScriptConverter::new(
+        table,
+    ))));
     let mut s = engine.start_session();
     for c in "yihou".chars() {
         s.on_key(Key::Char(c));
@@ -2688,7 +2713,12 @@ fn literal_backspace_restores_pinyin_candidates() {
 fn literal_mode_locks_following_keys_until_cleared() {
     let engine = default_engine();
     let mut s = engine.start_session();
-    for k in [Key::Char('d'), Key::Char(':'), Key::Char('\\'), Key::Char('t')] {
+    for k in [
+        Key::Char('d'),
+        Key::Char(':'),
+        Key::Char('\\'),
+        Key::Char('t'),
+    ] {
         s.on_key(k);
     }
     assert_eq!(s.effect().composition, "d:\\t");

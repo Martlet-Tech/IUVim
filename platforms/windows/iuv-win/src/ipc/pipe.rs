@@ -29,11 +29,11 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile, OPEN_EXISTING,
+    CreateFileW, ReadFile, WriteFile, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW,
-    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW, PIPE_READMODE_MESSAGE,
+    PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows_core::PCWSTR;
 
@@ -81,9 +81,7 @@ pub(super) mod imp {
         };
         if handle.is_invalid() {
             let e = unsafe { windows::Win32::Foundation::GetLastError() };
-            return Err(io::Error::other(
-                format!("创建命名管道失败: {}", e.0),
-            ));
+            return Err(io::Error::other(format!("创建命名管道失败: {}", e.0)));
         }
         Ok(handle)
     }
@@ -95,9 +93,7 @@ pub(super) mod imp {
         if let Err(_e) = r {
             let code = unsafe { windows::Win32::Foundation::GetLastError() };
             if code != ERROR_PIPE_CONNECTED {
-                return Err(io::Error::other(
-                    format!("等待客户端连接失败: {}", code.0),
-                ));
+                return Err(io::Error::other(format!("等待客户端连接失败: {}", code.0)));
             }
         }
         Ok(())
@@ -161,7 +157,10 @@ pub(super) mod imp {
         unsafe { WriteFile(handle, Some(&frame), Some(&mut written), None) }
             .map_err(|e| io::Error::other(format!("写管道失败: {}", e.code())))?;
         if written as usize != frame.len() {
-            return Err(bad(&format!("写管道字节数不符 {written} != {}", frame.len())));
+            return Err(bad(&format!(
+                "写管道字节数不符 {written} != {}",
+                frame.len()
+            )));
         }
         Ok(())
     }
@@ -195,8 +194,7 @@ impl PipeClient {
             let e = unsafe { windows::Win32::Foundation::GetLastError() };
             if e == ERROR_PIPE_BUSY {
                 // SAFETY: name 以 NUL 结尾；等待超时视为 daemon 不在线。
-                let ok =
-                    unsafe { WaitNamedPipeW(PCWSTR(name.as_ptr()), PIPE_CONNECT_TIMEOUT_MS) };
+                let ok = unsafe { WaitNamedPipeW(PCWSTR(name.as_ptr()), PIPE_CONNECT_TIMEOUT_MS) };
                 if !ok.as_bool() {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
@@ -252,9 +250,7 @@ impl PipeServer {
         };
         if handle.is_invalid() {
             let e = unsafe { windows::Win32::Foundation::GetLastError() };
-            return Err(io::Error::other(
-                format!("创建命名管道失败: {}", e.0),
-            ));
+            return Err(io::Error::other(format!("创建命名管道失败: {}", e.0)));
         }
         // SAFETY: 阻塞等待客户端 ConnectNamedPipe（非重叠）。
         let r = unsafe { ConnectNamedPipe(handle, None) };
@@ -263,9 +259,7 @@ impl PipeServer {
             if code != ERROR_PIPE_CONNECTED {
                 // SAFETY: 等待失败，关闭管道句柄。
                 let _ = unsafe { CloseHandle(handle) };
-                return Err(io::Error::other(
-                    format!("等待客户端连接失败: {}", code.0),
-                ));
+                return Err(io::Error::other(format!("等待客户端连接失败: {}", code.0)));
             }
         }
         Ok(PipeServer { handle })

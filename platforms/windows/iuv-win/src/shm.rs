@@ -192,11 +192,7 @@ impl ShmWriter {
         // SAFETY: view 指向可写映射（容量 SHM_CAPACITY）；DATA_OFFSET + bytes.len()
         // ≤ SHM_CAPACITY（已校验 bytes.len() ≤ DATA_CAPACITY）。
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                self.view.add(DATA_OFFSET),
-                bytes.len(),
-            );
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.view.add(DATA_OFFSET), bytes.len());
         }
         let v = self.version.wrapping_add(1);
         let base = self.view.cast::<u32>();

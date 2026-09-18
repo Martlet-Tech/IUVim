@@ -101,7 +101,12 @@ fn register_one(hwnd: HWND, a: GlobalAction, combo: Combo, secondary: bool) -> b
     let id = hotkey_id(a, secondary);
     // SAFETY: hwnd 为工具栏窗口（消息泵线程存活期间有效）；id/修饰/vk 均为合法值。
     let r = unsafe {
-        RegisterHotKey(Some(hwnd), id, HOT_KEY_MODIFIERS(combo_mods(&combo)), vk as u32)
+        RegisterHotKey(
+            Some(hwnd),
+            id,
+            HOT_KEY_MODIFIERS(combo_mods(&combo)),
+            vk as u32,
+        )
     };
     match r {
         Ok(()) => {

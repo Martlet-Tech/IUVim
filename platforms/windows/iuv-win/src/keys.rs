@@ -87,7 +87,13 @@ pub fn combo_from_vk(vk: u16, char_code: u32, shift: bool, ctrl: bool, alt: bool
         return None;
     }
     let base = vk_to_base_key(vk, char_code)?;
-    Some(Combo { ctrl: false, alt: false, shift, win: false, base })
+    Some(Combo {
+        ctrl: false,
+        alt: false,
+        shift,
+        win: false,
+        base,
+    })
 }
 
 /// 基础键 → vk（`RegisterHotKey` 注册用）。`Char` 标点经 `VkKeyScanW`（当前布局）
@@ -105,9 +111,8 @@ pub fn base_key_to_vk(base: &Key) -> Option<u16> {
                 // 标点：VkKeyScanW 返回 (vk, shift 态) 的 short；只取低字节 vk。
                 // 修饰语义由 Combo 的 shift 位承载（RegisterHotKey 传 MOD_SHIFT），
                 // 不依赖 VkKeyScan 的 shift 高位。
-                let r = unsafe {
-                    windows::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW(*c as u16)
-                };
+                let r =
+                    unsafe { windows::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW(*c as u16) };
                 let vk = (r as u16) & 0xFF;
                 if (vk == 0 && *c != ' ') || vk == 0xFF {
                     None
@@ -204,7 +209,13 @@ mod tests {
         // Shift+Left → Combo{shift:true, base:Left}
         assert_eq!(
             combo_from_vk(VK_LEFT, 0, true, false, false),
-            Some(Combo { ctrl: false, alt: false, shift: true, win: false, base: Key::Left })
+            Some(Combo {
+                ctrl: false,
+                alt: false,
+                shift: true,
+                win: false,
+                base: Key::Left
+            })
         );
         // Ctrl/Alt 组合 → None（红线）
         assert_eq!(combo_from_vk(VK_LEFT, 0, true, true, false), None);
@@ -212,7 +223,13 @@ mod tests {
         // Shift+逗号
         assert_eq!(
             combo_from_vk(0xBC, 0x2C, true, false, false),
-            Some(Combo { ctrl: false, alt: false, shift: true, win: false, base: Key::Char(',') })
+            Some(Combo {
+                ctrl: false,
+                alt: false,
+                shift: true,
+                win: false,
+                base: Key::Char(',')
+            })
         );
     }
 
@@ -232,9 +249,21 @@ mod tests {
 
     #[test]
     fn combo_mods_flags() {
-        let c = Combo { ctrl: true, alt: true, shift: false, win: true, base: Key::Char('i') };
+        let c = Combo {
+            ctrl: true,
+            alt: true,
+            shift: false,
+            win: true,
+            base: Key::Char('i'),
+        };
         assert_eq!(combo_mods(&c), MOD_CONTROL | MOD_ALT | MOD_WIN);
-        let c2 = Combo { ctrl: false, alt: false, shift: true, win: false, base: Key::Left };
+        let c2 = Combo {
+            ctrl: false,
+            alt: false,
+            shift: true,
+            win: false,
+            base: Key::Left,
+        };
         assert_eq!(combo_mods(&c2), MOD_SHIFT);
     }
 }

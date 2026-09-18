@@ -121,7 +121,6 @@ pub fn run_settings(
     const HEIGHT: f32 = 480.0;
 
     let options = eframe::NativeOptions {
-
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([WIDTH, HEIGHT])
             .with_min_inner_size([WIDTH, HEIGHT])
@@ -152,10 +151,8 @@ pub fn run_settings(
                     ] {
                         w.corner_radius = 6.into();
                     }
-                    style.visuals.selection.bg_fill =
-                        egui::Color32::from_rgb(0x00, 0x78, 0xD7);
-                    style.visuals.selection.stroke =
-                        egui::Stroke::new(1.0, egui::Color32::WHITE);
+                    style.visuals.selection.bg_fill = egui::Color32::from_rgb(0x00, 0x78, 0xD7);
+                    style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
                 });
                 Ok(Box::new(SettingsApp::new(state, toolbar)))
             }),
@@ -183,11 +180,16 @@ fn install_cjk_font(ctx: &egui::Context) {
         return;
     };
     let mut fonts = egui::FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("iuv-cjk".to_owned(), egui::FontData::from_owned(bytes).into());
+    fonts.font_data.insert(
+        "iuv-cjk".to_owned(),
+        egui::FontData::from_owned(bytes).into(),
+    );
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts.families.entry(family).or_default().push("iuv-cjk".to_owned());
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("iuv-cjk".to_owned());
     }
     ctx.set_fonts(fonts);
     log::log_line("[settings] 已注入系统中文字体（微软雅黑等）");
@@ -196,7 +198,13 @@ fn install_cjk_font(ctx: &egui::Context) {
 /// 定位系统中文字体文件（WINDIR\Fonts 候选，取第一个存在；TTC 由 ab_glyph 取首 face）。
 fn load_cjk_font_bytes() -> Option<Vec<u8>> {
     let windir = std::env::var("WINDIR").ok()?;
-    for name in ["msyh.ttc", "msyh.ttf", "Deng.ttf", "simsun.ttc", "simhei.ttf"] {
+    for name in [
+        "msyh.ttc",
+        "msyh.ttf",
+        "Deng.ttf",
+        "simsun.ttc",
+        "simhei.ttf",
+    ] {
         let path = std::path::PathBuf::from(&windir).join("Fonts").join(name);
         match std::fs::read(&path) {
             Ok(bytes) => {
@@ -368,7 +376,11 @@ fn card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> 
 
 impl SettingsApp {
     fn new(state: Arc<DaemonState>, toolbar: Arc<crate::toolbar::ToolbarHost>) -> Self {
-        let cfg = state.config.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let cfg = state
+            .config
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         SettingsApp {
             state,
             toolbar,
@@ -475,16 +487,8 @@ impl SettingsApp {
                     }
                     ui.horizontal(|ui| {
                         ui.label("宽度");
-                        ui.radio_value(
-                            &mut self.initial.width,
-                            iuv_core::WidthMode::Half,
-                            "半角",
-                        );
-                        ui.radio_value(
-                            &mut self.initial.width,
-                            iuv_core::WidthMode::Full,
-                            "全角",
-                        );
+                        ui.radio_value(&mut self.initial.width, iuv_core::WidthMode::Half, "半角");
+                        ui.radio_value(&mut self.initial.width, iuv_core::WidthMode::Full, "全角");
                     });
                     ui.horizontal(|ui| {
                         ui.label("字形");
@@ -691,15 +695,13 @@ impl SettingsApp {
                 None => "未设置".to_string(),
             }
         };
-        let btn = egui::Button::new(
-            egui::RichText::new(text).color(if is_capturing_this {
-                egui::Color32::from_rgb(0x00, 0x78, 0xD7)
-            } else if combo.is_some() {
-                egui::Color32::from_rgb(0x20, 0x80, 0x40)
-            } else {
-                egui::Color32::GRAY
-            }),
-        )
+        let btn = egui::Button::new(egui::RichText::new(text).color(if is_capturing_this {
+            egui::Color32::from_rgb(0x00, 0x78, 0xD7)
+        } else if combo.is_some() {
+            egui::Color32::from_rgb(0x20, 0x80, 0x40)
+        } else {
+            egui::Color32::GRAY
+        }))
         .min_size(egui::vec2(170.0, 24.0));
         if ui.add(btn).clicked() {
             *hit = Some(target);
@@ -784,10 +786,7 @@ impl SettingsApp {
                 let c = self.slot_combo_mut(target);
                 *c = Some(combo);
                 self.keymap_warn = None;
-                log::log_line(&format!(
-                    "[settings] 录入成功：{:?} → {}",
-                    target, combo
-                ));
+                log::log_line(&format!("[settings] 录入成功：{:?} → {}", target, combo));
             }
         }
     }
@@ -807,11 +806,7 @@ impl SettingsApp {
     }
 
     /// 组合校验（会话/全局红线 + 跨功能冲突）。Err → 拒绝并给红字。
-    fn validate_combo(
-        &self,
-        target: CaptureTarget,
-        combo: &iuv_core::Combo,
-    ) -> Result<(), String> {
+    fn validate_combo(&self, target: CaptureTarget, combo: &iuv_core::Combo) -> Result<(), String> {
         // 会话内红线
         if let CaptureTarget::Session(a, _) = target {
             let label = self.session_label(a);
@@ -821,7 +816,9 @@ impl SettingsApp {
                 ));
             }
             if combo.ctrl {
-                return Err(format!("{label}：Ctrl 组合让位给应用（冲突大），会话快捷键不可用。"));
+                return Err(format!(
+                    "{label}：Ctrl 组合让位给应用（冲突大），会话快捷键不可用。"
+                ));
             }
             if combo.base_is_letter() {
                 return Err(format!(
@@ -1007,8 +1004,7 @@ impl SettingsApp {
                 ui.small("命中进程全部按键放行（不建会话、无候选窗）——该进程内无法输中文。");
                 ui.add_space(2.0);
                 if ui.button("恢复默认名单").clicked() {
-                    self.passthrough =
-                        crate::config::DEFAULT_PASSTHROUGH_APPS.join("\n");
+                    self.passthrough = crate::config::DEFAULT_PASSTHROUGH_APPS.join("\n");
                 }
                 ui.small("默认 = 近五年 3A 单机大作");
             });
@@ -1029,8 +1025,7 @@ impl SettingsApp {
                 ui.small("命中进程 iuv 不绘制候选窗（游戏自带候选栏场景），数据仍供其拉取。");
                 ui.add_space(2.0);
                 if ui.button("恢复默认名单").clicked() {
-                    self.candidate_owner =
-                        crate::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
+                    self.candidate_owner = crate::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
                 }
                 ui.small("默认 = 预置知名游戏");
             });
@@ -1040,10 +1035,7 @@ impl SettingsApp {
         card(ui, |ui| {
             ui.strong("全屏行为");
             ui.add_space(4.0);
-            ui.checkbox(
-                &mut self.hide_on_fullscreen,
-                "全屏时自动隐藏工具栏与桌宠",
-            );
+            ui.checkbox(&mut self.hide_on_fullscreen, "全屏时自动隐藏工具栏与桌宠");
             ui.small(
                 "看视频、打游戏等全屏场景自动隐藏，退出全屏后自动恢复。改动点「确定/应用」生效。",
             );
@@ -1085,9 +1077,11 @@ impl SettingsApp {
                 .max_height(200.0)
                 .show(ui, |ui| {
                     for (tag, desc) in LOG_MODULES {
-                        let mut enabled =
-                            !self.disabled_log.iter().any(|m| m == tag);
-                        if ui.checkbox(&mut enabled, format!("{tag} — {desc}")).changed() {
+                        let mut enabled = !self.disabled_log.iter().any(|m| m == tag);
+                        if ui
+                            .checkbox(&mut enabled, format!("{tag} — {desc}"))
+                            .changed()
+                        {
                             if enabled {
                                 self.disabled_log.retain(|m| m != tag);
                             } else if !self.disabled_log.iter().any(|m| m == tag) {
@@ -1118,7 +1112,11 @@ impl SettingsApp {
     fn apply(&mut self) {
         let mut msgs: Vec<String> = Vec::new();
 
-        let theme = if self.theme == "dark" { "dark" } else { "light" };
+        let theme = if self.theme == "dark" {
+            "dark"
+        } else {
+            "light"
+        };
         let orientation = if self.orientation == "horizontal" {
             "horizontal"
         } else {

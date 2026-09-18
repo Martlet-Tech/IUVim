@@ -58,7 +58,10 @@ const CORPUS: &[&str] = &[
 
 /// 真词库路径（`CARGO_MANIFEST_DIR` = crates/iuv-core，仓库根为 ../../）。
 fn dict_path() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/iuv.imedic"))
+    PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../data/iuv.imedic"
+    ))
 }
 
 /// 引擎内部埋点收集槽（`iuv_core::perf` 的 sink 只能是 `fn` 指针，故走静态槽）。
@@ -72,7 +75,10 @@ fn perf_sink(phase: &'static str, micros: u64) {
 }
 
 fn drain_phases() -> Vec<(&'static str, u64)> {
-    PHASES.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default()
+    PHASES
+        .lock()
+        .map(|mut v| std::mem::take(&mut *v))
+        .unwrap_or_default()
 }
 
 /// 打印某语料阶段分解（每阶段一行，避免宿主机 127 字符长行截断）。
@@ -81,7 +87,11 @@ fn dump_phases(idx: usize, phases: &[(&'static str, u64)]) {
     names.sort_unstable();
     names.dedup();
     for name in names {
-        let sel: Vec<u64> = phases.iter().filter(|(n, _)| *n == name).map(|(_, us)| *us).collect();
+        let sel: Vec<u64> = phases
+            .iter()
+            .filter(|(n, _)| *n == name)
+            .map(|(_, us)| *us)
+            .collect();
         eprintln!(
             "[time] PH i={idx} {name} n={} sum_us={} max_us={}",
             sel.len(),
@@ -95,7 +105,8 @@ fn dump_phases(idx: usize, phases: &[(&'static str, u64)]) {
 #[ignore = "需真词库 data/iuv.imedic（索引 iuvim 仓库根运行）"]
 fn corpus_baseline_dump() {
     let dict = Arc::new(
-        iuv_data::load(&dict_path()).unwrap_or_else(|e| panic!("词库加载失败: {}: {e}", dict_path().display())),
+        iuv_data::load(&dict_path())
+            .unwrap_or_else(|e| panic!("词库加载失败: {}: {e}", dict_path().display())),
     );
     let cfg = Config::default();
     // 引擎与词库共享同一 mmap（Dict::clone 共享 Arc<MappedFile>）。
@@ -145,7 +156,10 @@ fn corpus_baseline_dump() {
             for i in 1..=raw.len() {
                 let pre = &raw[..i];
                 let t = Instant::now();
-                let _ = engine.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw: pre });
+                let _ = engine.translate(
+                    &EngineCtx { preceding_text: "" },
+                    &PendingInput { raw: pre },
+                );
                 let us = t.elapsed().as_micros();
                 total += us;
                 if us > max {

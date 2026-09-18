@@ -29,9 +29,8 @@ impl SignalServer {
     /// 调用方 accept 循环每轮新建实例 → 连接后交独立线程 `recv_loop`，实现并发多连接。
     pub fn accept() -> io::Result<SignalServer> {
         let name = imp::name_wide(SIGNAL_PIPE_NAME);
-        let handle = imp::create_server(&name).map_err(|e| {
-            io::Error::new(e.kind(), format!("信号管道：{e}"))
-        })?;
+        let handle = imp::create_server(&name)
+            .map_err(|e| io::Error::new(e.kind(), format!("信号管道：{e}")))?;
         if let Err(e) = imp::connect_server(handle) {
             // SAFETY: 等待失败，关闭本实例句柄后返回错误（accept 循环重试）。
             let _ = unsafe { CloseHandle(handle) };

@@ -10,12 +10,11 @@ use std::rc::Rc;
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::TextServices::{
-    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
-    ITfContextComposition, ITfEditSession, ITfEditSession_Impl, TF_ANCHOR_END,
-    TF_ANCHOR_START, TF_DEFAULT_SELECTION, TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC,
-    TF_SELECTION, TF_SELECTIONSTYLE,
+    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
+    ITfEditSession, ITfEditSession_Impl, TF_ANCHOR_END, TF_ANCHOR_START, TF_DEFAULT_SELECTION,
+    TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE,
 };
-use windows_core::{implement, BOOL, ComObject, Interface, Result};
+use windows_core::{implement, ComObject, Interface, Result, BOOL};
 
 use crate::log::log_line;
 use crate::ui::CaretRect;
@@ -178,8 +177,11 @@ impl Composition {
         let com = ComObject::new(session);
         let sess: ITfEditSession = com.to_interface();
         // SAFETY: RequestEditSession 是标准 TSF 调用；sess 在本调用期间存活。
-        if unsafe { self.context.RequestEditSession(self.client_id, &sess, TF_ES_SYNC | TF_ES_READ) }
-            .is_err()
+        if unsafe {
+            self.context
+                .RequestEditSession(self.client_id, &sess, TF_ES_SYNC | TF_ES_READ)
+        }
+        .is_err()
         {
             return None;
         }
@@ -248,15 +250,12 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
                     log_line(&format!("GetSelection 无 selection（fetched={fetched}）"));
                     return Err(windows::Win32::Foundation::E_FAIL.into());
                 }
-                let range = sel[0]
-                    .range
-                    .as_ref()
-                    .cloned()
-                    .ok_or_else(|| windows_core::Error::from_hresult(windows::Win32::Foundation::E_FAIL))?;
-                // SAFETY: ITfContextComposition 为 ITfContext 的标准支持接口。
-                let context_comp: ITfContextComposition = trace_step("cast ITfContextComposition", || {
-                    self.context.cast()
+                let range = sel[0].range.as_ref().cloned().ok_or_else(|| {
+                    windows_core::Error::from_hresult(windows::Win32::Foundation::E_FAIL)
                 })?;
+                // SAFETY: ITfContextComposition 为 ITfContext 的标准支持接口。
+                let context_comp: ITfContextComposition =
+                    trace_step("cast ITfContextComposition", || self.context.cast())?;
                 // 仿 Weasel/SampleIME：psink 传真实 ITfCompositionSink（不能为 null）。
                 let sink = ComObject::new(CompositionSink {
                     comp: self.comp_slot.clone(),
@@ -278,9 +277,7 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
         // SAFETY: SetText 替换整个 composition 文本（写入切片为 UTF-16 编码）。
         // 注：原先会把预编辑文本前 32 字符拼进描述（每键一次 String 分配），
         // 描述改静态后已移除——失败时仍有 HRESULT 可定位，不缺排查手段。
-        trace_step("range.SetText", || unsafe {
-            range.SetText(ec, 0, &wide)
-        })?;
+        trace_step("range.SetText", || unsafe { range.SetText(ec, 0, &wide) })?;
         // 仿 Weasel：把光标 range 折叠到组合文本末尾，并把该 range 设为当前 selection，
         // 否则光标仍停在原 selection 处（组合文本开头）。
         // SAFETY: 均为标准 TSF 调用，ec 为当前读写 cookie。

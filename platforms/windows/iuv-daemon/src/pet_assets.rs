@@ -94,7 +94,11 @@ pub fn load_pet_art() -> PetArt {
                 "[pet] 已加载外部皮肤：{DEFAULT_SKIN_ID}（{} 图层）",
                 skin.layers.len()
             ));
-            return PetArt { skin, images, fallback: load_default_sprites() };
+            return PetArt {
+                skin,
+                images,
+                fallback: load_default_sprites(),
+            };
         }
         log_line(&format!(
             "[pet] 外部皮肤目录不可用（{}），回退内置皮肤",
@@ -107,7 +111,11 @@ pub fn load_pet_art() -> PetArt {
             "[pet] 已装配内置少女皮肤：{DEFAULT_SKIN_ID}（{} 图层）",
             skin.layers.len()
         ));
-        return PetArt { skin, images, fallback: load_default_sprites() };
+        return PetArt {
+            skin,
+            images,
+            fallback: load_default_sprites(),
+        };
     }
     // ③ L0 帧表兜底
     log_line("[pet] 分层素材缺失，回退 L0 帧表（像素狗）");
@@ -234,7 +242,12 @@ mod tests {
         assert_eq!(skin.design_size, (224, 256));
         assert!(!images.is_empty());
         // 核心图层全在
-        for id in [LayerId::Body, LayerId::Head, LayerId::HairBack, LayerId::HairFront] {
+        for id in [
+            LayerId::Body,
+            LayerId::Head,
+            LayerId::HairBack,
+            LayerId::HairFront,
+        ] {
             assert!(images.get(id).is_some(), "{id:?} 图层必须存在");
         }
         // 全部表情都在（缺失时渲染层会回退 Normal，但内置包应当提供齐全）
@@ -247,7 +260,12 @@ mod tests {
     fn builtin_layer_sizes_match_design_size() {
         let (skin, images) = builtin_girl_art().expect("内置皮肤可装配");
         let (dw, dh) = skin.design_size;
-        for id in [LayerId::Body, LayerId::Head, LayerId::HairBack, LayerId::HairFront] {
+        for id in [
+            LayerId::Body,
+            LayerId::Head,
+            LayerId::HairBack,
+            LayerId::HairFront,
+        ] {
             let px = images.get(id).expect("图层存在");
             assert_eq!(
                 (px.width(), px.height()),

@@ -2,7 +2,7 @@
 //! 候选窗/菜单/工具栏共用；全程 tiny-skia 纯 safe API，分配失败/非法参数
 //! 静默降级返回，绝不 panic。
 
-use tiny_skia::{FillRule, Path, PathBuilder, Paint, Pixmap, Rect, Stroke, Transform};
+use tiny_skia::{FillRule, Paint, Path, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
 /// 高亮行/悬停圆角半径（@96dpi 基准；render 乘 scale）。
 pub(crate) const HL_RADIUS: f32 = 2.0;

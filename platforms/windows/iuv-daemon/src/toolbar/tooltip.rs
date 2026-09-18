@@ -5,8 +5,8 @@ use iuv_win::UlwSurface;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, LOGPIXELSY};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, DestroyWindow, GetCursorPos, ShowWindow, SW_HIDE, SW_SHOWNA, HTTRANSPARENT,
-    MA_NOACTIVATE, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT,
+    DefWindowProcW, DestroyWindow, GetCursorPos, ShowWindow, HTTRANSPARENT, MA_NOACTIVATE, SW_HIDE,
+    SW_SHOWNA, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT,
 };
 
 use super::{clamp_to_work, CLASS_TIP};
@@ -59,8 +59,15 @@ impl TooltipWindow {
         }
         // 锚定光标处，右/下越界内收。
         let (x, y) = clamp_to_work(pt.x + 8, pt.y + 12, surf.w as i32, surf.h as i32);
-        self.ulw
-            .upload(self.hwnd, &surf, x, y, surf.w as i32, surf.h as i32, "[tooltip]");
+        self.ulw.upload(
+            self.hwnd,
+            &surf,
+            x,
+            y,
+            surf.w as i32,
+            surf.h as i32,
+            "[tooltip]",
+        );
         // SAFETY: SW_SHOWNA 显示但不激活。
         let _ = unsafe { ShowWindow(self.hwnd, SW_SHOWNA) };
     }

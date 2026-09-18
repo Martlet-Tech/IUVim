@@ -64,9 +64,13 @@ pub fn slice_frames(sheet: &Pixmap, layout: &PetSheetLayout) -> Vec<Pixmap> {
     let mut out = Vec::with_capacity((layout.rows * layout.cols) as usize);
     for row in 0..layout.rows {
         for col in 0..layout.cols {
-            let Some(px) =
-                copy_subpixmap(sheet, col * layout.frame_w, row * layout.frame_h, layout.frame_w, layout.frame_h)
-            else {
+            let Some(px) = copy_subpixmap(
+                sheet,
+                col * layout.frame_w,
+                row * layout.frame_h,
+                layout.frame_w,
+                layout.frame_h,
+            ) else {
                 return Vec::new();
             };
             out.push(px);
@@ -93,7 +97,11 @@ fn copy_subpixmap(src: &Pixmap, x: u32, y: u32, w: u32, h: u32) -> Option<Pixmap
         let d_off = row * dst_stride;
         // SAFETY: 边界已校验（x+w ≤ src.w、y+h ≤ src.h；dst 全新分配 w*h*4）
         unsafe {
-            std::ptr::copy_nonoverlapping(src.data().as_ptr().add(s_off), dst.data_mut().as_mut_ptr().add(d_off), dst_stride);
+            std::ptr::copy_nonoverlapping(
+                src.data().as_ptr().add(s_off),
+                dst.data_mut().as_mut_ptr().add(d_off),
+                dst_stride,
+            );
         }
     }
     Some(dst)
@@ -175,8 +183,7 @@ impl PetSprites {
 
     /// 是否有任何可用帧（false = 整个 sprite 全缺）
     pub fn is_empty(&self) -> bool {
-        self.frames.is_empty()
-            || self.clips.values().all(|r| r.is_empty())
+        self.frames.is_empty() || self.clips.values().all(|r| r.is_empty())
     }
 }
 
@@ -425,8 +432,7 @@ pub fn blit_layer(
 
     // 注意 tiny-skia 的 `post_*` 是**左乘**：新变换套在最外层、最后作用。
     // 故按"作用顺序"倒着链接：scale → 平移锚点到原点 → 旋转 → 平移到目标锚点位置。
-    let scaled = Transform::from_scale(sx, sy)
-        .post_translate(-ax * dst_w, -ay * dst_h);
+    let scaled = Transform::from_scale(sx, sy).post_translate(-ax * dst_w, -ay * dst_h);
     let rotated = if deg == 0.0 {
         scaled
     } else {
@@ -476,8 +482,19 @@ pub fn render_pet_layered(
             images.get(layer.id)
         };
         let Some(src) = src else { continue };
-        let layer_dst = LayoutRect { x: dst.x, y: dst.y + breath_px, w: dst.w, h: dst.h };
-        if blit_layer(canvas, src, &layer_dst, layer.anchor, anim.layer_angle(layer.id)) {
+        let layer_dst = LayoutRect {
+            x: dst.x,
+            y: dst.y + breath_px,
+            w: dst.w,
+            h: dst.h,
+        };
+        if blit_layer(
+            canvas,
+            src,
+            &layer_dst,
+            layer.anchor,
+            anim.layer_angle(layer.id),
+        ) {
             drew_any = true;
         }
     }
@@ -505,7 +522,11 @@ fn extract_alpha_mask(canvas: &Pixmap, dst: &LayoutRect) -> Option<Vec<u8>> {
                 continue;
             }
             let idx = ((py as u32 * cw + px as u32) * 4 + 3) as usize;
-            mask.push(if idx < canvas.data().len() { canvas.data()[idx] } else { 0 });
+            mask.push(if idx < canvas.data().len() {
+                canvas.data()[idx]
+            } else {
+                0
+            });
         }
     }
     Some(mask)
@@ -578,12 +599,35 @@ mod tests {
     fn slice_frames_zero_dims_return_empty() {
         let sheet = Pixmap::new(8, 8).unwrap();
         for layout in [
-            PetSheetLayout { frame_w: 0, frame_h: 4, rows: 2, cols: 2 },
-            PetSheetLayout { frame_w: 4, frame_h: 0, rows: 2, cols: 2 },
-            PetSheetLayout { frame_w: 4, frame_h: 4, rows: 0, cols: 2 },
-            PetSheetLayout { frame_w: 4, frame_h: 4, rows: 2, cols: 0 },
+            PetSheetLayout {
+                frame_w: 0,
+                frame_h: 4,
+                rows: 2,
+                cols: 2,
+            },
+            PetSheetLayout {
+                frame_w: 4,
+                frame_h: 0,
+                rows: 2,
+                cols: 2,
+            },
+            PetSheetLayout {
+                frame_w: 4,
+                frame_h: 4,
+                rows: 0,
+                cols: 2,
+            },
+            PetSheetLayout {
+                frame_w: 4,
+                frame_h: 4,
+                rows: 2,
+                cols: 0,
+            },
         ] {
-            assert!(slice_frames(&sheet, &layout).is_empty(), "layout={layout:?}");
+            assert!(
+                slice_frames(&sheet, &layout).is_empty(),
+                "layout={layout:?}"
+            );
         }
     }
 
@@ -641,8 +685,15 @@ mod tests {
         let mut s = make_sprites(4);
         s.clips.insert(PetClip::Idle, 0..4); // 4 帧 Idle（理论上静止只播帧 0）
         let first = s.frame(PetClip::Idle, 0).expect("首帧").data().to_vec();
-        let clamped = s.frame(PetClip::Idle, 100).expect("clamp 不应 None").data().to_vec();
-        assert_eq!(first, clamped, "静止 Idle 越界 idx=100 应回到首帧（clamp 而非 wrap）");
+        let clamped = s
+            .frame(PetClip::Idle, 100)
+            .expect("clamp 不应 None")
+            .data()
+            .to_vec();
+        assert_eq!(
+            first, clamped,
+            "静止 Idle 越界 idx=100 应回到首帧（clamp 而非 wrap）"
+        );
     }
 
     /// M1 §4.2 + §3.3：Typing 是循环律动，frame 须 wrap（mod clip_len）而非 clamp。
@@ -674,7 +725,10 @@ mod tests {
         assert_ne!(f1, f2, "idx 1/2 必须不同帧");
         // 循环：idx=3 应回到 idx=0（首帧红）
         let wrapped = s.frame(PetClip::Typing, 3).expect("idx 3").data().to_vec();
-        assert_eq!(f0, wrapped, "Typing 循环：idx=len 必须回到首帧（mod），而非卡在末帧");
+        assert_eq!(
+            f0, wrapped,
+            "Typing 循环：idx=len 必须回到首帧（mod），而非卡在末帧"
+        );
         // 验证正方向：idx=4 = idx=1（绿）
         let f4 = s.frame(PetClip::Typing, 4).expect("idx 4").data().to_vec();
         assert_eq!(f1, f4, "Typing 循环：idx=4 = idx=1");
@@ -725,8 +779,19 @@ mod tests {
 
         // 16x16 画布，把帧缩放绘到 (0,0,16,16)
         let mut canvas = Pixmap::new(16, 16).unwrap();
-        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
-        assert!(render_pet_frame(&mut canvas, &sprites, PetClip::Idle, 0, &dst));
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+        };
+        assert!(render_pet_frame(
+            &mut canvas,
+            &sprites,
+            PetClip::Idle,
+            0,
+            &dst
+        ));
         // 中心 alpha > 0（缩放后像素已绘制）
         let center_idx = (8 * 16 + 8) * 4 + 3; // 中心像素 alpha
         assert!(canvas.data()[center_idx] > 0, "中心像素应被绘制");
@@ -736,8 +801,19 @@ mod tests {
     fn render_pet_frame_missing_returns_false() {
         let sprites = PetSprites::new(Vec::new(), HashMap::new());
         let mut canvas = Pixmap::new(8, 8).unwrap();
-        let dst = LayoutRect { x: 0, y: 0, w: 8, h: 8 };
-        assert!(!render_pet_frame(&mut canvas, &sprites, PetClip::Idle, 0, &dst));
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 8,
+            h: 8,
+        };
+        assert!(!render_pet_frame(
+            &mut canvas,
+            &sprites,
+            PetClip::Idle,
+            0,
+            &dst
+        ));
     }
 
     #[test]
@@ -752,7 +828,12 @@ mod tests {
         let mut sprites = PetSprites::new(vec![src], HashMap::new());
         sprites.clips.insert(PetClip::Idle, 0..1);
 
-        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+        };
         // 中心 = (8, 8) → 缩放后落在源 (2, 2)（不透明区）
         let a = pet_alpha_at(&sprites, PetClip::Idle, 0, &dst, 8.0, 8.0);
         assert!(a > 0, "中心 alpha 应 >0，实际 {a}");
@@ -768,12 +849,23 @@ mod tests {
         let mut sprites = PetSprites::new(vec![src], HashMap::new());
         sprites.clips.insert(PetClip::Idle, 0..1);
 
-        let dst = LayoutRect { x: 0, y: 0, w: 8, h: 8 };
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 8,
+            h: 8,
+        };
         // 矩形外
-        assert_eq!(pet_alpha_at(&sprites, PetClip::Idle, 0, &dst, 100.0, 100.0), 0);
+        assert_eq!(
+            pet_alpha_at(&sprites, PetClip::Idle, 0, &dst, 100.0, 100.0),
+            0
+        );
         // 矩形内但无帧（先清 clips）
         let sprites_empty = PetSprites::new(Vec::new(), HashMap::new());
-        assert_eq!(pet_alpha_at(&sprites_empty, PetClip::Idle, 0, &dst, 4.0, 4.0), 0);
+        assert_eq!(
+            pet_alpha_at(&sprites_empty, PetClip::Idle, 0, &dst, 4.0, 4.0),
+            0
+        );
     }
 
     // ===== 分层渲染（少女形象） =====
@@ -800,7 +892,11 @@ mod tests {
     }
 
     fn no_swing(id: LayerId, anchor: (f32, f32)) -> PetLayer {
-        PetLayer { id, anchor, spring: None }
+        PetLayer {
+            id,
+            anchor,
+            spring: None,
+        }
     }
 
     #[test]
@@ -822,7 +918,12 @@ mod tests {
     fn blit_layer_scales_source_to_dst() {
         let src = solid(8, 8, 0, 0, 255, 255);
         let mut canvas = Pixmap::new(16, 16).unwrap();
-        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+        };
         assert!(blit_layer(&mut canvas, &src, &dst, (0.5, 0.5), 0.0));
         // 中心与四角都应有内容（等比铺满）
         for (x, y) in [(8, 8), (1, 1), (14, 14)] {
@@ -836,12 +937,21 @@ mod tests {
         // 铺满的正方形绕中心旋转 45° → 变成菱形：中心仍有内容，角落空出来
         let src = solid(8, 8, 0, 0, 255, 255);
         let mut canvas = Pixmap::new(16, 16).unwrap();
-        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+        };
         assert!(blit_layer(&mut canvas, &src, &dst, (0.5, 0.5), 45.0));
         let center = ((8 * 16 + 8) * 4 + 3) as usize;
         let corner = ((16 + 1) * 4 + 3) as usize;
         assert!(canvas.data()[center] > 200, "旋转后中心应仍有内容");
-        assert!(canvas.data()[corner] < 128, "旋转后角落应空出，实际 {}", canvas.data()[corner]);
+        assert!(
+            canvas.data()[corner] < 128,
+            "旋转后角落应空出，实际 {}",
+            canvas.data()[corner]
+        );
     }
 
     #[test]
@@ -849,11 +959,55 @@ mod tests {
         let src = solid(8, 8, 255, 0, 0, 255);
         let mut canvas = Pixmap::new(16, 16).unwrap();
         // 零/负尺寸
-        assert!(!blit_layer(&mut canvas, &src, &LayoutRect { x: 0, y: 0, w: 0, h: 8 }, (0.5, 0.5), 0.0));
-        assert!(!blit_layer(&mut canvas, &src, &LayoutRect { x: 0, y: 0, w: 8, h: 0 }, (0.5, 0.5), 0.0));
-        assert!(!blit_layer(&mut canvas, &src, &LayoutRect { x: 0, y: 0, w: -8, h: 8 }, (0.5, 0.5), 0.0));
+        assert!(!blit_layer(
+            &mut canvas,
+            &src,
+            &LayoutRect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 8
+            },
+            (0.5, 0.5),
+            0.0
+        ));
+        assert!(!blit_layer(
+            &mut canvas,
+            &src,
+            &LayoutRect {
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 0
+            },
+            (0.5, 0.5),
+            0.0
+        ));
+        assert!(!blit_layer(
+            &mut canvas,
+            &src,
+            &LayoutRect {
+                x: 0,
+                y: 0,
+                w: -8,
+                h: 8
+            },
+            (0.5, 0.5),
+            0.0
+        ));
         // 越界 dst 也不应 panic（由 tiny-skia 裁剪）
-        let _ = blit_layer(&mut canvas, &src, &LayoutRect { x: 100, y: 100, w: 16, h: 16 }, (0.5, 0.5), 30.0);
+        let _ = blit_layer(
+            &mut canvas,
+            &src,
+            &LayoutRect {
+                x: 100,
+                y: 100,
+                w: 16,
+                h: 16,
+            },
+            (0.5, 0.5),
+            30.0,
+        );
     }
 
     #[test]
@@ -868,13 +1022,23 @@ mod tests {
         imgs.insert(LayerId::Head, solid(8, 8, 0, 0, 255, 255));
 
         let mut canvas = Pixmap::new(16, 16).unwrap();
-        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+        };
         let anim = PetAnim::new(&skin);
-        assert!(render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst).is_some());
+        assert!(
+            render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst).is_some()
+        );
 
         let idx = (8 * 16 + 8) * 4;
         let (r, b) = (canvas.data()[idx], canvas.data()[idx + 2]);
-        assert!(b > 200 && r < 64, "上层 Head(蓝) 应覆盖 Body(红)，实际 r={r} b={b}");
+        assert!(
+            b > 200 && r < 64,
+            "上层 Head(蓝) 应覆盖 Body(红)，实际 r={r} b={b}"
+        );
     }
 
     #[test]
@@ -888,9 +1052,16 @@ mod tests {
         imgs.insert(LayerId::Body, solid(8, 8, 255, 0, 0, 255));
 
         let mut canvas = Pixmap::new(16, 16).unwrap();
-        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+        };
         let anim = PetAnim::new(&skin);
-        assert!(render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst).is_some());
+        assert!(
+            render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst).is_some()
+        );
         let idx = (8 * 16 + 8) * 4;
         assert!(canvas.data()[idx] > 200, "Body(红) 应被画出");
     }
@@ -900,9 +1071,16 @@ mod tests {
         let skin = test_skin(vec![no_swing(LayerId::Body, (0.5, 1.0))]);
         let imgs = LayerImages::empty(); // 完全没有素材
         let mut canvas = Pixmap::new(16, 16).unwrap();
-        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+        };
         let anim = PetAnim::new(&skin);
-        assert!(render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst).is_none());
+        assert!(
+            render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst).is_none()
+        );
     }
 
     #[test]
@@ -920,7 +1098,12 @@ mod tests {
         imgs.insert(LayerId::Body, src);
 
         let mut canvas = Pixmap::new(16, 16).unwrap();
-        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+        };
         let anim = PetAnim::new(&skin);
         let mask = render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Normal, &anim, &dst)
             .expect("应返回 mask");
@@ -938,9 +1121,16 @@ mod tests {
         imgs.insert_face(FaceExpr::Normal, solid(8, 8, 0, 255, 0, 255));
 
         let mut canvas = Pixmap::new(16, 16).unwrap();
-        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+        };
         let anim = PetAnim::new(&skin);
-        assert!(render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Smile, &anim, &dst).is_some());
+        assert!(
+            render_pet_layered(&mut canvas, &skin, &imgs, FaceExpr::Smile, &anim, &dst).is_some()
+        );
         let idx = (8 * 16 + 8) * 4;
         assert!(canvas.data()[idx + 1] > 200, "应回退绘制 Normal(绿)");
     }
@@ -961,7 +1151,12 @@ mod tests {
         }
         imgs.insert(LayerId::Body, src);
 
-        let dst = LayoutRect { x: 0, y: 0, w: 16, h: 16 };
+        let dst = LayoutRect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+        };
         let mut anim = PetAnim::new(&skin);
 
         let mut canvas_a = Pixmap::new(16, 16).unwrap();
@@ -996,7 +1191,10 @@ mod tests {
         // 越界与尺寸不匹配
         assert!(!pet_mask_hit(&mask, 2, 2, 2.0, 0.0, 0x20), "越界不命中");
         assert!(!pet_mask_hit(&mask, 2, 2, -1.0, 0.0, 0x20));
-        assert!(!pet_mask_hit(&mask, 3, 2, 1.0, 0.0, 0x20), "尺寸不匹配不命中");
+        assert!(
+            !pet_mask_hit(&mask, 3, 2, 1.0, 0.0, 0x20),
+            "尺寸不匹配不命中"
+        );
         assert!(!pet_mask_hit(&mask, 0, 0, 0.0, 0.0, 0x20), "零尺寸不命中");
     }
 }

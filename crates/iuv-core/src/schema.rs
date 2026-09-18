@@ -90,7 +90,11 @@ impl Quanpin {
                 // `zho`/`zhon` 同理。无任何前缀才单字母兜底，保证有解永不失败。
                 let mut plen = 1usize;
                 for len in (1..=upper).rev() {
-                    if self.syllables.iter().any(|syl| syl.starts_with(&s[pos..pos + len])) {
+                    if self
+                        .syllables
+                        .iter()
+                        .any(|syl| syl.starts_with(&s[pos..pos + len]))
+                    {
                         plen = len;
                         break;
                     }
@@ -434,8 +438,25 @@ mod tests {
         };
 
         for s in [
-            "nihao", "xian", "shigechengy", "nhao", "nhmsx", "qaz", "xn", "sh", "zho", "zhon",
-            "lue", "nue", "gonglue", "gonglve", "jue", "chuangqianmingyueguang", "", "x'", "x''y",
+            "nihao",
+            "xian",
+            "shigechengy",
+            "nhao",
+            "nhmsx",
+            "qaz",
+            "xn",
+            "sh",
+            "zho",
+            "zhon",
+            "lue",
+            "nue",
+            "gonglue",
+            "gonglve",
+            "jue",
+            "chuangqianmingyueguang",
+            "",
+            "x'",
+            "x''y",
             "beiguofengguangqianlibingfengwanlixuepiaowangchang",
         ] {
             check(s);
@@ -445,13 +466,16 @@ mod tests {
         const ALPHABET: &[u8] = b"aeioubpmfdtnlgkhjqxzhcsrwy";
         let mut seed: u64 = 0x464c_4f57_4552;
         let mut next = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (seed >> 33) as usize
         };
         for _ in 0..400 {
             let len = 1 + next() % 24;
-            let s: String =
-                (0..len).map(|_| ALPHABET[next() % ALPHABET.len()] as char).collect();
+            let s: String = (0..len)
+                .map(|_| ALPHABET[next() % ALPHABET.len()] as char)
+                .collect();
             check(&s);
         }
     }

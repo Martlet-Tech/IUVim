@@ -79,7 +79,9 @@ pub(crate) fn preview_rules(
         return plain;
     }
     let consumed = c.seg_len.max(1).min(seg.len());
-    let consumed_full = seg[..consumed].iter().all(|s| !s.is_empty() && is_syllable(s));
+    let consumed_full = seg[..consumed]
+        .iter()
+        .all(|s| !s.is_empty() && is_syllable(s));
     if !consumed_full {
         return display(seg);
     }

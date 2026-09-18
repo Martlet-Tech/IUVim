@@ -69,11 +69,7 @@ pub struct ToolbarSpec<'a> {
 /// 渲染浮动工具栏：横排 6 按钮条，风格与候选窗/菜单一致（扁平圆角细边框）。
 /// 返回 `(Surface, 按钮矩形列表)`——矩形为 surface 坐标（= 内容坐标，无边框留白
 /// 偏移），与窗口客户区坐标系重合，直接喂 `hit_test` 做按钮命中。
-pub fn render_toolbar(
-    spec: &ToolbarSpec,
-    theme: &Theme,
-    scale: f32,
-) -> (Surface, Vec<LayoutRect>) {
+pub fn render_toolbar(spec: &ToolbarSpec, theme: &Theme, scale: f32) -> (Surface, Vec<LayoutRect>) {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -94,15 +90,9 @@ pub fn render_toolbar(
             h: btn.round() as i32,
         });
     }
-    let surface = render_to_surface(
-        theme,
-        scale,
-        content_w as u32,
-        content_h as u32,
-        |pixmap| {
-            draw_toolbar_content(pixmap, spec, theme, &rects, scale);
-        },
-    );
+    let surface = render_to_surface(theme, scale, content_w as u32, content_h as u32, |pixmap| {
+        draw_toolbar_content(pixmap, spec, theme, &rects, scale);
+    });
     (surface, rects)
 }
 
@@ -295,7 +285,12 @@ pub fn render_composite(
     spec: &CompositeSpec,
     theme: &Theme,
     scale: f32,
-) -> (Surface, Vec<LayoutRect>, Option<LayoutRect>, Option<Vec<u8>>) {
+) -> (
+    Surface,
+    Vec<LayoutRect>,
+    Option<LayoutRect>,
+    Option<Vec<u8>>,
+) {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -309,7 +304,12 @@ pub fn render_composite(
     let composite_h = toolbar_h + overhang;
     let pet_rect = if spec.pet.is_some() {
         let (x, y, w, h) = pet_display_rect(scale);
-        Some(LayoutRect { x, y, w: w as i32, h: h as i32 })
+        Some(LayoutRect {
+            x,
+            y,
+            w: w as i32,
+            h: h as i32,
+        })
     } else {
         None
     };
@@ -416,7 +416,10 @@ mod tests {
             + (TOOLBAR_GAP * 1.0).ceil() as i32 * (TB_COUNT as i32 - 1)
             + (TOOLBAR_PAD * 1.0).ceil() as i32 * 2;
         let toolbar_h = (TOOLBAR_BTN * 1.0).ceil() as i32 + (TOOLBAR_PAD * 1.0).ceil() as i32 * 2;
-        assert_eq!(surf.w as i32, toolbar_w, "复合窗宽 = 工具栏宽（可贴屏幕右缘）");
+        assert_eq!(
+            surf.w as i32, toolbar_w,
+            "复合窗宽 = 工具栏宽（可贴屏幕右缘）"
+        );
         assert_eq!(surf.h as i32, toolbar_h + overhang);
         // 按钮矩形：y 全部一致 = pad + overhang（pad=6, overhang=136 @ scale=1 → 142）
         // 关键不变量：复合坐标下所有按钮 y 相同（横排布局）。
@@ -499,7 +502,10 @@ mod tests {
         // sprites.is_empty → composite 内不画宠物；pet_rect 仍按定义计算（用于命中穿透）
         assert!(surf.w > 0 && surf.h > 0);
         assert!(pet_rect.is_some(), "pet_rect 仍返回（命中用）");
-        assert!(mask.is_none(), "帧表路径不返回 alpha mask（沿用 pet_alpha_at）");
+        assert!(
+            mask.is_none(),
+            "帧表路径不返回 alpha mask（沿用 pet_alpha_at）"
+        );
     }
 
     /// 复合渲染几何（少女形象 · 竖长半身像）：scale=1 时
@@ -538,20 +544,35 @@ mod tests {
         let (surf, rects, pet_rect, _) =
             render_composite(&composite, &crate::theme::theme_dark(), 1.0);
         // 复合窗 212×178
-        assert_eq!(surf.w, 212, "scale=1 复合窗宽 = 工具栏宽（宠物居中挂上方，不追加宽度）");
+        assert_eq!(
+            surf.w, 212,
+            "scale=1 复合窗宽 = 工具栏宽（宠物居中挂上方，不追加宽度）"
+        );
         assert_eq!(surf.h, 178, "scale=1 复合窗高 = 42+136");
         // 宠物矩形（竖长半身像 @96dpi 基准）
         let pr = pet_rect.expect("pet_rect 必须返回（命中用）");
         assert_eq!(pr.x, 50, "宠物水平居中于工具栏：x = (212 - 112)/2");
         assert_eq!(pr.x + pr.w, 162, "宠物右缘仍在工具栏内（≤212）");
-        assert_eq!(pr.y, 8, "宠物 y = overhang - display_h = 136 - 128（底边贴工具栏上沿）");
+        assert_eq!(
+            pr.y, 8,
+            "宠物 y = overhang - display_h = 136 - 128（底边贴工具栏上沿）"
+        );
         assert_eq!(pr.w, 112);
         assert_eq!(pr.h, 128);
-        assert_eq!(pr.y + pr.h, 136, "宠物底边 y+h = PET_OVERHANG = 工具栏上沿（栖木线）");
+        assert_eq!(
+            pr.y + pr.h,
+            136,
+            "宠物底边 y+h = PET_OVERHANG = 工具栏上沿（栖木线）"
+        );
         // 按钮落在栖木线之下，且不与宠物矩形重叠
         let overhang = PET_OVERHANG as i32;
         for r in &rects {
-            assert!(r.y >= overhang, "按钮 y 应在栖木线之下，实际 {} < {}", r.y, overhang);
+            assert!(
+                r.y >= overhang,
+                "按钮 y 应在栖木线之下，实际 {} < {}",
+                r.y,
+                overhang
+            );
             let bottom = r.y + r.h;
             assert!(bottom <= surf.h as i32, "按钮不得超出复合窗底部");
         }

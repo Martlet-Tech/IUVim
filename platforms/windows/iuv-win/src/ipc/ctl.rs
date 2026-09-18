@@ -12,9 +12,7 @@ use std::io;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Pipes::DisconnectNamedPipe;
 
-use super::codec::{
-    decode_ctl_cmd, decode_ctl_result, encode_ctl_cmd, encode_ctl_result,
-};
+use super::codec::{decode_ctl_cmd, decode_ctl_result, encode_ctl_cmd, encode_ctl_result};
 use super::msg::{CtlCmd, CtlResult};
 use super::pipe::imp;
 

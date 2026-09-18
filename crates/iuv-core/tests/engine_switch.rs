@@ -26,7 +26,9 @@ fn engine_uses_rime_core_by_default() {
     let e = s.effect();
     assert_eq!(e.candidates[0].text, "你好");
     assert!(
-        e.candidates.iter().all(|c| c.kind != iuv_core::CandidateKind::Sentence),
+        e.candidates
+            .iter()
+            .all(|c| c.kind != iuv_core::CandidateKind::Sentence),
         "rime 核心：可靠精确词在场不组句"
     );
 }
@@ -42,7 +44,11 @@ fn rime_core_shares_user_dict_swap() {
     let e = s.effect();
     let xi = e.candidates.iter().position(|c| c.text == "西安").unwrap();
     // 西安(6091) 与相邻候选调权一次后应移动位置
-    s.on_key(if xi == 0 { Key::SwapRight } else { Key::SwapLeft });
+    s.on_key(if xi == 0 {
+        Key::SwapRight
+    } else {
+        Key::SwapLeft
+    });
     let e2 = s.effect();
     let xi2 = e2.candidates.iter().position(|c| c.text == "西安").unwrap();
     assert_ne!(xi, xi2, "调权后西安位置应变化：{} -> {}", xi, xi2);
@@ -113,7 +119,14 @@ fn pick(s: &mut iuv_core::Session, text: &str) {
         s.on_key(Key::Digit((i + 1) as u8));
         return;
     }
-    panic!("候选中找不到 {text}：{:?}", e.candidates.iter().map(|c| &c.text).take(9).collect::<Vec<_>>());
+    panic!(
+        "候选中找不到 {text}：{:?}",
+        e.candidates
+            .iter()
+            .map(|c| &c.text)
+            .take(9)
+            .collect::<Vec<_>>()
+    );
 }
 
 /// 39-rime-pipeline.md §6/§13 回归：用户**独有**词条对 rime 游标探针可见
@@ -129,9 +142,11 @@ fn rime_user_only_word_visible() {
         ("ye".into(), "也".into(), 30000),
         ("pi".into(), "皮".into(), 1000),
     ]);
-    dict.set_user(std::sync::Arc::new(
-        UserDict::empty().set_entry("ye'zhu'pi", "野猪皮", 8000),
-    ));
+    dict.set_user(std::sync::Arc::new(UserDict::empty().set_entry(
+        "ye'zhu'pi",
+        "野猪皮",
+        8000,
+    )));
     let engine = Engine::new(dict, Config::default());
 
     let mut s = engine.start_session();

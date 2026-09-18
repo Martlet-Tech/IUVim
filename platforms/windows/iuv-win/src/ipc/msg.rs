@@ -16,7 +16,11 @@ pub enum Request {
         b_adj: u32,
     },
     /// 自造词/覆盖写入（upsert）。
-    Set { code: String, word: String, adj: u32 },
+    Set {
+        code: String,
+        word: String,
+        adj: u32,
+    },
     /// 移除用户库条目（隐藏自造词/覆盖 = 撤销自造）。
     Remove { code: String, word: String },
     /// 屏蔽基础库词条（Shift+Delete 隐藏）。
@@ -29,18 +33,10 @@ pub enum Request {
     Quit,
     /// 32-status-toolbar.md §4.1：TSF 实例 Activate 时注册 + 上报初始四态。
     /// daemon 记入实例表（pid:tid 唯一），供看板判定/点击寻址。
-    Register {
-        pid: u32,
-        tid: u32,
-        state: ImeState,
-    },
+    Register { pid: u32, tid: u32, state: ImeState },
     /// 32-status-toolbar.md §4.1：实例运行时四态变化上报（OPENCLOSE OnChange /
     /// CtlCmd::Set* 应用成功后）。
-    StateSync {
-        pid: u32,
-        tid: u32,
-        state: ImeState,
-    },
+    StateSync { pid: u32, tid: u32, state: ImeState },
     /// 32-status-toolbar.md §4.1：Activate/Deactivate 通知（daemon 判「iuv 被选中」）。
     Active { pid: u32, tid: u32, active: bool },
     /// 32-status-toolbar.md §4.1：语言栏右键菜单「显示/隐藏工具栏」（全局偏好切换）。
@@ -54,10 +50,16 @@ pub enum Request {
 /// 守护进程 → 会话进程的响应。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Response {
-    Ok { version: u32 },
-    Err { msg: String },
+    Ok {
+        version: u32,
+    },
+    Err {
+        msg: String,
+    },
     /// `Request::GetToolbarVisible` 的应答：当前全局显隐偏好。
-    ToolbarVisible { visible: bool },
+    ToolbarVisible {
+        visible: bool,
+    },
 }
 
 /// 工具条信号通道载荷（40-toolbar-show-hide-governance.md 纯信号模型定稿）：

@@ -17,7 +17,7 @@
 //!
 //! 可单测（无 I/O、无 panic 路径），`cargo test -p iuv-core` 全绿。
 
-use crate::config::{InitialMode, ImeState};
+use crate::config::{ImeState, InitialMode};
 use crate::pet_skin::FaceExpr;
 
 /// 动作片段标识（M1 内置集；M2 起由 mod 素材描述扩展）。
@@ -442,7 +442,11 @@ mod tests {
         for _ in 0..(REACT_TOTAL * 1000 / ONESHOT_FPS + 200) {
             m.advance(100);
         }
-        assert_eq!(m.motion, PetMotion::Typing, "React 播完回 Typing（typing=true）");
+        assert_eq!(
+            m.motion,
+            PetMotion::Typing,
+            "React 播完回 Typing（typing=true）"
+        );
     }
 
     #[test]
@@ -541,7 +545,11 @@ mod tests {
         for _ in 0..12 {
             m.advance(100);
         }
-        assert_eq!(m.motion, PetMotion::Idle, "React 播完回 Idle（typing=false）");
+        assert_eq!(
+            m.motion,
+            PetMotion::Idle,
+            "React 播完回 Idle（typing=false）"
+        );
     }
 
     #[test]
@@ -615,7 +623,11 @@ mod tests {
     fn clip_face_maps_speech_states() {
         assert_eq!(PetClip::Idle.face(), FaceExpr::Normal);
         assert_eq!(PetClip::ModeCn.face(), FaceExpr::Normal, "中文模式 = 常态");
-        assert_eq!(PetClip::ModeEn.face(), FaceExpr::Sleepy, "英文模式 = 打盹（UIUX §4.2）");
+        assert_eq!(
+            PetClip::ModeEn.face(),
+            FaceExpr::Sleepy,
+            "英文模式 = 打盹（UIUX §4.2）"
+        );
         assert_eq!(PetClip::Typing.face(), FaceExpr::Focus, "打字中 = 专注");
         assert_eq!(PetClip::React.face(), FaceExpr::Smile, "点击互动 = 微笑");
     }
@@ -623,7 +635,11 @@ mod tests {
     #[test]
     fn clip_face_flash_states_are_surprised() {
         for clip in [PetClip::Width, PetClip::Script, PetClip::Punct] {
-            assert_eq!(clip.face(), FaceExpr::Surprised, "{clip:?} 四态一闪应为惊讶");
+            assert_eq!(
+                clip.face(),
+                FaceExpr::Surprised,
+                "{clip:?} 四态一闪应为惊讶"
+            );
         }
     }
 

@@ -1,7 +1,9 @@
 //! vk/char → Key 映射 + Effect 应用。契约 01-contract.md §7 与 13 任务书 §3.4。
 //! 【Agent D】W1 实现。
 
-use iuv_core::{chinese_punct, fullwidth, shifted_punct, Effect, Key, PunctMode, SessionEnd, WidthMode};
+use iuv_core::{
+    chinese_punct, fullwidth, shifted_punct, Effect, Key, PunctMode, SessionEnd, WidthMode,
+};
 
 use crate::composition::Composition;
 use crate::log::{log_line, perf_record_with, perf_tick};
@@ -49,8 +51,8 @@ pub fn map_key(
     const VK_OEM_7: u16 = 0xDE; // 引号键（无 Shift = '）
     const VK_OEM_COMMA: u16 = 0xBC; // 逗号键（无 Shift = ,）
     const VK_OEM_PERIOD: u16 = 0xBE; // 句号键（无 Shift = .）
-    // 其余 OEM 标点键（会话内作字面尾巴，见 session.rs tail；会话外行为不变——
-    // 中文标点/全角判定在 route_key 更前，命中即被吃，未命中原样放行）。
+                                     // 其余 OEM 标点键（会话内作字面尾巴，见 session.rs tail；会话外行为不变——
+                                     // 中文标点/全角判定在 route_key 更前，命中即被吃，未命中原样放行）。
     const VK_OEM_1: u16 = 0xBA; // ; :
     const VK_OEM_PLUS: u16 = 0xBB; // = +
     const VK_OEM_MINUS: u16 = 0xBD; // - _
@@ -99,7 +101,10 @@ pub fn map_key(
         | VK_OEM_6
             if char_code != 0 =>
         {
-            Some(Key::Char(shifted_punct(char_code as u8 as char, with_shift)))
+            Some(Key::Char(shifted_punct(
+                char_code as u8 as char,
+                with_shift,
+            )))
         }
         _ => None,
     }
@@ -414,38 +419,49 @@ mod tests {
         let cfg = iuv_core::Config::default();
         // 翻页：PageUp / , 主备两槽
         assert_eq!(
-            cfg.keymap.map(&combo_from_vk(0x21, 0, false, false, false).unwrap()),
+            cfg.keymap
+                .map(&combo_from_vk(0x21, 0, false, false, false).unwrap()),
             Some(SessionAction::PagePrev)
         );
         assert_eq!(
-            cfg.keymap.map(&combo_from_vk(0xBC, 0x2C, false, false, false).unwrap()),
+            cfg.keymap
+                .map(&combo_from_vk(0xBC, 0x2C, false, false, false).unwrap()),
             Some(SessionAction::PagePrev)
         );
         assert_eq!(
-            cfg.keymap.map(&combo_from_vk(0x22, 0, false, false, false).unwrap()),
+            cfg.keymap
+                .map(&combo_from_vk(0x22, 0, false, false, false).unwrap()),
             Some(SessionAction::PageNext)
         );
         // 调权：Shift+←/→
         assert_eq!(
-            cfg.keymap.map(&combo_from_vk(0x25, 0, true, false, false).unwrap()),
+            cfg.keymap
+                .map(&combo_from_vk(0x25, 0, true, false, false).unwrap()),
             Some(SessionAction::SwapLeft)
         );
         assert_eq!(
-            cfg.keymap.map(&combo_from_vk(0x27, 0, true, false, false).unwrap()),
+            cfg.keymap
+                .map(&combo_from_vk(0x27, 0, true, false, false).unwrap()),
             Some(SessionAction::SwapRight)
         );
         // 隐藏：Shift+Delete
         assert_eq!(
-            cfg.keymap.map(&combo_from_vk(0x2E, 0, true, false, false).unwrap()),
+            cfg.keymap
+                .map(&combo_from_vk(0x2E, 0, true, false, false).unwrap()),
             Some(SessionAction::HideCandidate)
         );
         // 字母不入会话查表（拼音输入空间）
         assert_eq!(
-            cfg.keymap.map(&combo_from_vk(0x41, 0x61, false, false, false).unwrap()),
+            cfg.keymap
+                .map(&combo_from_vk(0x41, 0x61, false, false, false).unwrap()),
             None
         );
         // 未绑定：F5 无映射
-        assert_eq!(cfg.keymap.map(&combo_from_vk(0x74, 0, false, false, false).unwrap()), None);
+        assert_eq!(
+            cfg.keymap
+                .map(&combo_from_vk(0x74, 0, false, false, false).unwrap()),
+            None
+        );
     }
 
     #[test]
@@ -562,7 +578,14 @@ mod tests {
     fn fullwidth_half_mode_release() {
         // 半角：中文/英文模式全放行
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Half, PunctMode::Chinese, '1', false, false),
+            fullwidth_pending(
+                false,
+                WidthMode::Half,
+                PunctMode::Chinese,
+                '1',
+                false,
+                false
+            ),
             None
         );
         assert_eq!(
@@ -571,11 +594,25 @@ mod tests {
         );
         // 非 ASCII / 控制字符不转
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Full, PunctMode::Chinese, '中', false, false),
+            fullwidth_pending(
+                true,
+                WidthMode::Full,
+                PunctMode::Chinese,
+                '中',
+                false,
+                false
+            ),
             None
         );
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Full, PunctMode::Chinese, '\t', false, false),
+            fullwidth_pending(
+                true,
+                WidthMode::Full,
+                PunctMode::Chinese,
+                '\t',
+                false,
+                false
+            ),
             None
         );
     }
@@ -612,11 +649,25 @@ mod tests {
     fn fullwidth_chinese_mode_punct_owned_or_release() {
         // 中文标点表内符号：punct=Chinese 时归标点开关，全角不接管
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, PunctMode::Chinese, ',', false, false),
+            fullwidth_pending(
+                false,
+                WidthMode::Full,
+                PunctMode::Chinese,
+                ',',
+                false,
+                false
+            ),
             None
         );
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, PunctMode::Chinese, '.', false, false),
+            fullwidth_pending(
+                false,
+                WidthMode::Full,
+                PunctMode::Chinese,
+                '.',
+                false,
+                false
+            ),
             None
         );
         assert_eq!(
@@ -626,12 +677,26 @@ mod tests {
         );
         // punct=English：标点表不接管 → 全角接管（，→ U+FF0C）
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, PunctMode::English, ',', false, false),
+            fullwidth_pending(
+                false,
+                WidthMode::Full,
+                PunctMode::English,
+                ',',
+                false,
+                false
+            ),
             Some("，".into())
         );
         // 字母不转（照常进拼音会话）
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, PunctMode::Chinese, 'a', false, false),
+            fullwidth_pending(
+                false,
+                WidthMode::Full,
+                PunctMode::Chinese,
+                'a',
+                false,
+                false
+            ),
             None
         );
         assert_eq!(

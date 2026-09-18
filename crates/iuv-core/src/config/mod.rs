@@ -119,8 +119,14 @@ mod tests {
         assert_eq!(c.max_candidates, 1024);
         assert_eq!(c.max_word_syllables, 7);
         assert!(!c.candidate_prefix);
-        assert_eq!(c.keymap.page_prev.primary.as_ref().map(Combo::name), Some("PageUp".into()));
-        assert_eq!(c.keymap.page_next.primary.as_ref().map(Combo::name), Some("PageDown".into()));
+        assert_eq!(
+            c.keymap.page_prev.primary.as_ref().map(Combo::name),
+            Some("PageUp".into())
+        );
+        assert_eq!(
+            c.keymap.page_next.primary.as_ref().map(Combo::name),
+            Some("PageDown".into())
+        );
         // 直通名单默认空（不启用）
         assert!(c.passthrough_apps.is_empty());
         // 候选渲染自持名单默认空（恒自绘）
@@ -185,9 +191,15 @@ mod tests {
         let c = Config::from_file(&p);
         assert_eq!(c.page_size, 7);
         // 旧格式数组 ["["] → 迁移为新两槽 primary="["
-        assert_eq!(c.keymap.page_prev.primary.as_ref().map(Combo::name), Some("[".into()));
+        assert_eq!(
+            c.keymap.page_prev.primary.as_ref().map(Combo::name),
+            Some("[".into())
+        );
         // 未写的 page_next 用默认
-        assert_eq!(c.keymap.page_next.primary.as_ref().map(Combo::name), Some("PageDown".into()));
+        assert_eq!(
+            c.keymap.page_next.primary.as_ref().map(Combo::name),
+            Some("PageDown".into())
+        );
     }
 
     #[test]
@@ -212,11 +224,7 @@ mod tests {
         let c: Config = serde_json::from_str(r#"{ "page_size": 5 }"#).unwrap();
         assert!(c.candidate_owner_apps.is_empty());
         let p = tmp_file("cand_owner.json");
-        std::fs::write(
-            &p,
-            r#"{ "candidate_owner_apps": ["Wow.exe"] }"#,
-        )
-        .unwrap();
+        std::fs::write(&p, r#"{ "candidate_owner_apps": ["Wow.exe"] }"#).unwrap();
         let c2 = Config::from_file(&p);
         assert_eq!(c2.candidate_owner_apps, vec!["Wow.exe".to_owned()]);
     }
@@ -230,7 +238,10 @@ mod tests {
         // 显式列表解析
         let c2: Config =
             serde_json::from_str(r#"{ "disabled_log_modules": ["uielem", "key"] }"#).unwrap();
-        assert_eq!(c2.disabled_log_modules, vec!["uielem".to_owned(), "key".to_owned()]);
+        assert_eq!(
+            c2.disabled_log_modules,
+            vec!["uielem".to_owned(), "key".to_owned()]
+        );
     }
 
     #[test]

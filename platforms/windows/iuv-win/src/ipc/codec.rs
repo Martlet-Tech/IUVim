@@ -138,11 +138,7 @@ pub(crate) fn encode_request(req: &Request) -> Vec<u8> {
             out.extend_from_slice(&tid.to_le_bytes());
             put_toolbar_state(&mut out, state);
         }
-        Request::Active {
-            pid,
-            tid,
-            active,
-        } => {
+        Request::Active { pid, tid, active } => {
             out.push(0x0A);
             out.extend_from_slice(&pid.to_le_bytes());
             out.extend_from_slice(&tid.to_le_bytes());
@@ -617,10 +613,7 @@ mod tests {
                 active: false,
             },
             Request::ToggleToolbar,
-            Request::Unregister {
-                pid: 1234,
-                tid: 56,
-            },
+            Request::Unregister { pid: 1234, tid: 56 },
         ] {
             let bytes = encode_request(&req);
             assert_eq!(decode_request(&bytes).unwrap(), req);
@@ -719,10 +712,20 @@ mod tests {
             assert_eq!(decode_signal(payload).unwrap(), sig);
         }
         // 截断拒绝
-        assert!(decode_signal(&[0x24, 0x01, 0x02]).is_err(), "Typing 截断（缺 tid/active）");
-        assert!(decode_signal(&[0x24, 0, 0, 0, 1, 0, 0, 0, 2]).is_err(), "Typing active 字节非法");
+        assert!(
+            decode_signal(&[0x24, 0x01, 0x02]).is_err(),
+            "Typing 截断（缺 tid/active）"
+        );
+        assert!(
+            decode_signal(&[0x24, 0, 0, 0, 1, 0, 0, 0, 2]).is_err(),
+            "Typing active 字节非法"
+        );
         // 尾部残留拒绝
-        let mut bytes = encode_signal(&ToolbarSignal::Typing { pid: 1, tid: 2, active: true });
+        let mut bytes = encode_signal(&ToolbarSignal::Typing {
+            pid: 1,
+            tid: 2,
+            active: true,
+        });
         bytes.push(0xAA);
         assert!(decode_signal(&bytes).is_err(), "Typing 残留字节");
     }
@@ -737,11 +740,27 @@ mod tests {
             punct: iuv_core::PunctMode::English,
         };
         for sig in [
-            ToolbarSignal::FocusGained { pid: 1, tid: 2, state },
+            ToolbarSignal::FocusGained {
+                pid: 1,
+                tid: 2,
+                state,
+            },
             ToolbarSignal::FocusLost { pid: 1, tid: 2 },
-            ToolbarSignal::StateChanged { pid: 1, tid: 2, state },
-            ToolbarSignal::Typing { pid: 1, tid: 2, active: true },
-            ToolbarSignal::Typing { pid: 1, tid: 2, active: false },
+            ToolbarSignal::StateChanged {
+                pid: 1,
+                tid: 2,
+                state,
+            },
+            ToolbarSignal::Typing {
+                pid: 1,
+                tid: 2,
+                active: true,
+            },
+            ToolbarSignal::Typing {
+                pid: 1,
+                tid: 2,
+                active: false,
+            },
         ] {
             let bytes = encode_signal(&sig);
             assert_eq!(decode_signal(&bytes).unwrap(), sig);

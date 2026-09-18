@@ -24,7 +24,11 @@ pub enum UserMutation {
         b_eff: u32,
     },
     /// 自造词/覆盖写入（upsert，对应 UserDict::set_entry）。
-    Set { code: String, word: String, adj: u32 },
+    Set {
+        code: String,
+        word: String,
+        adj: u32,
+    },
     /// 移除用户库条目（隐藏自造词/覆盖 = 撤销自造，对应 UserDict::remove_entry）。
     Remove { code: String, word: String },
     /// 屏蔽基础库词条（Shift+Delete 隐藏，对应 UserDict::block）。
@@ -409,7 +413,10 @@ mod tests {
 
     impl UserRemote for FakeRemote {
         fn apply(&self, m: &UserMutation) -> bool {
-            self.calls.lock().unwrap_or_else(|e| e.into_inner()).push(m.clone());
+            self.calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(m.clone());
             self.accepted
         }
     }
@@ -421,7 +428,8 @@ mod tests {
     /// 远端接受 → 跳过本地写盘（内存态照常替换 + mutation 构造正确）。
     #[test]
     fn set_user_remote_skips_file_write_when_accepted() {
-        let path = std::env::temp_dir().join(format!("iuv-remote-ok-{}.imedic", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("iuv-remote-ok-{}.imedic", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let e = Engine::new(swap_dict(), Config::default());
         let _ = e.attach_user_dict(path.clone()); // 路径已记录（首次无文件：空库）
@@ -433,11 +441,7 @@ mod tests {
         e.swap_weights("de", "的", "de", "得");
         // 内存态立即生效（本地即时；共享段周期重读覆盖为一致态）
         assert!(user_weight(&e, "de", "得").is_some(), "内存态应更新");
-        assert_eq!(
-            user_weight(&e, "de", "的"),
-            Some(300),
-            "互写对方合成权重"
-        );
+        assert_eq!(user_weight(&e, "de", "的"), Some(300), "互写对方合成权重");
         // 远端接受 → 本地不写盘
         assert!(!path.exists(), "远端接受后不应写盘，实际文件存在");
         // mutation 构造正确（Swap 双 code + 合成权重）
@@ -460,7 +464,8 @@ mod tests {
     /// 远端拒绝（daemon 离线/报错）→ 降级本地写盘兜底（现状 install_user 语义保留）。
     #[test]
     fn set_user_remote_rejected_falls_back_to_local_write() {
-        let path = std::env::temp_dir().join(format!("iuv-remote-no-{}.imedic", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("iuv-remote-no-{}.imedic", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let e = Engine::new(swap_dict(), Config::default());
         let _ = e.attach_user_dict(path.clone());
@@ -473,7 +478,10 @@ mod tests {
         assert!(path.exists(), "远端拒绝 → 本地写盘兜底，实际无文件");
         let loaded = iuv_data::UserDict::load(&path).unwrap();
         assert!(
-            loaded.adjusted("de").iter().any(|(w, a)| w == "得" && *a == 100000),
+            loaded
+                .adjusted("de")
+                .iter()
+                .any(|(w, a)| w == "得" && *a == 100000),
             "本地写盘内容应为交换后的合成权重"
         );
         let _ = std::fs::remove_file(&path);
@@ -482,7 +490,8 @@ mod tests {
     /// 远端接受 → record_phrase/hide_entry 同样跳过本地写盘（Set/Remove/Block 构造正确）。
     #[test]
     fn remote_mode_record_and_hide_skip_write() {
-        let path = std::env::temp_dir().join(format!("iuv-remote-ops-{}.imedic", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("iuv-remote-ops-{}.imedic", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let e = Engine::new(
             dict_of(vec![("shou'xuan", "首选", 8000)]),

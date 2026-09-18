@@ -10,14 +10,14 @@
 /// knowledge/tsf-interaction.md 应用责任小节）。设置页「恢复默认」按钮的回填源。
 /// 同步责任：install.ps1 / dev-deploy.ps1 的 config 模板数组须与此保持一致。
 pub const DEFAULT_PASSTHROUGH_APPS: &[&str] = &[
-    "Cyberpunk2077.exe",         // 赛博朋克2077
-    "b1-Win64-Shipping.exe",     // 黑神话：悟空（游戏本体）
-    "b1.exe",                    // 黑神话：悟空（启动器）
-    "eldenring.exe",             // 艾尔登法环
-    "bg3.exe",                   // 博德之门3
-    "RDR2.exe",                  // 荒野大镖客2
-    "MonsterHunterWilds.exe",    // 怪物猎人：荒野
-    "Starfield.exe",             // 星空
+    "Cyberpunk2077.exe",      // 赛博朋克2077
+    "b1-Win64-Shipping.exe",  // 黑神话：悟空（游戏本体）
+    "b1.exe",                 // 黑神话：悟空（启动器）
+    "eldenring.exe",          // 艾尔登法环
+    "bg3.exe",                // 博德之门3
+    "RDR2.exe",               // 荒野大镖客2
+    "MonsterHunterWilds.exe", // 怪物猎人：荒野
+    "Starfield.exe",          // 星空
 ];
 
 /// 候选自绘抑制默认名单：预置**要在游戏内打中文**的知名游戏（它们自绘候选栏，
@@ -26,16 +26,16 @@ pub const DEFAULT_PASSTHROUGH_APPS: &[&str] = &[
 /// 实测依据：wow pbshow=true 但桥转数据（2026-08-16/22 两轮）、暗黑4 pbshow=false
 /// 自带候选框（knowledge/tsf-interaction.md）。同步责任同上。
 pub const DEFAULT_CANDIDATE_OWNER_APPS: &[&str] = &[
-    "wow.exe",                  // 魔兽世界
-    "WowClassic.exe",           // 魔兽怀旧服
-    "Diablo IV.exe",            // 暗黑破坏神4
-    "Diablo III64.exe",         // 暗黑破坏神3
-    "League of Legends.exe",    // 英雄联盟（游戏内进程）
-    "TslGame.exe",              // 绝地求生
-    "Gw2-64.exe",               // 激战2
-    "JX3ClientX64.exe",         // 剑网3重制版
-    "JX3Client.exe",            // 剑网3老客户端
-    "crossfire.exe",            // 穿越火线经典区
+    "wow.exe",               // 魔兽世界
+    "WowClassic.exe",        // 魔兽怀旧服
+    "Diablo IV.exe",         // 暗黑破坏神4
+    "Diablo III64.exe",      // 暗黑破坏神3
+    "League of Legends.exe", // 英雄联盟（游戏内进程）
+    "TslGame.exe",           // 绝地求生
+    "Gw2-64.exe",            // 激战2
+    "JX3ClientX64.exe",      // 剑网3重制版
+    "JX3Client.exe",         // 剑网3老客户端
+    "crossfire.exe",         // 穿越火线经典区
 ];
 
 use std::io;
@@ -277,7 +277,8 @@ mod tests {
     #[test]
     fn save_preserves_unknown_fields() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir().join(format!("iuv-daemon-config-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("iuv-daemon-config-test-{}", std::process::id()));
         // config_path() = %LOCALAPPDATA%\iuv\config.json → 测试目录下再建 iuv 子目录。
         let iuv_dir = dir.join("iuv");
         std::fs::create_dir_all(&iuv_dir).unwrap();
@@ -310,7 +311,8 @@ mod tests {
         })
         .unwrap();
         // 未知字段保留
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["page_size"], 7);
         // keymap 写为两槽对象（覆盖旧数组格式）
         assert_eq!(v["keymap"]["page_prev"]["primary"], "PageUp");
@@ -346,7 +348,10 @@ mod tests {
             cfg.keymap.toggle_mode.primary,
             Some(iuv_core::Combo::plain(iuv_core::Key::F5))
         );
-        assert_eq!(cfg.keymap.page_prev.primary, Some(iuv_core::Combo::plain(iuv_core::Key::PageUp)));
+        assert_eq!(
+            cfg.keymap.page_prev.primary,
+            Some(iuv_core::Combo::plain(iuv_core::Key::PageUp))
+        );
         std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -354,7 +359,8 @@ mod tests {
     #[test]
     fn load_legacy_english_punctuation_migrates() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir().join(format!("iuv-daemon-config-legacy-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("iuv-daemon-config-legacy-{}", std::process::id()));
         let iuv_dir = dir.join("iuv");
         std::fs::create_dir_all(&iuv_dir).unwrap();
         // 旧顶层 english_punctuation 键（升级前配置）→ 迁移并入 initial_state.punct
@@ -370,7 +376,11 @@ mod tests {
             iuv_core::PunctMode::English,
             "旧键 true → 英文标点"
         );
-        assert_eq!(cfg.initial_state.mode, iuv_core::InitialMode::Chinese, "其余默认");
+        assert_eq!(
+            cfg.initial_state.mode,
+            iuv_core::InitialMode::Chinese,
+            "其余默认"
+        );
         assert_eq!(cfg.theme, "dark");
         std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
@@ -432,10 +442,19 @@ mod tests {
         // 全局组合字符串（含修饰）同样迁移
         assert_eq!(
             cfg.keymap.toggle_mode.primary,
-            Some(Combo { ctrl: false, alt: true, shift: false, win: false, base: iuv_core::Key::Char('`') })
+            Some(Combo {
+                ctrl: false,
+                alt: true,
+                shift: false,
+                win: false,
+                base: iuv_core::Key::Char('`')
+            })
         );
         // 其余字段保持默认
-        assert_eq!(cfg.keymap.page_next.primary, Some(Combo::plain(iuv_core::Key::PageDown)));
+        assert_eq!(
+            cfg.keymap.page_next.primary,
+            Some(Combo::plain(iuv_core::Key::PageDown))
+        );
         std::env::remove_var("LOCALAPPDATA");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -443,7 +462,8 @@ mod tests {
     #[test]
     fn load_missing_uses_default() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir().join(format!("iuv-daemon-config-missing-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("iuv-daemon-config-missing-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("LOCALAPPDATA", &dir);
         let cfg = load_config();
@@ -456,7 +476,10 @@ mod tests {
             "缺省初始状态 = 中文/半角/简体/中文标点"
         );
         assert!(cfg.passthrough_apps.is_empty());
-        assert!(cfg.candidate_owner_apps.is_empty(), "缺省候选自绘名单为空（恒自绘）");
+        assert!(
+            cfg.candidate_owner_apps.is_empty(),
+            "缺省候选自绘名单为空（恒自绘）"
+        );
         assert!(cfg.disabled_log_modules.is_empty(), "缺省字段默认全记录");
         assert!(cfg.hide_on_fullscreen, "缺省全屏隐藏开启");
         std::env::remove_var("LOCALAPPDATA");
@@ -475,7 +498,11 @@ mod tests {
         std::fs::write(iuv_dir.join("config.json"), r#"{ "theme": "dark" }"#).unwrap();
         assert!(load_config().hide_on_fullscreen, "缺失时默认 true");
         // 显式 false 读回
-        std::fs::write(iuv_dir.join("config.json"), r#"{ "hide_on_fullscreen": false }"#).unwrap();
+        std::fs::write(
+            iuv_dir.join("config.json"),
+            r#"{ "hide_on_fullscreen": false }"#,
+        )
+        .unwrap();
         assert!(!load_config().hide_on_fullscreen, "false 读回 false");
         // 保存 false → 读回 false（非默认值不被默认覆盖）
         let cfg = DaemonConfig {
@@ -501,8 +528,7 @@ mod tests {
         ] {
             assert!(!list.is_empty(), "{name}默认名单不应为空");
             assert!(
-                list.iter()
-                    .all(|s| s.ends_with(".exe") && s.is_ascii()),
+                list.iter().all(|s| s.ends_with(".exe") && s.is_ascii()),
                 "{name}名单须为 ASCII .exe 名：{list:?}"
             );
             assert!(

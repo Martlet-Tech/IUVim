@@ -45,7 +45,7 @@ fn roundtrip_small_dict() {
     assert_eq!(nihao[0].weight, 9999); // 去重取最大 weight（与出现顺序无关）
     assert_eq!(nihao[1].weight, 100);
     assert_eq!(d.exact("hao'de")[0].weight, 0); // 权重缺省按 0
-    // 简拼键：同键多条按 weight 降序，权重复制自原词条
+                                                // 简拼键：同键多条按 weight 降序，权重复制自原词条
     let nh = d.exact("nh");
     assert_eq!(nh.len(), 2);
     assert_eq!(nh[0].word, "你好");
@@ -202,13 +202,17 @@ fn unknown_segment_ignored() {
     // 段表驱动兼容：往合法 IMEDIC02 尾部追加一个未知段类型（99），加载必须成功
     // 且忽略之（旧加载器对未来新段的约定行为）。
     let dir = tmp_dir("unknown_seg");
-    let records = [Entry { word: "你好".into(), code: "ni'hao".into(), weight: 10 }];
+    let records = [Entry {
+        word: "你好".into(),
+        code: "ni'hao".into(),
+        weight: 10,
+    }];
     let mut v = Vec::new();
     iuv_data::format::write(&records, &mut v).unwrap();
     let seg_count = u32::from_le_bytes([v[8], v[9], v[10], v[11]]) as usize;
     assert_eq!(seg_count, 5); // 46 号起含段5 整跨词反查
     let seg_hdr = 9usize; // u8 类型 | u32 偏移 | u32 长度
-    // 段表后插入一条未知段条目（9 字节）
+                          // 段表后插入一条未知段条目（9 字节）
     let table_end = 12 + seg_count * seg_hdr;
     let new_entry = [99u8, 0, 0, 0, 0, 0, 0, 0, 0];
     v.splice(table_end..table_end, new_entry.iter().copied());

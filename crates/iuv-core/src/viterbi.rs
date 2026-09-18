@@ -1,8 +1,8 @@
 //! unigram Viterbi 最优路径。契约 01-contract.md §4.2。
 //! 内部 API，不 re-export。
 
-use crate::{Candidate, CandidateKind, Config, LmProvider};
 use crate::lm::OOV_PENALTY;
+use crate::{Candidate, CandidateKind, Config, LmProvider};
 use iuv_data::Dict;
 
 /// 带路径分的版本（M2.5 消费端多方案整句排序用，2026-08-14）：
@@ -106,13 +106,17 @@ mod tests {
         let lm = UnigramLm::new(d.total_weight());
         // "shijie": 世界(6000) vs 世(3000)+界(2500)。世界更高频。
         let s = seg("shijie");
-        let c = best_sentence_scored(&d, &s, &lm, &Config::default()).unwrap().0;
+        let c = best_sentence_scored(&d, &s, &lm, &Config::default())
+            .unwrap()
+            .0;
         assert_eq!(c.text, "世界");
         // "nihao": 你好(8000) vs 你(50000)+好(40000)。单独字频率更高，但整句路径得分：
         // ln(8001)-ln(total) vs ln(50001)-ln(total)+ln(40001)-ln(total)
         // 单字路径=2ln(W)-2ln(T)，整词=ln(8001)-ln(T)。W 很大时单字更优。
         let s2 = seg("nihao");
-        let c2 = best_sentence_scored(&d, &s2, &lm, &Config::default()).unwrap().0;
+        let c2 = best_sentence_scored(&d, &s2, &lm, &Config::default())
+            .unwrap()
+            .0;
         assert_eq!(c2.text, "你好");
     }
 
@@ -121,7 +125,9 @@ mod tests {
         let d = dict();
         let lm = UnigramLm::new(d.total_weight());
         let s = seg("wode");
-        let c = best_sentence_scored(&d, &s, &lm, &Config::default()).unwrap().0;
+        let c = best_sentence_scored(&d, &s, &lm, &Config::default())
+            .unwrap()
+            .0;
         // "wo" 无词条 → 兜底原样 "wo"；"de" → "的"
         assert!(c.text.contains("wo"));
         assert!(c.text.contains('的'));

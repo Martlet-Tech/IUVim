@@ -15,7 +15,7 @@ use tiny_skia::{Paint, Pixmap, Rect, Stroke, Transform};
 
 use crate::layout::{candidate_label, layout, Rect as LayoutRect};
 use crate::menu::MenuEntry;
-use crate::paint::{fill_path, fill_rounded, stroke_rounded_dashed, rounded_rect_path, HL_RADIUS};
+use crate::paint::{fill_path, fill_rounded, rounded_rect_path, stroke_rounded_dashed, HL_RADIUS};
 use crate::snapshot::UiSnapshot;
 use crate::text::{TextRenderer, FONT_PX_96};
 use crate::theme::Theme;
@@ -84,62 +84,56 @@ pub fn render_candidate(
         |_s| page_size.unwrap_or((0, 0)),
         snap.orientation,
     );
-    let surface = render_to_surface(
-        theme,
-        scale,
-        cw.max(0) as u32,
-        ch.max(0) as u32,
-        |pixmap| {
-            // 候选行：真高亮填充底 + 悬停虚线框（叠加，互不覆盖）+ 文本
-            // （原文兜底候选不编号，规则与 layout 一致）
-            for (i, cand) in snap.candidates.iter().enumerate() {
-                let Some(r) = rects.get(i) else {
-                    break; // 防御：布局行数与候选数不一致也不越界
-                };
-                let sel = i == snap.selected;
-                if sel {
-                    fill_rounded(
-                        pixmap,
-                        r.x as f32,
-                        r.y as f32,
-                        r.w as f32,
-                        r.h as f32,
-                        (HL_RADIUS * scale).min(r.h as f32 / 2.0),
-                        theme.hl_bg,
-                    );
-                }
-                if hover == Some(i) {
-                    stroke_rounded_dashed(
-                        pixmap,
-                        r.x as f32,
-                        r.y as f32,
-                        r.w as f32,
-                        r.h as f32,
-                        (HL_RADIUS * scale).min(r.h as f32 / 2.0),
-                        1.0_f32.max(scale),
-                        theme.hover_border,
-                    );
-                }
-                let label = candidate_label(snap, i, cand);
-                let color = if sel { theme.hl_fg } else { theme.fg };
-                text.draw(pixmap, &label, r.x as f32, r.y as f32, size_px, color);
+    let surface = render_to_surface(theme, scale, cw.max(0) as u32, ch.max(0) as u32, |pixmap| {
+        // 候选行：真高亮填充底 + 悬停虚线框（叠加，互不覆盖）+ 文本
+        // （原文兜底候选不编号，规则与 layout 一致）
+        for (i, cand) in snap.candidates.iter().enumerate() {
+            let Some(r) = rects.get(i) else {
+                break; // 防御：布局行数与候选数不一致也不越界
+            };
+            let sel = i == snap.selected;
+            if sel {
+                fill_rounded(
+                    pixmap,
+                    r.x as f32,
+                    r.y as f32,
+                    r.w as f32,
+                    r.h as f32,
+                    (HL_RADIUS * scale).min(r.h as f32 / 2.0),
+                    theme.hl_bg,
+                );
             }
-            // 页码小字（多页时；行号 = candidates.len()）
-            if snap.page.page_count > 1 {
-                if let Some(r) = rects.get(snap.candidates.len()) {
-                    let label = format!("{}/{}", snap.page.page + 1, snap.page.page_count);
-                    text.draw(
-                        pixmap,
-                        &label,
-                        r.x as f32,
-                        r.y as f32,
-                        page_px,
-                        theme.page_fg,
-                    );
-                }
+            if hover == Some(i) {
+                stroke_rounded_dashed(
+                    pixmap,
+                    r.x as f32,
+                    r.y as f32,
+                    r.w as f32,
+                    r.h as f32,
+                    (HL_RADIUS * scale).min(r.h as f32 / 2.0),
+                    1.0_f32.max(scale),
+                    theme.hover_border,
+                );
             }
-        },
-    );
+            let label = candidate_label(snap, i, cand);
+            let color = if sel { theme.hl_fg } else { theme.fg };
+            text.draw(pixmap, &label, r.x as f32, r.y as f32, size_px, color);
+        }
+        // 页码小字（多页时；行号 = candidates.len()）
+        if snap.page.page_count > 1 {
+            if let Some(r) = rects.get(snap.candidates.len()) {
+                let label = format!("{}/{}", snap.page.page + 1, snap.page.page_count);
+                text.draw(
+                    pixmap,
+                    &label,
+                    r.x as f32,
+                    r.y as f32,
+                    page_px,
+                    theme.page_fg,
+                );
+            }
+        }
+    });
     (surface, rects)
 }
 
@@ -195,51 +189,39 @@ pub fn render_menu(
         });
         y += row_h + crate::layout::ROW_GAP;
     }
-    let surface = render_to_surface(
-        theme,
-        scale,
-        content_w as u32,
-        content_h as u32,
-        |pixmap| {
-            for (i, item) in items.iter().enumerate() {
-                let Some(r) = rows.get(i) else {
-                    break; // 防御
-                };
-                let sel = selected == Some(i) && !item.is_separator();
-                if sel {
-                    fill_rounded(
-                        pixmap,
-                        r.x as f32,
-                        r.y as f32,
-                        r.w as f32,
-                        r.h as f32,
-                        (HL_RADIUS * scale).min(r.h as f32 / 2.0),
-                        theme.hl_bg,
-                    );
-                }
-                if item.is_separator() {
-                    // 分隔线：水平 1px（行内垂直居中）
-                    let cy = r.y as f32 + r.h as f32 / 2.0;
-                    if let Some(rect) = Rect::from_xywh(r.x as f32, cy - 0.5, r.w as f32, 1.0)
-                    {
-                        let mut paint = Paint::default();
-                        paint.set_color_rgba8(
-                            theme.border[0],
-                            theme.border[1],
-                            theme.border[2],
-                            0x80,
-                        );
-                        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-                    }
-                    continue;
-                }
-                let color = if sel { theme.hl_fg } else { theme.fg };
-                let tx = r.x as f32;
-                let ty = r.y as f32 + pad_y as f32;
-                text.draw(pixmap, &item.label, tx, ty, size_px, color);
+    let surface = render_to_surface(theme, scale, content_w as u32, content_h as u32, |pixmap| {
+        for (i, item) in items.iter().enumerate() {
+            let Some(r) = rows.get(i) else {
+                break; // 防御
+            };
+            let sel = selected == Some(i) && !item.is_separator();
+            if sel {
+                fill_rounded(
+                    pixmap,
+                    r.x as f32,
+                    r.y as f32,
+                    r.w as f32,
+                    r.h as f32,
+                    (HL_RADIUS * scale).min(r.h as f32 / 2.0),
+                    theme.hl_bg,
+                );
             }
-        },
-    );
+            if item.is_separator() {
+                // 分隔线：水平 1px（行内垂直居中）
+                let cy = r.y as f32 + r.h as f32 / 2.0;
+                if let Some(rect) = Rect::from_xywh(r.x as f32, cy - 0.5, r.w as f32, 1.0) {
+                    let mut paint = Paint::default();
+                    paint.set_color_rgba8(theme.border[0], theme.border[1], theme.border[2], 0x80);
+                    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                }
+                continue;
+            }
+            let color = if sel { theme.hl_fg } else { theme.fg };
+            let tx = r.x as f32;
+            let ty = r.y as f32 + pad_y as f32;
+            text.draw(pixmap, &item.label, tx, ty, size_px, color);
+        }
+    });
     (surface, rows)
 }
 
@@ -247,12 +229,7 @@ pub fn render_menu(
 
 /// 渲染悬停 tooltip（32-status-toolbar.md §6.6「全半角」「简体/繁体」等）：单行小标签，
 /// 风格与候选窗一致（扁平圆角细边框）。返回 Surface（无命中矩形——tooltip 不接收点击）。
-pub fn render_tooltip(
-    label: &str,
-    theme: &Theme,
-    scale: f32,
-    text: &mut TextRenderer,
-) -> Surface {
+pub fn render_tooltip(label: &str, theme: &Theme, scale: f32, text: &mut TextRenderer) -> Surface {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -272,7 +249,13 @@ pub fn render_tooltip(
 /// 通用外壳：建 Surface 画布（内容精确尺寸）→ 圆角底 + 细边框 → 调用 `draw`。
 /// 扁平风格：无阴影；边框宽度 = `(scale).round().max(1)`（100%/125%→1px、150%+→2px），
 /// 描边路径内缩 `宽度/2` 使整条边框完整落在位图内（外缘贴齐位图边缘，不被裁半）。
-pub(crate) fn render_to_surface(theme: &Theme, scale: f32, cw: u32, ch: u32, draw: impl FnOnce(&mut Pixmap)) -> Surface {
+pub(crate) fn render_to_surface(
+    theme: &Theme,
+    scale: f32,
+    cw: u32,
+    ch: u32,
+    draw: impl FnOnce(&mut Pixmap),
+) -> Surface {
     if cw == 0 || ch == 0 {
         return Surface::empty();
     }
@@ -326,11 +309,7 @@ pub(crate) fn pixmap_to_surface(pixmap: Pixmap) -> Surface {
     for px in data.chunks_exact_mut(4) {
         px.swap(0, 2);
     }
-    Surface {
-        w,
-        h,
-        pixels: data,
-    }
+    Surface { w, h, pixels: data }
 }
 
 /// 渲染工具栏到 raw Pixmap（premultiplied RGBA）——供 `render_composite` 把工具栏作为
@@ -345,12 +324,15 @@ pub(crate) fn render_toolbar_into_pixmap(
 ) -> Option<(Pixmap, Vec<crate::layout::Rect>)> {
     use crate::layout::Rect as LayoutRect;
     use crate::toolbar::{TB_COUNT, TOOLBAR_BTN, TOOLBAR_GAP, TOOLBAR_PAD};
-    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let btn = (TOOLBAR_BTN * scale).ceil();
     let gap = (TOOLBAR_GAP * scale).ceil();
     let pad = (TOOLBAR_PAD * scale).ceil();
-    let content_w =
-        (btn * TB_COUNT as f32) + (gap * (TB_COUNT as f32 - 1.0)) + pad * 2.0;
+    let content_w = (btn * TB_COUNT as f32) + (gap * (TB_COUNT as f32 - 1.0)) + pad * 2.0;
     let content_h = btn + pad * 2.0;
     let mut rects = Vec::with_capacity(TB_COUNT);
     for i in 0..TB_COUNT {
@@ -370,11 +352,17 @@ pub(crate) fn render_toolbar_into_pixmap(
     let bw = scale.round().max(1.0);
     let inset = bw / 2.0;
     let radius = (theme.corner_radius * scale - inset).max(0.0);
-    let bg_path = crate::paint::rounded_rect_path(inset, inset, cw as f32 - bw, ch as f32 - bw, radius);
+    let bg_path =
+        crate::paint::rounded_rect_path(inset, inset, cw as f32 - bw, ch as f32 - bw, radius);
     if let Some(path) = &bg_path {
         crate::paint::fill_path(&mut pixmap, path, theme.bg);
         let mut paint = Paint::default();
-        paint.set_color_rgba8(theme.border[0], theme.border[1], theme.border[2], theme.border[3]);
+        paint.set_color_rgba8(
+            theme.border[0],
+            theme.border[1],
+            theme.border[2],
+            theme.border[3],
+        );
         let stroke = Stroke {
             width: bw,
             ..Stroke::default()
@@ -395,7 +383,9 @@ mod tests {
         render_toolbar, ToolbarIcons, ToolbarSpec, TB_COUNT, TB_GEAR, TB_LOGO, TOOLBAR_GAP,
         TOOLBAR_PAD,
     };
-    use iuv_core::{ImeState, InitialMode, Orientation, PageInfo, PunctMode, ScriptMode, WidthMode};
+    use iuv_core::{
+        ImeState, InitialMode, Orientation, PageInfo, PunctMode, ScriptMode, WidthMode,
+    };
 
     fn renderer() -> TextRenderer {
         TextRenderer::new()
@@ -568,7 +558,11 @@ mod tests {
         let (x, y) = row_sample(&rects, 1);
         let (r, g, b, a) = px(&hovered, x, y);
         assert!(a > 250, "悬停行内部不透明");
-        assert_eq!((r, g, b), (0xFF, 0xFF, 0xFF), "悬停行内部背景白（无填充底）");
+        assert_eq!(
+            (r, g, b),
+            (0xFF, 0xFF, 0xFF),
+            "悬停行内部背景白（无填充底）"
+        );
         // 对照：真高亮第 0 行内部 = hl_bg
         let (x0, y0) = row_sample(&rects, 0);
         let (r2, g2, b2, _) = px(&hovered, x0, y0);
@@ -668,7 +662,8 @@ mod tests {
     #[test]
     fn render_candidate_empty_snapshot_no_panic() {
         let mut t = renderer();
-        let (surf, _rows) = render_candidate(&UiSnapshot::default(), &theme_light(), 1.0, &mut t, None);
+        let (surf, _rows) =
+            render_candidate(&UiSnapshot::default(), &theme_light(), 1.0, &mut t, None);
         // 空快照：极小窗口但恒有像素缓冲（候选窗内容恒非空由引擎保证，这里只验证不 panic）
         assert!(surf.pixels.len() % 4 == 0);
     }
@@ -697,10 +692,7 @@ mod tests {
             Some(2)
         );
         // 菜单窗口尺寸 = 行高总和 + gap + padding（无阴影边距）
-        assert_eq!(
-            surf.w,
-            (rows[0].w + crate::layout::PAD_X * 2) as u32
-        );
+        assert_eq!(surf.w, (rows[0].w + crate::layout::PAD_X * 2) as u32);
         // 分隔线行：采样点避让中线分隔线（行内靠下）→ 背景底
         let (_, _, _, a) = px(
             &surf,
@@ -736,7 +728,7 @@ mod tests {
             hover: Some(TB_GEAR),
             pressed: None,
         };
-        let (surf, rects) = render_toolbar(&spec, &theme_light(), 1.0, );
+        let (surf, rects) = render_toolbar(&spec, &theme_light(), 1.0);
         assert_eq!(rects.len(), TB_COUNT, "6 按钮");
         assert!(rects.iter().all(|r| r.h == rects[0].h), "等高");
         // 按钮横排：x 递增、y 相同
@@ -745,11 +737,20 @@ mod tests {
         assert!(rects[2].x > rects[1].x);
         // 命中测试：首按钮中心命中 0
         assert_eq!(
-            hit_test(&rects, rects[0].x + rects[0].w / 2, rects[0].y + rects[0].h / 2),
+            hit_test(
+                &rects,
+                rects[0].x + rects[0].w / 2,
+                rects[0].y + rects[0].h / 2
+            ),
             Some(TB_LOGO)
         );
         // surface 尺寸 = 内容精确尺寸（扁平无阴影边距）
-        assert_eq!(surf.w, (rects[0].w * TB_COUNT as i32 + TOOLBAR_GAP as i32 * (TB_COUNT as i32 - 1) + TOOLBAR_PAD as i32 * 2) as u32);
+        assert_eq!(
+            surf.w,
+            (rects[0].w * TB_COUNT as i32
+                + TOOLBAR_GAP as i32 * (TB_COUNT as i32 - 1)
+                + TOOLBAR_PAD as i32 * 2) as u32
+        );
         assert!(surf.h > 0);
         // 命中区与绘制重合回归锚：矩形即表面坐标（无偏移）——首按钮矩形左上角
         // 必须落在 surface 内且不越出（2026-08-22 曾因阴影 margin 未计入矩形，

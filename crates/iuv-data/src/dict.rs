@@ -343,7 +343,10 @@ impl Dict {
             lo < n && self.code_at(self.index_off(lo)) == target
         };
         // 用户独有词条：基础库 mmap 无此码但仍应可收集（rime 游标探针可见性）
-        base || self.user().map(|u| u.has_code(squashed_code)).unwrap_or(false)
+        base || self
+            .user()
+            .map(|u| u.has_code(squashed_code))
+            .unwrap_or(false)
     }
 
     /// 零分配探针：是否存在以目标为真前缀（且不等长）的词条。
@@ -372,10 +375,16 @@ impl Dict {
             }
         }
         if lo >= n {
-            return self.user().map(|u| u.has_prefix(squashed_prefix)).unwrap_or(false);
+            return self
+                .user()
+                .map(|u| u.has_prefix(squashed_prefix))
+                .unwrap_or(false);
         }
         let base = self.code_at(self.index_off(lo)).starts_with(target);
-        base || self.user().map(|u| u.has_prefix(squashed_prefix)).unwrap_or(false)
+        base || self
+            .user()
+            .map(|u| u.has_prefix(squashed_prefix))
+            .unwrap_or(false)
     }
 
     /// 前缀补全：返回 squashed 以 prefix 开头（且不等于 prefix）的词条，
@@ -475,7 +484,10 @@ impl Dict {
     pub fn set_user(&self, user: Arc<UserDict>) {
         let mut code_adj: HashMap<&str, u32> = HashMap::new();
         for (code, _word, adj) in user.cover_iter() {
-            code_adj.entry(code).and_modify(|w| *w = (*w).max(adj)).or_insert(adj);
+            code_adj
+                .entry(code)
+                .and_modify(|w| *w = (*w).max(adj))
+                .or_insert(adj);
         }
         let mut pairs: Vec<(String, String, u32)> = code_adj
             .into_iter()
@@ -597,10 +609,8 @@ impl Dict {
         let klen = bytes[h] as usize;
         let key = &bytes[h + 1..h + 1 + klen];
         let var_off = u32_at(bytes, h + 1 + klen) as usize;
-        let var_count = u16::from_le_bytes([
-            bytes[h + 1 + klen + 4],
-            bytes[h + 1 + klen + 5],
-        ]) as usize;
+        let var_count =
+            u16::from_le_bytes([bytes[h + 1 + klen + 4], bytes[h + 1 + klen + 5]]) as usize;
         (key, var_off, var_count)
     }
 
@@ -628,7 +638,11 @@ impl Dict {
 
     /// 根游标（空前缀 = 全表）。
     pub fn cursor(&self) -> DictCursor {
-        DictCursor { lo: 0, hi: self.index.len() / 4, plen: 0 }
+        DictCursor {
+            lo: 0,
+            hi: self.index.len() / 4,
+            plen: 0,
+        }
     }
 
     /// 从游标步进一个键片段：音节（join 键族传 `\'`+音节）、简拼字母（concat
@@ -663,7 +677,11 @@ impl Dict {
         if lo >= a {
             return None;
         }
-        Some(DictCursor { lo, hi: a, plen: c.plen + seg.len() })
+        Some(DictCursor {
+            lo,
+            hi: a,
+            plen: c.plen + seg.len(),
+        })
     }
 
     /// 区间内存在码 == 累计前缀（等长码是区间内 lex 最小码，居首）。
@@ -916,7 +934,10 @@ mod tests {
         // concat "xian"：非贪心变体 xi'an（xian 即贪心码形，按 §3.1 过滤不入段）
         assert_eq!(d.reverse_candidates("xian", &[]), vec!["xi'an".to_string()]);
         // 用户强制撇号掩码：xi'an 的撇号在 concat 偏移 2
-        assert_eq!(d.reverse_candidates("xian", &[2]), vec!["xi'an".to_string()]);
+        assert_eq!(
+            d.reverse_candidates("xian", &[2]),
+            vec!["xi'an".to_string()]
+        );
         // 掩码不满足：期望空
         assert!(d.reverse_candidates("xian", &[1]).is_empty());
         // 唯一可达码形 = 贪心（nihao）／码不可达（hahaha）→ 不入段
@@ -1133,14 +1154,20 @@ mod tests {
             ("cheng'yi".into(), "乘以".into(), 2022),
             ("cheng'ya".into(), "承压".into(), 226),
         ]);
-        let hits: Vec<String> =
-            d.prefix("cheng'y", 2).iter().map(|e| e.word.clone()).collect();
+        let hits: Vec<String> = d
+            .prefix("cheng'y", 2)
+            .iter()
+            .map(|e| e.word.clone())
+            .collect();
         assert_eq!(hits, vec!["成员", "乘以"], "截断前必须先权重降序");
         // 装配用户库后契约不变（覆盖权重生效）
         let user = crate::userdict::UserDict::empty().set_entry("cheng'ya", "承压", 99999);
         d.set_user(Arc::new(user));
-        let hits: Vec<String> =
-            d.prefix("cheng'y", 1).iter().map(|e| e.word.clone()).collect();
+        let hits: Vec<String> = d
+            .prefix("cheng'y", 1)
+            .iter()
+            .map(|e| e.word.clone())
+            .collect();
         assert_eq!(hits, vec!["承压"], "用户覆盖后仍权重序");
     }
 }

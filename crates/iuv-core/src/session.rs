@@ -1,6 +1,8 @@
 //! 会话状态机。契约 01-contract.md §4 session.rs / §4.1 按键行为。
 
-use crate::{fullwidth_text, Candidate, Effect, Engine, ImeState, Key, PageInfo, ScriptMode, SessionEnd};
+use crate::{
+    fullwidth_text, Candidate, Effect, Engine, ImeState, Key, PageInfo, ScriptMode, SessionEnd,
+};
 use std::sync::{Arc, Mutex};
 
 /// 一次输入会话。TSF/REPL 创建后逐键喂入。
@@ -329,7 +331,11 @@ impl Session {
     /// 否则原文返回。内部候选/自造词恒简体，仅在输出边界转换。
     /// 字形读**实例运行时态**（live：点简繁后当前候选/预编辑立即重渲）。
     fn convert_script(&self, text: &str) -> String {
-        let script = self.runtime.lock().unwrap_or_else(|e| e.into_inner()).script;
+        let script = self
+            .runtime
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .script;
         if script != ScriptMode::Traditional {
             return text.to_string();
         }
@@ -364,7 +370,9 @@ impl Session {
     /// 无候选也保持 active。
     fn recompute(&mut self) {
         let preceding = self.picked_text();
-        let ctx = crate::api::EngineCtx { preceding_text: &preceding };
+        let ctx = crate::api::EngineCtx {
+            preceding_text: &preceding,
+        };
         let tr = self
             .ime
             .translate(&ctx, &crate::api::PendingInput { raw: &self.raw });
@@ -494,7 +502,10 @@ impl Session {
         Effect {
             composition: preview_disp.clone(),
             reading: preview_disp,
-            candidates: page_cands.iter().map(|c| self.convert_candidate(c)).collect(),
+            candidates: page_cands
+                .iter()
+                .map(|c| self.convert_candidate(c))
+                .collect(),
             all_candidates: self.all.iter().map(|c| self.convert_candidate(c)).collect(),
             selected: self.selected,
             page: PageInfo {

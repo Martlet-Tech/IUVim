@@ -36,31 +36,36 @@ use self::prefs::load_pref;
 use self::tooltip::tip_wnd_proc;
 use self::window::{bar_wnd_proc, ToolbarWindow};
 
-use std::collections::{HashMap, VecDeque};use std::mem::size_of;
+use std::collections::{HashMap, VecDeque};
+use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use iuv_core::ImeState;
-use iuv_win::{Request, ToolbarSignal};
 use iuv_ui::{theme_dark, theme_light, Theme, ToolbarIcons};
+use iuv_win::{Request, ToolbarSignal};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Foundation::{
+    GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW, PostMessageW,
-    PostThreadMessageW, RegisterClassExW, SetWindowLongPtrW, TranslateMessage, WM_APP,
-    WM_QUIT, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, IDC_ARROW, MSG, WNDCLASSEXW, WS_EX_LAYERED,
+    PostThreadMessageW, RegisterClassExW, SetWindowLongPtrW, TranslateMessage, CS_HREDRAW,
+    CS_VREDRAW, GWLP_USERDATA, IDC_ARROW, MSG, WM_APP, WM_QUIT, WNDCLASSEXW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 // WM_MOUSELEAVE 在 windows-rs 0.62 中位于 Controls 模块（值 0x02A3 = 675），本地定义。
 const WM_MOUSELEAVE: u32 = 675;
 
+use crate::log;
 use crate::pet_assets::PetArt;
 use crate::state::DaemonState;
-use crate::log;
 
 /// 私有消息：FIFO 有新请求 → 唤醒工具条线程 drain（管道线程 PostMessage）。
 const WM_APP_REFRESH: u32 = WM_APP + 41;
@@ -448,7 +453,13 @@ fn button_tooltip(index: usize) -> Option<&'static str> {
 
 /// 当前主题（从 daemon 配置快照；默认浅色）。
 fn current_theme(state: &DaemonState) -> Theme {
-    match state.config.lock().unwrap_or_else(|p| p.into_inner()).theme.as_str() {
+    match state
+        .config
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .theme
+        .as_str()
+    {
         "dark" => theme_dark(),
         _ => theme_light(),
     }
@@ -495,8 +506,16 @@ fn clamp_to_work(x: i32, y: i32, w: i32, h: i32) -> (i32, i32) {
     if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
         area = info.rcWork;
     }
-    let x = if x + w > area.right { area.right - w } else { x };
-    let y = if y + h > area.bottom { area.bottom - h } else { y };
+    let x = if x + w > area.right {
+        area.right - w
+    } else {
+        x
+    };
+    let y = if y + h > area.bottom {
+        area.bottom - h
+    } else {
+        y
+    };
     (x.max(area.left), y.max(area.top))
 }
 

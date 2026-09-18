@@ -144,7 +144,9 @@ pub(crate) fn make_sentence(
                     None => true,
                     // 平局决胜（poet.cc:88-109）：权重降序 → 少词优先 →
                     // 词长序列字典序（左结合）
-                    Some(b) => compare_line(&arena[*b as usize], &new_line) == std::cmp::Ordering::Less,
+                    Some(b) => {
+                        compare_line(&arena[*b as usize], &new_line) == std::cmp::Ordering::Less
+                    }
                 };
                 if better {
                     *slot = Some(new_line.into_id(&mut arena));
@@ -162,7 +164,10 @@ pub(crate) fn make_sentence(
         return None;
     }
     let weight = line.weight;
-    Some(Sentence { words: line.path_words(&arena), weight })
+    Some(Sentence {
+        words: line.path_words(&arena),
+        weight,
+    })
 }
 
 /// 线比较（CompareWeight + LeftAssociateCompare 的合并，poet.cc:88-109）：

@@ -11,35 +11,34 @@ use iuv_core::{InitialMode, PetAnim, PetModel, PunctMode, ScriptMode, WidthMode}
 use iuv_ui::layout::Rect;
 use iuv_ui::{
     hit_test, pet_alpha_at, pet_mask_hit, render_composite, CompositeSpec, LayeredPetSpec,
-    PetRenderSpec, PetSpec, TextRenderer, Theme, ToolbarIcons, ToolbarSpec, TB_GEAR, TB_LOGO,
-    TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH, PET_OVERHANG,
+    PetRenderSpec, PetSpec, TextRenderer, Theme, ToolbarIcons, ToolbarSpec, PET_OVERHANG, TB_GEAR,
+    TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
 };
-use iuv_win::{ctl_pipe_name, CtlClient, CtlCmd, CtlResult, PipeClient, Request};
 use iuv_win::UlwSurface;
+use iuv_win::{ctl_pipe_name, CtlClient, CtlCmd, CtlResult, PipeClient, Request};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, LOGPIXELSY};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
+    ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect, KillTimer, LoadCursorW,
-    SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, SWP_NOACTIVATE,
-    SWP_NOCOPYBITS, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, GWLP_USERDATA, HTCLIENT,
-    HTTRANSPARENT, IDC_ARROW, IDC_HAND, MA_NOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
-    WM_SETCURSOR, WM_TIMER,
+    SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA, HTCLIENT,
+    HTTRANSPARENT, IDC_ARROW, IDC_HAND, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSIZE,
+    SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WM_TIMER,
 };
 
-use crate::pet_assets::PetArt;
+use super::fullscreen;
 use super::prefs::{save_pref, ToolbarPref};
 use super::tooltip::TooltipWindow;
 use super::{
-    button_tooltip, clamp_to_work, client_pos, create_window, cursor_screen, current_theme,
+    button_tooltip, clamp_to_work, client_pos, create_window, current_theme, cursor_screen,
     default_pos, in_rounded_rect, BarEvent, Shared, ToolbarInstance, CLASS_BAR, WM_APP_REFRESH,
     WM_MOUSELEAVE,
 };
-use super::fullscreen;
 use crate::log;
+use crate::pet_assets::PetArt;
 use crate::state::DaemonState;
 /// 工具条窗口（仅工具条线程触碰；wnd_proc 经 GWLP_USERDATA 取回）。
 pub(super) struct ToolbarWindow {
@@ -242,7 +241,10 @@ impl ToolbarWindow {
                 // 防御性 upsert：未知实例直接建表（信号即注册——「有一个」语义）。
                 sh.instances.insert(
                     (pid, tid),
-                    ToolbarInstance { state, active: true },
+                    ToolbarInstance {
+                        state,
+                        active: true,
+                    },
                 );
                 let was_bound = sh.focused == Some((pid, tid));
                 let prior_focused = sh.focused;
@@ -265,9 +267,7 @@ impl ToolbarWindow {
                     // 全屏期间即便收到焦点信号也不显示，退出全屏后由轮询翻转恢复）。
                     log::log_line("[toolbar] 工具条 → 保持隐藏（偏好关闭或全屏中，仅绑定）");
                 } else if !self.visible {
-                    log::log_line(&format!(
-                        "[toolbar] 工具条 → 显示（绑定 {pid}:{tid}）"
-                    ));
+                    log::log_line(&format!("[toolbar] 工具条 → 显示（绑定 {pid}:{tid}）"));
                     self.show();
                 } else if !was_bound && self.drag_offset.is_none() {
                     self.repaint();
@@ -301,9 +301,7 @@ impl ToolbarWindow {
                 drop(sh);
                 log::log_line(&format!("[toolbar] 失焦（{pid}:{tid}）"));
                 if was_bound && self.visible {
-                    log::log_line(&format!(
-                        "[toolbar] 工具条 → 隐藏（解绑 {pid}:{tid}）"
-                    ));
+                    log::log_line(&format!("[toolbar] 工具条 → 隐藏（解绑 {pid}:{tid}）"));
                     self.hide();
                 }
             }
@@ -431,7 +429,9 @@ impl ToolbarWindow {
     /// 宠物点击命中：给定客户区坐标，判断是否落在宠物**不透明**像素上。
     /// 用于 WM_NCHITTEST 与 WM_LBUTTONDOWN 区分"宠物像素（可点）"与"宠物区透明（穿透）"。
     fn pet_pixel_hit(&self, x: i32, y: i32) -> bool {
-        let Some(pr) = self.pet_rect else { return false };
+        let Some(pr) = self.pet_rect else {
+            return false;
+        };
         if x < pr.x || x >= pr.x + pr.w || y < pr.y || y >= pr.y + pr.h {
             return false;
         }
@@ -509,7 +509,13 @@ impl ToolbarWindow {
         if unsafe { GetWindowRect(self.hwnd, &mut rc) }.is_err() {
             return;
         }
-        self.present(&surf, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
+        self.present(
+            &surf,
+            rc.left,
+            rc.top,
+            rc.right - rc.left,
+            rc.bottom - rc.top,
+        );
     }
 
     /// 渲染当前帧 → Surface（**M1 复合**：工具栏 + 宠物同窗） + 刷新按钮命中矩形 +
@@ -642,7 +648,10 @@ impl ToolbarWindow {
                         TB_MODE => ("中英", CtlCmd::SetMode(st.mode == InitialMode::Chinese)),
                         TB_WIDTH => ("全半角", CtlCmd::SetWidth(st.width == WidthMode::Half)),
                         TB_PUNCT => ("标点", CtlCmd::SetPunct(st.punct == PunctMode::Chinese)),
-                        TB_SCRIPT => ("简繁", CtlCmd::SetScript(st.script == ScriptMode::Simplified)),
+                        TB_SCRIPT => (
+                            "简繁",
+                            CtlCmd::SetScript(st.script == ScriptMode::Simplified),
+                        ),
                         _ => return,
                     }
                 };
@@ -666,7 +675,10 @@ impl ToolbarWindow {
             }
             crate::hotkey::GlobalAction::ToggleScript => {
                 let st = self.focused_state();
-                ("简繁", CtlCmd::SetScript(st.script == ScriptMode::Simplified))
+                (
+                    "简繁",
+                    CtlCmd::SetScript(st.script == ScriptMode::Simplified),
+                )
             }
             crate::hotkey::GlobalAction::TogglePunct => {
                 let st = self.focused_state();
@@ -711,9 +723,7 @@ impl ToolbarWindow {
     /// 四态翻转分派（on_click 与 on_hotkey 共用）：连 focused 实例控制管道发 cmd →
     /// 按结果更新实例表 + 重绘。
     fn dispatch_state_toggle(&mut self, label: &str, cmd: &CtlCmd, pid: u32, tid: u32) {
-        log::log_line(&format!(
-            "[toolbar] {label}翻转（实例 {pid}:{tid}）"
-        ));
+        log::log_line(&format!("[toolbar] {label}翻转（实例 {pid}:{tid}）"));
         let name = ctl_pipe_name(pid, tid);
         match CtlClient::connect(&name).and_then(|c| c.request(cmd)) {
             Ok(CtlResult::Ok { state }) => {
@@ -778,7 +788,9 @@ impl ToolbarWindow {
     /// **边缘检测**：目标位置先 clamp 到光标所在显示器工作区（x∈[left, right-w]、
     /// y∈[top, bottom-h]）——窗口整体一像素也不越出屏幕（2026-08-21 用户要求）。
     fn drag_move(&mut self) {
-        let Some((ox, oy)) = self.drag_offset else { return };
+        let Some((ox, oy)) = self.drag_offset else {
+            return;
+        };
         let (cx, cy) = cursor_screen();
         let (nx, ny) = (cx - ox, cy - oy);
         // SAFETY: GetWindowRect 读当前窗口矩形（窗口尺寸做 clamp 边界）。
@@ -841,7 +853,11 @@ impl ToolbarWindow {
             sh.pos = Some(pos);
         }
         save_pref(&ToolbarPref {
-            visible: self.shared.lock().unwrap_or_else(|p| p.into_inner()).visible,
+            visible: self
+                .shared
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .visible,
             pos: Some(pos),
         });
         log::log_line(&format!("[toolbar] 位置已记忆：{pos:?}"));
@@ -871,7 +887,10 @@ impl ToolbarWindow {
         };
         self.pet_model.advance(dt);
         // 眨眼随机源：LCG（纯整数运算，无外部依赖，保持 PetAnim 可单测）
-        self.pet_rand = self.pet_rand.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        self.pet_rand = self
+            .pet_rand
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
         self.pet_anim.step(dt, self.pet_rand);
         // 推进后：若空闲停帧则 KillTimer；否则保持定时器（继续推进）。
         self.sync_pet_timer();
@@ -1068,8 +1087,7 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
                         return IDC_HAND;
                     }
                     // 工具栏按钮命中（含 logo 排除，logo 走箭头）
-                    let over_button = hit_test(&w.rows, cx, cy)
-                        .is_some_and(|i| i != TB_LOGO);
+                    let over_button = hit_test(&w.rows, cx, cy).is_some_and(|i| i != TB_LOGO);
                     if over_button {
                         IDC_HAND
                     } else {
@@ -1078,8 +1096,8 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
                 });
                 // SAFETY: SetCursor 设标准内置光标；LoadCursorW 取系统 stock 光标。
                 unsafe {
-                    let cursor = LoadCursorW(None, cursor_kind.unwrap_or(IDC_ARROW))
-                        .unwrap_or_default();
+                    let cursor =
+                        LoadCursorW(None, cursor_kind.unwrap_or(IDC_ARROW)).unwrap_or_default();
                     SetCursor(Some(cursor));
                 }
                 LRESULT(1)
@@ -1107,12 +1125,16 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
             }
             // 2) 工具栏背景圆角矩形内（y 偏移 PET_OVERHANG，复用 frame 缓存几何）
             let (tx, ty, tw, th, radius) = match get_bar_mut(hwnd) {
-                Some(wnd) => (x, y - wnd.overhang, wnd.toolbar_w, wnd.toolbar_h, wnd.radius),
+                Some(wnd) => (
+                    x,
+                    y - wnd.overhang,
+                    wnd.toolbar_w,
+                    wnd.toolbar_h,
+                    wnd.radius,
+                ),
                 None => return LRESULT(HTTRANSPARENT as isize),
             };
-            if ty >= 0 && ty < th && tx >= 0 && tx < tw
-                && in_rounded_rect(tx, ty, tw, th, radius)
-            {
+            if ty >= 0 && ty < th && tx >= 0 && tx < tw && in_rounded_rect(tx, ty, tw, th, radius) {
                 return LRESULT(HTCLIENT as isize);
             }
             // 3) 其余穿透

@@ -24,14 +24,14 @@ mod toolbar;
 mod toolbar_icons;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use iuv_data::UserDict;
 use iuv_win::{PipeServer, Request, Response, ShmWriter, SignalServer};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
 };
 use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
 use windows::Win32::UI::HiDpi::{
@@ -161,9 +161,7 @@ fn run() -> i32 {
 
 /// 用户库文件路径：<iuv 数据目录>\iuv.user.imedic（目录链统一走 iuv-core [`iuv_core::paths`]）。
 fn user_dict_path() -> Option<PathBuf> {
-    Some(
-        iuv_core::paths::iuv_dir()?.join(USER_DICT_FILENAME),
-    )
+    Some(iuv_core::paths::iuv_dir()?.join(USER_DICT_FILENAME))
 }
 
 /// 获取具名互斥（bInitialOwner=true）：已存在且非废弃（另一实例活跃）→ None。

@@ -32,8 +32,20 @@ pub fn chinese_punct(ascii: char, quote_open: bool) -> Option<&'static str> {
         '&' => "—",
         '$' => "￥",
         // 引号自动配对（开/关交替）
-        '\'' => if quote_open { "‘" } else { "’" },
-        '"' => if quote_open { "“" } else { "”" },
+        '\'' => {
+            if quote_open {
+                "‘"
+            } else {
+                "’"
+            }
+        }
+        '"' => {
+            if quote_open {
+                "“"
+            } else {
+                "”"
+            }
+        }
         // 搜狗补充键（微软表未列）
         '`' => "～",
         '~' => "～",
@@ -112,9 +124,7 @@ pub fn fullwidth_text(text: &str, width: WidthMode) -> String {
     if width != WidthMode::Full {
         return text.to_string();
     }
-    text.chars()
-        .map(|c| fullwidth(c).unwrap_or(c))
-        .collect()
+    text.chars().map(|c| fullwidth(c).unwrap_or(c)).collect()
 }
 
 #[cfg(test)]
@@ -285,7 +295,10 @@ mod tests {
         let half = WidthMode::Half;
         // 全角：纯拼音 → 全角
         assert_eq!(fullwidth_text("nihao", full), "ｎｉｈａｏ");
-        assert_eq!(fullwidth_text("hello world", full), "ｈｅｌｌｏ\u{3000}ｗｏｒｌｄ");
+        assert_eq!(
+            fullwidth_text("hello world", full),
+            "ｈｅｌｌｏ\u{3000}ｗｏｒｌｄ"
+        );
         // 全角：汉字/中文标点不受影响，拼音转
         assert_eq!(fullwidth_text("你好nihao", full), "你好ｎｉｈａｏ");
         assert_eq!(fullwidth_text("，nihao", full), "，ｎｉｈａｏ");

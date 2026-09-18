@@ -13,7 +13,7 @@
 //! 5. 文本去重（DistinctTranslation，translation.cc:191-207）。
 
 use super::poet::{self, GraphEntry, WordGraph};
-use super::syllabifier::{SyllableGraph, SpellingType};
+use super::syllabifier::{SpellingType, SyllableGraph};
 use iuv_data::Dict;
 use std::collections::BTreeMap;
 
@@ -250,7 +250,11 @@ pub(crate) fn collect_buckets(
                 BucketEntry {
                     entry,
                     exact: !m.completion,
-                    class: if m.completion { m.class.max(2) } else { m.class },
+                    class: if m.completion {
+                        m.class.max(2)
+                    } else {
+                        m.class
+                    },
                     cred: m.cred,
                 },
             );
@@ -329,12 +333,16 @@ pub(crate) fn build_poet_graph(
             continue;
         }
         if let Some(be) = slot.first() {
-            wg.entry(s).or_default().entry(e).or_default().push(GraphEntry {
-                word: be.entry.word.clone(),
-                // credibility 累进 log 权重（dictionary.cc:164 语义）——
-                // 补全/简拼边在组句 DP 中劣于纯全拼边（2026-08-29 λ 校准）
-                log_weight: lm_log_prob(be.entry.weight) + be.cred,
-            });
+            wg.entry(s)
+                .or_default()
+                .entry(e)
+                .or_default()
+                .push(GraphEntry {
+                    word: be.entry.word.clone(),
+                    // credibility 累进 log 权重（dictionary.cc:164 语义）——
+                    // 补全/简拼边在组句 DP 中劣于纯全拼边（2026-08-29 λ 校准）
+                    log_weight: lm_log_prob(be.entry.weight) + be.cred,
+                });
         }
     }
     if wg.is_empty() {

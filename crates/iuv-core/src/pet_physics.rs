@@ -47,14 +47,22 @@ pub struct Spring {
 impl Spring {
     /// 构造（静止状态）。非法参数（非有限值 / 刚度非正 / 阻尼为负）回落到默认值，不 panic。
     pub fn new(stiffness: f32, damping: f32) -> Self {
-        let stiffness =
-            if stiffness.is_finite() && stiffness > 0.0 { stiffness } else { DEFAULT_STIFFNESS };
+        let stiffness = if stiffness.is_finite() && stiffness > 0.0 {
+            stiffness
+        } else {
+            DEFAULT_STIFFNESS
+        };
         let damping = if damping.is_finite() && damping >= 0.0 {
             damping
         } else {
             DEFAULT_DAMPING
         };
-        Spring { value: 0.0, velocity: 0.0, stiffness, damping }
+        Spring {
+            value: 0.0,
+            velocity: 0.0,
+            stiffness,
+            damping,
+        }
     }
 
     /// 注入速度冲量（窗口拖拽的惯性激励）。非有限值忽略。
@@ -144,7 +152,10 @@ pub struct BlinkTimer {
 impl BlinkTimer {
     /// 构造，首次间隔由 `rand` 在区间内取值。
     pub fn new(interval: (u32, u32), rand: u32) -> Self {
-        BlinkTimer { next_in_ms: pick_interval(interval, rand), closed_ms: 0 }
+        BlinkTimer {
+            next_in_ms: pick_interval(interval, rand),
+            closed_ms: 0,
+        }
     }
 
     /// 推进 `dt_ms`；`rand` 仅在**重新安排下次间隔**时被消费。
@@ -269,8 +280,8 @@ impl PetAnim {
         if self.breath_amp == 0.0 {
             return 0.0;
         }
-        let phase = (self.breath_t_ms as f32 / self.breath_period_ms as f32)
-            * std::f32::consts::TAU;
+        let phase =
+            (self.breath_t_ms as f32 / self.breath_period_ms as f32) * std::f32::consts::TAU;
         phase.sin() * self.breath_amp
     }
 
@@ -346,7 +357,12 @@ mod tests {
         for _ in 0..200 {
             s.step(16);
         }
-        assert!(s.is_settled(SETTLE_EPS), "应回落到静止，实际 v={} vel={}", s.value(), s.velocity());
+        assert!(
+            s.is_settled(SETTLE_EPS),
+            "应回落到静止，实际 v={} vel={}",
+            s.value(),
+            s.velocity()
+        );
         assert!(s.value().abs() < 0.01);
     }
 
@@ -366,7 +382,10 @@ mod tests {
                 saw_negative = true;
             }
         }
-        assert!(saw_positive && saw_negative, "欠阻尼应越过零点来回摆，实际只看到一侧");
+        assert!(
+            saw_positive && saw_negative,
+            "欠阻尼应越过零点来回摆，实际只看到一侧"
+        );
     }
 
     #[test]
@@ -429,7 +448,11 @@ mod tests {
             s.step(DT_CLAMP_MS);
         }
         assert!(s.value().is_finite(), "最大 dt 下不得发散");
-        assert!(s.value().abs() < 1.0, "最大 dt 下应收敛，实际 {}", s.value());
+        assert!(
+            s.value().abs() < 1.0,
+            "最大 dt 下应收敛，实际 {}",
+            s.value()
+        );
     }
 
     // ===== BlinkTimer =====
@@ -542,7 +565,11 @@ mod tests {
         let steps = settle(&mut anim, 16, 400);
         assert!(steps < 400, "弹簧应在 400 步内收敛，实际用了 {steps}");
         assert!(!anim.spring_active());
-        assert_eq!(anim.desired_interval_ms(), SLOW_INTERVAL_MS, "收敛后降频到 10fps");
+        assert_eq!(
+            anim.desired_interval_ms(),
+            SLOW_INTERVAL_MS,
+            "收敛后降频到 10fps"
+        );
     }
 
     #[test]
@@ -575,8 +602,14 @@ mod tests {
             min = min.min(v);
             max = max.max(v);
         }
-        assert!(min < -0.5 * skin.breath_amp, "应到达呼吸下沿，实际 min={min}");
-        assert!(max > 0.5 * skin.breath_amp, "应到达呼吸上沿，实际 max={max}");
+        assert!(
+            min < -0.5 * skin.breath_amp,
+            "应到达呼吸下沿，实际 min={min}"
+        );
+        assert!(
+            max > 0.5 * skin.breath_amp,
+            "应到达呼吸上沿，实际 max={max}"
+        );
     }
 
     #[test]

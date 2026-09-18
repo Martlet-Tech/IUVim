@@ -23,12 +23,24 @@ pub struct Combo {
 impl Combo {
     /// 无修饰组合（基础键）。
     pub fn plain(base: Key) -> Combo {
-        Combo { ctrl: false, alt: false, shift: false, win: false, base }
+        Combo {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            win: false,
+            base,
+        }
     }
 
     /// Shift 组合。
     pub fn shifted(base: Key) -> Combo {
-        Combo { ctrl: false, alt: false, shift: true, win: false, base }
+        Combo {
+            ctrl: false,
+            alt: false,
+            shift: true,
+            win: false,
+            base,
+        }
     }
 
     /// 展示名（config.json / 设置页 / 日志）：`"Shift+Left"`、`"Ctrl+Alt+I"`、`","`。
@@ -57,7 +69,13 @@ impl Combo {
 
     /// 从展示名解析。基础键字母归一为小写（大写输入等价）；解析失败 → None。
     pub fn from_name(s: &str) -> Option<Combo> {
-        let mut c = Combo { ctrl: false, alt: false, shift: false, win: false, base: Key::Space };
+        let mut c = Combo {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            win: false,
+            base: Key::Space,
+        };
         let mut base: Option<Key> = None;
         for part in s.split('+') {
             match part {
@@ -215,9 +233,18 @@ impl Default for Keymap {
                 primary: Some(Key::Right.into()),
                 secondary: Some(Key::Down.into()),
             },
-            swap_left: TwoSlot { primary: Some(Combo::shifted(Key::Left)), secondary: None },
-            swap_right: TwoSlot { primary: Some(Combo::shifted(Key::Right)), secondary: None },
-            hide_candidate: TwoSlot { primary: Some(Combo::shifted(Key::Delete)), secondary: None },
+            swap_left: TwoSlot {
+                primary: Some(Combo::shifted(Key::Left)),
+                secondary: None,
+            },
+            swap_right: TwoSlot {
+                primary: Some(Combo::shifted(Key::Right)),
+                secondary: None,
+            },
+            hide_candidate: TwoSlot {
+                primary: Some(Combo::shifted(Key::Delete)),
+                secondary: None,
+            },
             toggle_mode: TwoSlot::default(),
             toggle_width: TwoSlot::default(),
             toggle_script: TwoSlot::default(),
@@ -336,13 +363,19 @@ impl From<Key> for Combo {
 
 impl From<Combo> for TwoSlot {
     fn from(c: Combo) -> TwoSlot {
-        TwoSlot { primary: Some(c), secondary: None }
+        TwoSlot {
+            primary: Some(c),
+            secondary: None,
+        }
     }
 }
 
 impl From<Key> for TwoSlot {
     fn from(k: Key) -> TwoSlot {
-        TwoSlot { primary: Some(k.into()), secondary: None }
+        TwoSlot {
+            primary: Some(k.into()),
+            secondary: None,
+        }
     }
 }
 
@@ -380,11 +413,23 @@ mod tests {
     #[test]
     fn combo_letter_lowercase_normalized() {
         // 基础键字母归一化小写：大写输入等价（Shift 语义由 shift 位表达）
-        let a = Combo { ctrl: true, alt: false, shift: false, win: false, base: Key::Char('a') };
+        let a = Combo {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            win: false,
+            base: Key::Char('a'),
+        };
         assert_eq!(combo("Ctrl+A"), a);
         assert_eq!(combo("Ctrl+A").name(), "Ctrl+A");
         // 修饰序固定：Ctrl/Alt/Shift/Win + base
-        let c = Combo { ctrl: true, alt: true, shift: true, win: true, base: Key::Char('z') };
+        let c = Combo {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            win: true,
+            base: Key::Char('z'),
+        };
         assert_eq!(c.name(), "Ctrl+Alt+Shift+Win+Z");
     }
 
@@ -443,7 +488,10 @@ mod tests {
         assert_eq!(k.map(&combo("Left")), Some(SessionAction::CandidatePrev));
         assert_eq!(k.map(&combo("Shift+Left")), Some(SessionAction::SwapLeft));
         assert_eq!(k.map(&combo("Shift+Right")), Some(SessionAction::SwapRight));
-        assert_eq!(k.map(&combo("Shift+Delete")), Some(SessionAction::HideCandidate));
+        assert_eq!(
+            k.map(&combo("Shift+Delete")),
+            Some(SessionAction::HideCandidate)
+        );
         assert_eq!(k.map(&combo("Ctrl+A")), None, "字母不入会话查表");
         assert_eq!(k.map(&combo("F5")), None);
     }
@@ -461,7 +509,11 @@ mod tests {
         assert_eq!(k.map(&combo("[")), Some(SessionAction::PagePrev));
         assert_eq!(k.map(&combo("]")), Some(SessionAction::PageNext));
         // 备槽仍生效：page_prev 备槽 `,` 未被主槽覆盖
-        assert_eq!(k.map(&combo(",")), Some(SessionAction::PagePrev), "备槽仍生效");
+        assert_eq!(
+            k.map(&combo(",")),
+            Some(SessionAction::PagePrev),
+            "备槽仍生效"
+        );
         assert_eq!(k.map(&combo("PageUp")), None, "主槽已被覆盖");
         // 清除后不再命中
         k.candidate_prev.primary = None;
@@ -475,10 +527,23 @@ mod tests {
         k.toggle_mode.primary = Some(combo("Alt+`"));
         k.open_settings.primary = Some(combo("Ctrl+Alt+I"));
         k.toggle_toolbar.secondary = Some(combo("Win+Shift+L"));
-        assert_eq!(k.global_action(&combo("Alt+`")), Some(GlobalAction::ToggleMode));
-        assert_eq!(k.global_action(&combo("Ctrl+Alt+I")), Some(GlobalAction::OpenSettings));
-        assert_eq!(k.global_action(&combo("Win+Shift+L")), Some(GlobalAction::ToggleToolbar));
-        assert_eq!(k.global_action(&combo("Shift+Left")), None, "会话键不进全局表");
+        assert_eq!(
+            k.global_action(&combo("Alt+`")),
+            Some(GlobalAction::ToggleMode)
+        );
+        assert_eq!(
+            k.global_action(&combo("Ctrl+Alt+I")),
+            Some(GlobalAction::OpenSettings)
+        );
+        assert_eq!(
+            k.global_action(&combo("Win+Shift+L")),
+            Some(GlobalAction::ToggleToolbar)
+        );
+        assert_eq!(
+            k.global_action(&combo("Shift+Left")),
+            None,
+            "会话键不进全局表"
+        );
         assert_eq!(k.global_action(&combo("F5")), None);
     }
 
@@ -492,7 +557,11 @@ mod tests {
         assert!(list.contains(&combo("Shift+Left")));
         assert!(list.contains(&combo("Alt+1")));
         assert!(list.contains(&combo("Ctrl+Alt+I")));
-        assert_eq!(list.len(), 13, "会话 11（翻页2×2+移动2×2+调权2+隐藏1）+ 全局 2");
+        assert_eq!(
+            list.len(),
+            13,
+            "会话 11（翻页2×2+移动2×2+调权2+隐藏1）+ 全局 2"
+        );
     }
 
     #[test]
@@ -507,7 +576,10 @@ mod tests {
     #[test]
     fn session_start_keys() {
         assert!(is_session_start_key(Key::Char('a')));
-        assert!(is_session_start_key(Key::ShiftChar('H')), "Shift/CapsLock 大写同样开会话");
+        assert!(
+            is_session_start_key(Key::ShiftChar('H')),
+            "Shift/CapsLock 大写同样开会话"
+        );
         assert!(!is_session_start_key(Key::Char('\'')));
         assert!(!is_session_start_key(Key::Char(',')));
         assert!(!is_session_start_key(Key::Digit(1)));

@@ -69,7 +69,11 @@ impl TextService {
             "[daemon] 配置热载：theme={:?} passthrough_apps={} keymap{}",
             cfg.theme,
             cfg.passthrough_apps.len(),
-            if keymap_changed { "变化（会话键已生效）" } else { "不变" }
+            if keymap_changed {
+                "变化（会话键已生效）"
+            } else {
+                "不变"
+            }
         ));
     }
 }

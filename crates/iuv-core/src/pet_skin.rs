@@ -294,10 +294,7 @@ mod tests {
         for id in LayerId::ALL {
             let stem = id.file_stem();
             assert!(!stem.is_empty());
-            assert!(
-                seen.insert(stem),
-                "file_stem 必须唯一，重复：{stem}"
-            );
+            assert!(seen.insert(stem), "file_stem 必须唯一，重复：{stem}");
         }
     }
 
@@ -344,7 +341,10 @@ mod tests {
         for id in [LayerId::Body, LayerId::Head, LayerId::Face, LayerId::Ahoge] {
             assert!(skin.layer(id).is_some(), "{id:?} 必须存在于内置皮肤");
         }
-        assert!(skin.layer(LayerId::Accessory).is_none(), "内置皮肤不含挂件层");
+        assert!(
+            skin.layer(LayerId::Accessory).is_none(),
+            "内置皮肤不含挂件层"
+        );
     }
 
     #[test]
@@ -367,8 +367,7 @@ mod tests {
         let front = skin.layer(LayerId::HairFront).unwrap().spring.unwrap();
         let ahoge = skin.layer(LayerId::Ahoge).unwrap().spring.unwrap();
         assert!(
-            back.max_angle_deg < front.max_angle_deg
-                && front.max_angle_deg < ahoge.max_angle_deg,
+            back.max_angle_deg < front.max_angle_deg && front.max_angle_deg < ahoge.max_angle_deg,
             "摆幅应递增：后发 < 前发 < 呆毛"
         );
     }
@@ -404,6 +403,9 @@ mod tests {
         // ζ = c / (2√k) 应 < 1（欠阻尼才会摆动），且明显 > 0（不能一直晃）
         let p = SpringParam::default();
         let zeta = p.damping / (2.0 * p.stiffness.sqrt());
-        assert!(zeta > 0.1 && zeta < 1.0, "阻尼比应在 (0.1, 1.0)，实际 {zeta}");
+        assert!(
+            zeta > 0.1 && zeta < 1.0,
+            "阻尼比应在 (0.1, 1.0)，实际 {zeta}"
+        );
     }
 }

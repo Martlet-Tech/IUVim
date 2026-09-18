@@ -5,7 +5,7 @@
 //! 在构造时内部装配，会话工厂产出的会话直接绑定该核心。
 
 use crate::userdict::{UserRemote, UserState};
-use crate::{rime::RimeEngine, session::Session, script::ScriptConverter, Config};
+use crate::{rime::RimeEngine, script::ScriptConverter, session::Session, Config};
 use iuv_data::Dict;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -90,7 +90,10 @@ impl Engine {
 
     /// 当前配置快照（克隆：M6 热载后新值立即可见；读侧不用锁穿透引用）。
     pub fn config(&self) -> Config {
-        self.config.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 每页候选数（缓存 `config.page_size.max(1)`：热路径每键多次读取，免整份克隆；
@@ -98,7 +101,6 @@ impl Engine {
     pub fn page_size(&self) -> u32 {
         self.page_size.load(Ordering::Relaxed)
     }
-
 }
 
 #[cfg(test)]

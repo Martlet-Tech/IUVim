@@ -155,33 +155,34 @@ impl OpenccTable {
 pub fn from_text(phrases_text: &str, chars_text: &str) -> io::Result<OpenccTable> {
     let mut phrases: HashMap<String, String> = HashMap::new();
     let mut chars: HashMap<char, String> = HashMap::new();
-    let parse = |src: &str, multi: &mut HashMap<String, String>, single: &mut HashMap<char, String>| {
-        for line in src.lines() {
-            let line = line.strip_prefix('\u{feff}').unwrap_or(line);
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let mut parts = line.splitn(2, '\t');
-            let (key, vals) = match (parts.next(), parts.next()) {
-                (Some(k), Some(v)) => (k.trim(), v.trim()),
-                _ => continue,
-            };
-            if key.is_empty() || vals.is_empty() {
-                continue;
-            }
-            let Some(val) = vals.split_whitespace().next().map(str::to_owned) else {
-                continue;
-            };
-            if key.chars().count() == 1 {
-                if let Some(c) = key.chars().next() {
-                    single.insert(c, val);
+    let parse =
+        |src: &str, multi: &mut HashMap<String, String>, single: &mut HashMap<char, String>| {
+            for line in src.lines() {
+                let line = line.strip_prefix('\u{feff}').unwrap_or(line);
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
                 }
-            } else {
-                multi.insert(key.to_owned(), val);
+                let mut parts = line.splitn(2, '\t');
+                let (key, vals) = match (parts.next(), parts.next()) {
+                    (Some(k), Some(v)) => (k.trim(), v.trim()),
+                    _ => continue,
+                };
+                if key.is_empty() || vals.is_empty() {
+                    continue;
+                }
+                let Some(val) = vals.split_whitespace().next().map(str::to_owned) else {
+                    continue;
+                };
+                if key.chars().count() == 1 {
+                    if let Some(c) = key.chars().next() {
+                        single.insert(c, val);
+                    }
+                } else {
+                    multi.insert(key.to_owned(), val);
+                }
             }
-        }
-    };
+        };
     parse(phrases_text, &mut phrases, &mut chars);
     parse(chars_text, &mut phrases, &mut chars);
     Ok(OpenccTable::from_maps(phrases, chars))
@@ -189,11 +190,7 @@ pub fn from_text(phrases_text: &str, chars_text: &str) -> io::Result<OpenccTable
 
 /// 编译 OpenCC 文本文件 → IUVOCC01 二进制文件（dictc opencc 子命令）。
 /// 返回词条总数（phrases + chars）。
-pub fn compile_files(
-    phrases_path: &Path,
-    chars_path: &Path,
-    output: &Path,
-) -> io::Result<usize> {
+pub fn compile_files(phrases_path: &Path, chars_path: &Path, output: &Path) -> io::Result<usize> {
     let read_txt = |p: &Path| -> io::Result<String> {
         std::fs::read_to_string(p)
             .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", p.display())))
@@ -248,8 +245,7 @@ mod tests {
     /// 构造一个小测试表（短语 + 单字），用于转换逻辑断言。
     fn sample() -> OpenccTable {
         // STPhrases 风格：皇后 後；网络 → 網絡（s2t 通用繁体，非台语网络）
-        let phrases = "以后\t以後\n皇后\t皇后 後\n网络\t網絡\n".
-            to_string();
+        let phrases = "以后\t以後\n皇后\t皇后 後\n网络\t網絡\n".to_string();
         let chars = "后\t后 後\n发\t发 髮\n台\t台 臺\n网\t網\n".to_string();
         from_text(&phrases, &chars).unwrap()
     }

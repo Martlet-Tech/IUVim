@@ -47,7 +47,9 @@ fn migrate_initial_state(mut v: serde_json::Value) -> serde_json::Value {
     if v.get("initial_state").is_some() {
         return v;
     }
-    let Some(obj) = v.as_object_mut() else { return v };
+    let Some(obj) = v.as_object_mut() else {
+        return v;
+    };
     let Some(punct) = obj
         .get("english_punctuation")
         .and_then(|x| x.as_bool())
@@ -55,7 +57,10 @@ fn migrate_initial_state(mut v: serde_json::Value) -> serde_json::Value {
     else {
         return v;
     };
-    obj.insert("initial_state".into(), serde_json::json!({ "punct": punct }));
+    obj.insert(
+        "initial_state".into(),
+        serde_json::json!({ "punct": punct }),
+    );
     v
 }
 

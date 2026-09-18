@@ -17,9 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use iuv_core::{Engine, ImeState, UserMutation, UserRemote};
-use iuv_win::{
-    PipeClient, Request, Response, ShmReader, SignalClient, ToolbarSignal,
-};
+use iuv_win::{PipeClient, Request, Response, ShmReader, SignalClient, ToolbarSignal};
 use windows::Win32::System::Threading::{
     CreateProcessW, CREATE_NO_WINDOW, PROCESS_INFORMATION, STARTUPINFOW,
 };

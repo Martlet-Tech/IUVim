@@ -17,10 +17,10 @@ use std::mem::size_of;
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-    BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB, AC_SRC_ALPHA, AC_SRC_OVER,
-    BLENDFUNCTION, HBITMAP, HDC, RGBQUAD,
+    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
+    HBITMAP, HDC, RGBQUAD,
 };
-use windows::Win32::UI::WindowsAndMessaging::{ULW_ALPHA, UpdateLayeredWindow};
+use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
 /// ULW 呈现缓存：内存 DC + 32bpp 自顶向下 DIB section（bits 由 GDI 分配）。
 /// 尺寸变化时自动重建；Drop 释放（DC 先删，DIB 对象后删）。

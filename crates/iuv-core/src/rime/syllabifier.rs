@@ -92,7 +92,15 @@ pub(crate) fn build_graph(
             while e < n && bytes[e] == b'\'' {
                 e += 1;
             }
-            add_spelling(&mut edges, &mut reached, v, e, sub.to_string(), SpellingType::Normal, 0.0);
+            add_spelling(
+                &mut edges,
+                &mut reached,
+                v,
+                e,
+                sub.to_string(),
+                SpellingType::Normal,
+                0.0,
+            );
         }
         // 单字母简拼边：两族拼写——①该字母开头的全部音节（混拼展开，
         // n(i)+hao 命中 ni'hao）；②字母串自身（命中构建期简拼键，如
@@ -115,7 +123,11 @@ pub(crate) fn build_graph(
         }
         // 族②字母串自身：仅小写字母（大写保形字符不产边——作为不可达分隔，
         // `Hello` 的 H 处无出边 → farthest=0 → 兜底原文，与 classic 语义一致）。
-        if initial.as_bytes().first().is_some_and(|b| b.is_ascii_lowercase()) {
+        if initial
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_lowercase())
+        {
             add_spelling(
                 &mut edges,
                 &mut reached,
@@ -168,7 +180,11 @@ fn add_spelling(
             existing.credibility = cred;
         }
     } else {
-        slot.push(Spelling { syllable, spelling_type: t, credibility: cred });
+        slot.push(Spelling {
+            syllable,
+            spelling_type: t,
+            credibility: cred,
+        });
     }
 }
 
@@ -199,7 +215,8 @@ pub(crate) fn push_completion_edge(
 }
 
 /// 反向剪枝：只留能到达 `target` 的边（librime syllabifier.cc:156-205 化简版）。
-fn prune(edges: &mut Edges, target: usize) {    let mut good: BTreeSet<usize> = BTreeSet::new();
+fn prune(edges: &mut Edges, target: usize) {
+    let mut good: BTreeSet<usize> = BTreeSet::new();
     good.insert(target);
     let ends: Vec<(usize, usize)> = edges
         .iter()

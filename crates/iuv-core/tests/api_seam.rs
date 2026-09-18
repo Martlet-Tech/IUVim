@@ -29,12 +29,16 @@ fn rime_engine(dict: iuv_data::Dict) -> Arc<RimeEngine> {
 fn translate_returns_segmentation_and_candidates() {
     let e = rime_engine(jian_dict());
     let tr = e.translate(&ctx(), &PendingInput { raw: "nihao" });
-    assert_eq!(tr.segmentation.len(), 1, "rime 打字期单活动段：segmentation 恒单段");
+    assert_eq!(
+        tr.segmentation.len(),
+        1,
+        "rime 打字期单活动段：segmentation 恒单段"
+    );
     assert_eq!(tr.segmentation[0].syllables, vec!["ni", "hao"]);
-    assert!(tr
-        .candidates
-        .iter()
-        .any(|c| c.text == "你好"), "nihao 应出「你好」");
+    assert!(
+        tr.candidates.iter().any(|c| c.text == "你好"),
+        "nihao 应出「你好」"
+    );
 }
 
 /// 输入方向②：高亮候选 → 预编辑跟随候选切分（管理员点名的快赢：

@@ -21,10 +21,10 @@ use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{
     ITfCompartment, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr,
     ITfContext, ITfContextView, ITfDocumentMgr, ITfKeyEventSink, ITfKeyEventSink_Impl,
-    ITfKeystrokeMgr, ITfSource, ITfTextLayoutSink, ITfTextLayoutSink_Impl,
-    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
-    ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
-    ITfThreadMgrEventSink_Impl, TfLayoutCode, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+    ITfKeystrokeMgr, ITfSource, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl,
+    ITfTextInputProcessor_Impl, ITfTextLayoutSink, ITfTextLayoutSink_Impl, ITfThreadFocusSink,
+    ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
+    TfLayoutCode, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, BOOL};
 
@@ -565,7 +565,9 @@ impl TextService_Impl {
         let source: ITfSource = match pic.cast() {
             Ok(s) => s,
             Err(e) => {
-                log_line(&format!("[follow] ITfSource QI 失败（来源={origin}）：{e:?}（无跟随）"));
+                log_line(&format!(
+                    "[follow] ITfSource QI 失败（来源={origin}）：{e:?}（无跟随）"
+                ));
                 return;
             }
         };
@@ -577,7 +579,9 @@ impl TextService_Impl {
                 log_line(&format!("[follow] 布局 sink 已挂载（来源={origin}）"));
             }
             Err(e) => {
-                log_line(&format!("[follow] AdviseSink 失败（来源={origin}）：{e:?}（无跟随）"));
+                log_line(&format!(
+                    "[follow] AdviseSink 失败（来源={origin}）：{e:?}（无跟随）"
+                ));
             }
         }
     }

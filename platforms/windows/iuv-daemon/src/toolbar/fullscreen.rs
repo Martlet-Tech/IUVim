@@ -163,7 +163,11 @@ mod tests {
     #[test]
     fn degenerate_rects_rejected() {
         // 显示器矩形退化 → 不猜
-        assert!(!covers_monitor(&r(0, 0, 1920, 1080), &r(100, 100, 100, 100), TOLERANCE));
+        assert!(!covers_monitor(
+            &r(0, 0, 1920, 1080),
+            &r(100, 100, 100, 100),
+            TOLERANCE
+        ));
         // 窗口矩形退化（最小化）→ 不覆盖
         assert!(!covers_monitor(&r(0, 0, 0, 0), &mon(), TOLERANCE));
     }

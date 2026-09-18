@@ -21,7 +21,9 @@ pub mod viterbi;
 
 pub use api::{EngineCtx, ImeEngine, PendingInput, Span, Translation};
 pub use candidate::{Candidate, CandidateKind};
-pub use config::keymap::{is_session_start_key, Combo, GlobalAction, Keymap, SessionAction, TwoSlot};
+pub use config::keymap::{
+    is_session_start_key, Combo, GlobalAction, Keymap, SessionAction, TwoSlot,
+};
 pub use config::{
     default_config_path, migrate_keymap, strip_bom, strip_jsonc_comments, Config, ImeState,
     InitialMode, Orientation, PunctMode, ScriptMode, ThemeChoice, WidthMode,

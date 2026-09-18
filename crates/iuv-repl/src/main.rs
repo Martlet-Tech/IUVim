@@ -6,7 +6,7 @@ use std::error::Error;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
-use iuv_core::{Config, Combo, Effect, Engine, Key, Session, SessionEnd};
+use iuv_core::{Combo, Config, Effect, Engine, Key, Session, SessionEnd};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -183,7 +183,14 @@ fn run_batch(engine: &Arc<Engine>, raw: &str) {
     let e = collect_all(engine, raw);
     println!("{}", e.reading);
     for (i, c) in e.candidates.iter().enumerate() {
-        println!("{}\t{}\t{:?}\t{}\t{:.4}", i + 1, c.text, c.kind, c.weight, c.score);
+        println!(
+            "{}\t{}\t{:?}\t{}\t{:.4}",
+            i + 1,
+            c.text,
+            c.kind,
+            c.weight,
+            c.score
+        );
     }
 }
 
@@ -296,17 +303,28 @@ mod tests {
     #[test]
     fn parse_args_forms() {
         assert_eq!(parse_args(&[]), None);
-        assert_eq!(parse_args(&["a.imedic".into()]), Some(("a.imedic".into(), None)));
+        assert_eq!(
+            parse_args(&["a.imedic".into()]),
+            Some(("a.imedic".into(), None))
+        );
         assert_eq!(
             parse_args(&["a".into(), "--batch".into(), "ni'hao".into()]),
             Some(("a".into(), Some("ni'hao".into())))
         );
         assert_eq!(parse_args(&["a".into(), "x".into()]), None);
         assert_eq!(
-            parse_args(&["a".into(), "--batch".into(), "ni'hao".into(), "extra".into()]),
+            parse_args(&[
+                "a".into(),
+                "--batch".into(),
+                "ni'hao".into(),
+                "extra".into()
+            ]),
             None
         );
         // 39 号收尾：--engine 过渡开关已删，未知参数拒绝
-        assert_eq!(parse_args(&["a".into(), "--engine".into(), "rime".into()]), None);
+        assert_eq!(
+            parse_args(&["a".into(), "--engine".into(), "rime".into()]),
+            None
+        );
     }
 }

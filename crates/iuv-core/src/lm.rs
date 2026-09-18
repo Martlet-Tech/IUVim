@@ -15,7 +15,9 @@ pub struct UnigramLm {
 
 impl UnigramLm {
     pub fn new(total_weight: u64) -> Self {
-        UnigramLm { total: total_weight }
+        UnigramLm {
+            total: total_weight,
+        }
     }
 }
 

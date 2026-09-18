@@ -20,7 +20,11 @@ fn pref_path() -> Option<std::path::PathBuf> {
         .ok()
         .or_else(|| std::env::var("APPDATA").ok().map(|a| format!("{a}\\Local")))
         .or_else(|| std::env::var("HOME").ok())?;
-    Some(std::path::PathBuf::from(base).join("iuv").join("toolbar.json"))
+    Some(
+        std::path::PathBuf::from(base)
+            .join("iuv")
+            .join("toolbar.json"),
+    )
 }
 
 /// 加载偏好（缺失/损坏 → 默认 visible=true、pos=None；绝不失败）。

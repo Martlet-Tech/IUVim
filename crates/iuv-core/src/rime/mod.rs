@@ -80,7 +80,9 @@ impl RimeEngine {
             return self.fallback_translation(pending, seg);
         }
         Translation {
-            segmentation: vec![Span { syllables: seg.to_vec() }],
+            segmentation: vec![Span {
+                syllables: seg.to_vec(),
+            }],
             candidates: cands,
         }
     }
@@ -108,14 +110,20 @@ impl RimeEngine {
             let n_seg = seg.iter().filter(|s| !s.is_empty()).count();
             cands.push(crate::api::raw_fallback_candidate(&plain, n_seg.max(1)));
         }
-        Translation { segmentation: vec![], candidates: cands }
+        Translation {
+            segmentation: vec![],
+            candidates: cands,
+        }
     }
 }
 
 impl ImeEngine for RimeEngine {
     fn translate(&self, ctx: &EngineCtx, pending: &PendingInput) -> Translation {
         if pending.raw.is_empty() {
-            return Translation { segmentation: vec![], candidates: vec![] };
+            return Translation {
+                segmentation: vec![],
+                candidates: vec![],
+            };
         }
         // 图构建视图：保留大小写（大写保形字符不参与拼音匹配——syllabifier 对
         // 非小写字母不产 Normal/简拼边，作为不可达分隔；`niHAO` 仍从 ni 前缀出词、
@@ -148,15 +156,21 @@ impl ImeEngine for RimeEngine {
         let mut graph = graph;
         // —— 2b 补全边注入（守卫 n_seg≥2，与 classic 句通道守卫同规）——
         {
-            let lens: Vec<usize> =
-                seg.iter().filter(|s| !s.is_empty()).map(|s| s.chars().count()).collect();
+            let lens: Vec<usize> = seg
+                .iter()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.chars().count())
+                .collect();
             let n_ne = lens.len();
             if n_ne >= 2 {
                 let total: usize = lens.iter().sum();
                 let tail_start = total - lens[n_ne - 1];
                 if let Some(last) = seg.iter().rfind(|s| !s.is_empty()) {
                     if !self.is_syllable(last)
-                        && self.syllables.iter().any(|syl| syl.starts_with(last.as_str()))
+                        && self
+                            .syllables
+                            .iter()
+                            .any(|syl| syl.starts_with(last.as_str()))
                     {
                         syllabifier::push_completion_edge(
                             &mut graph,
@@ -180,7 +194,10 @@ impl ImeEngine for RimeEngine {
         origins.insert(0);
         for (_, to_map) in graph.edges.iter() {
             for (to, sps) in to_map {
-                if sps.iter().any(|sp| sp.spelling_type == syllabifier::SpellingType::Normal) {
+                if sps
+                    .iter()
+                    .any(|sp| sp.spelling_type == syllabifier::SpellingType::Normal)
+                {
                     origins.insert(*to);
                 }
             }
@@ -274,15 +291,19 @@ impl ImeEngine for RimeEngine {
             let wg_filtered: translator::Buckets = buckets
                 .iter()
                 .map(|(k, slot)| {
-                    (*k, slot.iter().filter(|b| b.class != 1).cloned().collect::<Vec<_>>())
+                    (
+                        *k,
+                        slot.iter()
+                            .filter(|b| b.class != 1)
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    )
                 })
                 .filter(|(_, slot)| !slot.is_empty())
                 .collect();
-            if let Some(wg) = translator::build_poet_graph(
-                &wg_filtered,
-                graph.farthest,
-                |w| self.lm.log_prob(None, "", w),
-            ) {
+            if let Some(wg) = translator::build_poet_graph(&wg_filtered, graph.farthest, |w| {
+                self.lm.log_prob(None, "", w)
+            }) {
                 if let Some(sentence) =
                     poet::make_sentence(&wg, graph.farthest, ctx.preceding_text, self.lambda)
                 {
@@ -360,14 +381,11 @@ mod tests {
     }
 
     fn texts(e: &RimeEngine, raw: &str) -> Vec<String> {
-        e.translate(
-            &EngineCtx { preceding_text: "" },
-            &PendingInput { raw },
-        )
-        .candidates
-        .iter()
-        .map(|c| c.text.clone())
-        .collect()
+        e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw })
+            .candidates
+            .iter()
+            .map(|c| c.text.clone())
+            .collect()
     }
 
     /// 词优先：全段精确词存在 → 无整句，最长码桶在前（st.cc 码长优先）。
@@ -380,13 +398,16 @@ mod tests {
         ]);
         let t = texts(&e, "nihao");
         assert_eq!(t.first().map(String::as_str), Some("你好"));
-        assert!(
-            !t.contains(&"你号".to_string()),
-            "无该词条不应出现：{t:?}"
-        );
+        assert!(!t.contains(&"你号".to_string()), "无该词条不应出现：{t:?}");
         // 无 Sentence（可靠精确词闸门）
-        let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw: "nihao" });
-        assert!(tr.candidates.iter().all(|c| c.kind != crate::CandidateKind::Sentence));
+        let tr = e.translate(
+            &EngineCtx { preceding_text: "" },
+            &PendingInput { raw: "nihao" },
+        );
+        assert!(tr
+            .candidates
+            .iter()
+            .all(|c| c.kind != crate::CandidateKind::Sentence));
     }
 
     /// 歧义音节：西安（xi'an 路径）与 先（xian 路径）同桶竞争，权重降序。
@@ -443,16 +464,23 @@ mod tests {
     /// 预编辑快赢在 rime 核心下同样成立：jian 导航吉安 → ji'an。
     #[test]
     fn preedit_follows_candidate_rime() {
-        let e = engine(vec![
-            ("ji'an", "吉安", 6091),
-            ("jian", "间", 5000),
-        ]);
-        let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw: "jian" });
-        let jian = tr.candidates.iter().find(|c| c.text == "吉安").expect("吉安应在候选中");
+        let e = engine(vec![("ji'an", "吉安", 6091), ("jian", "间", 5000)]);
+        let tr = e.translate(
+            &EngineCtx { preceding_text: "" },
+            &PendingInput { raw: "jian" },
+        );
+        let jian = tr
+            .candidates
+            .iter()
+            .find(|c| c.text == "吉安")
+            .expect("吉安应在候选中");
         // 46 号 §3.3：seg 由调用方给（= translate 分段视图首段）；jam 权重 6091
         // > 间 5000，反查应选 [ji, an]。
         assert_eq!(tr.segmentation[0].syllables, vec!["ji", "an"]);
-        assert_eq!(e.preedit("jian", &tr.segmentation[0].syllables, Some(jian)), "ji'an");
+        assert_eq!(
+            e.preedit("jian", &tr.segmentation[0].syllables, Some(jian)),
+            "ji'an"
+        );
     }
 
     /// 部分消费推进：nihao 选「你」（parts=1 < 贪心段数 2）→ seg_len=1。
@@ -463,8 +491,15 @@ mod tests {
             ("ni", "你", 50000),
             ("hao", "好", 40000),
         ]);
-        let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw: "nihao" });
-        let ni = tr.candidates.iter().find(|c| c.text == "你").expect("你应在候选中");
+        let tr = e.translate(
+            &EngineCtx { preceding_text: "" },
+            &PendingInput { raw: "nihao" },
+        );
+        let ni = tr
+            .candidates
+            .iter()
+            .find(|c| c.text == "你")
+            .expect("你应在候选中");
         assert_eq!(ni.seg_len, 1, "单字候选消费 1 段");
         let nihao = tr.candidates.iter().find(|c| c.text == "你好").unwrap();
         assert_eq!(nihao.seg_len, 2);
@@ -477,9 +512,16 @@ mod tests {
             ("ni'hai'mei'shui'xing", "你还没睡醒", 30),
             ("ni'hao", "你好", 8000),
         ]);
-        let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw: "nhmsx" });
+        let tr = e.translate(
+            &EngineCtx { preceding_text: "" },
+            &PendingInput { raw: "nhmsx" },
+        );
         let texts: Vec<String> = tr.candidates.iter().map(|c| c.text.clone()).collect();
-        assert_eq!(texts.first().map(String::as_str), Some("你还没睡醒"), "{texts:?}");
+        assert_eq!(
+            texts.first().map(String::as_str),
+            Some("你还没睡醒"),
+            "{texts:?}"
+        );
     }
 
     /// 微软对齐政策：严格音节前缀（sh）→ 纯单字（exact 命中的 shi 键单字）。
@@ -490,10 +532,16 @@ mod tests {
             ("shi", "时", 800),
             ("shi'hou", "时候", 5000),
         ]);
-        let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw: "sh" });
+        let tr = e.translate(
+            &EngineCtx { preceding_text: "" },
+            &PendingInput { raw: "sh" },
+        );
         let texts: Vec<String> = tr.candidates.iter().map(|c| c.text.clone()).collect();
         assert!(texts.contains(&"是".to_string()), "{texts:?}");
-        assert!(!texts.contains(&"时候".to_string()), "前缀档不出词：{texts:?}");
+        assert!(
+            !texts.contains(&"时候".to_string()),
+            "前缀档不出词：{texts:?}"
+        );
     }
 
     /// 真词库校准诊断（39 号 W2，λ 校准用）：dump 切分/音节图/桶/poet 词格/
@@ -506,8 +554,11 @@ mod tests {
         let dict = StdArc::new(iuv_data::load(std::path::Path::new(dict_path)).unwrap());
         println!("== prefix probes ==");
         for p in ["cheng'y", "cheng", "y"] {
-            let got: Vec<String> =
-                dict.prefix(p, 64).iter().map(|e| format!("{}:{}", e.word, e.weight)).collect();
+            let got: Vec<String> = dict
+                .prefix(p, 64)
+                .iter()
+                .map(|e| format!("{}:{}", e.word, e.weight))
+                .collect();
             println!("  prefix({p:?}) -> {got:?}");
         }
         let cfg = crate::Config::default();
@@ -525,8 +576,11 @@ mod tests {
         );
         // 复刻 translate 的 2b 补全边注入
         {
-            let lens: Vec<usize> =
-                seg.iter().filter(|s| !s.is_empty()).map(|s| s.chars().count()).collect();
+            let lens: Vec<usize> = seg
+                .iter()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.chars().count())
+                .collect();
             if lens.len() >= 2 {
                 let total: usize = lens.iter().sum();
                 let tail_start = total - lens[lens.len() - 1];
@@ -560,18 +614,16 @@ mod tests {
         origins.insert(0);
         for (_, to_map) in graph.edges.iter() {
             for (to, sps) in to_map {
-                if sps.iter().any(|sp| sp.spelling_type == syllabifier::SpellingType::Normal) {
+                if sps
+                    .iter()
+                    .any(|sp| sp.spelling_type == syllabifier::SpellingType::Normal)
+                {
                     origins.insert(*to);
                 }
             }
         }
-        let buckets = translator::collect_buckets(
-            &dict,
-            &graph,
-            MAX_WORD_SYLLABLES,
-            &origins,
-            e.blocked(),
-        );
+        let buckets =
+            translator::collect_buckets(&dict, &graph, MAX_WORD_SYLLABLES, &origins, e.blocked());
         for ((s, en), slot) in &buckets {
             for be in slot.iter().take(5) {
                 println!(
@@ -583,20 +635,27 @@ mod tests {
         let wg_filtered: translator::Buckets = buckets
             .iter()
             .map(|(k, slot)| {
-                (*k, slot.iter().filter(|b| b.class != 1).cloned().collect::<Vec<_>>())
+                (
+                    *k,
+                    slot.iter()
+                        .filter(|b| b.class != 1)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
             })
             .filter(|(_, slot)| !slot.is_empty())
             .collect();
-        if let Some(wg) = translator::build_poet_graph(
-            &wg_filtered,
-            graph.farthest,
-            |w| e.lm.log_prob(None, "", w),
-        ) {
+        if let Some(wg) = translator::build_poet_graph(&wg_filtered, graph.farthest, |w| {
+            e.lm.log_prob(None, "", w)
+        }) {
             println!("== poet graph ==");
             for (s, ends) in &wg {
                 for (en, entries) in ends {
                     for g in entries {
-                        println!("  poet [{s:>2},{en:>2}) {:?} lw={:.4}", g.word, g.log_weight);
+                        println!(
+                            "  poet [{s:>2},{en:>2}) {:?} lw={:.4}",
+                            g.word, g.log_weight
+                        );
                     }
                 }
             }
@@ -613,8 +672,10 @@ mod tests {
         }
         let tr = e.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw });
         for c in tr.candidates.iter().take(8) {
-            println!("  cand {:?}\t{:?}\tw={}\tscore={:.4}", c.text, c.kind, c.weight, c.score);
+            println!(
+                "  cand {:?}\t{:?}\tw={}\tscore={:.4}",
+                c.text, c.kind, c.weight, c.score
+            );
         }
     }
-
 }

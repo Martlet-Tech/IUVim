@@ -110,13 +110,12 @@ impl DaemonState {
         }
         let dict = self.dict.lock().unwrap_or_else(|p| p.into_inner());
         match dict.save(&self.user_dict_path) {
-            Ok(()) => {
-                log::log_line(&format!("[state] 用户库已写盘：{}", self.user_dict_path.display()))
-            }
+            Ok(()) => log::log_line(&format!(
+                "[state] 用户库已写盘：{}",
+                self.user_dict_path.display()
+            )),
             Err(e) => {
-                log::log_line(&format!(
-                    "[state] 写盘失败（保留 dirty，下轮重试）: {e}"
-                ));
+                log::log_line(&format!("[state] 写盘失败（保留 dirty，下轮重试）: {e}"));
                 self.dirty.store(true, Ordering::Release);
             }
         }
@@ -158,7 +157,10 @@ mod tests {
             path.clone(),
         );
         state.publish();
-        assert!(state.dirty.load(std::sync::atomic::Ordering::Acquire), "publish 应置 dirty");
+        assert!(
+            state.dirty.load(std::sync::atomic::Ordering::Acquire),
+            "publish 应置 dirty"
+        );
         state.flush_if_dirty();
         let loaded = UserDict::load(&path).expect("flush 后文件应存在");
         assert_eq!(loaded.cover_count(), 1, "flush 应写当前 dict（含 de/的）");
