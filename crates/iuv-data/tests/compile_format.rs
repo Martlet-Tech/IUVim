@@ -174,6 +174,24 @@ fn abbrev_key_generation() {
 }
 
 #[test]
+fn abbrev_key_colliding_syllable_skipped() {
+    // 48 号：简拼串恰为完整音节（fang'an→fa、lian'ai→la）时不生成，防撞 exact 档。
+    let dir = tmp_dir("abbrev_syllable");
+    let (out, _) = compile_one(
+        &dir,
+        "方案\tfang an\t27240\n发\tfa\t22519\n恋爱\tlian ai\t6795\n拉\tla\t15903\n",
+    );
+    let d = load(&out).unwrap();
+    assert_eq!(d.exact("fa").len(), 1); // 只剩全拼单字 发，无简拼副本 方案
+    assert_eq!(d.exact("fa")[0].word, "发");
+    assert_eq!(d.exact("la").len(), 1);
+    assert_eq!(d.exact("la")[0].word, "拉");
+    // 全拼键与音节表不受影响
+    assert_eq!(d.exact("fang'an")[0].word, "方案");
+    assert_eq!(d.exact("lian'ai")[0].word, "恋爱");
+}
+
+#[test]
 fn format_write_load_roundtrip() {
     let dir = tmp_dir("direct");
     let records = [

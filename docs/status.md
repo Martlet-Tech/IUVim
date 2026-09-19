@@ -500,3 +500,18 @@
   同源（前台窗口矩形覆盖 `rcMonitor`），风险低，后续遇到该场景再补测。另：设置页
   「全屏行为」开关入口暂不可达（高级页缺外层 ScrollArea），见顶部活跃事项——功能本身
   恒为默认开启，不影响上述实测结论。
+
+- [x] **48 号 · 简拼键音节碰撞修复（dictc 编译期过滤）**（2026-09-19，任务书
+  `docs/plan/48-abbrev-syllable-collision.md`，**未提交**）：敲 `fa` 1 号出「方案」
+  压过「发」——根因 = M1.5 预生成简拼键（`fang'an`→`fa`）无"非完整音节"守卫，撞
+  完整单音节 exact 查询档（§4.2"完整单音节无歧义→纯单字"），满权重零罚分进池；
+  判别实验 `la` 桶混入恋爱/立案/两岸等 l+a 形态词。修法：`compile.rs::abbrev_of`
+  对串联结果过 `format::is_syllable`（iuv-data 现成标准音节表），命中即不生成简拼键
+  ——`fa`/`la` 形同微软/小狼毫只出单字，`nh`/`xa`/`tam` 等非音节形简拼照常。
+  改动：`compile.rs`（过滤 + 注释）、`compile_format.rs`（+1 碰撞回归测试）、
+  `01-contract.md` §3 简拼键注释（隔离前提升级为生成不变量）。重编译
+  `data/iuv.imedic`（旧库备份 `iuv.imedic.bak-20260919`，gitignore 产物不入库）。
+- [x] **测试**：workspace 全绿（18 套件）+ clippy 零警告；repl 实测 `fa`→发/法纯单字、
+  `la` 无恋爱、`n'h` 简拼出词、`fang'an` 方案 1 号、`x'a` 新旧库逐条一致（无误伤）。
+  分数列微移为词库 total_weight 分母变化，符合预期。**真机手测待管理员**
+  （dev-deploy 前装机器已装的旧 imedic 需换新：脚本按 install.ps1 词库链自动重编或手动拷贝）。

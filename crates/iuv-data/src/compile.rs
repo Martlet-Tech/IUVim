@@ -32,8 +32,9 @@ pub fn compile_files(inputs: &[PathBuf], output: &Path) -> io::Result<CompileSta
         .map(|((code, word), weight)| Entry { word, code, weight })
         .collect();
     // M1.5：生成简拼键（≥2 音节词），与全拼键同表混存。查询路由隔离保证互不命中：
-    // 全拼查询的键要么是完整音节、要么含 `'`；简拼键不含 `'` 且非完整音节，只在多段
-    // 简拼输入时被查询（见 01-contract.md §4.2）。老引擎加载新词库不受影响（多余键从不查询）。
+    // 全拼查询的键要么是完整音节、要么含 `'`；简拼键不含 `'` 且非完整音节（48 号：
+    // 由 `abbrev_of` 编译期过滤强制，否则 `fang'an`→`fa` 撞完整音节 exact 档），
+    // 只在多段简拼输入时被查询（见 01-contract.md §4.2）。老引擎加载新词库不受影响（多余键从不查询）。
     let records: Vec<Entry> = {
         let mut all = Vec::with_capacity(records.len() + records.len() / 3);
         for r in records {
@@ -154,10 +155,13 @@ fn squash(pinyin: &str) -> String {
 
 /// 简拼键：≥2 音节词的每音节首字母串联（`ni'hao`→`nh`、`xi'an`→`xa`、
 /// `tian'an'men`→`tam`）。单音节词无简拼键；含空段的畸形键跳过。
+/// 48 号：串联结果恰为完整音节（`fang'an`→`fa`）时跳过——否则撞全拼 exact 档，
+/// 简拼词以满权重零罚分混进单字候选（`fa` 出「方案」压过「发」）。
 fn abbrev_of(code: &str) -> Option<String> {
     let parts: Vec<&str> = code.split('\'').collect();
     if parts.len() < 2 || parts.iter().any(|p| p.is_empty()) {
         return None;
     }
-    Some(parts.iter().map(|p| p.chars().next().unwrap()).collect())
+    let ab: String = parts.iter().map(|p| p.chars().next().unwrap()).collect();
+    (!format::is_syllable(&ab)).then_some(ab)
 }
