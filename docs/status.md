@@ -502,7 +502,7 @@
   恒为默认开启，不影响上述实测结论。
 
 - [x] **48 号 · 简拼键音节碰撞修复（dictc 编译期过滤）**（2026-09-19，任务书
-  `docs/plan/48-abbrev-syllable-collision.md`，**未提交**）：敲 `fa` 1 号出「方案」
+  `docs/plan/48-abbrev-syllable-collision.md`，同日入库 6b34917）：敲 `fa` 1 号出「方案」
   压过「发」——根因 = M1.5 预生成简拼键（`fang'an`→`fa`）无"非完整音节"守卫，撞
   完整单音节 exact 查询档（§4.2"完整单音节无歧义→纯单字"），满权重零罚分进池；
   判别实验 `la` 桶混入恋爱/立案/两岸等 l+a 形态词。修法：`compile.rs::abbrev_of`
@@ -513,5 +513,20 @@
   `data/iuv.imedic`（旧库备份 `iuv.imedic.bak-20260919`，gitignore 产物不入库）。
 - [x] **测试**：workspace 全绿（18 套件）+ clippy 零警告；repl 实测 `fa`→发/法纯单字、
   `la` 无恋爱、`n'h` 简拼出词、`fang'an` 方案 1 号、`x'a` 新旧库逐条一致（无误伤）。
-  分数列微移为词库 total_weight 分母变化，符合预期。**真机手测待管理员**
-  （dev-deploy 前装机器已装的旧 imedic 需换新：脚本按 install.ps1 词库链自动重编或手动拷贝）。
+  分数列微移为词库 total_weight 分母变化，符合预期。**真机手测通过**
+  （2026-09-27 管理员实测；dev-deploy 前装机器已装的旧 imedic 需换新：脚本按
+  install.ps1 词库链自动重编或手动拷贝）。
+
+- [x] **49 号 · M10 架构重构立项：薄客户端 + 引擎服务端，IPC 协议定稿**（2026-09-27，
+  任务书 `docs/plan/49-thin-client-arch.md`，分支 `feat/m10-thin-client`）：
+  「每应用进程一份引擎」→「全系统一个 iuv-server.exe + 薄 TSF 客户端」。现存 4 套 IPC
+  （用户库管道/SHM/ctl 反向通道/toolbar signal）收敛为一条长连接三平面
+  （热路径 REQ/RESP · 控制面 · 状态面 latest-wins PUSH）。§6 五项拍板：
+  ①失效语义 **C+A**（断连拉起 + ResumeToken 重绑重生；失败窗口透明降级；客户端兜底引擎否决）；
+  ②超时**放行按键** + 基线失效全量重同步（Key.full 位）；
+  ③**Effect 瘦身**（热路径只回 KeyOutcome，候选仅 CAP_UIELEMENT 走 Push::UiElement）；
+  ④认证密钥文件放用户配置目录、仅当前用户可读、不轮换；
+  ⑤codec **全量 serde**（放弃「iuv-proto 零依赖」的绝对化约束）。
+  实施顺序：P0 前置（perf_probe 新增 ipc_rtt 实测热路径往返，没有数据不开工）→
+  P1（iuv-proto crate）→ P2（transport + 握手/认证）→ P3（热路径打通）→
+  P4（四套旧 IPC 收敛、按键路径零轮询）→ P5（失效语义落地）。
