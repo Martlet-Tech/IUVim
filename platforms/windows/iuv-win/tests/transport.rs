@@ -47,6 +47,7 @@ impl Session for EchoSession {
                 reading: None,
                 end: None,
                 candidates: None,
+                all_candidates: None,
                 page: None,
                 selected: None,
             }))),

@@ -43,7 +43,10 @@ fn main() {
         }
     };
 
-    let service = Arc::new(iuv_server::EngineService::new(engine));
+    let service = Arc::new(iuv_server::EngineService::new(engine.clone()));
+    // P4 配置热载：后台监视 config.json → 引擎热载 + 纪元自增（会话捎带
+    // Push::ConfigChanged 通知客户端）；改配置不再需要重启 server。
+    iuv_server::config_watch::spawn(engine, service.config_epoch());
     let server = match TransportServer::start(
         iuv_win::transport::ServerConfig {
             pipe_name: pipe.clone(),

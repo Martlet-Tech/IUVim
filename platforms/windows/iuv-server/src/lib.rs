@@ -14,6 +14,7 @@
 //! - `FocusChanged`/`CaretMoved`/`SetMaintenance` 不影响服务端会话
 //!   （38 号：焦点切换不断会话）。
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use iuv_win::logger::log_line;
@@ -22,20 +23,33 @@ use iuv_core::{
     Effect, Engine, ImeState, InitialMode, Key, PunctMode, ScriptMode, SessionEnd, WidthMode,
 };
 use iuv_proto::{
-    Candidate, CandidateKind, Caps, ClientInfo, ImeMode, ImePunct, ImeScript,
-    ImeState as WireImeState, ImeWidth, KeyOutcome, KeyVerdict, PageInfo,
+    Candidate, CandidateKind, Caps, ClientConfig, ClientInfo, ImeMode, ImePunct, ImeScript,
+    ImeState as WireImeState, ImeWidth, KeyOutcome, KeyVerdict, PageInfo, Push,
     SessionEnd as WireSessionEnd, C2S, S2C,
 };
 use iuv_win::transport::{ConnHandler, Reply, Session};
 
+pub mod config_watch;
+
 /// 引擎服务工厂：进程级一个 [`Engine`]，每连接派生会话。
 pub struct EngineService {
     engine: Arc<Engine>,
+    /// 配置纪元（`config_watch` 监视 config.json 变化时自增）。会话在每个请求
+    /// 处理时比对，变化则捎带 `Push::ConfigChanged`（latest-wins，49 §4.6）。
+    config_epoch: Arc<AtomicU32>,
 }
 
 impl EngineService {
     pub fn new(engine: Arc<Engine>) -> EngineService {
-        EngineService { engine }
+        EngineService {
+            engine,
+            config_epoch: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// 配置纪元句柄（main 装配 `config_watch` 时共享）。
+    pub fn config_epoch(&self) -> Arc<AtomicU32> {
+        self.config_epoch.clone()
     }
 }
 
@@ -47,6 +61,10 @@ impl ConnHandler for EngineService {
             runtime: Arc::new(Mutex::new(ImeState::default())),
             caps,
             baseline: None,
+            // 连接时点即基线：不在建连时推当前配置（客户端连接时自行 Config::load），
+            // 只推「连接之后发生的变化」。
+            seen_epoch: self.config_epoch.load(Ordering::Relaxed),
+            config_epoch: self.config_epoch.clone(),
         })
     }
 }
@@ -59,10 +77,29 @@ pub struct EngineSession {
     caps: Caps,
     /// composition 增量基线（None = 无基线，下一应答必须全量，49 §4.5.2）。
     baseline: Option<String>,
+    /// 配置纪元（P4 配置热载）：服务端 `config_watch` 变更时自增，会话在请求
+    /// 路径比对并捎带推送。进程内原子读，无磁盘/IPC 开销（非轮询）。
+    config_epoch: Arc<AtomicU32>,
+    seen_epoch: u32,
 }
 
 impl Session for EngineSession {
     fn on_c2s(&mut self, req: C2S, reply: &mut Reply) {
+        // 配置变更捎带（49 §4.6 latest-wins）：随本请求的应答/推送一起下行，
+        // 客户端收到后自行刷新配置副本。传输层无需服务端主动发送通道。
+        let epoch = self.config_epoch.load(Ordering::Relaxed);
+        if epoch != self.seen_epoch {
+            self.seen_epoch = epoch;
+            reply.push(Push::ConfigChanged {
+                epoch,
+                client_view: ClientConfig {
+                    initial_mode: match self.engine.config().initial_state.mode {
+                        InitialMode::Chinese => ImeMode::Chinese,
+                        InitialMode::English => ImeMode::English,
+                    },
+                },
+            });
+        }
         match req {
             C2S::Key { key, full, .. } => {
                 let t0 = std::time::Instant::now();

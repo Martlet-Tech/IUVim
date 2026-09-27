@@ -234,3 +234,61 @@ fn no_uielement_caps_means_no_candidate_payload() {
         "无 UIELEMENT 能力不应收到任何推送"
     );
 }
+
+/// P4 配置热载（49 §5）：纪元变化 → 下一请求捎带 `Push::ConfigChanged`
+///（latest-wins，同一纪元只推一次）；无变化零推送。
+/// （真实 config_watch 的 mtime 监视是文件 IO，本机测试环境存量红——此处
+/// 直接驱动纪元句柄，覆盖会话侧契约。）
+#[test]
+fn config_epoch_change_pushes_config_changed_once() {
+    use std::sync::atomic::Ordering;
+
+    let pipe = test_pipe("config-push");
+    let service = Arc::new(EngineService::new(test_engine()));
+    let epoch = service.config_epoch();
+    let _server = TransportServer::start(
+        ServerConfig {
+            pipe_name: pipe.clone(),
+            auth: Auth([3u8; 32]),
+            caps: Caps(Caps::UIELEMENT),
+            build: BuildId("test".into()),
+            max_connections: 8,
+        },
+        service,
+    )
+    .expect("服务端启动");
+    let (client, _ack, pushes) = connect_ok(&pipe);
+    assert!(matches!(
+        pushes.recv_timeout(Duration::from_secs(2)),
+        Ok(Push::SessionAttached { .. })
+    ));
+
+    // 无变更：请求只回应答
+    let _ = key(&client, Key::Char('n'));
+    assert!(
+        pushes.recv_timeout(Duration::from_millis(150)).is_err(),
+        "无配置变更不应有推送"
+    );
+
+    // 纪元自增（真实服务里由 config_watch 驱动）：下一请求捎带 ConfigChanged
+    epoch.store(1, Ordering::SeqCst);
+    let _ = key(&client, Key::Char('i'));
+    match pushes.recv_timeout(Duration::from_secs(2)) {
+        Ok(Push::ConfigChanged { epoch: e, client_view }) => {
+            assert_eq!(e, 1);
+            let expected = match iuv_core::Config::default().initial_state.mode {
+                iuv_core::InitialMode::Chinese => iuv_proto::ImeMode::Chinese,
+                iuv_core::InitialMode::English => iuv_proto::ImeMode::English,
+            };
+            assert_eq!(client_view.initial_mode, expected, "client_view = 引擎当前配置视图");
+        }
+        other => panic!("应收到 ConfigChanged，实际 {other:?}"),
+    }
+
+    // 同一纪元不重复推（会话记住 seen_epoch）
+    let _ = key(&client, Key::Char('h'));
+    assert!(
+        pushes.recv_timeout(Duration::from_millis(150)).is_err(),
+        "同一纪元只推一次"
+    );
+}

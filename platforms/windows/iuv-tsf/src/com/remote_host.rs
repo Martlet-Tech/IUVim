@@ -12,15 +12,19 @@
 //!   （等同没装输入法），P5 补快速重生（方案 C）。
 //!
 //! 客户端本地配置副本：路由判定（keymap/passthrough）与候选窗渲染所需字段
-//! 在远端模式下读 `RemoteHandle::config`（Config::load 装配 + daemon 配置纪元热载），
-//! **不加载词库/引擎**（49 §2「客户端无词库无引擎」）。
+//! 在远端模式下读 `RemoteHandle::config`。P4 起副本由服务端驱动更新——
+//! iuv-server 监视 config.json 热载引擎并推 `Push::ConfigChanged`，推送泵
+//! 从盘刷新副本并自增纪元，实例按键路径比对纪元切候选窗主题（进程内原子
+//! 比较，无 SHM/IPC/文件读）。**不加载词库/引擎**（49 §2「客户端无词库无引擎」）。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use iuv_core::{Config, Key, SessionEnd};
-use iuv_proto::{ImeState as WireImeState, KeyOutcome, KeyPhase, KeyToken, KeyVerdict, C2S, S2C};
+use iuv_proto::{
+    ImeState as WireImeState, KeyOutcome, KeyPhase, KeyToken, KeyVerdict, Push, C2S, S2C,
+};
 use iuv_win::logger::log_line;
 use iuv_win::transport::{
     connect, ClientConfig, TransportClient, TransportError, CONNECT_RETRY_MS, SERVICE_PIPE_NAME,
@@ -139,12 +143,12 @@ pub(crate) fn start_remote_load() {
                 "[backend] iuv-server 已连接（{:.0} ms）",
                 t0.elapsed().as_millis()
             ));
-            let _ = REMOTE.set(Some(Arc::new(handle)));
+            let _ = REMOTE.set(Some(handle));
         })
         .expect("远端连接线程创建");
 }
 
-fn connect_server() -> Result<RemoteHandle, String> {
+fn connect_server() -> Result<Arc<RemoteHandle>, String> {
     let dir = iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
     let token = iuv_win::transport::load_or_create_token(&dir).map_err(|e| e.to_string())?;
     let cfg = ClientConfig {
@@ -166,31 +170,42 @@ fn connect_server() -> Result<RemoteHandle, String> {
             Err(e) => return Err(e.to_string()),
         }
     };
-    // 推送泵：SessionAttached/未来推送在此消费，防止通道堆积（P3 无业务推送）。
-    std::thread::Builder::new()
-        .name("iuv-remote-push".into())
-        .spawn(move || loop {
-            if pushes.recv_timeout(Duration::from_secs(3600)).is_err() {
-                return; // 连接关闭
-            }
-        })
-        .map_err(|e| e.to_string())?;
-    Ok(RemoteHandle {
+    let handle = Arc::new(RemoteHandle {
         client: Mutex::new(Some(client)),
         config: Mutex::new(Config::load()),
+        config_epoch: AtomicU32::new(0),
         pending: Mutex::new(None),
         last_state: Mutex::new(None),
         degraded: AtomicBool::new(false),
         offline: AtomicBool::new(false),
         last_composition: Mutex::new(None),
-    })
+    });
+    // 推送泵（P4 配置热载）：ConfigChanged → 从盘刷新配置副本 + 纪元自增
+    // （TSF 实例在按键路径比对纪元切主题）；连接关闭 → 泵退出。
+    std::thread::Builder::new()
+        .name("iuv-remote-push".into())
+        .spawn({
+            let handle = handle.clone();
+            move || loop {
+                match pushes.recv_timeout(Duration::from_secs(3600)) {
+                    Ok(p) => handle.apply_push(&p),
+                    Err(_) => return,
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(handle)
 }
 
 /// 远端引擎会话的客户端句柄（进程级单例，STA 线程们经它发请求）。
 pub(crate) struct RemoteHandle {
     client: Mutex<Option<TransportClient>>,
     /// 客户端本地配置副本（路由 keymap/passthrough + 候选窗渲染字段）。
+    /// P4 起由服务端 `Push::ConfigChanged` 推动刷新（推送泵线程写）。
     config: Mutex<Config>,
+    /// 配置纪元（`set_config` 自增）：TSF 实例按键路径比对，决定是否切主题。
+    /// 进程内原子量——实例侧判定无 SHM/IPC/文件读（非轮询）。
+    config_epoch: AtomicU32,
     /// Test 裁定单槽缓存：`key_test` 写入、`key_down` 消费（键值匹配才复用）。
     pending: Mutex<Option<(Key, KeyOutcome)>>,
     last_state: Mutex<Option<WireImeState>>,
@@ -214,9 +229,28 @@ impl RemoteHandle {
             .clone()
     }
 
-    /// daemon 配置纪元热载（远端模式：更新客户端副本；服务端配置热载 P4 接管）。
+    /// 当前配置纪元（实例侧主题应用收敛用）。
+    pub(crate) fn config_epoch(&self) -> u32 {
+        self.config_epoch.load(Ordering::Acquire)
+    }
+
+    /// 配置副本替换（P4：服务端 ConfigChanged 推送驱动，推送泵线程调用）。
+    /// 纪元自增 = 各实例按键路径切主题的信号。
     pub(crate) fn set_config(&self, cfg: Config) {
         *self.config.lock().unwrap_or_else(|e| e.into_inner()) = cfg;
+        self.config_epoch.fetch_add(1, Ordering::Release);
+    }
+
+    /// 推送泵入口（P4）：`ConfigChanged` → 从盘刷新配置副本（与 daemon 纪元
+    /// 热载同语义，改由服务端推动）。其余推送（SessionAttached 握手即收/
+    /// ImeState/UiElement 等）P5 接线前忽略。
+    fn apply_push(&self, push: &Push) {
+        if let Push::ConfigChanged { epoch, .. } = push {
+            log_line(&format!(
+                "[backend] 配置推送 epoch={epoch} → 刷新客户端配置副本"
+            ));
+            self.set_config(Config::load());
+        }
     }
 
     /// OnTestKeyDown：Test 阶段**真正处理**并缓存裁定（§4.5.1）。None = 放行按键。
@@ -518,12 +552,40 @@ mod tests {
         RemoteHandle {
             client: Mutex::new(Some(client)),
             config: Mutex::new(Config::default()),
+            config_epoch: AtomicU32::new(0),
             pending: Mutex::new(None),
             last_state: Mutex::new(None),
             degraded: AtomicBool::new(false),
             offline: AtomicBool::new(false),
             last_composition: Mutex::new(None),
         }
+    }
+
+    #[test]
+    fn set_config_bumps_epoch_and_updates_copy() {
+        let h = RemoteHandle {
+            client: Mutex::new(None),
+            config: Mutex::new(Config::default()),
+            config_epoch: AtomicU32::new(0),
+            pending: Mutex::new(None),
+            last_state: Mutex::new(None),
+            degraded: AtomicBool::new(false),
+            offline: AtomicBool::new(false),
+            last_composition: Mutex::new(None),
+        };
+        assert_eq!(h.config_epoch(), 0);
+        let cfg = Config {
+            theme: iuv_core::ThemeChoice::Dark,
+            ..Config::default()
+        };
+        h.set_config(cfg.clone());
+        assert_eq!(h.config_epoch(), 1, "set_config 应自增纪元（实例切主题信号）");
+        assert_eq!(h.config().theme, cfg.theme, "配置副本应更新");
+        h.set_config(cfg);
+        assert_eq!(h.config_epoch(), 2);
+        // 非配置推送不扰动纪元/状态（P4 无消费方，P5 接线）。
+        h.apply_push(&Push::SessionAttached { token: iuv_proto::ResumeToken(7) });
+        assert_eq!(h.config_epoch(), 2);
     }
 
     #[test]

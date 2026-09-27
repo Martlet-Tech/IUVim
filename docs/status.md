@@ -24,15 +24,23 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
   （125 万词库，`iuv-server.log [perf]` 观测线 ≥10ms 持续收集）。
 - **测试**：`scripts\m10-build.ps1` → `m10-deploy.ps1`（-SkipBuild/-NoServer）→
   `m10-uninstall.ps1`。日志 `%TEMP%\iuv-tsf.log` / `iuv-server.log` / `iuv-script.log`。
-- **下一步 P4**：四套旧 IPC 收敛至 transport（用户库管道/SHM/ctl/toolbar signal）、
-  `daemon_poll_tick` 从按键路径删除、服务端自渲染候选窗（届时 KeyOutcome 的
-  candidates/all_candidates/reading 过渡字段与每键全量载荷随之裁撤）、配置热载改
-  服务端持有（现过渡：远端模式配置改动需重启 server）。
+- **P4 首切片已落地（2026-09-27）**：配置热载改服务端持有（iuv-server 后台监视
+  config.json → 引擎热载 + 请求捎带 `Push::ConfigChanged`）+ 远端模式按键路径零轮询
+  （`poll_client`/SHM 读取从按键路径删除，`daemon_poll_tick` 远端分支只剩进程内原子量
+  比较的主题收敛）。细节见台账。
+- **P4 剩余**：服务端自渲染候选窗（届时 KeyOutcome 的 candidates/all_candidates/reading
+  过渡字段与每键全量载荷随之裁撤）；ctl 反向通道与 toolbar signal 收敛至 transport
+  （依赖 daemon→server 演进，工具栏/设置页迁入服务端后整体消失）；用户库 SHM 写者
+  移交服务端（修工具栏权重显示滞后）。
+- **远端模式已知盲区（P4 首切片引入，接受）**：daemon 重启自愈退回 Activate 重发——
+  原按键路径轮询承担的「打字即恢复」不再有；正式使用不重启 daemon，daemon→server
+  合并后问题消失。
 - **下一步 P5**：失效语义 C 落地（TSF 检测断连 → 拉起 iuv-server → ResumeToken
   重绑；协议字段已留位：`Hello.resume` / `Push::SessionAttached`，服务端尚未实现重绑）。
-- **过渡期已知限制**（P4 收敛项，非 bug）：远端模式下调权/造词不经旧 daemon（工具栏
-  SHM 权重显示可能滞后）；服务端配置热载未接（改配置需重启 server）；用户库版本
-  注入跳过（服务端持有用户库）；flush 原文 = composition 去撇号（用户手打引号边角）。
+- **过渡期已知限制**（P4 剩余项，非 bug）：远端模式下调权/造词不经旧 daemon（工具栏
+  SHM 权重显示可能滞后）；用户库版本注入跳过（服务端持有用户库）；flush 原文 =
+  composition 去撇号（用户手打引号边角）。~~服务端配置热载未接~~（P4 首切片已消除，
+  改配置即时生效）。
 - **环境注意**：本机测试进程做文件 IO 报 os error 5（存量环境问题，疑杀软，干净树
   复现，与本仓库代码无关）——相关存量测试在本机红属正常。
 
@@ -653,3 +661,46 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
   据此单键截止定档 300ms（保命线语义，非延迟策略——放行漏字 + 基线分叉比等待更伤）。
   过渡期遗留：`use_engine_server` 开关 + 客户端自绘候选（P4 服务端自渲染后收敛）；
   服务端慢键 `[perf]` 观测线 >=10ms 持续收集。
+
+- [x] **49 号 P4 首切片：配置热载改服务端持有 + 远端模式按键路径零轮询**（2026-09-27，
+  同分支）：P3 过渡期两个已知限制一并消除——「远端模式改配置需重启 server」与
+  「按键路径读 SHM 检测配置纪元」。
+  - **根因**：daemon 设置页保存 config.json 后只 bump SHM `config_epoch`（原子量），
+    iuv-server 无人通知（引擎配置启动时一次性加载）；TSF 侧消费该纪元的唯一触发点
+    在按键路径 `route_key → daemon_poll_tick → poll_client`（每键读 SHM 两个原子量，
+    epoch 变化才 `Config::load`）。服务端主动推送通道在 transport 层不存在
+    （conn 线程阻塞读循环，外部线程无法插写），但 `Reply::push` 已支持捎带。
+  - **方案（传输层零改动）**：① iuv-server 新增 `config_watch` 后台线程——500ms
+    stat config.json（mtime+len 对，原子 rename 保存下两者同变），变化 →
+    `engine.set_config` + 日志禁用集热载 + 配置纪元（`AtomicU32`）自增；
+    ② `EngineSession` 每请求处理时比对纪元（进程内原子读，非轮询），变化则在
+    `Reply` 捎带 `Push::ConfigChanged{epoch, client_view}`——latest-wins 语义天然
+    成立（客户端按 epoch 判新旧），连接建立时点即基线（不推旧值，客户端连接时
+    自行 `Config::load`）；③ TSF 推送泵（原样丢弃推送）接 `ConfigChanged` →
+    `Config::load()` 刷新进程级配置副本 + 纪元自增（`RemoteHandle::set_config`）；
+    ④ 实例侧主题收敛：`daemon_poll_tick` 远端分支改 `apply_remote_theme_tick`——
+    比对 `RemoteHandle.config_epoch()` 与实例缓存 `remote_theme_epoch`（两个进程内
+    原子量，无 SHM/IPC/文件读），落后才 `ui.set_theme`。传播时序与旧路径相同
+    （改动 → 下一键生效），磁盘读移到推送泵后台线程。
+  - **P4b 按键路径零轮询**：远端模式 `poll_client` 删除（SHM 读取随之消失，本地
+    模式 `poll` 原样保留——A/B 开关保证 main 行为不变）。daemon 上线翻转重注册
+    随按键路径轮询一并移除：**已知盲区（接受）**= 远端模式下 daemon 重启后工具栏
+    自愈退回 Activate 重发（原「打字即恢复」不再有；daemon→server 合并后消失）。
+  - **顺手修复**：`iuv-win/tests/transport.rs` 存量编译错误——P3 修漏键给
+    `KeyOutcome` 加 `all_candidates` 字段（a1fa127）时测试初始化器漏改，该测试
+    文件在 HEAD 编译不过（与本次改动无关）。
+  - **改动**：iuv-server（lib.rs 纪元字段+捎带推送、config_watch.rs 新增、main.rs
+    装配、hot_path.rs +1 测试）、iuv-tsf（remote_host.rs 推送泵/纪元/apply_push、
+    daemon_host.rs 远端分支重写、text_service.rs remote_theme_epoch 字段、
+    daemon_client.rs 删 poll_client、key_routing.rs 注释）、iuv-win
+    （tests/transport.rs 存量编译修复）。
+  - **测试**：iuv-server 7/7（新增 config_epoch_change_pushes_config_changed_once：
+    无变更零推送/纪元变化下一请求捎带/同纪元只推一次/client_view 取引擎当前
+    配置视图）；iuv-tsf 40 通过 + 2 存量 SHM 环境红；iuv-win transport 7/7（修复后
+    可编译）；workspace 其余失败全部为已记录存量 os error 5（36 处，统一
+    PermissionDenied/SHM 0x80070005/PoisonError 派生）；clippy 全 workspace 零警告。
+  - **待真机回归（管理员）**：dev-dep 后远端模式（`use_engine_server=true` +
+    iuv-server）：设置页改主题/翻页数/键位 → 不重启 server，下一键生效（引擎 +
+    候选窗主题）；杀 daemon → 工具栏不再打字恢复（预期行为，切窗口恢复）。
+  - **P4 剩余（后续切片）**：服务端自渲染候选窗（KeyOutcome 候选字段裁撤）、
+    ctl/toolbar signal 收敛（依赖 daemon→server 演进）、用户库 SHM 写者移交服务端。

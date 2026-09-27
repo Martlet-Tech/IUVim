@@ -1,8 +1,9 @@
 # 49 · 架构重构：薄客户端 + 引擎服务端（M10 立项）
 
-> 状态：**P0-P3 已落地并真机回归通过**（2026-09-27，分支 `feat/m10-thin-client`，
-> 进度快照与过渡期遗留清单见 `docs/status.md` 活跃事项速览「M10」条）。§6 各项已拍板。
-> 剩 P4（旧 IPC 收敛/服务端自渲染）与 P5（失效语义 C）。
+> 状态：**P0-P3 已落地并真机回归通过；P4 首切片已落地（2026-09-27，分支
+> `feat/m10-thin-client`**，进度快照与过渡期遗留清单见 `docs/status.md` 活跃事项
+> 速览「M10」条）。§6 各项已拍板。P4 剩：服务端自渲染候选窗、ctl/toolbar signal
+> 收敛（依赖 daemon→server 演进）；剩 P5（失效语义 C）。
 > 一句话：把「每个应用进程一份引擎」改成「全系统一个引擎服务进程 + 薄 TSF 客户端」，
 > 重划模块分层、清算历史包袱。
 
@@ -281,7 +282,7 @@ pub enum ProtoError {
 Test/KeyDown 单槽去重、20ms 截止、Deadline→degraded→full 重同步、断线透明降级 A、
 四态同步、客户端配置副本），config `use_engine_server` 开关 A/B 切换（默认 false=现状）。
 路由判定（keymap/passthrough/全角/标点）**留客户端**；待真机打字回归 | 能打字（真机），往返数 = 1/键；服务端侧契约已全测 |
-| P4 | 四套旧 IPC 收敛至协议；`daemon_poll_tick` 从按键路径**删除**（改 PUSH） | 按键路径零轮询 |
+| P4 | 四套旧 IPC 收敛至协议；`daemon_poll_tick` 从按键路径**删除**（改 PUSH） | 按键路径零轮询。**首切片已落地（2026-09-27）**：配置热载改服务端持有（iuv-server `config_watch` 后台监视 config.json → 引擎热载 + 纪元自增，`EngineSession` 每请求比对捎带 `Push::ConfigChanged`，传输层零改动）+ 远端模式按键路径零轮询（`poll_client` 删除，主题收敛 = 进程内原子量比较）。**剩余**：服务端自渲染候选窗（候选字段裁撤）、ctl/toolbar signal 收敛（依赖 daemon→server 演进）、用户库 SHM 写者移交 |
 | P5 | §4.5.4 失效语义落地（方案 C+A，依赖 §4.4 `ResumeToken` 重绑） | 杀服务端进程仍能优雅降级/重生 |
 
 **P4 值得单独强调**：现状「所有自愈路径都汇聚在按键驱动的 poll，**不打字不恢复**」

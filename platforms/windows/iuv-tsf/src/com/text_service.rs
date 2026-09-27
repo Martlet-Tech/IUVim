@@ -116,6 +116,9 @@ pub(crate) struct TextService {
     pub(crate) daemon: RefCell<Option<Arc<DaemonClient>>>,
     /// 远端写后端是否已注册到引擎（Activate 时引擎可能仍在后台加载，首键补注册）。
     pub(crate) remote_registered: Cell<bool>,
+    /// M10 P4 远端模式：已应用的配置纪元（服务端 ConfigChanged 推送驱动收敛，
+    /// 比对落后才切候选窗主题；进程内原子量比较，非轮询）。
+    pub(crate) remote_theme_epoch: Cell<u32>,
     /// 引号配对状态（`'`/`"` 交替开/关形）。会话开始/模式切换复位为开。
     pub(crate) punct_quote_open: Cell<bool>,
     /// 实例运行时四态（32-status-toolbar.md §5.1）：per-实例（非进程级 config），
@@ -211,6 +214,7 @@ impl TextService {
             lang_bar: RefCell::new(None),
             daemon: RefCell::new(None),
             remote_registered: Cell::new(false),
+            remote_theme_epoch: Cell::new(0),
             punct_quote_open: Cell::new(false),
             // 实例运行时四态：创建时（首次 Activate 前）从 config 初始值取一次
             // （32-toolbar §2.5：设置页默认值 = 新建实例时的初始值；热载不改运行实例）。

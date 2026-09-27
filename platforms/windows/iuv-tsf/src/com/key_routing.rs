@@ -43,9 +43,9 @@ impl TextService {
         let Some(config) = crate::com::remote_host::backend_config() else {
             return KeyAction::Pass;
         };
-        // M6：daemon 共享段轮询（低成本：读 u32 版本；用户库版本/配置纪元变化 → 即时生效；
-        // 离线→在线翻转重注册）。daemon_poll_tick 唯一触发点在按键路径。
-        // 远端模式内部分支见 daemon_poll_tick（无引擎：配置热载进客户端副本）。
+        // M6/P4：本地模式 = daemon 共享段轮询（用户库版本/配置纪元热载 + 上线翻转
+        // 重注册）；远端模式 = 配置更新 PUSH 驱动（daemon_poll_tick 内只剩进程内
+        // 原子量比较的主题收敛），按键路径零 SHM/IPC/文件读。
         self.daemon_poll_tick();
 
         let shift = shift_pressed();

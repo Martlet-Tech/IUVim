@@ -19,25 +19,14 @@ impl TextService {
     /// （Activate 重发激活 + 本函数按键路径），零交互盲区以注销/重启规避
     /// （正式使用不重启 daemon；对齐小狼毫纯事件驱动架构）。
     pub(crate) fn daemon_poll_tick(&self) {
-        // M10 远端模式：无本地引擎——只做配置纪元热载（客户端副本 + 候选窗主题）
-        // 与上线翻转重注册；用户库版本注入跳过（服务端持有用户库，P4 收敛）。
+        // M10 远端模式（P4）：配置热载改服务端持有——iuv-server 监视 config.json
+        // 热载引擎并推 `Push::ConfigChanged`，推送泵刷新进程级配置副本；此处只剩
+        // 候选窗主题的实例侧收敛（两个进程内原子量比较，无 SHM/IPC/文件读）。
+        // daemon 上线翻转重注册随按键路径轮询一并移除——daemon 重启自愈退回
+        // Activate 重发（2026-08-21 已知盲区扩大为「远端模式不按键不恢复」；
+        // daemon→server 合并后整个问题消失）。
         if crate::com::remote_host::use_server() {
-            let Some(remote) = crate::com::remote_host::remote() else {
-                return;
-            };
-            if let Some(client) = self.daemon.borrow().as_ref() {
-                client.poll_client(
-                    |cfg| {
-                        remote.set_config(cfg.clone());
-                        let theme = match cfg.theme {
-                            iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
-                            iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
-                        };
-                        self.ui.borrow_mut().set_theme(theme);
-                    },
-                    || self.signal_focus_gained(),
-                );
-            }
+            self.apply_remote_theme_tick();
             return;
         }
         let Some(engine) = engine() else { return };
@@ -48,6 +37,29 @@ impl TextService {
                 || self.signal_focus_gained(),
             );
         }
+    }
+
+    /// 远端模式主题收敛（按键路径触发）：服务端推送泵刷新配置副本时自增纪元，
+    /// 实例比对纪元落后才读副本切主题（绝大多数键 = 两次原子比较后直接返回）。
+    fn apply_remote_theme_tick(&self) {
+        let Some(remote) = crate::com::remote_host::remote() else {
+            return;
+        };
+        let epoch = remote.config_epoch();
+        if epoch == self.remote_theme_epoch.get() {
+            return;
+        }
+        let cfg = remote.config();
+        let theme = match cfg.theme {
+            iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
+            iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
+        };
+        self.ui.borrow_mut().set_theme(theme);
+        self.remote_theme_epoch.set(epoch);
+        log_line(&format!(
+            "[backend] 实例主题收敛：epoch={epoch} theme={:?}",
+            cfg.theme
+        ));
     }
 
     /// 激活上报（40-toolbar-show-hide-governance.md 纯信号模型）：实例获得焦点 /
