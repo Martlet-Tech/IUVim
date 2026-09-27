@@ -292,3 +292,47 @@ fn config_epoch_change_pushes_config_changed_once() {
         "同一纪元只推一次"
     );
 }
+
+/// 真机实锤（2026-09-27）回归钉：**每个 C2S 请求必须有应答**。ImeState 臂曾不回
+/// `S2C::Ok`，客户端 sync_state 同步等待 → 每次四态同步白等满截止（300ms）+ 误标
+/// degraded——「间歇漏键」的真凶（首会话必中：连接后 last_state=None 必发一次）。
+#[test]
+fn every_c2s_request_gets_a_reply() {
+    let pipe = test_pipe("c2s-reply");
+    let _server = start_server(&pipe);
+    let (client, _ack, pushes) = connect_ok(&pipe);
+    assert!(matches!(
+        pushes.recv_timeout(Duration::from_secs(2)),
+        Ok(Push::SessionAttached { .. })
+    ));
+
+    // 连接后首次四态同步（此前：无应答 → 客户端白等 300ms）
+    let r = client.request(
+        C2S::ImeState(iuv_proto::ImeState {
+            mode: iuv_proto::ImeMode::Chinese,
+            width: iuv_proto::ImeWidth::Half,
+            script: iuv_proto::ImeScript::Simplified,
+            punct: iuv_proto::ImePunct::Chinese,
+        }),
+        true,
+        Duration::from_millis(500),
+    );
+    assert!(matches!(r, Ok(S2C::Ok)), "ImeState 必须有应答: {r:?}");
+
+    // fire-and-forget 变体同样必须回 Ok（杜绝「等不来的应答」整类问题）
+    let r = client.request(
+        C2S::FocusChanged { focused: true },
+        true,
+        Duration::from_millis(500),
+    );
+    assert!(matches!(r, Ok(S2C::Ok)), "FocusChanged 必须有应答: {r:?}");
+    let r = client.request(
+        C2S::CaretMoved {
+            rect: iuv_proto::CaretRect::default(),
+            dpi: 96,
+        },
+        true,
+        Duration::from_millis(500),
+    );
+    assert!(matches!(r, Ok(S2C::Ok)), "CaretMoved 必须有应答: {r:?}");
+}

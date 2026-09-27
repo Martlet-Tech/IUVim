@@ -129,13 +129,20 @@ impl Session for EngineSession {
             }
             C2S::ImeState(s) => {
                 *self.runtime.lock().unwrap_or_else(|e| e.into_inner()) = core_ime_state(&s);
+                // 客户端 request() 同步等应答（真机实锤 2026-09-27：不回应答 =
+                // sync_state 每次白等满 300ms 截止 + 误标 degraded，四态切换卡
+                // 300ms）。**每个 C2S 请求必须有应答**——fire-and-forget 变体
+                // 一律回 Ok，杜绝整类「等不来的应答」。
+                reply.respond(S2C::Ok);
             }
             C2S::Ping { nonce } => reply.respond(S2C::Pong { nonce }),
             C2S::UserMutation(_)
             | C2S::FocusChanged { .. }
             | C2S::CaretMoved { .. }
             | C2S::SetMaintenance { .. }
-            | C2S::CtlResult(_) => {}
+            | C2S::CtlResult(_) => {
+                reply.respond(S2C::Ok);
+            }
             // 握手/通用应答/服务端心跳回执不经会话处理；新增变体在语义接入前落这里。
             _ => {}
         }
