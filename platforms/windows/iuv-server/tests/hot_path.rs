@@ -108,12 +108,13 @@ fn type_nihao_and_commit_via_space() {
         assert!(o.eaten);
         assert!(o.end.is_none(), "第 {i} 键不应结束会话");
         assert!(o.candidates.as_ref().is_some_and(|c| !c.is_empty()));
-        // 每键一条 UiElement 全量候选推送（过渡期：客户端游戏内候选栏数据源）
-        assert!(matches!(
-            pushes.recv_timeout(Duration::from_secs(2)),
-            Ok(Push::UiElement(_))
-        ));
+        assert!(o.all_candidates.as_ref().is_some_and(|c| !c.is_empty()));
     }
+    // 每键 UiElement 推送已裁撤（载荷实测顶破客户端截止）：全量候选单份走 KeyOutcome
+    assert!(
+        pushes.recv_timeout(Duration::from_millis(150)).is_err(),
+        "不应再有推送"
+    );
 
     // 空格提交首候选
     let last = key(&client, Key::Space);

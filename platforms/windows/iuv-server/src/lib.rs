@@ -9,18 +9,21 @@
 //! - `UserMutation` 无独立入口——调权/造词/屏蔽**只**经按键在引擎内生效
 //!   （`Session::on_key(SwapLeft/…)` → `engine.swap_weights/…`），此处空实现；
 //! - 候选窗仍由客户端自绘（过渡 caps `UIELEMENT`）：`KeyOutcome` 带当前页候选 +
-//!   `Push::UiElement` 带全量候选（游戏内候选栏数据源）；
+//!   全量候选（游戏内候选栏数据源；每键 `Push::UiElement` 推送已裁撤——实测
+//!   单字母 400+ 候选双份载荷顶破客户端截止，见 on_c2s 内注释）；
 //! - `FocusChanged`/`CaretMoved`/`SetMaintenance` 不影响服务端会话
 //!   （38 号：焦点切换不断会话）。
 
 use std::sync::{Arc, Mutex};
+
+use iuv_win::logger::log_line;
 
 use iuv_core::{
     Effect, Engine, ImeState, InitialMode, Key, PunctMode, ScriptMode, SessionEnd, WidthMode,
 };
 use iuv_proto::{
     Candidate, CandidateKind, Caps, ClientInfo, ImeMode, ImePunct, ImeScript,
-    ImeState as WireImeState, ImeWidth, KeyOutcome, KeyVerdict, PageInfo, Push,
+    ImeState as WireImeState, ImeWidth, KeyOutcome, KeyVerdict, PageInfo,
     SessionEnd as WireSessionEnd, C2S, S2C,
 };
 use iuv_win::transport::{ConnHandler, Reply, Session};
@@ -62,18 +65,26 @@ impl Session for EngineSession {
     fn on_c2s(&mut self, req: C2S, reply: &mut Reply) {
         match req {
             C2S::Key { key, full, .. } => {
+                let t0 = std::time::Instant::now();
                 let effect = self.on_key(core_key(&key));
                 let outcome = self.outcome(&effect, full);
                 reply.respond(S2C::KeyResult(KeyVerdict::Consumed(outcome)));
+                // 慢键观测（P0 预算定档数据，49 §4.5.2）：真实词库单键处理分布。
+                let elapsed = t0.elapsed();
+                if elapsed.as_millis() >= 10 {
+                    log_line(&format!(
+                        "[perf] on_key 慢键 {elapsed:?} key={key:?} cand={}",
+                        effect.candidates.len()
+                    ));
+                }
                 if effect.end.is_some() {
                     // 会话已由本键结束（Commit/Cancel）：服务端丢弃 Session；
                     // 客户端随后发 EndSession（幂等）。
                     self.drop_session();
                 }
-                if self.caps.has(Caps::UIELEMENT) {
-                    // 过渡期：全量候选经状态面推送（游戏内候选栏数据源，P4 服务端渲染后移除）。
-                    reply.push(Push::UiElement(wire_effect(&effect)));
-                }
+                // 每键 UiElement 推送已移除（实测：单字母 400+ 候选 × 双份载荷
+                // 序列化顶破客户端 20ms 截止）——过渡期全量候选走 KeyOutcome
+                // .all_candidates 单份；推送式回归 P4 服务端自渲染。
             }
             C2S::EndSession { .. } => {
                 self.drop_session();
@@ -207,37 +218,6 @@ fn wire_candidate_kind(k: iuv_core::CandidateKind) -> CandidateKind {
         iuv_core::CandidateKind::Sentence => CandidateKind::Sentence,
         iuv_core::CandidateKind::Word => CandidateKind::Word,
         iuv_core::CandidateKind::Char => CandidateKind::Char,
-    }
-}
-
-/// 核心 `Effect` → 线上 `Effect`（全量候选保留：游戏内候选栏翻页从全量切片）。
-fn wire_effect(e: &Effect) -> iuv_proto::Effect {
-    iuv_proto::Effect {
-        composition: e.composition.clone(),
-        reading: e.reading.clone(),
-        candidates: e
-            .candidates
-            .iter()
-            .map(|c| Candidate {
-                text: c.text.clone(),
-                kind: wire_candidate_kind(c.kind),
-            })
-            .collect(),
-        all_candidates: e
-            .all_candidates
-            .iter()
-            .map(|c| Candidate {
-                text: c.text.clone(),
-                kind: wire_candidate_kind(c.kind),
-            })
-            .collect(),
-        selected: e.selected as u32,
-        page: PageInfo {
-            page: e.page.page as u32,
-            page_count: e.page.page_count as u32,
-            page_size: e.page.page_size as u32,
-            total: e.page.total as u32,
-        },
     }
 }
 

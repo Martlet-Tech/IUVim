@@ -26,9 +26,10 @@ use iuv_win::transport::{
     connect, ClientConfig, TransportClient, TransportError, CONNECT_RETRY_MS, SERVICE_PIPE_NAME,
 };
 
-/// 每键请求截止（49 §4.5.2）：实测长连接 P99 = 13µs，20ms 已是百倍余量；
-/// 超时 = 服务端异常，放行按键优于卡住宿主。
-const KEY_DEADLINE_MS: u64 = 20;
+/// 每键请求截止（49 §4.5.2）。IPC 往返实测 P99 = 13µs；此处预算覆盖**服务端引擎
+/// 单键处理**（真实 125 万词库的 rime 候选生成，实测慢键可破 20ms——20ms 档在
+/// 打字流里间歇漏键，50ms 仍低于可感知阈值）。超时 = 放行 + degraded 重同步。
+const KEY_DEADLINE_MS: u64 = 50;
 
 /// 进程模式：true = 远端 iuv-server（薄客户端）。`init_mode` 一次性判定。
 static USE_SERVER: AtomicBool = AtomicBool::new(false);
