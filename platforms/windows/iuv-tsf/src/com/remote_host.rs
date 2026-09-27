@@ -26,10 +26,12 @@ use iuv_win::transport::{
     connect, ClientConfig, TransportClient, TransportError, CONNECT_RETRY_MS, SERVICE_PIPE_NAME,
 };
 
-/// 每键请求截止（49 §4.5.2）。IPC 往返实测 P99 = 13µs；此处预算覆盖**服务端引擎
-/// 单键处理**（真实 125 万词库的 rime 候选生成，实测慢键可破 20ms——20ms 档在
-/// 打字流里间歇漏键，50ms 仍低于可感知阈值）。超时 = 放行 + degraded 重同步。
-const KEY_DEADLINE_MS: u64 = 50;
+/// 每键请求截止（49 §4.5.2，已定档）。**它是服务端挂死的保命线，不是延迟策略**：
+/// 真机实测引擎单键 17-58ms（125 万词库 rime 生成，慢键分布见 iuv-server.log
+/// `[perf]`），本地模式同样有此耗时且无感知；对活服务端放行按键 = 漏字 + 基线
+/// 分叉，比短暂等待更伤。300ms = 最慢键 5 倍余量；真正挂死场景（deadlock）一次
+/// 最多拖 300ms 后放行。IPC 往返本身 P99 = 13µs，不构成预算项。
+const KEY_DEADLINE_MS: u64 = 300;
 
 /// 进程模式：true = 远端 iuv-server（薄客户端）。`init_mode` 一次性判定。
 static USE_SERVER: AtomicBool = AtomicBool::new(false);
@@ -453,7 +455,7 @@ mod tests {
         fn on_c2s(&mut self, req: C2S, reply: &mut Reply) {
             if let C2S::Key { full, .. } = req {
                 if self.first.swap(false, Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(300));
+                    std::thread::sleep(Duration::from_millis(600));
                 }
                 reply.respond(S2C::KeyResult(KeyVerdict::Consumed(KeyOutcome {
                     eaten: true,

@@ -612,3 +612,16 @@
   **真机回归（管理员）**：dev-dep 后 ①默认 `use_engine_server=false` 回归现状；
   ②config.json 加 `"use_engine_server": true` + 启动 `iuv-server.exe` → 打字验证：
   中文拼音/候选窗/空格上屏/Esc 取消/Shift 中英/Ctrl+Space/点简繁/翻页/游戏内候选。
+
+- [x] **49 号 P3 真机回归通过（远端模式打字全链路）**（2026-09-27，记事本/多应用）：
+  远端模式连接 0ms、远端会话内提交、候选窗/uielem 数据流全部正常；失效语义 A 验证
+  通过（服务端不可达 → 全放行，应用零卡死）。真机暴露并修复三坑：
+  ① `let _ = server` 语句结束即析构 → 服务端管道消失（进程活着客户端全放行）；
+  ② 提权脚本直启 server → 高完整性管道，中完整性应用连不上 error 5 →
+     改受限计划任务（用户上下文）启动 + windows_subsystem 去黑窗；
+  ③ 单字母 400+ 候选三份全量载荷间歇顶破截止 → 裁每键 UiElement 推送（单份走
+     KeyOutcome.all_candidates）。
+  **定档数据（iuv-server.log `[perf]`）**：引擎单键 17-58ms（125 万词库 rime 生成），
+  据此单键截止定档 300ms（保命线语义，非延迟策略——放行漏字 + 基线分叉比等待更伤）。
+  过渡期遗留：`use_engine_server` 开关 + 客户端自绘候选（P4 服务端自渲染后收敛）；
+  服务端慢键 `[perf]` 观测线 >=10ms 持续收集。
