@@ -61,6 +61,9 @@ struct Shared {
     ids: Mutex<StreamIdAlloc>,
     push_tx: mpsc::Sender<Push>,
     closed: AtomicBool,
+    /// 读线程句柄（最后一个 client drop 时先 join 再关句柄——防句柄值复用后
+    /// 读线程读到新连接的数据，2026-09-27 P5 重连实测的帧错乱根因）。
+    reader: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// 存活的 TransportClient 数（最后一个 drop 关连接）。
     clients: AtomicUsize,
     /// 写互斥：overlapped 同句柄并发读写安全，但两次写不得交错（防帧字节交错）。
@@ -85,13 +88,27 @@ impl Clone for TransportClient {
 impl Drop for TransportClient {
     fn drop(&mut self) {
         if self.shared.clients.fetch_sub(1, Ordering::SeqCst) == 1 {
+            // 收尾协议（2026-09-27 修订）：**句柄由读线程负责关闭**——它退出后
+            // 不再有 ReadFile，句柄值被新连接 CreateFileW 复用也绝不会命中旧读
+            // 线程（否则两读线程瓜分新连接字节流 → 帧错乱；P5 断开即重连实测）。
+            // Drop 只置关闭标志 + 尽力唤醒挂起读 + 有界 join（读线程以
+            // READER_TICK_MS 周期醒来检查 closed，最坏一个 tick 内退出并关句柄）。
+            self.shared.closed.store(true, Ordering::SeqCst);
             let h = self.shared.h.get();
-            // SAFETY: 最后一个属主收尾：取消挂起 IO 并关闭句柄（读线程随之退出）。
+            // SAFETY: 尽力取消挂起读以加速收尾；若读线程恰在两次读之间，
+            // 下一轮读会在关闭标志检查/管道断开处退出，句柄由读线程关闭。
             unsafe {
                 let _ = windows::Win32::System::IO::CancelIoEx(h, None);
-                let _ = windows::Win32::Foundation::CloseHandle(h);
             }
-            self.shared.closed.store(true, Ordering::SeqCst);
+            let reader = self
+                .shared
+                .reader
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(t) = reader {
+                let _ = t.join();
+            }
         }
     }
 }
@@ -169,16 +186,21 @@ pub fn connect(
         ids: Mutex::new(StreamIdAlloc::client()),
         push_tx,
         closed: AtomicBool::new(false),
+        reader: Mutex::new(None),
         clients: AtomicUsize::new(1),
         write_lock: Mutex::new(()),
     });
-    std::thread::Builder::new()
+    let reader = std::thread::Builder::new()
         .name("iuv-transport-rx".into())
         .spawn({
             let shared = shared.clone();
             move || reader_loop(shared)
         })
         .map_err(|e| TransportError::Io(io::Error::other(e.to_string())))?;
+    *shared
+        .reader
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(reader);
 
     std::mem::forget(guard);
     Ok((TransportClient { shared }, ack, PushStream { rx: push_rx }))
@@ -253,9 +275,31 @@ impl TransportClient {
     }
 }
 
+/// 读线程 tick：有界超时读的周期。数据到达即返回，tick 只影响空闲空转与
+/// 关闭收尾延迟（最坏一个 tick）。
+const READER_TICK_MS: u32 = 500;
+
+/// 读线程独占连接的读取与**句柄关闭**（见 `TransportClient::drop` 收尾协议）。
 fn reader_loop(shared: Arc<Shared>) {
+    let exit = |shared: &Arc<Shared>| {
+        shared.closed.store(true, Ordering::Relaxed);
+        shared
+            .inflight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        // SAFETY: 读线程是唯一在关闭时机做 ReadFile 的一方，退出即关——
+        // 此后句柄值可被复用且无人再读旧值。
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(shared.h.get());
+        }
+    };
     loop {
-        match read_frame_ov(shared.h.get(), u32::MAX) {
+        if shared.closed.load(Ordering::Relaxed) {
+            exit(&shared);
+            return;
+        }
+        match read_frame_ov(shared.h.get(), READER_TICK_MS) {
             Ok((hdr, payload)) => match payload {
                 iuv_proto::Payload::ServerResp(s2c) => {
                     let tx = shared
@@ -271,25 +315,18 @@ fn reader_loop(shared: Arc<Shared>) {
                 iuv_proto::Payload::Push(p) => {
                     let _ = shared.push_tx.send(p);
                 }
-                // ServerReq（Ctl/Ping）：P3 接线；P2 服务端不发起。
+                // ServerReq（Ctl/Ping）：服务端尚未发起。
                 _ => {
-                    shared.closed.store(true, Ordering::Relaxed);
-                    shared
-                        .inflight
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clear();
+                    exit(&shared);
                     return;
                 }
             },
+            Err(TransportError::Deadline) => {
+                // 空 tick：回环查关闭标志即可
+            }
             Err(_) => {
-                // 管道断开/超时：置关闭 + 清在途（Sender 丢弃 → 请求方得到 Closed）。
-                shared.closed.store(true, Ordering::Relaxed);
-                shared
-                    .inflight
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clear();
+                // 管道断开：置关闭 + 清在途（Sender 丢弃 → 请求方得到 Closed）。
+                exit(&shared);
                 return;
             }
         }

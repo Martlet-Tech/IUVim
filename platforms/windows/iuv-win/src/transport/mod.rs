@@ -178,11 +178,15 @@ fn wait_io(
     if !already {
         let w: WAIT_EVENT = unsafe { WaitForSingleObject(host.ev, timeout_ms) };
         if w != WAIT_OBJECT_0 {
-            // SAFETY: 取消挂起 IO；失败仅意味着已完成（由下方 GetOverlappedResult 收尾）。
-            unsafe {
-                let _ = CancelIoEx(h, Some(&host.ov));
-                let mut n = 0u32;
-                let _ = GetOverlappedResult(h, &host.ov, &mut n, true);
+            // 超时：取消在途 IO。但 IO 可能恰在超时瞬间完成——CancelIoEx 返回
+            // ERROR_NOT_FOUND（无在途可取消）时必须收取已完成字节数，否则丢数据
+            //（读线程的有界超时读会周期性踩此窗口）。
+            let cancelled = unsafe { CancelIoEx(h, Some(&host.ov)) };
+            let mut n = 0u32;
+            // SAFETY: OVERLAPPED 属本调用持有；bWait=true 等取消/完成落定。
+            let r = unsafe { GetOverlappedResult(h, &host.ov, &mut n, true) };
+            if cancelled.is_err() && r.is_ok() && n > 0 {
+                return Ok(n);
             }
             return Err(TransportError::Deadline);
         }

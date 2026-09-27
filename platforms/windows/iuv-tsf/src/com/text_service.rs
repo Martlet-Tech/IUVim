@@ -447,6 +447,11 @@ impl TextService_Impl {
         // M10：模式一次性判定——远端模式改连 iuv-server（薄客户端，不加载词库）。
         crate::com::remote_host::init_mode();
         if crate::com::remote_host::use_server() {
+            // P5 失效语义 C 兜底：离线（重生失败窗口）→ Activate 再试一次；
+            // 正常在线时无副作用（reviving 防重入）。
+            if crate::com::remote_host::remote().is_some_and(|r| !r.ready()) {
+                crate::com::remote_host::schedule_revive();
+            }
             crate::com::remote_host::start_remote_load();
         } else {
             start_engine_load();

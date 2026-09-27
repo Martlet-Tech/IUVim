@@ -14,8 +14,10 @@
 //! - `FocusChanged`/`CaretMoved`/`SetMaintenance` 不影响服务端会话
 //!   （38 号：焦点切换不断会话）。
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use iuv_win::logger::log_line;
 
@@ -24,12 +26,23 @@ use iuv_core::{
 };
 use iuv_proto::{
     Candidate, CandidateKind, Caps, ClientConfig, ClientInfo, ImeMode, ImePunct, ImeScript,
-    ImeState as WireImeState, ImeWidth, KeyOutcome, KeyVerdict, PageInfo, Push,
+    ImeState as WireImeState, ImeWidth, KeyOutcome, KeyVerdict, PageInfo, Push, ResumeToken,
     SessionEnd as WireSessionEnd, C2S, S2C,
 };
 use iuv_win::transport::{ConnHandler, Reply, Session};
 
 pub mod config_watch;
+
+/// 重绑现场保留期：断连后客户端在此时间内带令牌重连可回绑（49 §4.5.4 方案 C）。
+/// 超期回收——服务端不设定时器，`on_connect` 取用时顺带清扫。
+const RESUME_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// 断连时保存的会话现场（Drop 里从 `EngineSession` 抽出）。
+struct SavedSession {
+    session: Option<iuv_core::Session>,
+    baseline: Option<String>,
+    runtime: Arc<Mutex<ImeState>>,
+}
 
 /// 引擎服务工厂：进程级一个 [`Engine`]，每连接派生会话。
 pub struct EngineService {
@@ -37,6 +50,9 @@ pub struct EngineService {
     /// 配置纪元（`config_watch` 监视 config.json 变化时自增）。会话在每个请求
     /// 处理时比对，变化则捎带 `Push::ConfigChanged`（latest-wins，49 §4.6）。
     config_epoch: Arc<AtomicU32>,
+    /// 重绑注册表：token → (断连现场, 保存时刻)。断连时由 `EngineSession::drop`
+    /// 写入，重连握手带 `Hello.resume` 时取走（49 §4.4）。
+    resumes: Arc<Mutex<HashMap<u64, (SavedSession, Instant)>>>,
 }
 
 impl EngineService {
@@ -44,6 +60,7 @@ impl EngineService {
         EngineService {
             engine,
             config_epoch: Arc::new(AtomicU32::new(0)),
+            resumes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -51,20 +68,52 @@ impl EngineService {
     pub fn config_epoch(&self) -> Arc<AtomicU32> {
         self.config_epoch.clone()
     }
+
+    /// 取走重绑现场（超期条目顺带清扫——服务端零定时器）。
+    fn take_saved(&self, token: u64) -> Option<SavedSession> {
+        let mut resumes = self.resumes.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        resumes.retain(|_, (_, at)| now.duration_since(*at) < RESUME_TTL);
+        resumes.remove(&token).map(|(s, _)| s)
+    }
 }
 
 impl ConnHandler for EngineService {
-    fn on_connect(&self, _client: &ClientInfo, caps: Caps) -> Box<dyn Session> {
+    fn on_connect(
+        &self,
+        _client: &ClientInfo,
+        caps: Caps,
+        resume: Option<ResumeToken>,
+        token: ResumeToken,
+    ) -> Box<dyn Session> {
+        // 连接时点即基线：不在建连时推当前配置（客户端连接时自行 Config::load），
+        // 只推「连接之后发生的变化」。
+        let seen_epoch = self.config_epoch.load(Ordering::Relaxed);
+        let (session, baseline, runtime) = match resume.and_then(|t| self.take_saved(t.0)) {
+            Some(saved) => {
+                log_line(&format!(
+                    "[resume] 令牌重绑成功：composition 基线长度 {}",
+                    saved.baseline.as_deref().unwrap_or("").len()
+                ));
+                (saved.session, saved.baseline, saved.runtime)
+            }
+            None => {
+                if resume.is_some() {
+                    log_line("[resume] 令牌无对应现场（超期/已作废/服务端重启）→ 全新会话");
+                }
+                (None, None, Arc::new(Mutex::new(ImeState::default())))
+            }
+        };
         Box::new(EngineSession {
             engine: self.engine.clone(),
-            session: None,
-            runtime: Arc::new(Mutex::new(ImeState::default())),
+            session,
+            runtime,
             caps,
-            baseline: None,
-            // 连接时点即基线：不在建连时推当前配置（客户端连接时自行 Config::load），
-            // 只推「连接之后发生的变化」。
-            seen_epoch: self.config_epoch.load(Ordering::Relaxed),
+            baseline,
             config_epoch: self.config_epoch.clone(),
+            seen_epoch,
+            token,
+            resumes: self.resumes.clone(),
         })
     }
 }
@@ -81,6 +130,33 @@ pub struct EngineSession {
     /// 路径比对并捎带推送。进程内原子读，无磁盘/IPC 开销（非轮询）。
     config_epoch: Arc<AtomicU32>,
     seen_epoch: u32,
+    /// 本连接的重绑令牌（transport 握手生成并随 SessionAttached 下发）。
+    token: ResumeToken,
+    /// 重绑注册表（断连时 Drop 写入现场）。
+    resumes: Arc<Mutex<HashMap<u64, (SavedSession, Instant)>>>,
+}
+
+/// 断连时保存会话现场（49 §4.4/§4.5.4 方案 C）：连接线程释放
+/// `Box<dyn Session>` 走 Drop，把**仍活动的**引擎会话按令牌存入注册表，
+/// 客户端带 `Hello.resume` 重连即回绑。EndSession/commit 已清空
+/// `self.session` → 无现场可存 = 令牌自然作废（重绑得全新会话）。
+impl Drop for EngineSession {
+    fn drop(&mut self) {
+        if self.session.is_none() {
+            return;
+        }
+        let saved = SavedSession {
+            session: self.session.take(),
+            baseline: self.baseline.take(),
+            runtime: self.runtime.clone(),
+        };
+        let token = self.token.0;
+        self.resumes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(token, (saved, Instant::now()));
+        log_line(&format!("[resume] 断连保存现场：token={token:#x}"));
+    }
 }
 
 impl Session for EngineSession {

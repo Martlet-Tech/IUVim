@@ -77,7 +77,13 @@ impl Session for SlowSession {
 struct Factory;
 
 impl ConnHandler for Factory {
-    fn on_connect(&self, _client: &iuv_proto::ClientInfo, _caps: Caps) -> Box<dyn Session> {
+    fn on_connect(
+        &self,
+        _client: &iuv_proto::ClientInfo,
+        _caps: Caps,
+        _resume: Option<iuv_proto::ResumeToken>,
+        _token: iuv_proto::ResumeToken,
+    ) -> Box<dyn Session> {
         Box::new(EchoSession)
     }
 }
@@ -85,7 +91,13 @@ impl ConnHandler for Factory {
 struct SlowFactory(Duration);
 
 impl ConnHandler for SlowFactory {
-    fn on_connect(&self, _client: &iuv_proto::ClientInfo, _caps: Caps) -> Box<dyn Session> {
+    fn on_connect(
+        &self,
+        _client: &iuv_proto::ClientInfo,
+        _caps: Caps,
+        _resume: Option<iuv_proto::ResumeToken>,
+        _token: iuv_proto::ResumeToken,
+    ) -> Box<dyn Session> {
         Box::new(SlowSession { delay: self.0 })
     }
 }

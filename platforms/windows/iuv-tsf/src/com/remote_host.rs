@@ -8,8 +8,10 @@
 //!   命中缓存零 IPC 复用、未命中（只发 OnKeyDown 的应用）现场处理；
 //! - **截止时间**（§4.5.2）：每请求 20ms；超时 → 放行按键（返回 `None`）+ degraded
 //!   标记 → 下一键 `full=true` 强制全量重同步；`Busy` 不触发；
-//! - **失效语义 A**（§4.5.4，P3b 范围）：连接断开 → `offline`，按键全部放行
-//!   （等同没装输入法），P5 补快速重生（方案 C）。
+//! - **失效语义 C+A**（§4.5.4，P5）：连接断开 → offline 透明放行（A）+ **后台快速
+//!   重生**（C）——拉起 iuv-server.exe（继承宿主中完整性，P3 教训）→ 带
+//!   `Hello.resume` 令牌重连 → 服务端回绑旧会话，`full=true` 首键全量回放
+//!   composition；重生失败保持透明，下次 Activate 兜底重试。
 //!
 //! 客户端本地配置副本：路由判定（keymap/passthrough）与候选窗渲染所需字段
 //! 在远端模式下读 `RemoteHandle::config`。P4 起副本由服务端驱动更新——
@@ -23,11 +25,13 @@ use std::time::{Duration, Instant};
 
 use iuv_core::{Config, Key, SessionEnd};
 use iuv_proto::{
-    ImeState as WireImeState, KeyOutcome, KeyPhase, KeyToken, KeyVerdict, Push, C2S, S2C,
+    Auth, ImeState as WireImeState, KeyOutcome, KeyPhase, KeyToken, KeyVerdict, Push,
+    ResumeToken, C2S, S2C,
 };
 use iuv_win::logger::log_line;
 use iuv_win::transport::{
-    connect, ClientConfig, TransportClient, TransportError, CONNECT_RETRY_MS, SERVICE_PIPE_NAME,
+    connect, ClientConfig, PushStream, TransportClient, TransportError, CONNECT_RETRY_MS,
+    SERVICE_PIPE_NAME,
 };
 
 /// 每键请求截止（49 §4.5.2，已定档）。**它是服务端挂死的保命线，不是延迟策略**：
@@ -171,34 +175,41 @@ fn connect_server() -> Result<Arc<RemoteHandle>, String> {
         }
     };
     let handle = Arc::new(RemoteHandle {
+        pipe_name: SERVICE_PIPE_NAME.to_string(),
         client: Mutex::new(Some(client)),
         config: Mutex::new(Config::load()),
         config_epoch: AtomicU32::new(0),
+        token: Mutex::new(None),
         pending: Mutex::new(None),
         last_state: Mutex::new(None),
         degraded: AtomicBool::new(false),
         offline: AtomicBool::new(false),
+        reviving: AtomicBool::new(false),
         last_composition: Mutex::new(None),
     });
-    // 推送泵（P4 配置热载）：ConfigChanged → 从盘刷新配置副本 + 纪元自增
-    // （TSF 实例在按键路径比对纪元切主题）；连接关闭 → 泵退出。
+    // 推送泵（P4 配置热载 + P5 令牌捕获）：连接关闭 → 泵退出。
+    spawn_push_pump(handle.clone(), pushes);
+    Ok(handle)
+}
+
+/// 连接的推送泵：把推送交给 `apply_push`（ConfigChanged/SessionAttached），
+/// 防通道堆积；连接关闭自然退出。
+fn spawn_push_pump(handle: Arc<RemoteHandle>, pushes: PushStream) {
     std::thread::Builder::new()
         .name("iuv-remote-push".into())
-        .spawn({
-            let handle = handle.clone();
-            move || loop {
-                match pushes.recv_timeout(Duration::from_secs(3600)) {
-                    Ok(p) => handle.apply_push(&p),
-                    Err(_) => return,
-                }
+        .spawn(move || loop {
+            match pushes.recv_timeout(Duration::from_secs(3600)) {
+                Ok(p) => handle.apply_push(&p),
+                Err(_) => return,
             }
         })
-        .map_err(|e| e.to_string())?;
-    Ok(handle)
+        .expect("推送泵线程创建");
 }
 
 /// 远端引擎会话的客户端句柄（进程级单例，STA 线程们经它发请求）。
 pub(crate) struct RemoteHandle {
+    /// 本连接的管道名（生产 = SERVICE_PIPE_NAME；测试可注入独立管道）。
+    pipe_name: String,
     client: Mutex<Option<TransportClient>>,
     /// 客户端本地配置副本（路由 keymap/passthrough + 候选窗渲染字段）。
     /// P4 起由服务端 `Push::ConfigChanged` 推动刷新（推送泵线程写）。
@@ -206,13 +217,17 @@ pub(crate) struct RemoteHandle {
     /// 配置纪元（`set_config` 自增）：TSF 实例按键路径比对，决定是否切主题。
     /// 进程内原子量——实例侧判定无 SHM/IPC/文件读（非轮询）。
     config_epoch: AtomicU32,
+    /// 当前连接的重绑令牌（`Push::SessionAttached` 下发，重连时进 `Hello.resume`）。
+    token: Mutex<Option<ResumeToken>>,
     /// Test 裁定单槽缓存：`key_test` 写入、`key_down` 消费（键值匹配才复用）。
     pending: Mutex<Option<(Key, KeyOutcome)>>,
     last_state: Mutex<Option<WireImeState>>,
     /// 上次请求 Deadline → 下一 Key 带 `full=true`（§4.5.2 基线失效重同步）。
     degraded: AtomicBool,
-    /// 连接断开（失效语义 A）：按键全部放行，直至进程重激活。
+    /// 连接断开（失效语义 A）：按键全部放行，直至重生成功/进程重激活。
     offline: AtomicBool,
+    /// 重生循环在跑（防线程风暴）。
+    reviving: AtomicBool,
     /// 最近一次 composition（flush_session 原文上屏用；撇号为切分显示层）。
     last_composition: Mutex<Option<String>>,
 }
@@ -241,15 +256,22 @@ impl RemoteHandle {
         self.config_epoch.fetch_add(1, Ordering::Release);
     }
 
-    /// 推送泵入口（P4）：`ConfigChanged` → 从盘刷新配置副本（与 daemon 纪元
-    /// 热载同语义，改由服务端推动）。其余推送（SessionAttached 握手即收/
-    /// ImeState/UiElement 等）P5 接线前忽略。
+    /// 推送泵入口（P4/P5）：`ConfigChanged` → 从盘刷新配置副本（与 daemon 纪元
+    /// 热载同语义，改由服务端推动）；`SessionAttached` → 记录重绑令牌（断连
+    /// 重连时进 `Hello.resume`，**每次连接更新**——重绑后的新连接有新令牌）。
     fn apply_push(&self, push: &Push) {
-        if let Push::ConfigChanged { epoch, .. } = push {
-            log_line(&format!(
-                "[backend] 配置推送 epoch={epoch} → 刷新客户端配置副本"
-            ));
-            self.set_config(Config::load());
+        match push {
+            Push::ConfigChanged { epoch, .. } => {
+                log_line(&format!(
+                    "[backend] 配置推送 epoch={epoch} → 刷新客户端配置副本"
+                ));
+                self.set_config(Config::load());
+            }
+            Push::SessionAttached { token } => {
+                *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(*token);
+            }
+            // ImeState / UiElement 等：无消费方（P4 服务端自渲染后回归）。
+            _ => {}
         }
     }
 
@@ -367,14 +389,146 @@ impl RemoteHandle {
                 None
             }
             Err(e) => {
-                // Closed/IO/协议错误：失效语义 A——连接已坏，按键全部放行。
+                // Closed/IO/协议错误：失效语义 A——连接已坏，按键全部放行；
+                // 失效语义 C（P5）：后台快速重生（拉起 server + 令牌重绑）。
                 self.offline.store(true, Ordering::Relaxed);
                 log_line(&format!(
-                    "[backend] 远端请求失败（{e}）→ 透明放行（失效语义 A）"
+                    "[backend] 远端请求失败（{e}）→ 透明放行 + 后台重生（失效语义 C）"
                 ));
+                schedule_revive();
                 None
             }
         }
+    }
+}
+
+/// 重生循环（49 §4.5.4 方案 C）：离线后按节奏重连（带 `Hello.resume` 令牌），
+/// 首次失败顺带拉起 iuv-server.exe（继承宿主中完整性——绝不提权，P3 教训）。
+/// 全部尝试失败 → 保持透明放行，下次 Activate 兜底重试。`reviving` 防线程风暴。
+pub(crate) fn schedule_revive() {
+    let Some(handle) = remote().cloned() else {
+        return;
+    };
+    if handle.reviving.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("iuv-remote-revive".into())
+        .spawn(move || {
+            const ATTEMPTS: usize = 6;
+            let dir = iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
+            let auth = match iuv_win::transport::load_or_create_token(&dir) {
+                Ok(a) => a,
+                Err(e) => {
+                    handle.reviving.store(false, Ordering::SeqCst);
+                    log_line(&format!("[backend] 共享密钥装配失败 → 无法重生：{e}"));
+                    return;
+                }
+            };
+            for i in 0..ATTEMPTS {
+                if i > 0 {
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                // 首次尝试就允许拉起：走到离线说明管道已消失（服务端进程死亡），
+                // 立即拉起最快；服务端其实在线（accept 间隙）时 connect 成功、不拉。
+                if let Ok(pushes) = handle.try_reconnect_once(i == 0, auth.clone()) {
+                    spawn_push_pump(handle.clone(), pushes);
+                    log_line("[backend] 重生成功（令牌重绑，下键全量重同步）");
+                    handle.reviving.store(false, Ordering::SeqCst);
+                    return;
+                }
+            }
+            handle.reviving.store(false, Ordering::SeqCst);
+            log_line(&format!(
+                "[backend] 重生失败（{ATTEMPTS} 次重连未果）→ 保持透明，下次 Activate 重试"
+            ));
+        })
+        .expect("重生线程创建");
+}
+
+impl RemoteHandle {
+    /// 原地重连一次（成功即替换 client 槽）。`Ok` = 新连接的推送流（调用方起泵）。
+    /// `spawn_server` = 连接失败时是否拉起 iuv-server.exe（每个重生周期只拉一次）。
+    fn try_reconnect_once(&self, spawn_server: bool, auth: Auth) -> Result<PushStream, TransportError> {
+        let resume = *self.token.lock().unwrap_or_else(|e| e.into_inner());
+        let cfg = ClientConfig {
+            pipe_name: self.pipe_name.clone(),
+            proto_min: iuv_proto::PROTO_MIN,
+            proto_max: iuv_proto::PROTO_MAX,
+            auth,
+            caps: iuv_proto::Caps(iuv_proto::Caps::UIELEMENT),
+            app: crate::log::module_name(),
+            resume,
+            handshake_timeout: Duration::from_millis(CONNECT_RETRY_MS),
+        };
+        match connect(&cfg) {
+            Ok((client, _ack, pushes)) => {
+                *self.client.lock().unwrap_or_else(|e| e.into_inner()) = Some(client);
+                // 旧连接的 Test 裁定全部作废（服务端可能已推进）
+                *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                // 基线可能分叉 → 下一键 full=true 全量重同步（重绑回放/全新会话）
+                self.degraded.store(true, Ordering::Relaxed);
+                self.offline.store(false, Ordering::Relaxed);
+                Ok(pushes)
+            }
+            Err(e) => {
+                if spawn_server {
+                    log_line("[backend] 服务端不可达 → 拉起 iuv-server.exe（重生）");
+                    spawn_server_process();
+                }
+                log_line(&format!("[backend] 重连尝试失败：{e}"));
+                Err(e)
+            }
+        }
+    }
+}
+
+/// 拉起 TSF DLL 同目录的 iuv-server.exe（安装布局固定）。继承宿主进程完整性
+/// （TSF 运行在中完整性的应用进程内 → 服务端管道同为中完整性，P3 教训）。
+/// 若服务端其实在线（accept 间隙），CreateNamedPipeW 撞名失败 → 进程静默退出，无害。
+fn spawn_server_process() -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Threading::{
+        CreateProcessW, CREATE_NO_WINDOW, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    let dll = crate::registration::dll_path();
+    if dll.is_empty() {
+        return false;
+    }
+    let Some(exe) = std::path::Path::new(&dll)
+        .parent()
+        .map(|d| d.join("iuv-server.exe"))
+    else {
+        return false;
+    };
+    if !exe.exists() {
+        log_line(&format!(
+            "[backend] iuv-server.exe 不存在（{}）→ 无法重生",
+            exe.display()
+        ));
+        return false;
+    }
+    // SAFETY: cmdline 以 NUL 结尾且生命周期覆盖调用；SI/PI 均为本调用持有。
+    unsafe {
+        let mut cmdline: Vec<u16> = format!("\"{}\"\0", exe.display()).encode_utf16().collect();
+        let si = STARTUPINFOW {
+            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+            ..Default::default()
+        };
+        let mut pi = PROCESS_INFORMATION::default();
+        CreateProcessW(
+            PCWSTR::null(),
+            Some(windows::core::PWSTR(cmdline.as_mut_ptr())),
+            None,
+            None,
+            false,
+            CREATE_NO_WINDOW,
+            None,
+            PCWSTR::null(),
+            &si,
+            &mut pi,
+        )
+        .is_ok()
     }
 }
 
@@ -474,7 +628,13 @@ mod tests {
     struct Factory;
 
     impl ConnHandler for Factory {
-        fn on_connect(&self, _client: &iuv_proto::ClientInfo, _caps: Caps) -> Box<dyn Session> {
+        fn on_connect(
+        &self,
+        _client: &iuv_proto::ClientInfo,
+        _caps: Caps,
+        _resume: Option<iuv_proto::ResumeToken>,
+        _token: iuv_proto::ResumeToken,
+    ) -> Box<dyn Session> {
             Box::new(EchoSession)
         }
     }
@@ -508,7 +668,13 @@ mod tests {
     struct SlowFactory;
 
     impl ConnHandler for SlowFactory {
-        fn on_connect(&self, _client: &iuv_proto::ClientInfo, _caps: Caps) -> Box<dyn Session> {
+        fn on_connect(
+        &self,
+        _client: &iuv_proto::ClientInfo,
+        _caps: Caps,
+        _resume: Option<iuv_proto::ResumeToken>,
+        _token: iuv_proto::ResumeToken,
+    ) -> Box<dyn Session> {
             Box::new(SlowFirstSession {
                 first: AtomicBool::new(true),
             })
@@ -550,10 +716,13 @@ mod tests {
             }
         });
         RemoteHandle {
+            pipe_name: pipe.to_string(),
             client: Mutex::new(Some(client)),
             config: Mutex::new(Config::default()),
             config_epoch: AtomicU32::new(0),
+            token: Mutex::new(None),
             pending: Mutex::new(None),
+            reviving: AtomicBool::new(false),
             last_state: Mutex::new(None),
             degraded: AtomicBool::new(false),
             offline: AtomicBool::new(false),
@@ -564,10 +733,13 @@ mod tests {
     #[test]
     fn set_config_bumps_epoch_and_updates_copy() {
         let h = RemoteHandle {
+            pipe_name: String::new(),
             client: Mutex::new(None),
             config: Mutex::new(Config::default()),
             config_epoch: AtomicU32::new(0),
+            token: Mutex::new(None),
             pending: Mutex::new(None),
+            reviving: AtomicBool::new(false),
             last_state: Mutex::new(None),
             degraded: AtomicBool::new(false),
             offline: AtomicBool::new(false),
@@ -659,6 +831,51 @@ mod tests {
             h.pending_raw_text(),
             None,
             "无 composition 时原文上屏应为 None（走 cancel 分支）"
+        );
+    }
+
+    #[test]
+    fn session_attached_captures_resume_token() {
+        let (pipe, _server) = start_with("token", Arc::new(Factory));
+        let h = connect_handle(&pipe);
+        h.apply_push(&Push::SessionAttached { token: iuv_proto::ResumeToken(9) });
+        assert_eq!(
+            h.token.lock().unwrap().map(|t| t.0),
+            Some(9),
+            "SessionAttached 推送应更新重绑令牌"
+        );
+    }
+
+    /// P5 失效语义 C 客户端侧：断连 → 原地重连 → offline 清除、degraded 全量重同步、
+    /// 旧 Test 裁定作废、按键恢复。拉进程分支（spawn_server_process）不可无头测，
+    /// 此处服务端在线，仅验证重连/状态恢复。
+    #[test]
+    fn revive_reconnects_and_clears_offline() {
+        let (pipe, _server) = start_with("revive", Arc::new(Factory));
+        let h = connect_handle(&pipe);
+        h.apply_push(&Push::SessionAttached { token: iuv_proto::ResumeToken(3) });
+        // 模拟断连：client 槽清空 + offline
+        *h.client.lock().unwrap() = None;
+        h.offline.store(true, Ordering::Relaxed);
+
+        let pushes = h
+            .try_reconnect_once(false, Auth([5u8; 32]))
+            .expect("服务端在线，重连应成功");
+        assert!(!h.offline.load(Ordering::Relaxed), "offline 应清除");
+        assert!(h.client.lock().unwrap().is_some(), "client 槽应恢复");
+        assert!(
+            h.degraded.load(Ordering::Relaxed),
+            "重连后应置 degraded（下键 full=true 全量重同步）"
+        );
+        assert!(h.pending.lock().unwrap().is_none(), "旧 Test 裁定应作废");
+        // 新连接的推送流要有人消费（生产由 spawn_push_pump 承担）
+        std::thread::spawn(move || {
+            let _ = pushes.recv_timeout(Duration::from_secs(3600));
+        });
+        // 重连后的键照常工作
+        assert!(
+            h.key_test(Key::Char('n'), iuv_proto::Mods::default()).is_some(),
+            "重连后按键应恢复"
         );
     }
 }

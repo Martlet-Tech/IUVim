@@ -336,3 +336,97 @@ fn every_c2s_request_gets_a_reply() {
     );
     assert!(matches!(r, Ok(S2C::Ok)), "CaretMoved 必须有应答: {r:?}");
 }
+
+/// P5 失效语义 C（49 §4.4/§4.5.4）：断连保存现场 + `Hello.resume` 重绑。
+/// 打 "ni" → 断连 → 带令牌重连 → `full=true` 首键全量回放（composition 仍含 "ni"）。
+#[test]
+fn resume_token_rebinds_and_replays_composition() {
+    let pipe = test_pipe("resume");
+    let _server = start_server(&pipe);
+    let token = {
+        let (client, _ack, pushes) = connect_ok(&pipe);
+        let token = match pushes.recv_timeout(Duration::from_secs(2)) {
+            Ok(Push::SessionAttached { token }) => token,
+            other => panic!("应收到 SessionAttached: {other:?}"),
+        };
+        // 打字建立会话（"ni" 入 composition），随后 client drop = 断连
+        type_str(&client, "ni");
+        token
+    };
+    // 连接线程回收 + Drop 保存现场是异步的，短等
+    std::thread::sleep(Duration::from_millis(300));
+
+    let cfg = ClientConfig {
+        resume: Some(token),
+        ..client_cfg(&pipe, Caps(Caps::UIELEMENT))
+    };
+    let (client, _ack, pushes) = connect(&cfg).expect("带令牌重连");
+    assert!(matches!(
+        pushes.recv_timeout(Duration::from_secs(2)),
+        Ok(Push::SessionAttached { .. })
+    ));
+    // 客户端 degraded → full=true：服务端强制全量应答 = composition 重放
+    let o = client
+        .request(
+            C2S::Key {
+                key: Key::Char('x'),
+                mods: Default::default(),
+                token: KeyToken { seq: 0, phase: KeyPhase::Down },
+                full: true,
+            },
+            true,
+            Duration::from_secs(2),
+        )
+        .expect("重绑后首键应答");
+    match o {
+        S2C::KeyResult(KeyVerdict::Consumed(out)) => {
+            let comp = out.composition.expect("full=true 必须全量");
+            assert!(comp.starts_with("ni"), "重绑应回放断连前 composition：{comp}");
+        }
+        other => panic!("应答类型错误: {other:?}"),
+    }
+}
+
+/// EndSession 后令牌作废：重绑得到全新会话（无 composition 可回放）。
+#[test]
+fn end_session_voids_resume_state() {
+    let pipe = test_pipe("resume-void");
+    let _server = start_server(&pipe);
+    let token = {
+        let (client, _ack, pushes) = connect_ok(&pipe);
+        let token = match pushes.recv_timeout(Duration::from_secs(2)) {
+            Ok(Push::SessionAttached { token }) => token,
+            other => panic!("应收到 SessionAttached: {other:?}"),
+        };
+        type_str(&client, "ni");
+        let _ = client.request(C2S::EndSession { end: SessionEnd::Cancel }, true, Duration::from_secs(2));
+        token
+    };
+    std::thread::sleep(Duration::from_millis(300));
+
+    let cfg = ClientConfig {
+        resume: Some(token),
+        ..client_cfg(&pipe, Caps(Caps::UIELEMENT))
+    };
+    let (client, _ack, pushes) = connect(&cfg).expect("重连");
+    let _ = pushes.recv_timeout(Duration::from_secs(2));
+    let o = client
+        .request(
+            C2S::Key {
+                key: Key::Char('x'),
+                mods: Default::default(),
+                token: KeyToken { seq: 0, phase: KeyPhase::Down },
+                full: true,
+            },
+            true,
+            Duration::from_secs(2),
+        )
+        .expect("首键应答");
+    match o {
+        S2C::KeyResult(KeyVerdict::Consumed(out)) => {
+            let comp = out.composition.expect("full=true 必须全量");
+            assert_eq!(comp, "x", "EndSession 后重绑应得全新会话：{comp}");
+        }
+        other => panic!("应答类型错误: {other:?}"),
+    }
+}

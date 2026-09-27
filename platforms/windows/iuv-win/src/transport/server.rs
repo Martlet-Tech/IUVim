@@ -55,8 +55,17 @@ pub trait Session: Send + 'static {
 
 /// 会话工厂：新连接接入时装配。认证/版本由 transport 先行校验，到此处必然合法；
 /// `caps` = 服务端 ∩ 客户端的能力交集（会话据此决定候选数据等推送）。
+/// `resume` = 客户端重绑请求（49 §4.4：断线重连回绑旧会话，由实现方查注册表）；
+/// `token` = 本连接的重绑令牌（服务端生成，随 `Push::SessionAttached` 下发，
+/// 断连时会话实现可按它保存现场）。
 pub trait ConnHandler: Send + Sync + 'static {
-    fn on_connect(&self, client: &ClientInfo, caps: Caps) -> Box<dyn Session>;
+    fn on_connect(
+        &self,
+        client: &ClientInfo,
+        caps: Caps,
+        resume: Option<ResumeToken>,
+        token: ResumeToken,
+    ) -> Box<dyn Session>;
 }
 
 /// 一次 `on_c2s` 的产出：0/1 条应答 + 任意条推送。
@@ -259,14 +268,14 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
             proto_max,
             auth,
             caps,
-            resume: _,
+            resume,
             client,
-        }) => (proto_min, proto_max, auth, caps, client),
+        }) => (proto_min, proto_max, auth, caps, resume, client),
         _ => {
             return Err(io::Error::other("协议违规: 首帧非 Hello"));
         }
     };
-    let (proto_min, proto_max, auth, want_caps, client) = hello;
+    let (proto_min, proto_max, auth, want_caps, resume, client) = hello;
     let proto = match negotiate(proto_min, proto_max, PROTO_MIN, PROTO_MAX) {
         Ok(p) => p,
         Err(e) => {
@@ -292,7 +301,8 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
         return Err(io::Error::other("握手失败: 认证不符"));
     }
     let caps = Caps(ctx.caps.0 & want_caps.0);
-    let mut session = ctx.handler.on_connect(&client, caps);
+    let token = next_token();
+    let mut session = ctx.handler.on_connect(&client, caps, resume, token);
     write_frame_ov(
         h,
         0,
@@ -309,9 +319,7 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
         h,
         0,
         false,
-        &Payload::Push(Push::SessionAttached {
-            token: next_token(),
-        }),
+        &Payload::Push(Push::SessionAttached { token }),
         WRITE_TIMEOUT_MS,
     )
     .map_err(|e| io::Error::other(format!("SessionAttached 写失败: {e}")))?;
