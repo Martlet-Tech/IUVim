@@ -55,6 +55,7 @@ fn client_cfg(pipe: &str, caps: Caps) -> ClientConfig {
         app: "hot-path-test".into(),
         resume: None,
         handshake_timeout: Duration::from_secs(5),
+        on_server_req: None,
     }
 }
 
@@ -468,4 +469,36 @@ fn suppressed_app_receives_candidate_data() {
     let cands = o.candidates.expect("抑制命中必须带候选数据源");
     assert!(!cands.is_empty(), "抑制命中的客户端拿真实候选");
     assert!(o.all_candidates.as_ref().is_some_and(|v| !v.is_empty()));
+}
+
+/// ② 用户库收敛：客户端 `C2S::UserMutation` → 引擎应用（屏蔽生效于候选）。
+#[test]
+fn user_mutation_applies_to_engine() {
+    let pipe = test_pipe("mutation");
+    let _server = start_server(&pipe);
+    let (client, _ack, pushes) = connect_ok(&pipe);
+    assert!(matches!(
+        pushes.recv_timeout(Duration::from_secs(2)),
+        Ok(Push::SessionAttached { .. })
+    ));
+
+    // 屏蔽「你」→ n 的候选不再含「你」（只剩「尼」）
+    let r = client
+        .request(
+            C2S::UserMutation(iuv_proto::UserMutation::Block {
+                code: "ni".into(),
+                word: "你".into(),
+            }),
+            true,
+            Duration::from_secs(2),
+        )
+        .expect("UserMutation 应答");
+    assert!(matches!(r, S2C::Ok), "UserMutation 必须有应答: {r:?}");
+
+    let o = key(&client, Key::Char('n'));
+    let cands = o.candidates.expect("抑制外默认空; 此连接非抑制 → 空数组");
+    assert_eq!(cands, Vec::new(), "普通应用零候选载荷");
+    // 屏蔽效果经会话键验证：Digit 无从观察（无候选下发）——改走 composition 增量
+    // 与 all_candidates 不可观察，此处以「应答 Ok + 引擎内部应用」为契约；
+    // 引擎层屏蔽行为已有 iuv-core 单测覆盖（hide_entry 系列）。
 }

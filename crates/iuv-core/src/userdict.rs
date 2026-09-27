@@ -184,6 +184,41 @@ impl Engine {
         self.dict.set_user(Arc::new(next));
     }
 
+    /// 外部用户库变更（M10 ②：客户端经 transport 上报 UserMutation，服务端引擎
+    /// 应用并写盘）。语义与 daemon 数据面管道同源——Swap 的有效权重由客户端
+    /// **交叉**携带（a←b_eff、b←a_eff，与 apply_swap 契约一致）。走
+    /// [`Self::install_user`]：服务端无 UserRemote → 本地写盘 + mtime 基线同步。
+    pub fn apply_user_mutation(&self, m: &UserMutation) {
+        let user = self.dict.user();
+        let empty = || UserDict::empty();
+        let next = match m {
+            UserMutation::Swap {
+                a_code,
+                a_word,
+                a_eff,
+                b_code,
+                b_word,
+                b_eff,
+            } => match user.as_deref() {
+                Some(u) => u.apply_swap(a_code, a_word, *b_eff, b_code, b_word, *a_eff),
+                None => empty().apply_swap(a_code, a_word, *b_eff, b_code, b_word, *a_eff),
+            },
+            UserMutation::Set { code, word, adj } => match user.as_deref() {
+                Some(u) => u.set_entry(code, word, *adj),
+                None => empty().set_entry(code, word, *adj),
+            },
+            UserMutation::Remove { code, word } => match user.as_deref() {
+                Some(u) => u.remove_entry(code, word),
+                None => empty(),
+            },
+            UserMutation::Block { code, word } => match user.as_deref() {
+                Some(u) => u.block(code, word),
+                None => empty().block(code, word),
+            },
+        };
+        self.install_user(next, None);
+    }
+
     /// 装配/更换用户库远端写后端（M6 daemon 客户端；`None` 拆除 = 回归本地写盘）。
     /// 重复调用幂等（只替换 Arc 引用）；daemon 掉线后 apply 返回 false 即自动降级本地。
     pub fn set_user_remote(&self, remote: Option<Arc<dyn UserRemote>>) {

@@ -31,7 +31,7 @@ use iuv_proto::{
     ImeState as WireImeState, ImeWidth, KeyOutcome, KeyVerdict, PageInfo, Push, ResumeToken,
     SessionEnd as WireSessionEnd, C2S, S2C,
 };
-use iuv_win::transport::{ConnHandler, Reply, Session};
+use iuv_win::transport::{ConnHandler, ConnSender, Reply, Session};
 
 pub mod candwin;
 pub mod config_watch;
@@ -52,20 +52,43 @@ struct SavedSession {
 /// 引擎服务工厂：进程级一个 [`Engine`]，每连接派生会话。
 pub struct EngineService {
     engine: Arc<Engine>,
+    /// 用户库共享段写者（②：客户端 UserMutation → 引擎写盘 → 此处发布；
+    /// 本地模式 TSF 实例与（迁移期）daemon 读端消费）。创建失败 = 不发布。
+    shm: Arc<Mutex<Option<iuv_win::ShmWriter>>>,
     /// 配置纪元（`config_watch` 监视 config.json 变化时自增）。会话在每个请求
     /// 处理时比对，变化则捎带 `Push::ConfigChanged`（latest-wins，49 §4.6）。
     config_epoch: Arc<AtomicU32>,
     /// 重绑注册表：token → (断连现场, 保存时刻)。断连时由 `EngineSession::drop`
     /// 写入，重连握手带 `Hello.resume` 时取走（49 §4.4）。
     resumes: Arc<Mutex<HashMap<u64, (SavedSession, Instant)>>>,
+    /// 连接发送器路由：pid/tid → ConnSender（②控制面：工具栏/热键 Ctl → 客户端）。
+    /// 同进程重连覆盖旧条目；陈旧条目 request 返回 Closed，调用方降级。
+    senders: Mutex<HashMap<(u32, u32), ConnSender>>,
 }
 
 impl EngineService {
     pub fn new(engine: Arc<Engine>) -> EngineService {
+        let shm = iuv_win::ShmWriter::create_or_open();
+        if let Err(e) = &shm {
+            log_line(&format!("[shm] 用户库共享段创建失败（不发布）：{e}"));
+        }
         EngineService {
             engine,
             config_epoch: Arc::new(AtomicU32::new(0)),
             resumes: Arc::new(Mutex::new(HashMap::new())),
+            shm: Arc::new(Mutex::new(shm.ok())),
+            senders: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 用户库发布到共享段（版本 bump 由 ShmWriter 维护；失败静默记日志）。
+    fn publish_user_dict(&self, dict: &iuv_data::UserDict) {
+        let mut shm = self.shm.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(w) = shm.as_mut() {
+            match w.write(dict) {
+                Ok(v) => log_line(&format!("[shm] 用户库已发布 version={v}")),
+                Err(e) => log_line(&format!("[shm] 用户库发布失败：{e}")),
+            }
         }
     }
 
@@ -86,11 +109,17 @@ impl EngineService {
 impl ConnHandler for EngineService {
     fn on_connect(
         &self,
-        _client: &ClientInfo,
+        client: &ClientInfo,
         caps: Caps,
         resume: Option<ResumeToken>,
         token: ResumeToken,
+        sender: ConnSender,
     ) -> Box<dyn Session> {
+        // 控制面路由注册（pid/tid = 客户端握手报备；同进程重连覆盖）。
+        self.senders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((client.pid, client.tid), sender);
         // 连接时点即基线：不在建连时推当前配置（客户端连接时自行 Config::load），
         // 只推「连接之后发生的变化」。
         let seen_epoch = self.config_epoch.load(Ordering::Relaxed);
@@ -121,7 +150,8 @@ impl ConnHandler for EngineService {
             seen_epoch,
             token,
             resumes: self.resumes.clone(),
-            app: _client.app.clone(),
+            app: client.app.clone(),
+            shm: self.shm.clone(),
             candwin: CandwinHandle::spawn(match theme_choice {
                 iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
                 iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
@@ -162,6 +192,8 @@ pub struct EngineSession {
     resumes: Arc<Mutex<HashMap<u64, (SavedSession, Instant)>>>,
     /// 客户端宿主进程名（握手报备；抑制名单匹配用）。
     app: String,
+    /// 用户库共享段写者（与 EngineService 共享；UserMutation 后发布）。
+    shm: Arc<Mutex<Option<iuv_win::ShmWriter>>>,
     /// 会话候选窗（服务端自渲染，49 §4.5.3；抑制命中时静默）。
     candwin: CandwinHandle,
     /// 客户端最近上报的光标锚点（屏幕物理坐标；None = 未上报，不渲染）。
@@ -264,8 +296,22 @@ impl Session for EngineSession {
                 }
                 reply.respond(S2C::Ok);
             }
-            C2S::UserMutation(_)
-            | C2S::FocusChanged { .. }
+            C2S::UserMutation(m) => {
+                // M10 ②：客户端用户库变更 → 引擎应用（写盘）→ SHM 发布
+                //（本地模式 TSF 实例经共享段保持一致，混合模式过渡）。
+                self.engine.apply_user_mutation(&core_user_mutation(&m));
+                if let Some(u) = self.engine.user_dict() {
+                    let mut shm = self.shm.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(w) = shm.as_mut() {
+                        match w.write(&u) {
+                            Ok(v) => log_line(&format!("[shm] 用户库已发布 version={v}")),
+                            Err(e) => log_line(&format!("[shm] 用户库发布失败：{e}")),
+                        }
+                    }
+                }
+                reply.respond(S2C::Ok);
+            }
+            C2S::FocusChanged { .. }
             | C2S::SetMaintenance { .. }
             | C2S::CtlResult(_) => {
                 reply.respond(S2C::Ok);
@@ -390,6 +436,51 @@ impl EngineSession {
             self.candwin_visible = false;
             self.candwin.send(CandwinCmd::Hide);
         }
+    }
+}
+
+/// 线上 `UserMutation` → 核心（镜像，②控制面迁移期）。
+fn core_user_mutation(m: &iuv_proto::UserMutation) -> iuv_core::UserMutation {
+    use iuv_proto::UserMutation as M;
+    match *m {
+        M::Swap {
+            ref a_code,
+            ref a_word,
+            a_eff,
+            ref b_code,
+            ref b_word,
+            b_eff,
+        } => iuv_core::UserMutation::Swap {
+            a_code: a_code.clone(),
+            a_word: a_word.clone(),
+            a_eff,
+            b_code: b_code.clone(),
+            b_word: b_word.clone(),
+            b_eff,
+        },
+        M::Set {
+            ref code,
+            ref word,
+            adj,
+        } => iuv_core::UserMutation::Set {
+            code: code.clone(),
+            word: word.clone(),
+            adj,
+        },
+        M::Remove {
+            ref code,
+            ref word,
+        } => iuv_core::UserMutation::Remove {
+            code: code.clone(),
+            word: word.clone(),
+        },
+        M::Block {
+            ref code,
+            ref word,
+        } => iuv_core::UserMutation::Block {
+            code: code.clone(),
+            word: word.clone(),
+        },
     }
 }
 
