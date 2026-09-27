@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-daemon", "platforms/windows/iuv-win"]
+members = ["crates/iuv-data", "crates/iuv-proto", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-daemon", "platforms/windows/iuv-win"]
 # M6 追加：platforms/windows/iuv-daemon
 
 [workspace.package]
@@ -11,6 +11,8 @@ license = "MIT"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
+# iuv-proto 线格式（postcard = serde 二进制 format，varint 紧凑；帧头/分帧仍自管）
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 serde_json = "1"
 tiny-skia = "0.12"
 cosmic-text = "0.19"
@@ -25,6 +27,7 @@ windows = { version = "0.62", features = [
 ] }
 windows-core = "0.62"
 windows-registry = "0.6"
+iuv-proto = { path = "crates/iuv-proto" }
 iuv-data = { path = "crates/iuv-data" }
 iuv-core = { path = "crates/iuv-core" }
 iuv-ui = { path = "crates/iuv-ui" }

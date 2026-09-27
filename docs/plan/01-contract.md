@@ -74,7 +74,8 @@ D:\Projects\vaim\
 ```toml
 [workspace]
 resolver = "2"
-members = ["crates/iuv-data", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-daemon"]
+members = ["crates/iuv-data", "crates/iuv-proto", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-daemon", "platforms/windows/iuv-win"]
+# M6 追加：platforms/windows/iuv-daemon；M10 追加：crates/iuv-proto（49 号）
 
 [workspace.package]
 edition = "2021"
@@ -83,22 +84,27 @@ license = "MIT"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
+# iuv-proto 线格式（postcard = serde 二进制 format，varint 紧凑；帧头/分帧仍自管）
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+serde_json = "1"
+tiny-skia = "0.12"
+cosmic-text = "0.19"
 windows = { version = "0.62", features = [
     "Win32_Foundation", "Win32_Graphics", "Win32_Graphics_Gdi",
     "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Memory",
     "Win32_System_Ole", "Win32_System_Pipes", "Win32_System_Threading",
     "Win32_System_Variant", "Win32_Storage_FileSystem", "Win32_System_IO",
-    "Win32_Security", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_TextServices",
+    "Win32_Security", "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_TextServices",
     "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "0.62"
 windows-registry = "0.6"
-serde_json = "1"
-tiny-skia = "0.12"
-cosmic-text = "0.19"
+iuv-proto = { path = "crates/iuv-proto" }
 iuv-data = { path = "crates/iuv-data" }
 iuv-core = { path = "crates/iuv-core" }
 iuv-ui = { path = "crates/iuv-ui" }
+iuv-win = { path = "platforms/windows/iuv-win" }
 
 [profile.release]
 lto = "fat"
@@ -109,6 +115,7 @@ codegen-units = 1
 
 | crate | 依赖 |
 |---|---|
+| **iuv-proto（M10，49 号）** | `serde`、`postcard`（workspace；拍板 §6.5：全量 serde） |
 | iuv-data | `serde`（workspace） |
 | iuv-core | `serde`（workspace）、`serde_json`（workspace）、`iuv-data`（workspace） |
 | iuv-ui | `tiny-skia`、`cosmic-text`（workspace）；`iuv-core`（workspace，Theme 消费） |

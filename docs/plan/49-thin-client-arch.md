@@ -96,7 +96,8 @@ iuv-proto，engine 与 client 共同消费——Effect 契约原样升级为线�
 ```
 偏移  长度  字段          说明
 0     4     payload_len   u32 LE，不含 8B 头
-4     1     kind          0=REQ 1=RESP 2=PUSH
+4     1     kind          0=客户端REQ 1=服务端REQ(Ctl/Ping) 2=客户端RESP 3=服务端RESP 4=PUSH
+                          （双向 REQ/RESP 分开编号，帧自描述，不依赖连接方向即可解码）
 5     1     flags         bit0=URGENT（热路径帧优先出队），其余保留
 6     2     stream_id     u16 LE：客户端用偶数、服务端用奇数（防双向 REQ 撞号）；
                           单调递增，回绕时跳过在途号
