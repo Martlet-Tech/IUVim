@@ -824,3 +824,22 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
     忙等光标；hover 高亮/圆角穿透（WM_MOUSEMOVE/NCHITTEST）同样实际未生效。**管理员
     拍板暂不修**——待点击选词/服务端主动 REQ 落地时必须先补消息泵（GetMessage 循环
     或事件唤醒 + 泵集成），届时一并根治。
+- [x] **49 号 P4 服务端候选窗真机回归通过 + ②用户库收敛第一刀**（2026-09-27）:
+  - **服务端候选窗真机验证通过**（管理员实测，远端模式候选窗由 iuv-server 绘制
+    正常）。唯一问题 = **悬停候选窗指针变漏斗**——根因：candwin UI 线程阻塞在
+    `rx.recv()`，无 Win32 消息泵 → WM_SETCURSOR（SendMessage）无响应 → 系统忙等
+    光标；hover 高亮/圆角穿透（WM_MOUSEMOVE/NCHITTEST）同样未实际生效。**拍板
+    暂不修**——待点击选词/服务端主动 REQ 落地时必须先补消息泵（GetMessage 集成
+    或事件唤醒），届时一并根治（悬停/穿透同批复活）。
+  - **②(daemon→server 演进)首切片**：远端模式下 iuv-server 是用户库文件真相源
+    （引擎调权/造词/隐藏走引擎本地写盘），daemon 内存态只是启动快照 → **设置页
+    用户词库面板打开时按 `use_engine_server` 从文件重载**（缺失/损坏保留快照）。
+    修掉已知限制「远端模式权重显示滞后」。文件写入无冲突（远端模式 daemon 管道
+    写路径无人触发）。**已知过渡边界**：混合模式（部分应用本地引擎）下 daemon
+    管道写会用陈旧内存态覆盖文件——待 `C2S::UserMutation` 接线（客户端统一经
+    transport 写 server）后整体消除。
+  - **M10 剩余路线图**：② 剩余——用户库混合模式收敛（C2S::UserMutation 接线）→
+    daemon→server 全量迁移（工具栏/设置页/全局热键）→ ctl/signal 收敛（服务端
+    主动 REQ + 客户端 reader 处理）＋candwin 消息泵补齐（根治悬停漏斗 + 复活
+    hover/穿透 + 接通点击选词）；③ 收口（删 A/B 开关、core/proto 镜像归一、
+    并 main）。
