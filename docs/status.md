@@ -851,3 +851,51 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
   拉起后持续打字至 22:36 无异常。21:38 出现首例 `[resume] 断连保存现场`（真实
   会话带 composition 断连，保存路径工作）。悬停漏斗维持已记录状态（消息泵缺失，
   待点击选词批次根治）。
+
+## 2026-09-27 · 49 号 ② daemon→server 全量迁移完成（七子提交，待真机回归）
+
+- [x] **M10 ② 收敛全量落地**（同分支，子提交 `7f912e2`/`c05540e`/`ac2937c`/`19af3d2`
+  /`8543b8e`/`fc4ed5c`(前条)/`0ea9935`）:
+  - **proto**: 迁移变体补齐——`C2S::{TypingActivity, OpenSettings, ToggleToolbar,
+    ToolbarVisibleQuery}` + `S2C::ToolbarVisible{visible}`。
+  - **transport 控制面（49 §4.1 服务端主动 REQ 打通）**: 服务端每连接
+    `ConnShared`（写互斥 + 在途应答表 + 写者计数）+ `ConnSender`（clone；
+    `request(S2C::Ctl)` 同步等 `C2S::CtlResult`，3s 截止、超时烧号）；conn 帧
+    循环增 `ClientResp` 路由 + 收尾协议（closed → 等写者归零 → 清在途——防句柄
+    值复用错写连接，与客户端读线程收尾同类）。客户端 `ClientConfig.on_server_req`
+    处理器（独立线程执行，阻塞 3s 不阻塞读线程；应答帧带原 stream_id）。
+    测试 +`server_initiated_request_roundtrip`，transport 8/8。
+  - **用户库**: `Engine::apply_user_mutation`（外部变更应用 + 本地写盘，语义与
+    daemon 数据面管道同源）+ iuv-server `C2S::UserMutation` 臂 → 引擎应用 +
+    SHM 发布（EngineService 持唯一 ShmWriter；混合模式本地实例经共享段一致）。
+    测试 +`user_mutation_applies_to_engine`，hot_path 12/12。
+  - **daemon 模块整体迁入** `iuv-server/src/daemon/`（toolbar/prefs/tooltip/
+    fullscreen/window/settings/state/config/hotkey/capture/pet_assets/
+    toolbar_icons/log，~5400 行，`crate::` 路径重写零逻辑改动）。出向依赖抽象:
+    `CtlDispatch` trait（四态翻转分派）——window.rs 齿轮/热键 OpenSettings/
+    ToggleToolbar 改进程内直调；server 实现 `TransportCtlDispatcher`（pid/tid →
+    ConnSender）。`EngineSession` C2S 路由: FocusChanged/ImeState/TypingActivity →
+    ToolbarSignal（pid/tid=握手报备）；OpenSettings → 主循环标志；
+    ToggleToolbar/ToolbarVisibleQuery → toolbar 宿主。main: park 循环 → daemon
+    同款主循环（OpenSettings → 主线程 eframe 设置窗 + hotkeys_changed + 兜底
+    flush）；`DaemonState` 以 shm=None 构造（SHM 零双写者）。
+  - **TSF 侧改线**（远端模式）: 焦点/四态/打字信号 → `C2S::{FocusChanged,
+    ImeState, TypingActivity}`（`notify_*` 模式感知出口；四态信号远端 no-op——
+    sync_state 已覆盖）；langbar 显隐查询/设置/工具栏开关 → transport；
+    `C2S::Ctl` 经进程级提交钩子（ctl.rs `set_submit_hook`/`submit_cmd`，最近
+    激活实例端点 PostMessage 应用，与旧 accept 线程同模式）。本地模式全保留。
+  - **candwin 消息泵补齐（根治悬停漏斗）**: UI 线程 `WakeEvent`（CreateEvent）
+    + sender `SetEvent` 唤醒 + `MsgWaitForMultipleObjectsEx(QS_ALLINPUT)` +
+    PeekMessage 泵——WM_SETCURSOR 等 SendMessage 得到响应（漏斗根除），hover
+    高亮/圆角点击穿透复活；事件句柄 Arc 计数，销毁竞态回环收敛。
+  - **daemon 退役**: 删 `platforms/windows/iuv-daemon`（workspace members/AGENTS/
+    README/契约同步）；dev-deploy 三路并行 → 两路（x64∥x86 TSF），守护进程部署
+    节改为停历史残留进程；m10-build 四车道 → 三车道。
+  - **测试**: workspace 全绿（仅存量 os error 5 环境红；iuv-server --lib 的
+    7 失败 = 迁入的 daemon config/state 文件 IO 测试，同源存量）；clippy 全
+    workspace 零警告。
+  - **待真机回归（管理员，dev-dep + m10-deploy 后）**: ①远端打字 + 工具栏看板
+    （焦点跟随/四态/桌宠——现在由 server 驱动）；②工具栏/全局热键四态翻转
+    （transport Ctl 往返）；③语言栏菜单（设置页打开/工具栏开关/菜单文案）；
+    ④候选窗悬停：指针应正常（漏斗根除）、hover 高亮生效；⑤混合模式调权 →
+    server SHM 发布。**注意旧 daemon 需手动停**（deploy 脚本已处理）。
