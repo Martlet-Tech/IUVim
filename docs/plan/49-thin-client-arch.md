@@ -194,6 +194,11 @@ pub struct KeyToken { pub seq: u32, pub phase: KeyPhase } // phase: Test/Down/Up
 
 **② 预算与超时**
 - 数字（P50/P99、心跳间隔、大帧阈值、单键硬预算）由 P0 实测定档，此处只定结构。
+  **首批实测（2026-09-27，开发机，echo 64B×500，`cargo test -p iuv-win --test rtt_bench -- --nocapture`）**：
+  per-request-connect（现路径形态）P50=17µs / P99≈2.0ms / mean=284µs，尾部全在 accept 间隙与建连；
+  persistent（M10 目标形态）**P50=8µs / P99=13µs / max=17µs**；单次 connect=1.5ms。
+  结论：长连接把 P99 从毫秒级压到 13µs（150×），传输往返不是新架构瓶颈，与 §4.5.3 瘦身判断一致。
+  **真机（打字机）数据采集后回填定档**（§5 P0 出口）。
 - 超时 → **放行按键 + 会话标记 degraded + 记日志**；禁止无上限重试
   （weasel `while(WaitNamedPipe)` = 服务端卡死则宿主卡死）。
 - **基线失效规则**：`composition: None` 是增量语义，依赖双方基线一致。会话首次应答必须全量；
@@ -267,7 +272,7 @@ pub enum ProtoError {
 
 | 期 | 内容 | 出口条件 |
 |---|---|---|
-| **P0 前置** | 热路径往返**实测**（复用 `perf_probe` 新增 `ipc_rtt`）+ §4.5.2 数字定档 | 有 P50/P99 真实数据；**没有数据不开工** |
+| **P0 前置** | 热路径往返**实测**（`iuv-win::ipc::rtt` 基准 + tsf `ipc_rtt` 埋点，已落地）+ §4.5.2 数字定档 | 开发机首批数据已有；**真机 P50/P99 采集回填后开工 P2** |
 | P1 | `iuv-proto` 独立成 crate：帧格式 + 三枚举 + serde codec + 往返/拒绝测试 | 与传输无关，可先落地 |
 | P2 | transport（`iuv-win` 管道长连接 + async）+ 握手/版本协商/认证（§4.4） | 双侧互连成功、版本不匹配有明确报错、未认证连接被拒 |
 | P3 | 热路径打通（§4.5.1 去重 + §4.5.3 瘦身 + 截止时间 + 超时后全量重同步） | 能打字，往返数 = 1/键；超时→重同步路径有测试 |

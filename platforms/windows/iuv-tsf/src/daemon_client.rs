@@ -22,7 +22,7 @@ use windows::Win32::System::Threading::{
     CreateProcessW, CREATE_NO_WINDOW, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
-use crate::log::log_line;
+use crate::log::{log_line, perf_record_with, perf_tick};
 
 /// daemon 自启节流（秒）：Activate 检测离线后 60s 内不重复拉起（防多进程/多键风暴；
 /// 并发拉起由 daemon 单实例互斥兜底）。
@@ -309,8 +309,17 @@ impl DaemonClient {
     }
 
     /// 通用请求（超时/失败 → None）。发送失败 → 清缓存重连一次；用后即弃（`request_once`）。
+    /// 挂 `ipc_rtt` 性能埋点（49 号 §4.5.2 P0：真实请求往返数据；perf_probe 开启才记录）。
     pub fn send_request(&self, req: &Request) -> Option<Response> {
-        self.request_once(req, false)
+        let t = perf_tick();
+        let resp = self.request_once(req, false);
+        if let Some(resp) = &resp {
+            let ok = !matches!(resp, Response::Err { .. });
+            perf_record_with("ipc_rtt", t, || {
+                format!("{} {}", if ok { "ok" } else { "err" }, request_kind(req))
+            });
+        }
+        resp
     }
 
     /// 在线/离线翻转记日志（幂等）。返回**切换前**状态（调用方据此判断"上线翻转"）。
@@ -445,6 +454,23 @@ pub(crate) fn user_mutation_to_request(m: &UserMutation) -> Request {
 /// Response 判定（纯函数，供测试/发送路径复用）：Ok → daemon 已接受。
 pub(crate) fn response_ok(resp: &Response) -> bool {
     matches!(resp, Response::Ok { .. })
+}
+
+/// Request 类别短名（`ipc_rtt` perf 日志明细用）。
+fn request_kind(req: &Request) -> &'static str {
+    match req {
+        Request::Ping => "ping",
+        Request::Swap { .. }
+        | Request::Set { .. }
+        | Request::Remove { .. }
+        | Request::Block { .. } => "mutation",
+        Request::OpenSettings | Request::Quit | Request::ToggleToolbar => "lbar-cmd",
+        Request::Register { .. }
+        | Request::StateSync { .. }
+        | Request::Active { .. }
+        | Request::Unregister { .. } => "instance",
+        Request::GetToolbarVisible => "lbar-query",
+    }
 }
 
 /// 自启冷却（进程级）：距上次尝试 ≥ `LAUNCH_COOLDOWN_SECS` 才允许再次拉起。

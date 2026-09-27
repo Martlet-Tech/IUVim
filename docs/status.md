@@ -530,3 +530,27 @@
   实施顺序：P0 前置（perf_probe 新增 ipc_rtt 实测热路径往返，没有数据不开工）→
   P1（iuv-proto crate）→ P2（transport + 握手/认证）→ P3（热路径打通）→
   P4（四套旧 IPC 收敛、按键路径零轮询）→ P5（失效语义落地）。
+
+- [x] **49 号 P0+P1：`iuv-proto` crate 落地 + `ipc_rtt` 实测基建**（2026-09-27，分支
+  `feat/m10-thin-client`，协议定稿后按 §5 分期实施）：
+  - **P1**：新 crate `crates/iuv-proto`（线上契约唯一权威，49 §4）——8B 帧头
+    （payload_len u32 LE / kind / flags bit0=URGENT / stream_id u16 LE），kind 5 值
+    **双向分编号**（客户端REQ/服务端REQ/客户端RESP/服务端RESP/PUSH，帧自描述）；
+    C2S/S2C/Push 三方向枚举 + 线上载荷类型（Key/ImeState/瘦身版 Effect/Candidate 剔 score/
+    UserMutation/CtlCmd 镜像现有语义）；全量 serde+postcard（拍板 §6.5）；stream_id
+    偶奇分配器（回绕跳过在途，耗尽返回 None）。**恰好一帧**校验：截断/残留/保留 flags 位/
+    未知 kind/未知变体一律拒整帧（49 §4.8 纪律）。帧预算有测试锁死：Key 请求 ≤24B、
+    None 增量应答 ≤24B。同步：01-contract §2.1 快照校准 + §2.2 加 iuv-proto 行；
+    49 §4.2 kind 表改 5 值。
+  - **P0**：`iuv-win::ipc::rtt` 基准模块（同套管道原语测 per-request-connect vs
+    persistent 双形态 echo，预热 20 轮不计样本，NotFound 短重试过 accept 间隙）+
+    tsf `send_request` 挂 `ipc_rtt` 埋点（perf_probe 开关内，`request_kind` 明细分六类）。
+    开发机首批实测：persistent P50=8µs/P99=13µs，per-request P50=17µs/P99≈2.0ms
+    （accept 间隙主导），connect=1.5ms——**长连接 150×@P99**，印证 49 §4.0 推翻旧否决。
+    真机（打字机）数据待采集回填（`cargo test -p iuv-win --test rtt_bench -- --nocapture`）。
+  - **测试**：iuv-proto 18 项契约测试全绿（往返/拒整帧/帧预算/回绕/协商）；rtt_bench 绿；
+    clippy 全 workspace 零警告；`cargo check --workspace` 零警告。
+  - **存量环境问题（与本批无关，干净树复现）**：本机全新编译的测试进程做文件 IO
+    （%TEMP% 写/SHM 创建/配置读写）一律 os error 5「拒绝访问」，shell 直写同路径正常
+    ——疑似杀软/策略拦截未签名测试二进制，致 iuv-core config / iuv-data / SHM 等
+    **存量** IO 类测试在本机红。非沙箱同样复现；49 号相关测试不受影响。

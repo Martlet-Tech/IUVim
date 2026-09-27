@@ -8,14 +8,17 @@
 //! - `pipe.rs`：用户库管道 PipeClient/PipeServer + 底层 `imp`（与 ctl.rs 共用）
 //! - `signal.rs`：工具条信号通道（专用管道，控制面/数据面物理隔离）
 //! - `ctl.rs`：反向控制通道 CtlServer/CtlClient
+//! - `rtt.rs`：IPC 往返延迟基准（49 号 P0 前置：热路径往返实测）
 
 mod codec;
 mod ctl;
 mod msg;
 mod pipe;
+mod rtt;
 mod signal;
 
 pub use ctl::{CtlClient, CtlServer};
 pub use msg::{ctl_pipe_name, CtlCmd, CtlResult, Request, Response, ToolbarSignal};
 pub use pipe::{PipeClient, PipeServer};
+pub use rtt::{bench as rtt_bench, test_pipe_name as rtt_test_pipe_name, RttReport, RttStats};
 pub use signal::{SignalClient, SignalServer};
