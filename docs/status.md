@@ -739,3 +739,11 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
     UAC 提权 taskkill 杀掉，下次任意普通应用 Activate 惰性重启即恢复中完整性。
     **后续方向**：daemon→server 演进（P4 剩余）后问题消失；短期若复发，可考虑给
     daemon 也套受限计划任务启动。
+- [x] **49 号 P4 配置热载服务端侧真机验证通过**（2026-09-27 三轮）：设置页切主题
+  Dark→Light，server 8848 日志 epoch 1→4（每次保存约 1.5s 内两次写，设置页双写、
+  幂等无害）`[config] 配置热载生效` → 引擎 set_config，**无需重启 server**。
+  Push→客户端接收链路本轮未被真机触发（改主题期间无远端客户端在线打字——
+  在打字的 ZCode 是本地模式；push 搭下一请求便车无车可搭，且随后 server 重启
+  epoch 清零、客户端重连时自行 Config::load 拿到新配置）。链路有无头测试覆盖；
+  真机验证法：notepad 保持打字状态改主题，下一键应即切主题 + tsf 日志出现
+  「配置推送 epoch=」。daemon 已以中完整性重启（ZCode 上线，error 5 归零）。
