@@ -138,9 +138,11 @@ pub struct KeyOutcome {
     pub reading: Option<String>,
     /// Some → 会话结束：`Commit(text)` 上屏文本 / `Cancel` 取消清空。
     pub end: Option<SessionEnd>,
-    /// 以下三项仅 `Caps::UIELEMENT`（客户端自绘候选时才有意义；服务端自渲染候选窗，
-    /// 普通客户端不消费——49 §4.5.3）。
+    /// 以下四项仅 `Caps::UIELEMENT`（客户端自绘候选时才有意义；服务端自渲染候选窗，
+    /// 普通客户端不消费——49 §4.5.3）。`all_candidates` 为**过渡期字段**（游戏内候选栏
+    /// 翻页数据源；P3 客户端自绘期间随应答回传，服务端自渲染落地后移除）。
     pub candidates: Option<Vec<Candidate>>,
+    pub all_candidates: Option<Vec<Candidate>>,
     pub page: Option<PageInfo>,
     pub selected: Option<u32>,
 }

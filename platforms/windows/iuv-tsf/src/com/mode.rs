@@ -20,8 +20,13 @@ impl TextService {
 
     /// 运行时四态变化后的收尾：live 重渲当前会话（点简繁/全半角/标点立即生效）+ StateSync 上报。
     pub(crate) fn after_runtime_change(&self) {
-        // 当前会话重渲：effect() 内部 live 读 runtime，切换后候选/预编辑立即跟随。
-        if let Some(sess) = self.session.borrow().as_ref() {
+        // M10 远端模式：四态同步给服务端（会话运行时）；过渡期不重渲当前会话
+        // （四态只影响后续键的服务端处理，当前候选重渲需另发请求——P4 收敛时统一）。
+        if crate::com::remote_host::use_server() {
+            if let Some(r) = crate::com::remote_host::remote() {
+                r.sync_state(&self.runtime_snapshot());
+            }
+        } else if let Some(sess) = self.session.borrow().as_ref() {
             let effect = sess.effect();
             self.dispatch(&effect);
         }
@@ -101,7 +106,12 @@ impl TextService {
     pub(crate) fn flush_session(&self) {
         self.ui.borrow_mut().hide();
         self.cand_elem.borrow_mut().end();
-        let text: Option<String> = self.session.borrow().as_ref().map(|s| s.pending_text());
+        // M10：远端模式原文 = 最近 composition 去切分撇号（过渡近似，见 remote_host）。
+        let text: Option<String> = if crate::com::remote_host::use_server() {
+            crate::com::remote_host::remote().and_then(|r| r.pending_raw_text())
+        } else {
+            self.session.borrow().as_ref().map(|s| s.pending_text())
+        };
         if let Some(comp) = self.composition.borrow().as_ref() {
             match text.as_deref() {
                 Some(t) if !t.is_empty() => match comp.commit(t) {
@@ -116,6 +126,13 @@ impl TextService {
         }
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
+        *self.last_effect.borrow_mut() = None;
+        // M10：远端会话收尾（尽力而为，断线无副作用）。
+        if crate::com::remote_host::use_server() {
+            if let Some(r) = crate::com::remote_host::remote() {
+                r.end_session();
+            }
+        }
         // M1 桌宠：flush_session 强制结束会话 → 发 Typing(false)（若之前在打字）。
         // 与 dispatch 边沿检测互补：dispatch 走正常 end 路径；flush_session 走强制路径。
         self.force_typing_stop();

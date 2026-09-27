@@ -591,3 +591,24 @@
   `EndSession` 后新会话、Esc 取消、无 UIELEMENT 能力零候选推送。clippy 零警告。
   服务端侧热路径契约全部可自动化验证；**P3b（TSF 薄客户端化 + Test/KeyDown 去重）待做，
   完成后需真机打字回归**。
+
+- [x] **49 号 P3b：TSF 薄客户端化（A/B 开关，待真机回归）**（2026-09-27，同分支）：
+  新模块 `com/remote_host.rs`——进程级 `RemoteHandle` 连 iuv-server：
+  - **Test/KeyDown 单槽去重（§4.5.1）**：`key_test` 发请求缓存裁定（同键重复 Test 复用）；
+    `key_down` 命中缓存零 IPC、未命中现场处理；
+  - **截止时间（§4.5.2）**：每键 20ms；超时 → 放行 + degraded → 下一键 `full=true`
+    全量重同步（测试验证 full 标志真实翻转）；`Busy` 不触发；
+  - **失效语义 A（§4.5.4）**：断线/Closed → offline，按键全部放行（P5 补方案 C）；
+  - 路由判定**全部留在客户端**（keymap/passthrough/全角/中文标点依赖本地态）；
+    `KeyOutcome` 经 `merge_outcome` 以 `last_effect` 为基线组装 Effect，复用既有
+    dispatch/候选窗/composition 渲染路径（本地/远端共用一套 UI 代码）；
+  - 客户端配置副本（`Config::use_engine_server` 新字段，默认 false=现状零行为变化）：
+    远端模式不加载词库/引擎；daemon 配置纪元热载走新 `DaemonClient::poll_client`
+    （无引擎变体：用户库注入跳过，服务端持有）；
+  - 四态同步：`after_runtime_change`/会话开始时 `C2S::ImeState`（差量，未变化不发）；
+  - flush_session：远端原文 = composition 去撇号（过渡近似，服务端补 pending_text 后消除）。
+  **测试**：remote_host 3 项单测全绿（去重/超时→degraded→full 重同步真实翻转/
+  断线放行）；TSF 39 通过 + 2 存量 SHM 环境失败；clippy 零警告；workspace 编译通过。
+  **真机回归（管理员）**：dev-dep 后 ①默认 `use_engine_server=false` 回归现状；
+  ②config.json 加 `"use_engine_server": true` + 启动 `iuv-server.exe` → 打字验证：
+  中文拼音/候选窗/空格上屏/Esc 取消/Shift 中英/Ctrl+Space/点简繁/翻页/游戏内候选。

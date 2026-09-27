@@ -135,6 +135,16 @@ impl EngineSession {
                     })
                     .collect()
             }),
+            all_candidates: with_ui.then(|| {
+                effect
+                    .all_candidates
+                    .iter()
+                    .map(|c| Candidate {
+                        text: c.text.clone(),
+                        kind: wire_candidate_kind(c.kind),
+                    })
+                    .collect()
+            }),
             page: with_ui.then_some(PageInfo {
                 page: effect.page.page as u32,
                 page_count: effect.page.page_count as u32,

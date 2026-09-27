@@ -19,6 +19,27 @@ impl TextService {
     /// （Activate 重发激活 + 本函数按键路径），零交互盲区以注销/重启规避
     /// （正式使用不重启 daemon；对齐小狼毫纯事件驱动架构）。
     pub(crate) fn daemon_poll_tick(&self) {
+        // M10 远端模式：无本地引擎——只做配置纪元热载（客户端副本 + 候选窗主题）
+        // 与上线翻转重注册；用户库版本注入跳过（服务端持有用户库，P4 收敛）。
+        if crate::com::remote_host::use_server() {
+            let Some(remote) = crate::com::remote_host::remote() else {
+                return;
+            };
+            if let Some(client) = self.daemon.borrow().as_ref() {
+                client.poll_client(
+                    |cfg| {
+                        remote.set_config(cfg.clone());
+                        let theme = match cfg.theme {
+                            iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
+                            iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
+                        };
+                        self.ui.borrow_mut().set_theme(theme);
+                    },
+                    || self.signal_focus_gained(),
+                );
+            }
+            return;
+        }
         let Some(engine) = engine() else { return };
         if let Some(client) = self.daemon.borrow().as_ref() {
             client.poll(

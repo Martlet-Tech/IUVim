@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use iuv_core::{Engine, ImeState, UserMutation, UserRemote};
+use iuv_core::{Config, Engine, ImeState, UserMutation, UserRemote};
 use iuv_win::{PipeClient, Request, Response, ShmReader, SignalClient, ToolbarSignal};
 use windows::Win32::System::Threading::{
     CreateProcessW, CREATE_NO_WINDOW, PROCESS_INFORMATION, STARTUPINFOW,
@@ -207,7 +207,10 @@ impl DaemonClient {
         }
 
         // 3. config_epoch 变化 → 回调（与用户库注入解耦，独立热载）。
-        changed |= self.on_config_epoch_consume(engine, epoch, &on_config_epoch);
+        if self.on_config_epoch_consume(epoch) {
+            on_config_epoch(engine);
+            changed = true;
+        }
 
         // 4. 在线翻转：离线→在线 → 重新 Register（§4.4 daemon 重启恢复）。
         let was_offline = !self.set_online(true);
@@ -218,22 +221,52 @@ impl DaemonClient {
         changed
     }
 
-    /// config_epoch 变化 → 回调（text_service 注入：engine.set_config + candwin.set_theme）。
-    /// 返回 true = 纪元确实消费（回调已触发）。
-    fn on_config_epoch_consume(
-        &self,
-        engine: &Arc<Engine>,
-        epoch: u32,
-        cb: &dyn Fn(&Arc<Engine>),
-    ) -> bool {
+    /// config_epoch 变化 → 消费纪元（回调由调用方触发：local 注入引擎 / remote 更新
+    /// 客户端配置副本，见 poll/poll_client）。返回 true = 纪元确实消费。
+    fn on_config_epoch_consume(&self, epoch: u32) -> bool {
         if epoch != *self.last_epoch.lock().unwrap_or_else(|e| e.into_inner()) {
             *self.last_epoch.lock().unwrap_or_else(|e| e.into_inner()) = epoch;
             log_line(&format!("[daemon] 配置纪元 {epoch}：触发配置热载"));
-            cb(engine);
             true
         } else {
             false
         }
+    }
+
+    /// M10 远端模式的 daemon 轮询（`poll` 的无引擎变体）：
+    /// 只做配置纪元热载（回调交付新 `Config`，调用方更新客户端副本/候选窗主题）
+    /// 与上线翻转重注册；**用户库版本注入跳过**（服务端持有用户库，P4 收敛）。
+    pub fn poll_client(
+        &self,
+        mut on_config_epoch: impl FnMut(&Config),
+        mut on_online: impl FnMut(),
+    ) -> bool {
+        let (_version, epoch) = {
+            let mut shm = self.shm.lock().unwrap_or_else(|e| e.into_inner());
+            if shm.is_none() {
+                match ShmReader::open() {
+                    Ok(r) => *shm = Some(r),
+                    Err(e) => {
+                        log_line(&format!("[daemon] 共享段打开失败（daemon 离线）：{e}"));
+                        self.set_online(false);
+                        return false;
+                    }
+                }
+            }
+            let reader = shm.as_ref().expect("shm 刚已确认存在");
+            (reader.version(), reader.config_epoch())
+        };
+        let mut changed = false;
+        if self.on_config_epoch_consume(epoch) {
+            on_config_epoch(&Config::load());
+            changed = true;
+        }
+        let was_offline = !self.set_online(true);
+        if was_offline {
+            log_line("[daemon] daemon 上线翻转：重新注册工具栏实例（§4.4）");
+            on_online();
+        }
+        changed
     }
 
     /// 发管道写请求：UserMutation → Request → 发送。失败重连一次。

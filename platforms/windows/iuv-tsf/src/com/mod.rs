@@ -7,4 +7,5 @@ pub(crate) mod dispatch;
 pub(crate) mod engine_host;
 pub(crate) mod key_routing;
 pub(crate) mod mode;
+pub(crate) mod remote_host;
 pub mod text_service;

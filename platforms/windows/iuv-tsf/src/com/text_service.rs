@@ -92,6 +92,9 @@ pub(crate) struct TextService {
     /// 活动会话；None = 无会话（字母键将开启新会话）。
     /// Rc 共享：候选窗点击/hover 回调（同线程）经克隆访问。
     pub(crate) session: Rc<RefCell<Option<Session>>>,
+    /// M10 远端模式：最近一次 Effect 基线（KeyOutcome 组装用；会话活性判定）。
+    /// Rc 共享：候选窗点击回调同线程访问。本地模式恒 None。
+    pub(crate) last_effect: Rc<RefCell<Option<iuv_core::Effect>>>,
     /// composition 封装（随会话创建/销毁）。Rc 共享：候选窗回调 dispatch 用。
     pub(crate) composition: Rc<RefCell<Option<Composition>>>,
     /// 候选窗：CandwinCandidateWindow（M4：ULW 呈现，iuv-ui 绘图）。Rc 共享：同上。
@@ -134,6 +137,7 @@ impl TextService {
         let composition = Rc::new(RefCell::new(None));
         let caret = Rc::new(Cell::new(CaretRect::default()));
         let cand_elem = Rc::new(RefCell::new(CandidateElementHost::new()));
+        let last_effect: Rc<RefCell<Option<iuv_core::Effect>>> = Rc::new(RefCell::new(None));
         // 候选窗交互接线（同线程回调；点击=页内行号→Digit 键上屏；悬停=纯视觉，
         // 窗口内部处理，不驱动会话）。
         // M4 主题：直接读 config.json（引擎可能仍在后台加载，engine() 不可依赖）：
@@ -153,11 +157,32 @@ impl TextService {
             let u = ui_rc.clone();
             let ca = caret.clone();
             let ce = cand_elem.clone();
+            let le = last_effect.clone();
             ui_rc
                 .borrow_mut()
                 .set_on_click(Some(Box::new(move |row: usize| {
                     // Digit 键位上限 1-9（row 0-8）；超限忽略（page_size 配置极端时防御）。
                     if row >= 9 {
+                        return;
+                    }
+                    // M10 远端模式：点击 = Digit 键经远端会话，基线组装后走同一渲染路径。
+                    if crate::com::remote_host::use_server() {
+                        let outcome = crate::com::remote_host::remote().and_then(|r| {
+                            r.key_down(Key::Digit((row + 1) as u8), Default::default())
+                        });
+                        if let Some(o) = outcome {
+                            let base = le.borrow_mut().take();
+                            let (effect, ended) = crate::com::dispatch::merge_outcome(base, o);
+                            dispatch_effect(&s, &c, &u, &ca, &ce, &effect);
+                            if ended {
+                                le.borrow_mut().take();
+                                if let Some(r) = crate::com::remote_host::remote() {
+                                    r.end_session();
+                                }
+                            } else {
+                                *le.borrow_mut() = Some(effect);
+                            }
+                        }
                         return;
                     }
                     let effect: Option<iuv_core::Effect> = s
@@ -177,6 +202,7 @@ impl TextService {
             layout_sink: RefCell::new(None),
             thread_focus_cookie: Cell::new(0),
             session,
+            last_effect,
             composition,
             ui: ui_rc,
             caret,
@@ -414,7 +440,13 @@ impl TextService_Impl {
 
         // 后台异步加载引擎（词库 17MB/65 万词条）：切到输入法即开始，
         // 首次按键不再同步加载卡顿；加载完成前按键透明放行。
-        start_engine_load();
+        // M10：模式一次性判定——远端模式改连 iuv-server（薄客户端，不加载词库）。
+        crate::com::remote_host::init_mode();
+        if crate::com::remote_host::use_server() {
+            crate::com::remote_host::start_remote_load();
+        } else {
+            start_engine_load();
+        }
 
         // M6 daemon 客户端装配：user_path = 现有 iuv.user.imedic 路径逻辑。共享段只读
         // 引用 + 管道写；daemon 不在线 → 引擎写路径自动降级本地写盘（绝不挂键）。
@@ -425,7 +457,7 @@ impl TextService_Impl {
         if let Some(engine) = engine() {
             engine.set_user_remote(Some(daemon.clone()));
             self.remote_registered.set(true);
-        } else {
+        } else if !crate::com::remote_host::use_server() {
             log_line("[daemon] 引擎尚未加载完成：远端写后端延迟到首键注册");
         }
         *self.daemon.borrow_mut() = Some(daemon.clone());
