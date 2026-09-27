@@ -319,6 +319,10 @@ struct SettingsApp {
     state: Arc<DaemonState>,
     /// 工具栏宿主（录入态开关通知：全局热键临时注销，41-keymap-settings.md §12）。
     toolbar: Arc<crate::toolbar::ToolbarHost>,
+    /// M10 ②：远端模式（use_engine_server）——iuv-server 是用户库文件真相源
+    /// （引擎调权/造词直接本地写盘），daemon 内存态只是启动快照 → 用户库面板
+    /// 打开时先从文件重载，显示才不滞后（构造时一次性判定）。
+    remote_mode: bool,
     /// 当前标签页。
     tab: Tab,
     /// 主题单选值（"light"/"dark"）。
@@ -384,6 +388,8 @@ impl SettingsApp {
         SettingsApp {
             state,
             toolbar,
+            // 一次性判定（面板打开时读盘一次；改模式后下次开面板生效）。
+            remote_mode: iuv_core::Config::load().use_engine_server,
             tab: Tab::Common,
             theme: cfg.theme,
             orientation: cfg.candidate_orientation,
@@ -1095,6 +1101,20 @@ impl SettingsApp {
 
     /// 用户库列表 + 清除全部。
     fn user_dict_snapshot(&self) -> (usize, usize, Vec<String>) {
+        // M10 ②：远端模式文件真相源在 iuv-server（引擎写盘），daemon 内存态
+        // 是启动快照 → 面板打开先重载（文件缺失/损坏保留现状，不炸面板）。
+        if self.remote_mode {
+            match UserDict::load(&self.state.user_dict_path) {
+                Ok(fresh) => {
+                    *self.state.dict.lock().unwrap_or_else(|p| p.into_inner()) = fresh;
+                }
+                Err(e) => {
+                    log::log_line(&format!(
+                        "[settings] 远端模式用户库重载失败（保留快照）：{e}"
+                    ));
+                }
+            }
+        }
         let dict = self.state.dict.lock().unwrap_or_else(|p| p.into_inner());
         let mut lines = Vec::new();
         for (code, word, adj) in dict.cover_iter() {
