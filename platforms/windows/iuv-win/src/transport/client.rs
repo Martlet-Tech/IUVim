@@ -30,6 +30,11 @@ use super::{
     read_frame_ov, write_frame_ov, SendHandle, TransportError, CONNECT_RETRY_MS, WRITE_TIMEOUT_MS,
 };
 
+/// 服务端请求处理器：把 `S2C::Ctl` 等服务端主动请求转换为客户端应答
+/// （`C2S::CtlResult` 等）。**阻塞执行**（内部自行跨线程编排 + 限时），由
+/// 独立线程调用，不阻塞读线程。None = 服务端请求被丢弃（服务端等待超时）。
+pub type ServerReqHandler = Arc<dyn Fn(S2C) -> C2S + Send + Sync>;
+
 /// 客户端连接配置。
 pub struct ClientConfig {
     pub pipe_name: String,
@@ -44,6 +49,8 @@ pub struct ClientConfig {
     /// 会话重绑令牌（§4.5.4 方案 C；P2 阶段服务端尚不处理重绑）。
     pub resume: Option<ResumeToken>,
     pub handshake_timeout: Duration,
+    /// 服务端主动请求处理（49 §4.1 控制面：工具栏 Ctl → 客户端应用 → 回结果）。
+    pub on_server_req: Option<ServerReqHandler>,
 }
 
 /// 握手成功后的服务端应答摘要（`S2C::HelloAck` 的字段提升，调用方免解枚举）。
@@ -68,6 +75,8 @@ struct Shared {
     clients: AtomicUsize,
     /// 写互斥：overlapped 同句柄并发读写安全，但两次写不得交错（防帧字节交错）。
     write_lock: Mutex<()>,
+    /// 服务端请求处理器（None = 丢弃服务端请求）。
+    server_req_handler: Option<ServerReqHandler>,
 }
 
 /// 传输客户端。`Clone` 共享同一条连接；**最后一个 clone drop 时关闭连接**
@@ -189,6 +198,7 @@ pub fn connect(
         reader: Mutex::new(None),
         clients: AtomicUsize::new(1),
         write_lock: Mutex::new(()),
+        server_req_handler: cfg.on_server_req.clone(),
     });
     let reader = std::thread::Builder::new()
         .name("iuv-transport-rx".into())
@@ -315,7 +325,34 @@ fn reader_loop(shared: Arc<Shared>) {
                 iuv_proto::Payload::Push(p) => {
                     let _ = shared.push_tx.send(p);
                 }
-                // ServerReq（Ctl/Ping）：服务端尚未发起。
+                iuv_proto::Payload::ServerReq(s2c) => {
+                    // 49 §4.1 控制面：服务端主动请求 → 独立线程执行处理器
+                    //（可能阻塞至 3s 等 TSF 线程应用），读线程继续分发不受阻。
+                    if let Some(handler) = shared.server_req_handler.clone() {
+                        let shared2 = shared.clone();
+                        let stream_id = hdr.stream_id;
+                        let spawned = std::thread::Builder::new()
+                            .name("iuv-transport-ctl".into())
+                            .spawn(move || {
+                                let resp = handler(s2c);
+                                let _w = shared2
+                                    .write_lock
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner());
+                                let _ = write_frame_ov(
+                                    shared2.h.get(),
+                                    stream_id,
+                                    false,
+                                    &iuv_proto::Payload::ClientResp(resp),
+                                    WRITE_TIMEOUT_MS,
+                                );
+                            });
+                        if spawned.is_err() {
+                            // 线程创建失败：无法应答，服务端按超时处理。
+                        }
+                    }
+                    // 无处理器：静默丢弃（服务端等待超时自行降级）。
+                }
                 _ => {
                     exit(&shared);
                     return;

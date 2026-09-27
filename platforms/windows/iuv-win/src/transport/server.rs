@@ -6,12 +6,14 @@
 //!
 //! 过载防线（49 §4.7）：连接数上限（超限即关，`Session` 不装配）。
 
+use std::collections::HashMap;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, HANDLE, WAIT_OBJECT_0,
@@ -24,13 +26,13 @@ use windows::Win32::System::IO::CancelIoEx;
 use windows_core::PCWSTR;
 
 use iuv_proto::{
-    negotiate, Auth, BuildId, Caps, ClientInfo, Payload, ProtoError, Push, ResumeToken, C2S,
-    PROTO_MAX, PROTO_MIN, S2C,
+    negotiate, Auth, BuildId, Caps, ClientInfo, Payload, ProtoError, Push, ResumeToken,
+    StreamIdAlloc, C2S, PROTO_MAX, PROTO_MIN, S2C,
 };
 
 use super::{
-    read_frame_ov, write_frame_ov, HandleGuard, OverlapHost, SendHandle, HANDSHAKE_TIMEOUT_MS,
-    WRITE_TIMEOUT_MS,
+    read_frame_ov, write_frame_ov, HandleGuard, OverlapHost, SendHandle, TransportError,
+    HANDSHAKE_TIMEOUT_MS, WRITE_TIMEOUT_MS,
 };
 
 /// 单帧读缓冲（64 KiB，与 `iuv_proto::MAX_PAYLOAD` 一致）。
@@ -57,7 +59,8 @@ pub trait Session: Send + 'static {
 /// `caps` = 服务端 ∩ 客户端的能力交集（会话据此决定候选数据等推送）。
 /// `resume` = 客户端重绑请求（49 §4.4：断线重连回绑旧会话，由实现方查注册表）；
 /// `token` = 本连接的重绑令牌（服务端生成，随 `Push::SessionAttached` 下发，
-/// 断连时会话实现可按它保存现场）。
+/// 断连时会话实现可按它保存现场）；
+/// `sender` = 服务端主动请求通道（49 §4.1 控制面：工具栏 Ctl → 客户端）。
 pub trait ConnHandler: Send + Sync + 'static {
     fn on_connect(
         &self,
@@ -65,7 +68,93 @@ pub trait ConnHandler: Send + Sync + 'static {
         caps: Caps,
         resume: Option<ResumeToken>,
         token: ResumeToken,
+        sender: ConnSender,
     ) -> Box<dyn Session>;
+}
+
+/// 连接级共享写状态（conn 线程与 [`ConnSender`] 共用）。
+pub(crate) struct ConnShared {
+    pub(crate) h: SendHandle,
+    pub(crate) write_lock: Mutex<()>,
+    /// 在途服务端请求：stream_id（奇数）→ 应答通道。
+    pub(crate) inflight: Mutex<HashMap<u16, mpsc::Sender<C2S>>>,
+    /// 进行中的写计数：conn 线程退出前等待归零（防句柄值复用后写错连接——
+    /// 与客户端读线程收尾协议同类问题，2026-09-27）。
+    pub(crate) writers: AtomicUsize,
+    pub(crate) closed: AtomicBool,
+}
+
+/// 服务端主动请求通道（49 §4.1 控制面）：连接线程之外（如工具栏线程）可经它
+/// 向客户端发 `S2C::Ctl` 并等 `C2S::CtlResult`。连接关闭后 request 返回 Closed。
+pub struct ConnSender {
+    shared: Arc<ConnShared>,
+    ids: Mutex<StreamIdAlloc>,
+}
+
+impl Clone for ConnSender {
+    fn clone(&self) -> Self {
+        ConnSender {
+            shared: self.shared.clone(),
+            ids: Mutex::new(self.ids.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+        }
+    }
+}
+
+impl ConnSender {
+    /// 服务端发起请求（`S2C::Ctl`/`Ping`），同步等客户端应答（`C2S::CtlResult` 等）。
+    /// 超时烧号不复用（与客户端 `request` 同纪律）。
+    pub fn request(&self, req: S2C, timeout: Duration) -> Result<C2S, TransportError> {
+        use std::sync::atomic::Ordering;
+        if self.shared.closed.load(Ordering::Acquire) {
+            return Err(TransportError::Closed);
+        }
+        let id = self
+            .ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .alloc()
+            .ok_or_else(|| TransportError::Io(io::Error::other("服务端 stream_id 耗尽")))?;
+        let (tx, rx) = mpsc::channel();
+        self.shared
+            .inflight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, tx);
+        let _guard = crate::transport::WriteGuard::new(&self.shared.writers);
+        let wr = {
+            let _w = self.shared.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+            if self.shared.closed.load(Ordering::Acquire) {
+                Err(TransportError::Closed)
+            } else {
+                write_frame_ov(
+                    self.shared.h.get(),
+                    id,
+                    false,
+                    &Payload::ServerReq(req),
+                    WRITE_TIMEOUT_MS,
+                )
+            }
+        };
+        if let Err(e) = wr {
+            self.shared
+                .inflight
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+            return Err(e);
+        }
+        match rx.recv_timeout(timeout) {
+            Ok(c2s) => {
+                self.ids
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .release(id);
+                Ok(c2s)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Deadline),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
+        }
+    }
 }
 
 /// 一次 `on_c2s` 的产出：0/1 条应答 + 任意条推送。
@@ -302,7 +391,23 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
     }
     let caps = Caps(ctx.caps.0 & want_caps.0);
     let token = next_token();
-    let mut session = ctx.handler.on_connect(&client, caps, resume, token);
+    let conn_shared = Arc::new(ConnShared {
+        h: SendHandle::new(h),
+        write_lock: Mutex::new(()),
+        inflight: Mutex::new(HashMap::new()),
+        writers: AtomicUsize::new(0),
+        closed: AtomicBool::new(false),
+    });
+    let mut session = ctx.handler.on_connect(
+        &client,
+        caps,
+        resume,
+        token,
+        ConnSender {
+            shared: conn_shared.clone(),
+            ids: Mutex::new(StreamIdAlloc::server()),
+        },
+    );
     write_frame_ov(
         h,
         0,
@@ -324,10 +429,10 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
     )
     .map_err(|e| io::Error::other(format!("SessionAttached 写失败: {e}")))?;
 
-    // —— 帧循环：客户端只准发 ClientReq（49 §4.3 方向即类型）——
+    // —— 帧循环：客户端只准发 ClientReq / ClientResp（49 §4.3 方向即类型）——
     loop {
         if ctx.stop.load(Ordering::SeqCst) {
-            return Ok(());
+            break;
         }
         let (hdr, payload) =
             read_frame_ov(h, u32::MAX).map_err(|e| io::Error::other(format!("请求读失败: {e}")))?;
@@ -335,6 +440,9 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
             Payload::ClientReq(c2s) => {
                 let mut reply = Reply::default();
                 session.on_c2s(c2s, &mut reply);
+                // 应答与推送统一走共享写锁（ConnSender 可能并发写服务端主动请求帧）。
+                let _guard = crate::transport::WriteGuard::new(&conn_shared.writers);
+                let w = conn_shared.write_lock.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(s2c) = reply.resp.take() {
                     write_frame_ov(
                         h,
@@ -349,10 +457,36 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
                     write_frame_ov(h, 0, false, &Payload::Push(p), WRITE_TIMEOUT_MS)
                         .map_err(|e| io::Error::other(format!("推送写失败: {e}")))?;
                 }
+                drop(w);
             }
-            _ => return Err(io::Error::other("协议违规: 客户端只能发 ClientReq")),
+            // 服务端主动请求的应答（C2S::CtlResult 等）→ 按号路由给等待方。
+            Payload::ClientResp(c2s) => {
+                let tx = conn_shared
+                    .inflight
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&hdr.stream_id);
+                if let Some(tx) = tx {
+                    let _ = tx.send(c2s);
+                }
+            }
+            _ => return Err(io::Error::other("协议违规: 客户端只能发 ClientReq/ClientResp")),
         }
     }
+    // —— 收尾协议（与客户端读线程同类）：停新写 → 等在途写归零 → 清在途 → 关句柄。
+    conn_shared.closed.store(true, Ordering::SeqCst);
+    for _ in 0..100 {
+        if conn_shared.writers.load(Ordering::SeqCst) == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    conn_shared
+        .inflight
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    Ok(())
 }
 
 /// BYTE 模式 + overlapped 双工服务实例（49 §4.2：显式分帧，不依赖消息模式）。

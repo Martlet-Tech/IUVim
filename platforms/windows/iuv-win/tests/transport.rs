@@ -31,6 +31,7 @@ fn client_cfg(pipe: &str) -> ClientConfig {
         app: "test.exe".into(),
         resume: None,
         handshake_timeout: Duration::from_secs(5),
+        on_server_req: None,
     }
 }
 
@@ -83,6 +84,7 @@ impl ConnHandler for Factory {
         _caps: Caps,
         _resume: Option<iuv_proto::ResumeToken>,
         _token: iuv_proto::ResumeToken,
+        _sender: iuv_win::transport::ConnSender,
     ) -> Box<dyn Session> {
         Box::new(EchoSession)
     }
@@ -97,6 +99,7 @@ impl ConnHandler for SlowFactory {
         _caps: Caps,
         _resume: Option<iuv_proto::ResumeToken>,
         _token: iuv_proto::ResumeToken,
+        _sender: iuv_win::transport::ConnSender,
     ) -> Box<dyn Session> {
         Box::new(SlowSession { delay: self.0 })
     }
@@ -309,4 +312,80 @@ fn max_connections_enforced() {
         Err(e) => panic!("意外错误: {e}"),
     }
     server.stop();
+}
+
+/// ②控制面：服务端主动 REQ（`S2C::Ctl`）→ 客户端处理器 → `C2S::CtlResult` 应答
+/// 按号路由回等待方。工厂在 on_connect 时捕获 ConnSender 供测试线程发起。
+#[test]
+fn server_initiated_request_roundtrip() {
+    use iuv_win::transport::ConnSender;
+    use std::sync::Mutex as StdMutex;
+
+    struct CaptureFactory(StdMutex<Option<ConnSender>>);
+    impl ConnHandler for CaptureFactory {
+        fn on_connect(
+            &self,
+            _client: &iuv_proto::ClientInfo,
+            _caps: Caps,
+            _resume: Option<iuv_proto::ResumeToken>,
+            _token: iuv_proto::ResumeToken,
+            sender: ConnSender,
+        ) -> Box<dyn Session> {
+            *self.0.lock().unwrap() = Some(sender);
+            Box::new(EchoSession)
+        }
+    }
+
+    let pipe = format!(r"\.\pipe\iuv-ctl-test-{}", std::process::id());
+    let factory = Arc::new(CaptureFactory(StdMutex::new(None)));
+    let _server = TransportServer::start(
+        ServerConfig {
+            pipe_name: pipe.clone(),
+            auth: Auth([7u8; 32]),
+            caps: Caps(0),
+            build: BuildId("t".into()),
+            max_connections: 4,
+        },
+        factory.clone(),
+    )
+    .expect("服务端启动");
+    let cfg = ClientConfig {
+        pipe_name: pipe.clone(),
+        proto_min: PROTO_MIN,
+        proto_max: PROTO_MAX,
+        auth: Auth([7u8; 32]),
+        caps: Caps(0),
+        app: "ctl-test".into(),
+        resume: None,
+        handshake_timeout: Duration::from_secs(5),
+        on_server_req: Some(Arc::new(|req| match req {
+            S2C::Ctl { cmd } => C2S::CtlResult(iuv_proto::CtlResult::Ok {
+                state: iuv_proto::ImeState::default(),
+            }),
+            _ => C2S::Err(iuv_proto::ProtoError::Unauthenticated),
+        })),
+    };
+    let (_client, _ack, pushes) = connect(&cfg).expect("握手");
+    // SessionAttached 推送先消费
+    assert!(matches!(
+        pushes.recv_timeout(Duration::from_secs(2)),
+        Ok(Push::SessionAttached { .. })
+    ));
+
+    let sender = factory
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("on_connect 应已捕获 sender");
+    let resp = sender.request(
+        S2C::Ctl {
+            cmd: iuv_proto::CtlCmd::SetMode(true),
+        },
+        Duration::from_secs(2),
+    );
+    match resp {
+        Ok(C2S::CtlResult(iuv_proto::CtlResult::Ok { .. })) => {}
+        other => panic!("Ctl 往返应得 CtlResult::Ok，实际 {other:?}"),
+    }
 }

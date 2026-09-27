@@ -28,7 +28,7 @@ mod server;
 
 pub use auth_file::load_or_create_token;
 pub use client::{connect, ClientConfig, HelloAck, PushStream, TransportClient};
-pub use server::{ConnHandler, Reply, ServerConfig, Session, TransportServer};
+pub use server::{ConnHandler, ConnSender, Reply, ServerConfig, Session, TransportServer};
 
 use std::io;
 
@@ -40,6 +40,22 @@ use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_core::PCWSTR;
 
 use iuv_proto::{decode_payload, encode_frame, FrameHeader, Payload, ProtoError};
+
+/// 服务端连接写者计数 RAII（conn 线程退出前等归零，防句柄值复用错写）。
+pub(crate) struct WriteGuard<'a> {
+    counter: &'a std::sync::atomic::AtomicUsize,
+}
+impl<'a> WriteGuard<'a> {
+    pub(crate) fn new(counter: &'a std::sync::atomic::AtomicUsize) -> Self {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        WriteGuard { counter }
+    }
+}
+impl Drop for WriteGuard<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// 服务管道名（49 §2）。
 pub const SERVICE_PIPE_NAME: &str = r"\\.\pipe\iuv.service.v1";

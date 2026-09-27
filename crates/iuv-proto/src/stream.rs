@@ -5,8 +5,9 @@
 
 use std::collections::HashSet;
 
-/// 单侧 stream_id 分配器。不共享、可移动（连接所有权模型，49 §4.7#8）。
-#[derive(Debug)]
+/// 单侧 stream_id 分配器。不共享、可移动（连接所有权模型，49 §4.7#8）；
+/// Clone 供连接发送器多副本（ConnSender::clone，②控制面）。
+#[derive(Debug, Clone)]
 pub struct StreamIdAlloc {
     next: u16,
     step: u16,
