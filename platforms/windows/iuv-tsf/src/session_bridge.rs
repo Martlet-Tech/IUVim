@@ -192,6 +192,9 @@ fn jump_distance(a: CaretRect, b: CaretRect) -> f64 {
 
 /// 应用 Effect：composition 更新 → 候选窗快照 → 会话结束处理。
 /// 契约 13 任务书 §3.4：SetText → caret → ui.show/update → end 上屏/取消并 hide。
+/// P4 服务端渲染：`render_locally=false`（远端模式）时跳过候选窗快照/显隐——
+/// 窗口由 iuv-server 画，本函数只更新 composition 与 caret 量取（锚点变化由
+/// 调用方上报）；ui.hide 在 end 路径保留（本地窗未建 = 无操作）。
 ///
 /// 返回 `true` 表示会话已结束（effect.end 为 Some 或远跳清除），调用方应丢弃 Session。
 pub fn apply_effect(
@@ -200,6 +203,7 @@ pub fn apply_effect(
     caret: &mut CaretRect,
     effect: &Effect,
     orientation: iuv_core::Orientation,
+    render_locally: bool,
 ) -> bool {
     match &effect.end {
         Some(SessionEnd::Commit(text)) => {
@@ -241,6 +245,10 @@ pub fn apply_effect(
             perf_record_with("settext", t_settext, || {
                 format!("len={}", effect.composition.chars().count())
             });
+            if !render_locally {
+                // P4 服务端渲染：候选窗/跳变判定全跳过（caret 更新已供上报）。
+                return false;
+            }
             let mut snap = effect_to_snapshot(effect);
             snap.orientation = orientation;
             if snap.candidates.is_empty() && snap.reading.is_empty() {

@@ -359,6 +359,20 @@ impl RemoteHandle {
         let _ = self.request(C2S::ImeState(wire));
     }
 
+    /// 光标锚点上报（P4 服务端自渲染：客户端只在锚点变化时发；dpi 由服务端按
+    /// caret 所在显示器自算，此处置 96 占位）。fire-and-forget（服务端回 Ok）。
+    pub(crate) fn sync_caret(&self, caret: iuv_ui::CaretRect) {
+        let _ = self.request(C2S::CaretMoved {
+            rect: iuv_proto::CaretRect {
+                left: caret.x,
+                top: caret.y,
+                right: caret.x + caret.w,
+                bottom: caret.y + caret.h,
+            },
+            dpi: 96,
+        });
+    }
+
     /// flush_session 原文上屏：最近 composition 去切分撇号（过渡近似：
     /// 用户手打引号的极端场景原文会少一个撇号，P4 服务端补 pending_text 后消除）。
     pub(crate) fn pending_raw_text(&self) -> Option<String> {

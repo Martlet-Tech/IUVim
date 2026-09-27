@@ -22,6 +22,9 @@ use super::text_service::TextService;
 impl TextService {
     pub(crate) fn dispatch(&self, effect: &iuv_core::Effect) {
         let t = perf_tick();
+        // P4 服务端渲染：远端模式本地候选窗不画（iuv-server 画），仅更新
+        // composition/caret 并在锚点变化时上报 CaretMoved。
+        let remote = crate::com::remote_host::use_server();
         dispatch_effect(
             &self.session,
             &self.composition,
@@ -29,13 +32,22 @@ impl TextService {
             &self.caret,
             &self.cand_elem,
             effect,
+            !remote,
         );
+        if remote {
+            let caret = self.caret.get();
+            if caret != self.caret_reported.get() {
+                self.caret_reported.set(caret);
+                if let Some(r) = crate::com::remote_host::remote() {
+                    r.sync_caret(caret);
+                }
+            }
+        }
         // M1 桌宠（docs/pet/M1-IMPLEMENTATION.md §2.1 + §4.4）：组合状态 transition
-        // → Typing 信号。"正在打字" = composition 存在 + 候选非空 + 未 end（持续会话中）。
+        // → Typing 信号。"正在打字" = composition 存在 + 未 end（持续会话中）。
+        // （P4 前还有"候选非空"条件——服务端渲染后普通应用候选为空属常态，撤销。）
         // 边沿检测避免每键重复发。
-        let composing_now = self.composition.borrow().is_some()
-            && !effect.candidates.is_empty()
-            && effect.end.is_none();
+        let composing_now = self.composition.borrow().is_some() && effect.end.is_none();
         if composing_now != self.was_typing.get() {
             self.was_typing.set(composing_now);
             if let Some(client) = self.daemon.borrow().as_ref() {
@@ -110,6 +122,7 @@ pub(crate) fn dispatch_effect(
     caret: &Rc<Cell<CaretRect>>,
     cand_elem: &Rc<RefCell<CandidateElementHost>>,
     effect: &iuv_core::Effect,
+    render_locally: bool,
 ) {
     // TSF 候选 UI 元素同步（与自绘窗平行）：候选非空 → Begin/Update；空 → End。
     // effect.end 的提交/取消路径统一走 ended 分支 End，这里跳过避免多余一次 Update。
@@ -137,12 +150,22 @@ pub(crate) fn dispatch_effect(
                     true
                 } else {
                     let mut ui_guard = ui.borrow_mut();
-                    apply_effect(comp, &mut *ui_guard, &mut caret_pos, effect, orientation)
+                    apply_effect(
+                        comp,
+                        &mut *ui_guard,
+                        &mut caret_pos,
+                        effect,
+                        orientation,
+                        render_locally,
+                    )
                 }
             }
             // composition 缺失（异常路径）：仅更新候选窗并继续。
             None => {
                 log_line("dispatch：composition 缺失，仅更新候选窗");
+                if !render_locally {
+                    false // P4 服务端渲染：本地窗不画（match 臂值，非 return）
+                } else {
                 let mut snap = crate::ui::effect_to_snapshot(effect);
                 snap.orientation = orientation;
                 let mut ui_guard = ui.borrow_mut();
@@ -154,6 +177,7 @@ pub(crate) fn dispatch_effect(
                     ui_guard.show(&snap, caret_pos);
                 }
                 effect.end.is_some()
+                }
             }
         }
     };

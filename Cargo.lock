@@ -1677,7 +1677,9 @@ dependencies = [
  "iuv-core",
  "iuv-data",
  "iuv-proto",
+ "iuv-ui",
  "iuv-win",
+ "windows",
 ]
 
 [[package]]

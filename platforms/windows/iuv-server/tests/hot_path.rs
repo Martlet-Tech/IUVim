@@ -107,8 +107,8 @@ fn type_nihao_and_commit_via_space() {
     for (i, o) in outs.iter().enumerate() {
         assert!(o.eaten);
         assert!(o.end.is_none(), "第 {i} 键不应结束会话");
-        assert!(o.candidates.as_ref().is_some_and(|c| !c.is_empty()));
-        assert!(o.all_candidates.as_ref().is_some_and(|c| !c.is_empty()));
+        // P4 服务端自渲染：普通应用零候选载荷（显式空 = 清客户端旧值）
+        assert_eq!(o.candidates.as_ref(), Some(&vec![]), "普通应用候选应为空");
     }
     // 每键 UiElement 推送已裁撤（载荷实测顶破客户端截止）：全量候选单份走 KeyOutcome
     assert!(
@@ -133,9 +133,8 @@ fn composition_delta_and_candidate_move() {
     assert_eq!(moved.composition, None, "composition 未变应回 None（增量）");
     assert_eq!(moved.reading, None);
     assert_eq!(moved.selected, Some(1), "ni 有两个候选：你/尼");
-    let cands = moved.candidates.expect("候选应随选中态重发");
-    assert_eq!(cands[0].text, "你");
-    assert_eq!(cands[1].text, "尼");
+    // P4：候选数据不下发（服务端自渲染），selected 仍随选中态走
+    assert_eq!(moved.candidates.as_ref(), Some(&vec![]));
 
     // 继续输入：composition 变化 → 恢复全量
     let h = key(&client, Key::Char('h'));
@@ -429,4 +428,44 @@ fn end_session_voids_resume_state() {
         }
         other => panic!("应答类型错误: {other:?}"),
     }
+}
+
+/// P4 抑制名单（candidate_owner_apps 命中）：KeyOutcome 携带候选数据源
+/// （客户端游戏桥自绘），服务端窗静默。
+#[test]
+fn suppressed_app_receives_candidate_data() {
+    let dict = Dict::from_entries(vec![
+        ("ni".into(), "你".into(), 100),
+        ("ni".into(), "尼".into(), 50),
+    ]);
+    let cfg = Config {
+        candidate_owner_apps: vec!["wow.exe".into()],
+        ..Config::default()
+    };
+    let engine = Engine::new(dict, cfg);
+    let pipe = test_pipe("suppress");
+    let _server = TransportServer::start(
+        ServerConfig {
+            pipe_name: pipe.clone(),
+            auth: Auth([3u8; 32]),
+            caps: Caps(Caps::UIELEMENT),
+            build: BuildId("test".into()),
+            max_connections: 8,
+        },
+        Arc::new(EngineService::new(engine)),
+    )
+    .expect("服务端启动");
+    // app = wow.exe（命中名单）
+    let mut c = client_cfg(&pipe, Caps(Caps::UIELEMENT));
+    c.app = "wow.exe".into();
+    let (client, _ack, pushes) = connect(&c).expect("握手");
+    assert!(matches!(
+        pushes.recv_timeout(Duration::from_secs(2)),
+        Ok(Push::SessionAttached { .. })
+    ));
+
+    let o = key(&client, Key::Char('n'));
+    let cands = o.candidates.expect("抑制命中必须带候选数据源");
+    assert!(!cands.is_empty(), "抑制命中的客户端拿真实候选");
+    assert!(o.all_candidates.as_ref().is_some_and(|v| !v.is_empty()));
 }

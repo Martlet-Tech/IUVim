@@ -9,7 +9,9 @@ license.workspace = true
 iuv-core = { workspace = true }
 iuv-data = { workspace = true }
 iuv-proto = { workspace = true }
+iuv-ui = { workspace = true }
 iuv-win = { workspace = true }
+windows = { workspace = true }
 
 [[bin]]
 name = "iuv-server"

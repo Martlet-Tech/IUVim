@@ -128,9 +128,12 @@ pub(crate) struct TextService {
     /// 反向控制端点（32-toolbar §4.2/§4.3）：accept 线程 + 隐藏消息窗。Activate 起、
     /// Deactivate/Drop 停（懒建，每个实例一个）。
     ctl: RefCell<Option<CtlEndpoint>>,
-    /// M1 桌宠：上次 dispatch 后的"是否在打字中"状态（composition 存在 + 有候选 + 未 end）。
+    /// M1 桌宠：上次 dispatch 后的"是否在打字中"状态（composition 存在 + 未 end）。
     /// transition 时（true → false / false → true）发 `Typing` 信号驱动 daemon 宠物动画。
     pub(crate) was_typing: Cell<bool>,
+    /// P4 服务端渲染：已上报给 iuv-server 的光标锚点（变化才发 CaretMoved；
+    /// 打字期锚点恒定 → 绝大多数键零上报）。
+    pub(crate) caret_reported: Cell<CaretRect>,
 }
 
 impl TextService {
@@ -176,7 +179,7 @@ impl TextService {
                         if let Some(o) = outcome {
                             let base = le.borrow_mut().take();
                             let (effect, ended) = crate::com::dispatch::merge_outcome(base, o);
-                            dispatch_effect(&s, &c, &u, &ca, &ce, &effect);
+                            dispatch_effect(&s, &c, &u, &ca, &ce, &effect, false);
                             if ended {
                                 le.borrow_mut().take();
                                 if let Some(r) = crate::com::remote_host::remote() {
@@ -193,7 +196,7 @@ impl TextService {
                         .as_mut()
                         .map(|sess: &mut Session| sess.on_key(Key::Digit((row + 1) as u8)));
                     if let Some(e) = effect {
-                        dispatch_effect(&s, &c, &u, &ca, &ce, &e);
+                        dispatch_effect(&s, &c, &u, &ca, &ce, &e, true);
                     }
                 })));
         }
@@ -221,6 +224,7 @@ impl TextService {
             runtime: Arc::new(Mutex::new(Config::load().initial_state)),
             ctl: RefCell::new(None),
             was_typing: Cell::new(false),
+            caret_reported: Cell::new(CaretRect::default()),
         }
     }
 
@@ -662,6 +666,16 @@ impl TextService_Impl {
         };
         let prev = self.caret.get();
         self.caret.set(rect);
+        // P4 服务端渲染：本地窗不跟随——锚点变化上报 iuv-server（其窗口随报移动）。
+        if crate::com::remote_host::use_server() {
+            if rect != self.caret_reported.get() {
+                self.caret_reported.set(rect);
+                if let Some(r) = crate::com::remote_host::remote() {
+                    r.sync_caret(rect);
+                }
+            }
+            return;
+        }
         // 47 号锚定后：打字期锚点坐标恒定（宿主仍每键发 layout 事件），锚点未动即跳过
         // SetWindowPos——这是锚定语义下才有的真实去重（2026-08-29 曾在"跟随尾端"语义下
         // 以收益测不出来撤销，那时坐标每键都在变）。

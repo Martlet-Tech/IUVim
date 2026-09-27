@@ -22,6 +22,14 @@ const OPENCC_FILENAME: &str = "iuv.opencc";
 
 fn main() {
     iuv_win::logger::init_logger("iuv-server.log", true);
+    // P4 服务端自渲染候选窗：PMv2（GetDpiForMonitor 按 caret 所在显示器返回
+    // 真 per-monitor DPI；窗口创建前置位，晚于任何窗口创建则无效）。
+    // SAFETY: 标准一次性进程属性设置；失败（已设置/不支持）忽略。
+    unsafe {
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+    }
     let pipe = pipe_name_from_args().unwrap_or_else(|| SERVICE_PIPE_NAME.to_string());
 
     let t0 = std::time::Instant::now();

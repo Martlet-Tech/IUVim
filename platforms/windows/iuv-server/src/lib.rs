@@ -5,14 +5,16 @@
 //! - 会话结束（`end` / `EndSession`）→ 服务端 Session 丢弃，客户端随后发 `EndSession`；
 //! - `ImeState` → 会话运行时四态（客户端是 OPENCLOSE 真相源）。
 //!
+//! P4 服务端自渲染候选窗（49 §4.5.3/§2）：候选窗由本进程 [`candwin`] 渲染——
+//! - `Effect` → UiSnapshot → 窗口命令（Show/Update/MoveTo/Hide），UI 线程每连接一个；
+//! - 光标锚点由客户端经 `C2S::CaretMoved` 上报（屏幕物理坐标；DPI 服务端自算）；
+//! - `KeyOutcome` 的候选字段只对**抑制名单命中**的连接填充（游戏桥自绘候选栏
+//!   需要 `all_candidates` 数据源），普通应用零候选载荷——每键从几 KB 降到几十字节。
+//!
 //! 过渡期边界（P3，P4 收敛时移除）：
 //! - `UserMutation` 无独立入口——调权/造词/屏蔽**只**经按键在引擎内生效
 //!   （`Session::on_key(SwapLeft/…)` → `engine.swap_weights/…`），此处空实现；
-//! - 候选窗仍由客户端自绘（过渡 caps `UIELEMENT`）：`KeyOutcome` 带当前页候选 +
-//!   全量候选（游戏内候选栏数据源；每键 `Push::UiElement` 推送已裁撤——实测
-//!   单字母 400+ 候选双份载荷顶破客户端截止，见 on_c2s 内注释）；
-//! - `FocusChanged`/`CaretMoved`/`SetMaintenance` 不影响服务端会话
-//!   （38 号：焦点切换不断会话）。
+//! - `FocusChanged`/`SetMaintenance` 不影响服务端会话（38 号：焦点切换不断会话）。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -31,7 +33,10 @@ use iuv_proto::{
 };
 use iuv_win::transport::{ConnHandler, Reply, Session};
 
+pub mod candwin;
 pub mod config_watch;
+
+use crate::candwin::{CandwinCmd, CandwinHandle};
 
 /// 重绑现场保留期：断连后客户端在此时间内带令牌重连可回绑（49 §4.5.4 方案 C）。
 /// 超期回收——服务端不设定时器，`on_connect` 取用时顺带清扫。
@@ -104,6 +109,8 @@ impl ConnHandler for EngineService {
                 (None, None, Arc::new(Mutex::new(ImeState::default())))
             }
         };
+        // 候选窗 UI 线程（每连接一个；主题取引擎当前配置，随 ConfigChanged 热载）。
+        let theme_choice = self.engine.config().theme;
         Box::new(EngineSession {
             engine: self.engine.clone(),
             session,
@@ -114,8 +121,27 @@ impl ConnHandler for EngineService {
             seen_epoch,
             token,
             resumes: self.resumes.clone(),
+            app: _client.app.clone(),
+            candwin: CandwinHandle::spawn(match theme_choice {
+                iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
+                iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
+            }),
+            caret: None,
+            candwin_visible: false,
         })
     }
+}
+
+/// `candidate_owner_apps` 命中判定（客户端游戏桥自绘候选栏 → 本连接不渲染、
+/// KeyOutcome 携带候选数据源）。exe 名单大小写不敏感精确匹配（与 TSF 侧同语义）。
+fn app_suppressed(app: &str, list: &[String]) -> bool {
+    let app = app.to_ascii_lowercase();
+    let app = app.strip_suffix(".exe").unwrap_or(&app);
+    list.iter().any(|owner| {
+        let owner = owner.to_ascii_lowercase();
+        let owner = owner.strip_suffix(".exe").unwrap_or(&owner);
+        owner == app
+    })
 }
 
 /// 一条连接的引擎会话。transport 保证 `on_c2s` 单线程独占调用。
@@ -134,6 +160,13 @@ pub struct EngineSession {
     token: ResumeToken,
     /// 重绑注册表（断连时 Drop 写入现场）。
     resumes: Arc<Mutex<HashMap<u64, (SavedSession, Instant)>>>,
+    /// 客户端宿主进程名（握手报备；抑制名单匹配用）。
+    app: String,
+    /// 会话候选窗（服务端自渲染，49 §4.5.3；抑制命中时静默）。
+    candwin: CandwinHandle,
+    /// 客户端最近上报的光标锚点（屏幕物理坐标；None = 未上报，不渲染）。
+    caret: Option<iuv_ui::CaretRect>,
+    candwin_visible: bool,
 }
 
 /// 断连时保存会话现场（49 §4.4/§4.5.4 方案 C）：连接线程释放
@@ -166,15 +199,21 @@ impl Session for EngineSession {
         let epoch = self.config_epoch.load(Ordering::Relaxed);
         if epoch != self.seen_epoch {
             self.seen_epoch = epoch;
+            let cfg = self.engine.config();
             reply.push(Push::ConfigChanged {
                 epoch,
                 client_view: ClientConfig {
-                    initial_mode: match self.engine.config().initial_state.mode {
+                    initial_mode: match cfg.initial_state.mode {
                         InitialMode::Chinese => ImeMode::Chinese,
                         InitialMode::English => ImeMode::English,
                     },
                 },
             });
+            // 服务端候选窗主题热载（与客户端 set_theme 同语义）。
+            self.candwin.send(CandwinCmd::SetTheme(match cfg.theme {
+                iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
+                iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
+            }));
         }
         match req {
             C2S::Key { key, full, .. } => {
@@ -182,6 +221,8 @@ impl Session for EngineSession {
                 let effect = self.on_key(core_key(&key));
                 let outcome = self.outcome(&effect, full);
                 reply.respond(S2C::KeyResult(KeyVerdict::Consumed(outcome)));
+                // P4 服务端自渲染：Effect → 快照 → 候选窗命令（抑制命中的连接静默）。
+                self.sync_candwin(&effect);
                 // 慢键观测（P0 预算定档数据，49 §4.5.2）：真实词库单键处理分布。
                 let elapsed = t0.elapsed();
                 if elapsed.as_millis() >= 10 {
@@ -201,6 +242,7 @@ impl Session for EngineSession {
             }
             C2S::EndSession { .. } => {
                 self.drop_session();
+                self.hide_candwin();
                 reply.respond(S2C::Ok);
             }
             C2S::ImeState(s) => {
@@ -212,9 +254,18 @@ impl Session for EngineSession {
                 reply.respond(S2C::Ok);
             }
             C2S::Ping { nonce } => reply.respond(S2C::Pong { nonce }),
+            C2S::CaretMoved { rect, .. } => {
+                // 服务端渲染的光标锚点（客户端只在变化时上报；打字期锚点恒定）。
+                let c = iuv_ui::CaretRect { x: rect.left, y: rect.top, w: rect.right - rect.left, h: rect.bottom - rect.top };
+                let moved = self.caret != Some(c);
+                self.caret = Some(c);
+                if moved && self.candwin_visible {
+                    self.candwin.send(CandwinCmd::MoveTo { caret: c });
+                }
+                reply.respond(S2C::Ok);
+            }
             C2S::UserMutation(_)
             | C2S::FocusChanged { .. }
-            | C2S::CaretMoved { .. }
             | C2S::SetMaintenance { .. }
             | C2S::CtlResult(_) => {
                 reply.respond(S2C::Ok);
@@ -250,39 +301,94 @@ impl EngineSession {
         let composition = changed.then(|| effect.composition.clone());
         let reading = changed.then(|| effect.reading.clone());
         self.baseline = Some(effect.composition.clone());
-        let with_ui = self.caps.has(Caps::UIELEMENT);
+        // P4 裁撤：候选窗已由服务端自渲染——候选数据源（游戏桥 UI 元素所需）
+        // 只对抑制名单命中的连接上线；普通应用发空候选（显式清空客户端旧值，
+        // 避免增量合并把上一键候选留在游戏桥里），每键载荷从几 KB 降到几十字节。
+        let element_data = self.caps.has(Caps::UIELEMENT) && self.suppressed();
+        let to_candidates = |list: &[iuv_core::Candidate]| {
+            list.iter()
+                .map(|c| Candidate {
+                    text: c.text.clone(),
+                    kind: wire_candidate_kind(c.kind),
+                })
+                .collect::<Vec<_>>()
+        };
+        // None = 无 UIELEMENT 能力（客户端无元素宿主）；Some(空) = 有能力但服务端
+        // 渲染（显式清空客户端旧值，防增量合并把上一键候选留在游戏桥）。
+        let candidates = if self.caps.has(Caps::UIELEMENT) {
+            Some(if element_data {
+                to_candidates(&effect.candidates)
+            } else {
+                Vec::new()
+            })
+        } else {
+            None
+        };
+        let all_candidates = if self.caps.has(Caps::UIELEMENT) {
+            Some(if element_data {
+                to_candidates(&effect.all_candidates)
+            } else {
+                Vec::new()
+            })
+        } else {
+            None
+        };
         KeyOutcome {
             eaten: true,
             composition,
             reading,
             end: effect.end.clone().map(wire_session_end),
-            candidates: with_ui.then(|| {
-                effect
-                    .candidates
-                    .iter()
-                    .map(|c| Candidate {
-                        text: c.text.clone(),
-                        kind: wire_candidate_kind(c.kind),
-                    })
-                    .collect()
-            }),
-            all_candidates: with_ui.then(|| {
-                effect
-                    .all_candidates
-                    .iter()
-                    .map(|c| Candidate {
-                        text: c.text.clone(),
-                        kind: wire_candidate_kind(c.kind),
-                    })
-                    .collect()
-            }),
-            page: with_ui.then_some(PageInfo {
+            candidates,
+            all_candidates,
+            page: self.caps.has(Caps::UIELEMENT).then_some(PageInfo {
                 page: effect.page.page as u32,
                 page_count: effect.page.page_count as u32,
                 page_size: effect.page.page_size as u32,
                 total: effect.page.total as u32,
             }),
-            selected: with_ui.then_some(effect.selected as u32),
+            selected: self.caps.has(Caps::UIELEMENT).then_some(effect.selected as u32),
+        }
+    }
+
+    /// 抑制名单命中？（`candidate_owner_apps` ∩ 客户端宿主进程名；每次判定读
+    /// 引擎配置——配置热载即时生效，代价一次 Config 克隆，相对引擎单键可忽略。）
+    fn suppressed(&self) -> bool {
+        app_suppressed(&self.app, &self.engine.config().candidate_owner_apps)
+    }
+
+    /// Effect → 候选窗命令（服务端自渲染；49 §4.5.3）。
+    /// 会话结束/取消 → Hide；空快照 → Hide；可见 → Update（原位），不可见 → Show。
+    fn sync_candwin(&mut self, effect: &Effect) {
+        if effect.end.is_some() {
+            self.hide_candwin();
+            return;
+        }
+        if self.suppressed() {
+            return; // 抑制命中：客户端游戏桥自绘，服务端窗静默
+        }
+        let mut snap = iuv_ui::effect_to_snapshot(effect);
+        snap.orientation = self.engine.config().candidate_orientation;
+        if snap.candidates.is_empty() && snap.reading.is_empty() {
+            self.hide_candwin();
+            return;
+        }
+        // 尚未收到客户端锚点（连接后首个会话的首键早于 CaretMoved 到达）：
+        // 不渲染，等客户端上报后由 MoveTo/下一键 Show 补位。
+        let Some(caret) = self.caret else {
+            return;
+        };
+        if self.candwin_visible {
+            self.candwin.send(CandwinCmd::Update { snap });
+        } else {
+            self.candwin.send(CandwinCmd::Show { snap, caret });
+            self.candwin_visible = true;
+        }
+    }
+
+    fn hide_candwin(&mut self) {
+        if self.candwin_visible {
+            self.candwin_visible = false;
+            self.candwin.send(CandwinCmd::Hide);
         }
     }
 }

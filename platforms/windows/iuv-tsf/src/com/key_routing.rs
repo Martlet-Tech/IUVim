@@ -198,6 +198,16 @@ impl TextService {
                 log_line(&format!("[key] 按键：{}（远端会话外）", key.name()));
                 remote.sync_state(&self.runtime_snapshot());
                 self.punct_quote_open.set(false); // 拼音输入开始：引号配对复位为开形
+                // P4 服务端渲染：会话首键先上报插入点锚点（composition 尚不存在，
+                // selection 量取）→ 服务端首帧候选即定位正确；打字期锚点恒定，
+                // 后续只在变化时上报（dispatch/follow_layout）。
+                if let Some(c) =
+                    crate::composition::query_insertion_caret(pic, self.client_id.get())
+                {
+                    self.caret.set(c);
+                    self.caret_reported.set(c);
+                    remote.sync_caret(c);
+                }
                 let mods = crate::com::remote_host::wire_mods(
                     shift_pressed(),
                     ctrl_pressed(),

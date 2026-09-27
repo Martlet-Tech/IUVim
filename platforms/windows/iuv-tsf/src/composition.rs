@@ -420,3 +420,72 @@ impl ITfEditSession_Impl for EndSession_Impl {
         Ok(())
     }
 }
+
+/// 只读量取**当前插入点**矩形（selection 起点；composition 尚不存在时的锚点）。
+/// P4 服务端渲染：会话首键由客户端先上报插入点，服务端首帧候选即定位正确
+/// （打字期锚点恒定，此后只在变化时上报）。失败一律 None（调用方跳过上报，
+/// 服务端沿用旧值/等下一键）。
+pub(crate) fn query_insertion_caret(
+    context: &ITfContext,
+    client_id: u32,
+) -> Option<crate::ui::CaretRect> {
+    let session = InsertionCaretSession {
+        context: context.clone(),
+        caret: RefCell::new(None),
+    };
+    let com = ComObject::new(session);
+    let sess: ITfEditSession = com.to_interface();
+    // SAFETY: RequestEditSession 是标准 TSF 调用；sess 在本调用期间存活。
+    let ok = unsafe {
+        context.RequestEditSession(client_id, &sess, TF_ES_SYNC | TF_ES_READ)
+    };
+    if ok.is_err() {
+        return None;
+    }
+    let caret = *com.caret.borrow();
+    caret
+}
+
+/// 插入点量取 edit session（selection 起点折叠 → GetTextExt；与
+/// RepositionSession 同口径，仅 range 来源不同——selection 而非 composition）。
+#[implement(ITfEditSession)]
+struct InsertionCaretSession {
+    context: ITfContext,
+    caret: RefCell<Option<crate::ui::CaretRect>>,
+}
+
+impl ITfEditSession_Impl for InsertionCaretSession_Impl {
+    fn DoEditSession(&self, ec: u32) -> Result<()> {
+        let mut sel = [TF_SELECTION::default()];
+        let mut fetched = 0u32;
+        // SAFETY: 标准 TSF 调用，ec 为当前只读 cookie。
+        unsafe {
+            self.context
+                .GetSelection(ec, TF_DEFAULT_SELECTION, &mut sel, &mut fetched)
+        }?;
+        if fetched == 0 || sel[0].range.is_none() {
+            return Ok(());
+        }
+        let Some(range) = sel[0].range.as_ref().cloned() else {
+            return Ok(());
+        };
+        // SAFETY: 标准 TSF 调用（与打字路径同锚点：起点折叠，47 号语义）。
+        unsafe { range.Collapse(ec, TF_ANCHOR_START) }?;
+        // SAFETY: GetActiveView 由 TSF 保证在 edit session 内可调用。
+        let view = unsafe { self.context.GetActiveView() }?;
+        let mut rc = RECT::default();
+        let mut clipped = BOOL(0);
+        // SAFETY: GetTextExt 由 TSF 保证在 edit session 内可调用。
+        unsafe { view.GetTextExt(ec, &range, &mut rc, &mut clipped) }?;
+        if clipped.as_bool() || (rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0) {
+            return Ok(()); // 文本不可见：None，调用方沿用旧值
+        }
+        *self.caret.borrow_mut() = Some(crate::ui::CaretRect {
+            x: rc.left,
+            y: rc.top,
+            w: rc.right - rc.left,
+            h: rc.bottom - rc.top,
+        });
+        Ok(())
+    }
+}
