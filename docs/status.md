@@ -747,3 +747,35 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
   epoch 清零、客户端重连时自行 Config::load 拿到新配置）。链路有无头测试覆盖；
   真机验证法：notepad 保持打字状态改主题，下一键应即切主题 + tsf 日志出现
   「配置推送 epoch=」。daemon 已以中完整性重启（ZCode 上线，error 5 归零）。
+
+- [x] **49 号 P5:失效语义 C+A 落地——断连拉起 server + ResumeToken 重绑重放**
+  （2026-09-27，分支 `feat/m10-thin-client`，待真机回归）:
+  - **服务端重绑**（§4.4）: transport `on_connect` 增 `resume`/`token` 参数；
+    iuv-server `EngineService` 持重绑注册表（token → 断连现场）——**断连时
+    `EngineSession::drop` 把仍活动的引擎会话（core Session + composition 基线 +
+    四态 runtime）按令牌存入**；EndSession/commit 已清空会话 → 无现场 = 令牌自然
+    作废（§4.4 语义）。带 `Hello.resume` 重连 → 回绑现场 → 客户端 degraded 置位
+    的下一键 `full=true` 强制全量应答 = **composition 重放**（复用 §4.5.2 机制，
+    无需专门的回放报文）。TTL 5 分钟，`on_connect` 取用时顺带清扫（零定时器）。
+  - **客户端重生**（§4.5.4 方案 C+A）: remote_host 推送泵捕获
+    `SessionAttached` 令牌（每次连接更新）；请求失败（Closed/IO）→ offline
+    透明放行（A）+ `schedule_revive` 后台重生线程（`reviving` 防重入）——
+    首次尝试即拉起 **TSF DLL 同目录 `iuv-server.exe`**（CreateProcessW 继承宿主
+    中完整性，P3 提权教训；在线时撞管道名静默退出无害）→ 带 `Hello.resume`
+    重连 → degraded → 下键全量重同步；6 次未果（约 2s/次重连上界 + 250ms 间隔）
+    保持透明，**Activate 兜底重试**（text_service Activate 挂 `schedule_revive`）。
+  - **transport 真 bug 修复（重连压测 1/5 帧错乱实锤）**: 旧连接 client drop 后
+    句柄值可被新连接 `CreateFileW` 复用，旧读线程的 `ReadFile` 会命中复用值、
+    与新读线程瓜分字节流 → 帧错乱（`Malformed` 载荷截断）。**收尾协议重构**——
+    ① 句柄改由读线程关闭（退出后无人再读旧值，复用无害）；② 读线程改 500ms
+    tick 有界超时读（每轮查 closed，Drop 最坏一个 tick 收尾）；③ Drop 只置
+    closed + 尽力 `CancelIoEx` + 有界 join；④ `wait_io` 超时路径修复「IO 恰在
+    超时瞬间完成 → 字节数被丢弃」的丢数据窗口（有界超时下必踩）。
+  - **测试**: iuv-server 10/10（+重绑回放：断连打 "ni" 重连后 full 首键回放
+    "ni…"；+EndSession 作废：重绑得全新会话）；iuv-tsf 42 通过（+令牌捕获/
+    重连恢复）+ 2 存量 SHM 环境红；transport 7/7；**重连压测 12 轮零失败**
+    （修复前 1/5 帧错乱）；clippy 全 workspace 零警告。
+  - **待真机回归（管理员）**: dev-dep 后远端模式 ①打字中杀 iuv-server → 按键
+    短暂放行后自动恢复（iuv-server.log/任务管理器可见新进程），**未提交的
+    composition 应保留**（重绑回放）；②服务端进程不存在时杀掉 → 打字自动拉起；
+    ③ `Hello.resume` 无现场（超期/作废）→ 全新会话不报错。
