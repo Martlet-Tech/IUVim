@@ -99,12 +99,29 @@ if ($NoServer) {
     Trace-Script "m10-deploy: iuv-server 复制成功 $serverDst"
     Write-Host "已部署引擎服务：$serverDst"
 
-    # 启动（后台隐藏窗口；日志 %TEMP%\iuv-server.log）。
-    Start-Process -FilePath $serverDst -WorkingDirectory $destDir -WindowStyle Hidden
+    # 启动（**受限计划任务**，同 Restart-Ctfmon 模式）。**必须**在用户的中完整性
+    # 上下文运行：提权脚本直接 Start-Process 会创建**高完整性**管道，而 TSF 客户端
+    # 全部跑在普通应用的中完整性进程里 → 连接 error 5 拒绝访问（实测 2026-09-27）。
+    # ExecutionTimeLimit 清零：计划任务默认 3 天限时会杀长驻服务进程。
+    $tn = 'Iuv-ServerStart'
+    try {
+        $u = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $action = New-ScheduledTaskAction -Execute $serverDst -WorkingDirectory $destDir
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
+        $principal = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+        Register-ScheduledTask -TaskName $tn -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $tn -ErrorAction Stop
+    } catch {
+        Trace-Script "m10-deploy: 计划任务启动失败：$_"
+        Write-Host "警告：计划任务启动失败（$_），回退直启（可能高完整性不可连）"
+        Start-Process -FilePath $serverDst -WorkingDirectory $destDir -WindowStyle Hidden
+    }
+    try { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     Start-Sleep -Milliseconds 800
     if (Get-Process -Name "iuv-server" -ErrorAction SilentlyContinue) {
-        Trace-Script "m10-deploy: iuv-server 已启动"
-        Write-Host "iuv-server 已启动（日志：%TEMP%\iuv-server.log）"
+        Trace-Script "m10-deploy: iuv-server 已启动（用户中完整性上下文）"
+        Write-Host "iuv-server 已启动（用户上下文；日志：%TEMP%\iuv-server.log）"
     } else {
         Trace-Script "m10-deploy: iuv-server 启动后退出"
         Write-Host "警告：iuv-server 启动后退出，请查看 %TEMP%\iuv-server.log"
