@@ -8,6 +8,34 @@
 
 ## 活跃事项速览
 
+### 进行中：M10 薄客户端重构（49 号，分支 `feat/m10-thin-client`，未并 main）
+
+**当前状态（2026-09-27，接手前必读）**：P0-P3 全部落地并真机回归通过，共 10 commits；
+main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随时可回。
+
+- **已交付**：P0（`iuv-win::ipc::rtt` 实测：长连接 P99=13µs vs 一请求一连接 ≈2ms）→
+  P1（`crates/iuv-proto` 线上契约：帧格式/三枚举/serde codec）→ P2（`iuv-win::transport`
+  长连接：握手/认证/推送/截止时间）→ P3a（`platforms/windows/iuv-server` 引擎服务进程）→
+  P3b（TSF 薄客户端 A/B 接入）。真机已验证：本地/远端双模式打字、杀 server 透明降级。
+- **真机坑已修**（细节见文末 M10 各条）：`let _ = server` 语句末析构毁管道；
+  提权启动 = 高完整性管道中完整性应用连不上（改受限计划任务启动 + windows_subsystem
+  去黑窗）；400+ 候选三份载荷顶破截止（裁每键 UiElement 推送）。
+- **定档**：单键截止 300ms = 挂死保命线（非延迟策略）；引擎单键实测 17-58ms
+  （125 万词库，`iuv-server.log [perf]` 观测线 ≥10ms 持续收集）。
+- **测试**：`scripts\m10-build.ps1` → `m10-deploy.ps1`（-SkipBuild/-NoServer）→
+  `m10-uninstall.ps1`。日志 `%TEMP%\iuv-tsf.log` / `iuv-server.log` / `iuv-script.log`。
+- **下一步 P4**：四套旧 IPC 收敛至 transport（用户库管道/SHM/ctl/toolbar signal）、
+  `daemon_poll_tick` 从按键路径删除、服务端自渲染候选窗（届时 KeyOutcome 的
+  candidates/all_candidates/reading 过渡字段与每键全量载荷随之裁撤）、配置热载改
+  服务端持有（现过渡：远端模式配置改动需重启 server）。
+- **下一步 P5**：失效语义 C 落地（TSF 检测断连 → 拉起 iuv-server → ResumeToken
+  重绑；协议字段已留位：`Hello.resume` / `Push::SessionAttached`，服务端尚未实现重绑）。
+- **过渡期已知限制**（P4 收敛项，非 bug）：远端模式下调权/造词不经旧 daemon（工具栏
+  SHM 权重显示可能滞后）；服务端配置热载未接（改配置需重启 server）；用户库版本
+  注入跳过（服务端持有用户库）；flush 原文 = composition 去撇号（用户手打引号边角）。
+- **环境注意**：本机测试进程做文件 IO 报 os error 5（存量环境问题，疑杀软，干净树
+  复现，与本仓库代码无关）——相关存量测试在本机红属正常。
+
 ### 未开工 / 挂起
 
 - M3 整句增强(LMDG)/模糊音
