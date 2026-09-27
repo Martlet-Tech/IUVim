@@ -704,3 +704,25 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
     候选窗主题）；杀 daemon → 工具栏不再打字恢复（预期行为，切窗口恢复）。
   - **P4 剩余（后续切片）**：服务端自渲染候选窗（KeyOutcome 候选字段裁撤）、
     ctl/toolbar signal 收敛（依赖 daemon→server 演进）、用户库 SHM 写者移交服务端。
+
+- [x] **49 号 P4 真机回归:P4 首切片验证通过 + 修「间歇漏键」真凶(C2S::ImeState 无应答)**
+  （2026-09-27,同分支）:
+  - **P4 首切片真机验证**:新 server 日志出现 `[config] 配置热载监视`;远端模式连接
+    0-3ms、打字正常;daemon 重启窗口期信号管道报错后自愈。配置热载生效链路(改配置 →
+    `[config] 配置热载生效` → 下一键 Push::ConfigChanged)待管理员改一次配置验证。
+  - **真凶实锤(日志时间线)**:远端会话首键候选窗晚 300ms + 偶发「远端请求超时 →
+    degraded」,而服务端 on_key <10ms。notepad 会话逐行对齐:`.333 [key] 按键:j` →
+    `sync_state` 发 `C2S::ImeState`(连接后 last_state=None 必发)→ `.334~.634` TSF
+    线程阻塞在 recv_timeout(300ms)——**服务端 ImeState 臂只更新 runtime、无
+    reply.respond,客户端等一个永远不会来的应答** → 必然超时 + 误标 degraded →
+    `.635` 才继续走缓存命中的 key_down。今日 16 次超时全部同源;P3「间歇漏键」
+    当时只修了载荷问题,此为残余真凶——首会话必中,每次中英/全半角/简繁/标点
+    切换同样命中(各 300ms 卡顿)。
+  - **修复**:`EngineSession::on_c2s` 对 ImeState 与全部 fire-and-forget 变体
+    (FocusChanged/CaretMoved/SetMaintenance/CtlResult/UserMutation)回 `S2C::Ok`——
+    协议纪律「每个 C2S 请求必须有应答」,杜绝「等不来的应答」整类问题。
+  - **测试**:hot_path +`every_c2s_request_gets_a_reply`(ImeState/FocusChanged/
+    CaretMoved 应答契约回归钉),iuv-server 8/8 全绿;clippy 零警告。
+  - **待管理员**:重新 dev-dep(此修在 server 侧,需重启 iuv-server)后,远端模式
+    首键应即时出候选;切换中英/简繁等不再卡 300ms;`[backend] 远端请求超时` 应归零
+    (除非服务端真挂死)。
