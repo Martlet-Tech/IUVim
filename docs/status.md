@@ -726,3 +726,16 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
   - **待管理员**:重新 dev-dep(此修在 server 侧,需重启 iuv-server)后,远端模式
     首键应即时出候选;切换中英/简繁等不再卡 300ms;`[backend] 远端请求超时` 应归零
     (除非服务端真挂死)。
+
+- [x] **49 号 P4 真机回归(二轮)：ImeState 应答修复验证通过 + daemon 完整性继承坑**
+  （2026-09-27）:
+  - **修复验证**：新 server(pid 8848)后全量日志**零**「远端请求超时」；首个远端会话
+    首键 `[key] 按键:c → BeginUIElement 候选窗` 间隔 **1ms**（修复前 300ms）；
+    连打 ceshi 全程无 degraded。
+  - **新坑（M7 惰性拉起的完整性继承，待收敛）**：提权部署窗口的 conhost（高完整性）
+    在 16:54 惰性拉起 daemon → 其信号/数据管道拒绝所有中完整性应用（error 5，
+    notepad/Explorer/Edge/ZCode 全中招，工具栏断连）——与 P3 server 提权启动同款
+    （server 已改受限计划任务，daemon 还是 CreateProcessW 惰性拉起）。**现场处置**：
+    UAC 提权 taskkill 杀掉，下次任意普通应用 Activate 惰性重启即恢复中完整性。
+    **后续方向**：daemon→server 演进（P4 剩余）后问题消失；短期若复发，可考虑给
+    daemon 也套受限计划任务启动。
