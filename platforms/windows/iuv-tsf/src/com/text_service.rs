@@ -255,6 +255,7 @@ impl TextService {
 
     /// 停反向控制端点（Deactivate：Drop 兜底清理，此处显式调以尽快释放窗口/线程）。
     fn stop_ctl_endpoint(&self) {
+        crate::ctl::clear_submit_hook();
         let ep = self.ctl.borrow_mut().take();
         drop(ep); // CtlEndpoint::drop 停线程 + 清 GWLP_USERDATA + 销毁窗口
     }
@@ -335,10 +336,7 @@ impl Drop for TextService {
         self.stop_ctl_endpoint();
         // 32-toolbar §4.1：实例 Drop = 失焦上报（daemon 解绑清理；纯信号模型下
         // 「注销」由「失焦」承担）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.focus_lost(pid, tid);
-        }
+        self.notify_focus_lost();
     }
 }
 
@@ -547,10 +545,7 @@ impl TextService_Impl {
         // 32-toolbar：停反向控制端点（accept 线程 + 隐藏窗）+ 失焦上报
         // （daemon 解绑 → 工具条隐藏）。同一实例再 Activate 会重发激活。
         self.stop_ctl_endpoint();
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.focus_lost(pid, tid);
-        }
+        self.notify_focus_lost();
 
         // 卸载语言栏"中/英"图标（失败仅记日志）。
         if let Some(lang_bar_com) = self.lang_bar.borrow_mut().take() {
@@ -722,10 +717,7 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
         // 维度③：应用切入 → 「激活 + 四态」上报，daemon 绑定并立即重显工具栏
         // （Alt+Tab 回已激活应用必须靠此信号重显——log 实锤的「隐藏后永不重现」根因）。
         log_line("[focus] OnSetThreadFocus（线程焦点获得 → 激活上报）");
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.focus_gained(pid, tid, self.runtime_snapshot());
-        }
+        self.signal_focus_gained();
         Ok(())
     }
 
@@ -735,10 +727,7 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
         // M1 桌宠（QA P2-B）：切走必须复位打字态——否则 `was_typing` 卡 true，
         // 回焦后首段会话不发 `Typing(true)` → 宠物一直 Idle（边沿状态机不自洽）。
         self.force_typing_stop();
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.focus_lost(pid, tid);
-        }
+        self.notify_focus_lost();
         Ok(())
     }
 }

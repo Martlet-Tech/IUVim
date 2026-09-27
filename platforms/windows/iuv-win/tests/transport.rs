@@ -359,7 +359,7 @@ fn server_initiated_request_roundtrip() {
         resume: None,
         handshake_timeout: Duration::from_secs(5),
         on_server_req: Some(Arc::new(|req| match req {
-            S2C::Ctl { cmd } => C2S::CtlResult(iuv_proto::CtlResult::Ok {
+            S2C::Ctl { cmd: _ } => C2S::CtlResult(iuv_proto::CtlResult::Ok {
                 state: iuv_proto::ImeState::default(),
             }),
             _ => C2S::Err(iuv_proto::ProtoError::Unauthenticated),

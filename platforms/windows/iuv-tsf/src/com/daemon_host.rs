@@ -73,11 +73,53 @@ impl TextService {
             log_line("[toolbar] passthrough 进程：不上报工具栏信号（iuv 完全透明）");
             return;
         }
+        if crate::com::remote_host::use_server() {
+            if let Some(r) = crate::com::remote_host::remote() {
+                r.focus_changed(true);
+            }
+            return;
+        }
         let Some(client) = self.daemon.borrow().as_ref().cloned() else {
             return;
         };
         let (pid, tid) = self.instance_id();
         client.focus_gained(pid, tid, self.runtime_snapshot());
+    }
+
+    pub(crate) fn notify_focus_lost(&self) {
+        if crate::com::remote_host::use_server() {
+            if let Some(r) = crate::com::remote_host::remote() {
+                r.focus_changed(false);
+            }
+            return;
+        }
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            let (pid, tid) = self.instance_id();
+            client.focus_lost(pid, tid);
+        }
+    }
+
+    pub(crate) fn notify_state_changed(&self) {
+        if crate::com::remote_host::use_server() {
+            return; // mode.rs 变化路径已发 C2S::ImeState，服务端转 StateChanged
+        }
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            let (pid, tid) = self.instance_id();
+            client.state_changed(pid, tid, self.runtime_snapshot());
+        }
+    }
+
+    pub(crate) fn notify_typing(&self, active: bool) {
+        if crate::com::remote_host::use_server() {
+            if let Some(r) = crate::com::remote_host::remote() {
+                r.send_typing(active);
+            }
+            return;
+        }
+        if let Some(client) = self.daemon.borrow().as_ref() {
+            let (pid, tid) = self.instance_id();
+            client.typing(pid, tid, active);
+        }
     }
 
     /// M6 配置热载（config_epoch 变化触发，DaemonClient::poll 回调）：

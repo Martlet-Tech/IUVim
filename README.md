@@ -31,7 +31,7 @@ crates/（跨平台纯 Rust）
 platforms/
   windows/iuv-tsf     cdylib：COM/TSF 管线 + 候选窗窗口层 + 语言栏"中/英"图标/菜单
   windows/iuv-win     Windows 共享层：ULW 呈现 + 弹窗骨架 + 管道 IPC/共享段 + 共享日志
-  windows/iuv-daemon  守护进程 exe：唯一持有用户库 + egui 设置页（纯后台）
+  windows/iuv-server  引擎服务进程 exe：全系统一份（引擎 + 用户库 + 工具栏/桌宠/设置页/全局热键；M10 ② iuv-daemon 并入）
   macos/, linux/      占位（IMK / Fcitx5·IBus，README）
 ```
 

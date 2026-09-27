@@ -152,6 +152,21 @@ pub(crate) fn start_remote_load() {
         .expect("远端连接线程创建");
 }
 
+/// ② 控制面处理器：`S2C::Ctl` → 最近激活实例端点应用（`submit_cmd`）→ 应答。
+/// 查表发生在调用时（Activate 注册 / Deactivate 撤销），连接期注册变化自动生效。
+fn ctl_req_handler() -> iuv_win::transport::ServerReqHandler {
+    Arc::new(|req| match req {
+        S2C::Ctl { cmd } => {
+            let win_cmd = proto_to_win_ctl_cmd(cmd);
+            let r = crate::ctl::submit_cmd(win_cmd).unwrap_or(iuv_win::CtlResult::Err {
+                msg: "无控制端点（未激活？）".into(),
+            });
+            C2S::CtlResult(win_to_proto_ctl_result(r))
+        }
+        _ => C2S::Err(iuv_proto::ProtoError::Unauthenticated),
+    })
+}
+
 fn connect_server() -> Result<Arc<RemoteHandle>, String> {
     let dir = iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
     let token = iuv_win::transport::load_or_create_token(&dir).map_err(|e| e.to_string())?;
@@ -164,6 +179,8 @@ fn connect_server() -> Result<Arc<RemoteHandle>, String> {
         app: crate::log::module_name(),
         resume: None,
         handshake_timeout: Duration::from_millis(CONNECT_RETRY_MS),
+        // ② 控制面：服务端 Ctl（工具栏/全局热键四态翻转）→ 最近激活实例端点应用。
+        on_server_req: Some(ctl_req_handler()),
     };
     let deadline = Instant::now() + Duration::from_millis(CONNECT_RETRY_MS);
     let (client, _ack, pushes) = loop {
@@ -359,6 +376,36 @@ impl RemoteHandle {
         let _ = self.request(C2S::ImeState(wire));
     }
 
+    // ===== ② daemon→server 收敛：toolbar signal / langbar 查询迁入 transport =====
+
+    /// 焦点变化（原 toolbar signal FocusGained/FocusLost；服务端转工具栏看板）。
+    pub(crate) fn focus_changed(&self, focused: bool) {
+        let _ = self.request(C2S::FocusChanged { focused });
+    }
+
+    /// 打字活动（原 toolbar signal Typing；桌宠动画驱动）。
+    pub(crate) fn send_typing(&self, active: bool) {
+        let _ = self.request(C2S::TypingActivity { active });
+    }
+
+    /// 工具栏显隐查询（原数据面管道 GetToolbarVisible；语言栏菜单文案）。
+    pub(crate) fn toolbar_visible(&self) -> Option<bool> {
+        match self.request(C2S::ToolbarVisibleQuery) {
+            Some(S2C::ToolbarVisible { visible }) => Some(visible),
+            _ => None,
+        }
+    }
+
+    /// 切换工具栏显隐（语言栏菜单/热键）。
+    pub(crate) fn toggle_toolbar(&self) {
+        let _ = self.request(C2S::ToggleToolbar);
+    }
+
+    /// 打开设置页（语言栏菜单）。
+    pub(crate) fn open_settings(&self) {
+        let _ = self.request(C2S::OpenSettings);
+    }
+
     /// 光标锚点上报（P4 服务端自渲染：客户端只在锚点变化时发；dpi 由服务端按
     /// caret 所在显示器自算，此处置 96 占位）。fire-and-forget（服务端回 Ok）。
     pub(crate) fn sync_caret(&self, caret: iuv_ui::CaretRect) {
@@ -474,6 +521,7 @@ impl RemoteHandle {
             app: crate::log::module_name(),
             resume,
             handshake_timeout: Duration::from_millis(CONNECT_RETRY_MS),
+            on_server_req: Some(ctl_req_handler()),
         };
         match connect(&cfg) {
             Ok((client, _ack, pushes)) => {
@@ -543,6 +591,26 @@ fn spawn_server_process() -> bool {
             &mut pi,
         )
         .is_ok()
+    }
+}
+
+/// proto `CtlCmd` → win（ctl 端点消费 win 形；镜像显式，防字段序漂移）。
+fn proto_to_win_ctl_cmd(c: iuv_proto::CtlCmd) -> iuv_win::CtlCmd {
+    match c {
+        iuv_proto::CtlCmd::SetMode(v) => iuv_win::CtlCmd::SetMode(v),
+        iuv_proto::CtlCmd::SetWidth(v) => iuv_win::CtlCmd::SetWidth(v),
+        iuv_proto::CtlCmd::SetScript(v) => iuv_win::CtlCmd::SetScript(v),
+        iuv_proto::CtlCmd::SetPunct(v) => iuv_win::CtlCmd::SetPunct(v),
+    }
+}
+
+/// win `CtlResult` → proto（应答回服务端）。
+fn win_to_proto_ctl_result(r: iuv_win::CtlResult) -> iuv_proto::CtlResult {
+    match r {
+        iuv_win::CtlResult::Ok { state } => iuv_proto::CtlResult::Ok {
+            state: wire_ime_state(&state),
+        },
+        iuv_win::CtlResult::Err { msg: _ } => iuv_proto::CtlResult::Err,
     }
 }
 
@@ -648,6 +716,7 @@ mod tests {
         _caps: Caps,
         _resume: Option<iuv_proto::ResumeToken>,
         _token: iuv_proto::ResumeToken,
+        _sender: iuv_win::transport::ConnSender,
     ) -> Box<dyn Session> {
             Box::new(EchoSession)
         }
@@ -688,6 +757,7 @@ mod tests {
         _caps: Caps,
         _resume: Option<iuv_proto::ResumeToken>,
         _token: iuv_proto::ResumeToken,
+        _sender: iuv_win::transport::ConnSender,
     ) -> Box<dyn Session> {
             Box::new(SlowFirstSession {
                 first: AtomicBool::new(true),
@@ -722,6 +792,7 @@ mod tests {
             app: "remote-host-test".into(),
             resume: None,
             handshake_timeout: Duration::from_secs(5),
+            on_server_req: None,
         };
         let (client, _ack, pushes) = connect(&cfg).expect("握手");
         std::thread::spawn(move || loop {

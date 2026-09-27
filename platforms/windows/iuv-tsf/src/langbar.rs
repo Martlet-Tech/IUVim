@@ -253,6 +253,15 @@ impl LangBarItemButton {
     /// 已显示 →「隐藏工具栏」、已隐藏 →「显示工具栏」）。查询失败（离线/旧版 daemon）
     /// → 中性文案兜底。
     fn toolbar_menu_label(&self) -> String {
+        // ② 收敛：远端 = ToolbarVisibleQuery 经 transport。
+        if crate::com::remote_host::use_server() {
+            let visible = crate::com::remote_host::remote().and_then(|r| r.toolbar_visible());
+            return match visible {
+                Some(true) => "隐藏工具栏".to_string(),
+                Some(false) => "显示工具栏".to_string(),
+                None => "显示/隐藏工具栏".to_string(),
+            };
+        }
         match self.daemon.toolbar_visible() {
             Some(true) => "隐藏工具栏".to_string(),
             Some(false) => "显示工具栏".to_string(),
@@ -298,6 +307,20 @@ const MENU_ABOUT_LABEL: &str = "关于";
 
 /// 菜单项分发（自绘菜单闭包与 OnMenuSelect 共用；id 语义与 [`MENU_TOOLBAR`] 等常量绑定）。
 fn handle_menu_id(daemon: &Arc<crate::daemon_client::DaemonClient>, id: u32) {
+    // ② 收敛：远端模式走 transport（服务端持有工具栏/设置页）。
+    if crate::com::remote_host::use_server() {
+        if let Some(r) = crate::com::remote_host::remote() {
+            match id as u16 {
+                MENU_TOOLBAR => r.toggle_toolbar(),
+                MENU_SETTINGS => r.open_settings(),
+                _ => {}
+            }
+        }
+        if id as u16 == MENU_ABOUT {
+            show_about();
+        }
+        return;
+    }
     match id as u16 {
         MENU_TOOLBAR => {
             log_line("语言栏菜单：显示/隐藏工具栏 → 通知守护进程切换全局偏好");

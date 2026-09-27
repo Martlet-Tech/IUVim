@@ -2,7 +2,7 @@
 #
 # 用法：scripts\m10-deploy.ps1              # 构建 + 部署 + 启动服务端
 #       scripts\m10-deploy.ps1 -SkipBuild   # 跳过构建，只部署现有产物
-#       scripts\m10-deploy.ps1 -NoServer    # 只部署 TSF/daemon，不启动 iuv-server
+#       scripts\m10-deploy.ps1 -NoServer    # 只部署 TSF，不启动 iuv-server（M10 ②：daemon 已退役）
 #                                           #（本地引擎模式基线回归用）
 #
 # 设计要点（实测教训）：**构建在当前（普通）窗口执行**——UAC 提权进程可能换了
@@ -57,7 +57,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 Trace-Script "m10-deploy: 管理员实例启动（SkipBuild=$SkipBuild NoServer=$NoServer）"
 Write-Host "=== M10 测试部署（管理员）==="
 
-# ---- 3. dev-deploy 热替换（TSF DLL x64+x86 / 词库 / 简繁表 / daemon / 注册 / ctfmon）----
+# ---- 3. dev-deploy 热替换（TSF DLL x64+x86 / 词库 / 简繁表 / 注册 / ctfmon；daemon 已退役）----
 # 成败不查 $LASTEXITCODE（残留值问题同上），直接验产物：目标 DLL 不旧于源产物。
 $destDllCheck = Join-Path $env:ProgramFiles "iuv\iuv_tsf.dll"
 try {

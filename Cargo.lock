@@ -1632,21 +1632,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iuv-daemon"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "iuv-core",
- "iuv-data",
- "iuv-ui",
- "iuv-win",
- "serde",
- "serde_json",
- "tiny-skia 0.12.0",
- "windows",
-]
-
-[[package]]
 name = "iuv-data"
 version = "0.1.0"
 dependencies = [

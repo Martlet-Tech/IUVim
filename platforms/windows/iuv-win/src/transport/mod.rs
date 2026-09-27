@@ -27,7 +27,7 @@ mod client;
 mod server;
 
 pub use auth_file::load_or_create_token;
-pub use client::{connect, ClientConfig, HelloAck, PushStream, TransportClient};
+pub use client::{connect, ClientConfig, HelloAck, PushStream, ServerReqHandler, TransportClient};
 pub use server::{ConnHandler, ConnSender, Reply, ServerConfig, Session, TransportServer};
 
 use std::io;

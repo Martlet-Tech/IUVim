@@ -50,10 +50,7 @@ impl TextService {
         let composing_now = self.composition.borrow().is_some() && effect.end.is_none();
         if composing_now != self.was_typing.get() {
             self.was_typing.set(composing_now);
-            if let Some(client) = self.daemon.borrow().as_ref() {
-                let (pid, tid) = self.instance_id();
-                client.typing(pid, tid, composing_now);
-            }
+            self.notify_typing(composing_now);
         }
         perf_record_with("dispatch", t, || {
             format!(

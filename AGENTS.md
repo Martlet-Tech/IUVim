@@ -58,7 +58,7 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 | `crates/iuv-repl` | CLI 调试前端（跨平台） |
 | `platforms/windows/iuv-tsf` | cdylib：COM/TSF 管线 + 候选窗窗口层（ULW 呈现）+ 语言栏"中/英"切换图标/右键菜单（Windows） |
 | `platforms/windows/iuv-win` | Windows 共享层：ULW 呈现（`ulw.rs`）+ 自绘弹窗骨架（`popup.rs` LayeredWindow）+ M6 管道 IPC/共享段（`ipc/`+`shm.rs`，2026-08-21 自 iuv-data 移入） |
-| `platforms/windows/iuv-daemon` | 守护进程 exe：唯一持有用户库（共享段+管道 IPC）+ egui 设置页（M6 已实现，纯后台无图标） |
+| `platforms/windows/iuv-server` | 引擎服务进程 exe（M10）：全系统一份——引擎/用户库 + transport 服务 + 服务端自绘候选窗 + 工具栏/桌宠/egui 设置页/全局热键（M10 ② iuv-daemon 并入退役） |
 | `platforms/{macos,linux}/` | 占位：IMK / Fcitx5·IBus 适配层 + 门面规划（README，见各目录） |
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |
 | `docs/status.md` | 工作状态台账：每项落地的根因/方案/改动/测试记录（AGENTS.md 指向此处） |

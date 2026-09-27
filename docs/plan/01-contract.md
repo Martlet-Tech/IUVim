@@ -74,8 +74,8 @@ D:\Projects\vaim\
 ```toml
 [workspace]
 resolver = "2"
-members = ["crates/iuv-data", "crates/iuv-proto", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-daemon", "platforms/windows/iuv-win"]
-# M6 追加：platforms/windows/iuv-daemon；M10 追加：crates/iuv-proto（49 号）
+members = ["crates/iuv-data", "crates/iuv-proto", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-win", "platforms/windows/iuv-server"]
+# M6 追加 iuv-daemon（M10 ② 已并入 iuv-server 并退役）；M10 追加：crates/iuv-proto、platforms/windows/iuv-server（49 号）
 
 [workspace.package]
 edition = "2021"

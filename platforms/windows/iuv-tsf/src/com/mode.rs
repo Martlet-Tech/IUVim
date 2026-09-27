@@ -30,11 +30,9 @@ impl TextService {
             let effect = sess.effect();
             self.dispatch(&effect);
         }
-        // 上报 daemon 看板（信号通道：态变更）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.state_changed(pid, tid, self.runtime_snapshot());
-        }
+        // 上报 daemon 看板（远端 no-op：上方 sync_state 已发 C2S::ImeState，
+        // 服务端转 StateChanged；重发双信号）。
+        self.notify_state_changed();
     }
 
     /// 翻转中/英模式（Shift / 语言栏点击共用入口）。
@@ -68,11 +66,8 @@ impl TextService {
         if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
             langbar::refresh_lang_bar(lang_bar);
         }
-        // 工具栏看板同步（中英钮真相源 OnChange → 态变更上报）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.state_changed(pid, tid, self.runtime_snapshot());
-        }
+        // 工具栏看板同步（远端 no-op 同上）。
+        self.notify_state_changed();
         // 关闭输入法：未确认输入按**原文上屏**语义结束（见 flush_session）。
         if !open && (self.session.borrow().is_some() || self.composition.borrow().is_some()) {
             self.flush_session();
@@ -89,10 +84,7 @@ impl TextService {
     pub(crate) fn force_typing_stop(&self) {
         if self.was_typing.get() {
             self.was_typing.set(false);
-            if let Some(client) = self.daemon.borrow().as_ref() {
-                let (pid, tid) = self.instance_id();
-                client.typing(pid, tid, false);
-            }
+            self.notify_typing(false);
         }
     }
 

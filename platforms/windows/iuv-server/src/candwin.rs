@@ -15,16 +15,22 @@
 //!   命中的连接不启动窗口线程。
 
 use std::mem::size_of;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Sender, TryRecvError};
+use std::sync::Arc;
 
+use windows::Win32::Foundation::{HANDLE, WAIT_EVENT, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
+use windows::Win32::System::Threading::CreateEventW;
+use windows::Win32::UI::WindowsAndMessaging::MsgWaitForMultipleObjectsEx;
+use windows::Win32::System::Threading::SetEvent;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, SetWindowPos, ShowWindow, HTCLIENT, HTTRANSPARENT, MA_NOACTIVATE, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOWNA, SWP_NOSIZE, WM_ERASEBKGND, WM_MBUTTONDOWN, WM_MOUSEACTIVATE,
-    WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN,
+    DispatchMessageW, GetWindowRect, PeekMessageW, SetWindowPos, ShowWindow, TranslateMessage,
+    HTCLIENT, HTTRANSPARENT, MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, SWP_NOSIZE, WM_ERASEBKGND, WM_MBUTTONDOWN,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN,
 };
 // WM_MOUSELEAVE 在 windows-rs 0.62 中位于 Controls 模块（值 0x02A3），本地定义。
 const WM_MOUSELEAVE: u32 = 675;
@@ -51,40 +57,109 @@ pub(crate) enum CandwinCmd {
 /// 会话持有的候选窗句柄（clone 廉价；全部 sender drop → UI 线程退出并销毁窗口）。
 pub(crate) struct CandwinHandle {
     tx: Sender<CandwinCmd>,
+    wake: Arc<WakeEvent>,
+}
+
+/// 唤醒事件（真机实锤 2026-09-27：UI 线程纯 `recv()` 阻塞 = 无消息泵 →
+/// WM_SETCURSOR 等 SendMessage 无响应 → 悬停漏斗；hover/圆角穿透全死）。
+/// 现在 sender 发命令后 SetEvent 唤醒，UI 线程醒后排空命令 + 泵窗口消息。
+struct WakeEvent(HANDLE);
+unsafe impl Send for WakeEvent {}
+unsafe impl Sync for WakeEvent {}
+
+impl WakeEvent {
+    fn new() -> WakeEvent {
+        // SAFETY: 自动重置事件；句柄由 Arc 引用计数管理（最后一个 drop 关闭）。
+        let h = unsafe { CreateEventW(None, false, false, None) }.unwrap_or_default();
+        WakeEvent(h)
+    }
+    fn set(&self) {
+        // SAFETY: 事件句柄有效（Arc 存活保证）。
+        let _ = unsafe { SetEvent(self.0) };
+    }
+}
+impl Drop for WakeEvent {
+    fn drop(&mut self) {
+        // SAFETY: 最后一个属主关闭；UI 线程此后 MsgWait 返回失败 → 回环见 recv
+        // 断开 → 退出（事件句柄值不会在旧线程仍使用时被复用为新事件——复用窗口
+        // 内 MsgWait 只会空醒/失败，均回环检查后退出）。
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(self.0) };
+    }
 }
 
 impl CandwinHandle {
     /// 启动 UI 线程（每连接一个；隐藏态零渲染开销）。
     pub(crate) fn spawn(theme: Theme) -> CandwinHandle {
         let (tx, rx) = mpsc::channel::<CandwinCmd>();
+        let wake = Arc::new(WakeEvent::new());
         let spawned = std::thread::Builder::new()
             .name("iuv-server-candwin".into())
-            .spawn(move || run_ui_thread(rx, theme));
+            .spawn({
+                let wake = wake.clone();
+                move || run_ui_thread(rx, theme, wake)
+            });
         if let Err(e) = spawned {
             iuv_win::logger::log_line(&format!("[candwin] UI 线程创建失败（{e}）→ 该连接无候选窗"));
         }
-        CandwinHandle { tx }
+        CandwinHandle { tx, wake }
     }
 
-    /// 发命令（UI 线程已退出/未建 → 静默丢弃）。
+    /// 发命令 + 唤醒 UI 线程（UI 线程已退出/未建 → 静默丢弃）。
     pub(crate) fn send(&self, cmd: CandwinCmd) {
         let _ = self.tx.send(cmd);
+        self.wake.set();
     }
 }
 
-fn run_ui_thread(rx: mpsc::Receiver<CandwinCmd>, theme: Theme) {
+fn run_ui_thread(rx: mpsc::Receiver<CandwinCmd>, theme: Theme, wake: Arc<WakeEvent>) {
     let mut wnd = ServerCandwin::new(theme);
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            CandwinCmd::Show { snap, caret } => wnd.show(snap, caret),
-            CandwinCmd::Update { snap } => wnd.update(snap),
-            CandwinCmd::MoveTo { caret } => wnd.move_to(caret),
-            CandwinCmd::Hide => wnd.hide(),
-            CandwinCmd::SetTheme(theme) => wnd.set_theme(theme),
+    loop {
+        // 排空命令（按序应用，最后一条即最新）。
+        let mut disconnected = false;
+        loop {
+            match rx.try_recv() {
+                Ok(cmd) => match cmd {
+                    CandwinCmd::Show { snap, caret } => wnd.show(snap, caret),
+                    CandwinCmd::Update { snap } => wnd.update(snap),
+                    CandwinCmd::MoveTo { caret } => wnd.move_to(caret),
+                    CandwinCmd::Hide => wnd.hide(),
+                    CandwinCmd::SetTheme(theme) => wnd.set_theme(theme),
+                },
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        if disconnected {
+            // 全部 sender 已 drop（会话销毁）：隐藏并随线程退出自然析构窗口。
+            wnd.hide();
+            return;
+        }
+        // 等唤醒（命令事件 / 窗口消息——跨线程 SendMessage 由 PeekMessage 隐式
+        // 分发，WM_SETCURSOR 悬停漏斗根除）。事件被关闭（销毁竞态）→ 回环退出。
+        // SAFETY: 事件句柄 Arc 存活；单事件等待。
+        let w = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                Some(&[wake.0]),
+                u32::MAX,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        if w == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
+            // 窗口消息：泵到排空（hover / NCHITTEST / 光标）。
+            // SAFETY: 本线程创建的窗口；标准消息泵。
+            unsafe {
+                let mut msg = MSG::default();
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
         }
     }
-    // 全部 sender 已 drop（会话销毁）：隐藏并让窗口随线程退出自然析构。
-    wnd.hide();
 }
 
 /// ULW 自绘候选窗（服务端版；渲染/定位/命中与 iuv-tsf candwin.rs 同源）。

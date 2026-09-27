@@ -135,6 +135,8 @@ impl CtlEndpoint {
         // HWND 为裸指针（!Send），线程闭包只做 PostMessage（跨线程投递合法）——以 usize 传递。
         let hwnd_val = self.hwnd.0 as usize;
         let pending = self.pending.clone();
+        // ② 控制面迁移：登记提交钩子（transport ServerReq → 本端点分发）。
+        set_submit_hook(hwnd_val, self.pending.clone());
         let handle_slot = self.handle_slot.clone();
         let os_tid = self.os_tid.clone();
         let stop = self.stop.clone();
@@ -237,6 +239,36 @@ fn accept_thread(
         *slot = None;
     }
     log_line("[ctl] accept 线程退出");
+}
+
+/// ② 控制面迁移：进程级提交钩子（最近激活实例的端点；transport ServerReq
+/// 处理器经 [`submit_cmd`] 路由到此，不经旧 ctl 管道）。
+/// 提交钩子槽类型（hwnd_val + 待应用命令槽）。
+type SubmitHook = (usize, Arc<Mutex<Option<CtlJob>>>);
+static SUBMIT_HOOK: OnceLock<Mutex<Option<SubmitHook>>> = OnceLock::new();
+
+/// 注册/更新提交钩子（start_ctl_endpoint 建窗后调用；hwnd_val = 隐藏消息窗）。
+pub(crate) fn set_submit_hook(hwnd_val: usize, pending: Arc<Mutex<Option<CtlJob>>>) {
+    let cell = SUBMIT_HOOK.get_or_init(|| Mutex::new(None));
+    *cell.lock().unwrap_or_else(|e| e.into_inner()) = Some((hwnd_val, pending));
+}
+
+/// 撤销提交钩子（端点停止时；之后的 transport Ctl 快速失败，不白等 3s）。
+pub(crate) fn clear_submit_hook() {
+    if let Some(cell) = SUBMIT_HOOK.get() {
+        *cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// 进程内提交一条命令（最近激活实例；无端点 → None，调用方回失败）。
+pub(crate) fn submit_cmd(cmd: CtlCmd) -> Option<CtlResult> {
+    let cell = SUBMIT_HOOK.get()?;
+    let (hwnd_val, pending) = cell
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()?;
+    let hwnd = HWND(hwnd_val as *mut core::ffi::c_void);
+    Some(dispatch_ctl_cmd(hwnd, &pending, cmd))
 }
 
 /// 跨线程分发：写待应用命令 → PostMessage 唤醒 TSF 线程 → 等 TSF 应用结果（超时兜底）。
