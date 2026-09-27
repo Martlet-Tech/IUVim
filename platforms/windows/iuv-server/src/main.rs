@@ -6,6 +6,9 @@
 //!
 //! 用法：`iuv-server [--pipe <name>]`（默认 `iuv.service.v1`）。
 
+// 服务进程无控制台：计划任务/自启拉起时不弹黑窗（日志全落 %TEMP%\iuv-server.log）。
+#![windows_subsystem = "windows"]
+
 use std::sync::Arc;
 
 use iuv_core::{paths::iuv_dir, Config, Engine};
