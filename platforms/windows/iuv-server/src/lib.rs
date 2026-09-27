@@ -81,16 +81,6 @@ impl EngineService {
         }
     }
 
-    /// 用户库发布到共享段（版本 bump 由 ShmWriter 维护；失败静默记日志）。
-    fn publish_user_dict(&self, dict: &iuv_data::UserDict) {
-        let mut shm = self.shm.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(w) = shm.as_mut() {
-            match w.write(dict) {
-                Ok(v) => log_line(&format!("[shm] 用户库已发布 version={v}")),
-                Err(e) => log_line(&format!("[shm] 用户库发布失败：{e}")),
-            }
-        }
-    }
 
     /// 配置纪元句柄（main 装配 `config_watch` 时共享）。
     pub fn config_epoch(&self) -> Arc<AtomicU32> {
