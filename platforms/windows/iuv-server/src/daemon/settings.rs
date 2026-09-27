@@ -29,9 +29,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
 };
 
-use crate::config::{self, DaemonConfig};
-use crate::log;
-use crate::state::DaemonState;
+use crate::daemon::config::{self, DaemonConfig};
+use crate::daemon::log;
+use crate::daemon::state::DaemonState;
 
 /// 设置窗标题（eframe viewport 标题；`FindWindowW` 按此查找，两处必须一致）。
 const SETTINGS_TITLE: &str = "iuv 设置";
@@ -115,7 +115,7 @@ fn center_window_on_screen() {
 /// `toolbar` = 工具栏宿主（录入态开关通知：全局热键临时注销，41-keymap-settings.md §12）。
 pub fn run_settings(
     state: &Arc<DaemonState>,
-    toolbar: &Arc<crate::toolbar::ToolbarHost>,
+    toolbar: &Arc<crate::daemon::toolbar::ToolbarHost>,
 ) -> Result<(), String> {
     const WIDTH: f32 = 640.0;
     const HEIGHT: f32 = 480.0;
@@ -318,7 +318,7 @@ fn slot_combo_mut(slot: &mut iuv_core::TwoSlot, which: Slot) -> &mut Option<iuv_
 struct SettingsApp {
     state: Arc<DaemonState>,
     /// 工具栏宿主（录入态开关通知：全局热键临时注销，41-keymap-settings.md §12）。
-    toolbar: Arc<crate::toolbar::ToolbarHost>,
+    toolbar: Arc<crate::daemon::toolbar::ToolbarHost>,
     /// M10 ②：远端模式（use_engine_server）——iuv-server 是用户库文件真相源
     /// （引擎调权/造词直接本地写盘），daemon 内存态只是启动快照 → 用户库面板
     /// 打开时先从文件重载，显示才不滞后（构造时一次性判定）。
@@ -379,7 +379,7 @@ fn card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> 
 }
 
 impl SettingsApp {
-    fn new(state: Arc<DaemonState>, toolbar: Arc<crate::toolbar::ToolbarHost>) -> Self {
+    fn new(state: Arc<DaemonState>, toolbar: Arc<crate::daemon::toolbar::ToolbarHost>) -> Self {
         let cfg = state
             .config
             .lock()
@@ -746,7 +746,7 @@ impl SettingsApp {
             if !pressed || repeat {
                 continue;
             }
-            let Some(outcome) = crate::capture::process_key_event(key, &modifiers) else {
+            let Some(outcome) = crate::daemon::capture::process_key_event(key, &modifiers) else {
                 continue; // 纯修饰键等，继续等
             };
             // 捕获完成：复位 + 回填 + 恢复全局热键
@@ -762,8 +762,8 @@ impl SettingsApp {
     }
 
     /// 应用捕获结果到槽位（含校验/冲突检测）。
-    fn apply_capture(&mut self, target: CaptureTarget, outcome: crate::capture::CaptureOutcome) {
-        use crate::capture::CaptureOutcome;
+    fn apply_capture(&mut self, target: CaptureTarget, outcome: crate::daemon::capture::CaptureOutcome) {
+        use crate::daemon::capture::CaptureOutcome;
         match outcome {
             CaptureOutcome::Cancel => {
                 self.keymap_warn = None; // Esc 取消：槽位不变
@@ -1010,7 +1010,7 @@ impl SettingsApp {
                 ui.small("命中进程全部按键放行（不建会话、无候选窗）——该进程内无法输中文。");
                 ui.add_space(2.0);
                 if ui.button("恢复默认名单").clicked() {
-                    self.passthrough = crate::config::DEFAULT_PASSTHROUGH_APPS.join("\n");
+                    self.passthrough = crate::daemon::config::DEFAULT_PASSTHROUGH_APPS.join("\n");
                 }
                 ui.small("默认 = 近五年 3A 单机大作");
             });
@@ -1031,7 +1031,7 @@ impl SettingsApp {
                 ui.small("命中进程 iuv 不绘制候选窗（游戏自带候选栏场景），数据仍供其拉取。");
                 ui.add_space(2.0);
                 if ui.button("恢复默认名单").clicked() {
-                    self.candidate_owner = crate::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
+                    self.candidate_owner = crate::daemon::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
                 }
                 ui.small("默认 = 预置知名游戏");
             });
@@ -1057,7 +1057,7 @@ impl SettingsApp {
             ui.label("清除 %TEMP% 下的 iuv 日志（daemon / tsf / script / cleanup）：");
             ui.add_space(4.0);
             if ui.button("清除日志").clicked() {
-                self.log_clear = Some(crate::log::clear_logs());
+                self.log_clear = Some(crate::daemon::log::clear_logs());
             }
             if let Some((ok, fail)) = self.log_clear {
                 ui.add_space(4.0);

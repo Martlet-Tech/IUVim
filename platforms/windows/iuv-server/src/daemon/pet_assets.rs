@@ -23,7 +23,7 @@ use iuv_ui::pet::slice_frames;
 use iuv_ui::{LayerImages, PetSheetLayout, PetSprites};
 use tiny_skia::Pixmap;
 
-use crate::log::log_line;
+use crate::daemon::log::log_line;
 
 /// 资产内嵌宏（与 toolbar_icons.rs 同款）：`concat!($env("CARGO_MANIFEST_DIR"), "/../../../assets/", $f)`。
 macro_rules! asset {

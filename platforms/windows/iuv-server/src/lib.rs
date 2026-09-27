@@ -32,9 +32,11 @@ use iuv_proto::{
     SessionEnd as WireSessionEnd, C2S, S2C,
 };
 use iuv_win::transport::{ConnHandler, ConnSender, Reply, Session};
+use iuv_win::ToolbarSignal;
 
 pub mod candwin;
 pub mod config_watch;
+pub mod daemon;
 
 use crate::candwin::{CandwinCmd, CandwinHandle};
 
@@ -63,7 +65,9 @@ pub struct EngineService {
     resumes: Arc<Mutex<HashMap<u64, (SavedSession, Instant)>>>,
     /// 连接发送器路由：pid/tid → ConnSender（②控制面：工具栏/热键 Ctl → 客户端）。
     /// 同进程重连覆盖旧条目；陈旧条目 request 返回 Closed，调用方降级。
-    senders: Mutex<HashMap<(u32, u32), ConnSender>>,
+    senders: Arc<Mutex<HashMap<(u32, u32), ConnSender>>>,
+    /// 迁入的 daemon UI（工具栏宿主 + daemon 状态）；main 在启动 transport 前装配。
+    ui: Mutex<Option<(Arc<daemon::state::DaemonState>, Arc<daemon::toolbar::ToolbarHost>)>>,
 }
 
 impl EngineService {
@@ -77,8 +81,23 @@ impl EngineService {
             config_epoch: Arc::new(AtomicU32::new(0)),
             resumes: Arc::new(Mutex::new(HashMap::new())),
             shm: Arc::new(Mutex::new(shm.ok())),
-            senders: Mutex::new(HashMap::new()),
+            senders: Arc::new(Mutex::new(HashMap::new())),
+            ui: Mutex::new(None),
         }
+    }
+
+    /// 控制面路由表句柄（main 装配 TransportCtlDispatcher 时共享）。
+    pub fn senders_handle(&self) -> Arc<Mutex<HashMap<(u32, u32), ConnSender>>> {
+        self.senders.clone()
+    }
+
+    /// 装配迁入的 daemon UI（main 在 ToolbarHost::spawn 后、transport start 前调用）。
+    pub fn attach_ui(
+        &self,
+        state: Arc<daemon::state::DaemonState>,
+        toolbar: Arc<daemon::toolbar::ToolbarHost>,
+    ) {
+        *self.ui.lock().unwrap_or_else(|e| e.into_inner()) = Some((state, toolbar));
     }
 
 
@@ -141,6 +160,9 @@ impl ConnHandler for EngineService {
             token,
             resumes: self.resumes.clone(),
             app: client.app.clone(),
+            client_pid: client.pid,
+            client_tid: client.tid,
+            ui: self.ui.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             shm: self.shm.clone(),
             candwin: CandwinHandle::spawn(match theme_choice {
                 iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
@@ -182,6 +204,11 @@ pub struct EngineSession {
     resumes: Arc<Mutex<HashMap<u64, (SavedSession, Instant)>>>,
     /// 客户端宿主进程名（握手报备；抑制名单匹配用）。
     app: String,
+    /// 客户端 pid/tid（握手报备；toolbar 信号/ctl 路由标识）。
+    client_pid: u32,
+    client_tid: u32,
+    /// 迁入的 daemon UI（None = main 未装配）。
+    ui: Option<(Arc<daemon::state::DaemonState>, Arc<daemon::toolbar::ToolbarHost>)>,
     /// 用户库共享段写者（与 EngineService 共享；UserMutation 后发布）。
     shm: Arc<Mutex<Option<iuv_win::ShmWriter>>>,
     /// 会话候选窗（服务端自渲染，49 §4.5.3；抑制命中时静默）。
@@ -268,7 +295,16 @@ impl Session for EngineSession {
                 reply.respond(S2C::Ok);
             }
             C2S::ImeState(s) => {
-                *self.runtime.lock().unwrap_or_else(|e| e.into_inner()) = core_ime_state(&s);
+                let core = core_ime_state(&s);
+                *self.runtime.lock().unwrap_or_else(|e| e.into_inner()) = core;
+                // ②toolbar 信号迁入：四态变化 → StateChanged。
+                if let Some((_, tb)) = &self.ui {
+                    tb.handle_signal(&ToolbarSignal::StateChanged {
+                        pid: self.client_pid,
+                        tid: self.client_tid,
+                        state: core,
+                    });
+                }
                 // 客户端 request() 同步等应答（真机实锤 2026-09-27：不回应答 =
                 // sync_state 每次白等满 300ms 截止 + 误标 degraded，四态切换卡
                 // 300ms）。**每个 C2S 请求必须有应答**——fire-and-forget 变体
@@ -301,10 +337,70 @@ impl Session for EngineSession {
                 }
                 reply.respond(S2C::Ok);
             }
-            C2S::FocusChanged { .. }
-            | C2S::SetMaintenance { .. }
-            | C2S::CtlResult(_) => {
+            C2S::FocusChanged { focused } => {
+                // ②toolbar 信号迁入：焦点变化 → ToolbarSignal（pid/tid = 握手报备）。
+                if let Some((_, tb)) = &self.ui {
+                    let sig = if focused {
+                        let st = *self
+                            .runtime
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        ToolbarSignal::FocusGained {
+                            pid: self.client_pid,
+                            tid: self.client_tid,
+                            state: st,
+                        }
+                    } else {
+                        ToolbarSignal::FocusLost {
+                            pid: self.client_pid,
+                            tid: self.client_tid,
+                        }
+                    };
+                    tb.handle_signal(&sig);
+                }
                 reply.respond(S2C::Ok);
+            }
+            C2S::SetMaintenance { .. } | C2S::CtlResult(_) => {
+                reply.respond(S2C::Ok);
+            }
+            C2S::TypingActivity { active } => {
+                // ②toolbar 信号迁入：桌宠动画驱动。
+                if let Some((_, tb)) = &self.ui {
+                    tb.handle_signal(&ToolbarSignal::Typing {
+                        pid: self.client_pid,
+                        tid: self.client_tid,
+                        active,
+                    });
+                }
+                reply.respond(S2C::Ok);
+            }
+            C2S::OpenSettings => {
+                // ②语言栏菜单迁入：窗口已开 → 还原/置前；未开 → 主循环消费标志。
+                if let Some((st, _)) = &self.ui {
+                    if st.settings_open.load(std::sync::atomic::Ordering::Acquire) {
+                        if daemon::settings::focus_existing_window() {
+                            log_line("[settings] 已打开 → 还原/置前");
+                        }
+                    } else {
+                        st.open_settings
+                            .store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                reply.respond(S2C::Ok);
+            }
+            C2S::ToggleToolbar => {
+                if let Some((_, tb)) = &self.ui {
+                    tb.handle_request(&iuv_win::Request::ToggleToolbar);
+                }
+                reply.respond(S2C::Ok);
+            }
+            C2S::ToolbarVisibleQuery => {
+                let visible = self
+                    .ui
+                    .as_ref()
+                    .map(|(_, tb)| tb.visible())
+                    .unwrap_or(false);
+                reply.respond(S2C::ToolbarVisible { visible });
             }
             // 握手/通用应答/服务端心跳回执不经会话处理；新增变体在语义接入前落这里。
             _ => {}
@@ -426,6 +522,56 @@ impl EngineSession {
             self.candwin_visible = false;
             self.candwin.send(CandwinCmd::Hide);
         }
+    }
+}
+
+/// ② 控制面桥：工具栏/全局热键的四态翻转 → ConnSender（pid/tid 路由）→
+/// 客户端 `S2C::Ctl` → 应用 → `C2S::CtlResult`。替代 daemon 时代的 CtlClient 旧管道。
+pub struct TransportCtlDispatcher {
+    pub senders: Arc<Mutex<HashMap<(u32, u32), ConnSender>>>,
+}
+
+impl daemon::toolbar::CtlDispatch for TransportCtlDispatcher {
+    fn dispatch_ctl(
+        &self,
+        pid: u32,
+        tid: u32,
+        cmd: &iuv_win::CtlCmd,
+    ) -> Result<iuv_win::CtlResult, String> {
+        let sender = {
+            let map = self.senders.lock().unwrap_or_else(|e| e.into_inner());
+            if map.is_empty() {
+                return Err("无活动客户端连接".into());
+            }
+            map.get(&(pid, tid)).cloned()
+        };
+        let Some(sender) = sender else {
+            return Err("目标实例连接不存在（已断开？）".into());
+        };
+        // proto CtlCmd 与 win CtlCmd 镜像转换（显式，防字段序漂移）
+        let proto_cmd = match cmd {
+            iuv_win::CtlCmd::SetMode(v) => iuv_proto::CtlCmd::SetMode(*v),
+            iuv_win::CtlCmd::SetWidth(v) => iuv_proto::CtlCmd::SetWidth(*v),
+            iuv_win::CtlCmd::SetScript(v) => iuv_proto::CtlCmd::SetScript(*v),
+            iuv_win::CtlCmd::SetPunct(v) => iuv_proto::CtlCmd::SetPunct(*v),
+        };
+        match sender.request(S2C::Ctl { cmd: proto_cmd }, Duration::from_secs(3)) {
+            Ok(C2S::CtlResult(r)) => Ok(proto_ctl_result(r)),
+            Ok(_) => Err("Ctl 应答类型错误".into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// proto `CtlResult` → win/core 镜像（工具栏消费 core ImeState）。
+fn proto_ctl_result(r: iuv_proto::CtlResult) -> iuv_win::CtlResult {
+    match r {
+        iuv_proto::CtlResult::Ok { state } => iuv_win::CtlResult::Ok {
+            state: core_ime_state(&state),
+        },
+        iuv_proto::CtlResult::Err => iuv_win::CtlResult::Err {
+            msg: "客户端应用失败".into(),
+        },
     }
 }
 

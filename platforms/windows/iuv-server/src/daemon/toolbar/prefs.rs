@@ -75,7 +75,7 @@ pub(super) fn save_pref(pref: &ToolbarPref) {
             let _ = std::fs::rename(&tmp, &path);
         }
         _ => {
-            crate::log::log_line("[toolbar] 偏好写盘失败（内存态已生效）");
+            crate::daemon::log::log_line("[toolbar] 偏好写盘失败（内存态已生效）");
             let _ = std::fs::remove_file(&tmp);
         }
     }

@@ -18,7 +18,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 pub use iuv_core::GlobalAction;
 
-use crate::log::log_line;
+use crate::daemon::log::log_line;
 
 /// 全局动作 → 功能说明（设置页/日志展示）。
 pub fn global_action_label(a: GlobalAction) -> &'static str {
