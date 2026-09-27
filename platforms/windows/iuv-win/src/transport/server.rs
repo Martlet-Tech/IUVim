@@ -53,9 +53,10 @@ pub trait Session: Send + 'static {
     fn on_c2s(&mut self, req: C2S, reply: &mut Reply);
 }
 
-/// 会话工厂：新连接接入时装配。认证/版本由 transport 先行校验，到此处必然合法。
+/// 会话工厂：新连接接入时装配。认证/版本由 transport 先行校验，到此处必然合法；
+/// `caps` = 服务端 ∩ 客户端的能力交集（会话据此决定候选数据等推送）。
 pub trait ConnHandler: Send + Sync + 'static {
-    fn on_connect(&self, client: &ClientInfo) -> Box<dyn Session>;
+    fn on_connect(&self, client: &ClientInfo, caps: Caps) -> Box<dyn Session>;
 }
 
 /// 一次 `on_c2s` 的产出：0/1 条应答 + 任意条推送。
@@ -291,7 +292,7 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
         return Err(io::Error::other("握手失败: 认证不符"));
     }
     let caps = Caps(ctx.caps.0 & want_caps.0);
-    let mut session = ctx.handler.on_connect(&client);
+    let mut session = ctx.handler.on_connect(&client, caps);
     write_frame_ov(
         h,
         0,

@@ -129,12 +129,15 @@ pub enum KeyVerdict {
 /// （composition 恒 `Some`），双方才有共同基线（49 §4.5.2）。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct KeyOutcome {
-    /// 应用是否应吞掉本键（OnTestKeyDown 的应答）。
+    /// 应用是否应吞掉本键（OnTestKeyDown 的应答；服务端只收非放行键，恒 true）。
     pub eaten: bool,
     /// 内嵌预编辑（拼音分段）；None = 与上帧相同。
     pub composition: Option<String>,
-    /// Some → 上屏并结束会话。
-    pub commit: Option<String>,
+    /// 切分显示（如 "ni'hao"）。**过渡期字段**：P3 客户端仍自绘候选窗时需要；
+    /// 服务端自渲染候选窗落地后移除（届时热路径再瘦 8 字节）。
+    pub reading: Option<String>,
+    /// Some → 会话结束：`Commit(text)` 上屏文本 / `Cancel` 取消清空。
+    pub end: Option<SessionEnd>,
     /// 以下三项仅 `Caps::UIELEMENT`（客户端自绘候选时才有意义；服务端自渲染候选窗，
     /// 普通客户端不消费——49 §4.5.3）。
     pub candidates: Option<Vec<Candidate>>,
@@ -370,6 +373,8 @@ pub enum C2S {
     FocusChanged {
         focused: bool,
     },
+    /// 四态同步（连接建立时 + 每次变化；客户端是 OPENCLOSE 真相源，服务端会话运行时消费）。
+    ImeState(ImeState),
     /// 维护模式（对照 weasel START/END_MAINTENANCE）。
     SetMaintenance {
         on: bool,

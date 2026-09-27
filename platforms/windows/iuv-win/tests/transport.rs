@@ -44,7 +44,8 @@ impl Session for EchoSession {
             C2S::Key { .. } => reply.respond(S2C::KeyResult(KeyVerdict::Consumed(KeyOutcome {
                 eaten: true,
                 composition: None,
-                commit: None,
+                reading: None,
+                end: None,
                 candidates: None,
                 page: None,
                 selected: None,
@@ -75,7 +76,7 @@ impl Session for SlowSession {
 struct Factory;
 
 impl ConnHandler for Factory {
-    fn on_connect(&self, _client: &iuv_proto::ClientInfo) -> Box<dyn Session> {
+    fn on_connect(&self, _client: &iuv_proto::ClientInfo, _caps: Caps) -> Box<dyn Session> {
         Box::new(EchoSession)
     }
 }
@@ -83,7 +84,7 @@ impl ConnHandler for Factory {
 struct SlowFactory(Duration);
 
 impl ConnHandler for SlowFactory {
-    fn on_connect(&self, _client: &iuv_proto::ClientInfo) -> Box<dyn Session> {
+    fn on_connect(&self, _client: &iuv_proto::ClientInfo, _caps: Caps) -> Box<dyn Session> {
         Box::new(SlowSession { delay: self.0 })
     }
 }

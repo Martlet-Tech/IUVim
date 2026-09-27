@@ -76,6 +76,10 @@ fn c2s_samples() -> Vec<C2S> {
             dpi: 144,
         },
         C2S::FocusChanged { focused: false },
+        C2S::ImeState(ImeState {
+            mode: ImeMode::English,
+            ..Default::default()
+        }),
         C2S::SetMaintenance { on: true },
         C2S::UserMutation(UserMutation::Swap {
             a_code: "ni".into(),
@@ -127,7 +131,8 @@ fn s2c_samples() -> Vec<S2C> {
         S2C::KeyResult(KeyVerdict::Consumed(KeyOutcome {
             eaten: true,
             composition: Some("ni'hao".into()),
-            commit: None,
+            reading: Some("ni'hao".into()),
+            end: Some(SessionEnd::Commit("你好".into())),
             candidates: None,
             page: None,
             selected: None,
@@ -405,7 +410,8 @@ fn hot_path_key_frame_is_tiny() {
         &Payload::ServerResp(S2C::KeyResult(KeyVerdict::Consumed(KeyOutcome {
             eaten: true,
             composition: None,
-            commit: None,
+            reading: None,
+            end: None,
             candidates: None,
             page: None,
             selected: None,

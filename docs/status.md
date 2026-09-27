@@ -571,3 +571,23 @@
   热路径 Key + UserMutation、版本不匹配类型化报错、认证拒绝、超时 Deadline 后恢复（迟到
   应答不串号）、4 线程并发多路复用、连接上限拒绝；clippy 零警告；iuv-proto 18 项仍绿。
   存量 SHM 环境失败不变（见上条）。
+
+- [x] **49 号 P3a：`iuv-server.exe` 引擎服务落地（无头可测）**（2026-09-27，同分支）：
+  新 crate `platforms/windows/iuv-server`（lib+bin）。main 装配与 tsf engine_host 同源
+  （词库/配置/用户库/简繁表 → `Engine`；词库失败退出非零——服务端无透明模式意义）；
+  共享密钥 `load_or_create_token(iuv_dir)`；`--pipe` 可覆盖管道名。lib = `EngineService`
+  （transport `ConnHandler`）：**每连接一个 `EngineSession`**（对齐旧架构每实例一会话），
+  `Key` → `Session::on_key` → `Effect` 映射瘦身 `KeyOutcome`：
+  - composition 增量（基线相同回 `None`；`full=true` 强制全量——§4.5.2 重同步服务端侧）；
+  - `commit` 字段升级为 `end: Option<SessionEnd>`（Commit(text)/Cancel 语义精确，
+    proto 破坏性变更，未发布故版本仍 v1）；补 `reading` 过渡字段（P3b 客户端自绘候选窗需要）；
+  - `Caps::UIELEMENT`：`KeyOutcome` 带当前页候选 + 每键 `Push::UiElement` 全量候选
+    （过渡期客户端自绘；服务端自渲染落地后移除）；
+  - `C2S::ImeState` 新增（客户端 OPENCLOSE 真相源 → 服务端会话运行时四态）；
+  - 过渡边界：`UserMutation` 无独立入口（调权/造词/屏蔽只经按键在引擎内生效）；
+    配置热载待接（改动需重启服务端，P4 收敛）；`FocusChanged` 不断会话（38 号）。
+  **测试**：`tests/hot_path.rs` 6 项无头全绿——合成 `nihao`+Space 提交「你好」、
+  composition 增量（Left 页首夹紧语义核实）/Right 移动选中、`full=true` 强制全量、
+  `EndSession` 后新会话、Esc 取消、无 UIELEMENT 能力零候选推送。clippy 零警告。
+  服务端侧热路径契约全部可自动化验证；**P3b（TSF 薄客户端化 + Test/KeyDown 去重）待做，
+  完成后需真机打字回归**。
