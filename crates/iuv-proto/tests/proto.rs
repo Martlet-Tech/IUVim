@@ -39,6 +39,7 @@ fn c2s_samples() -> Vec<C2S> {
             proto_min: PROTO_MIN,
             proto_max: PROTO_MAX,
             auth: Auth([7u8; 32]),
+            caps: Caps(Caps::UIELEMENT),
             resume: Some(ResumeToken(42)),
             client: ClientInfo {
                 pid: 1234,

@@ -554,3 +554,20 @@
     （%TEMP% 写/SHM 创建/配置读写）一律 os error 5「拒绝访问」，shell 直写同路径正常
     ——疑似杀软/策略拦截未签名测试二进制，致 iuv-core config / iuv-data / SHM 等
     **存量** IO 类测试在本机红。非沙箱同样复现；49 号相关测试不受影响。
+
+- [x] **49 号 P2：`iuv-win::transport` 长连接传输落地**（2026-09-27，同分支）：管道
+  `iuv.service.v1`（BYTE 模式，显式分帧），**std 线程 + overlapped IO**（实现层修订：
+  不引 async 运行时，避免 TSF DLL 依赖膨胀；overlapped 提供型别化截止时间，读写可限时
+  可取消——修订理由已写进 49 §4.1）。服务端：accept 线程（可取消）+ 每连接一线程 +
+  连接上限（§4.7）；握手三关 = 首帧 Hello → 版本协商（无交集回 `Err(VersionMismatch)`
+  断连）→ 密钥校验（不符回 `Err(Unauthenticated)`）；会话建立即推 `SessionAttached`
+  令牌（重绑语义 P5）。客户端：读线程分发 RESP/PUSH + 写互斥；`request(req, urgent,
+  deadline)` 同步有截止，**超时烧号不复用**（迟到应答绝不串号）；最后一个 client drop
+  关连接（读线程自然退出）。`Hello` 补 `caps` 能力位（服务端取交集回 `HelloAck.caps`）；
+  proto 新增 `decode_payload` 公开 API（transport 分帧后解载荷）。附 `auth_file`
+  load_or_create（BCryptGenRandom 生成 32B token，create_new 并发安全，ACL 随用户
+  profile 继承；显式 DACL 后置安装器）。
+  **测试**：`tests/transport.rs` 7 项集成全绿——互连+SessionAttached 推送、Ping/Pong +
+  热路径 Key + UserMutation、版本不匹配类型化报错、认证拒绝、超时 Deadline 后恢复（迟到
+  应答不串号）、4 线程并发多路复用、连接上限拒绝；clippy 零警告；iuv-proto 18 项仍绿。
+  存量 SHM 环境失败不变（见上条）。

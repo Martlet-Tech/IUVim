@@ -161,7 +161,12 @@ pub fn decode_frame(buf: &[u8]) -> Result<(FrameHeader, Payload), ProtoError> {
             reason: format!("帧长不匹配: 头声明 {expect}B, 实得 {}B", buf.len()),
         });
     }
-    let body = &buf[HEADER_LEN..expect];
+    let payload = decode_payload(header.kind, &buf[HEADER_LEN..expect])?;
+    Ok((header, payload))
+}
+
+/// 解码载荷（transport 分帧读取头/载荷后调用；kind 与载荷变体错配即拒）。
+pub fn decode_payload(kind: FrameKind, body: &[u8]) -> Result<Payload, ProtoError> {
     let (payload, rest) =
         postcard::take_from_bytes::<Payload>(body).map_err(|e| ProtoError::Malformed {
             offset: HEADER_LEN as u32,
@@ -173,11 +178,11 @@ pub fn decode_frame(buf: &[u8]) -> Result<(FrameHeader, Payload), ProtoError> {
             reason: format!("载荷残留 {} 字节", rest.len()),
         });
     }
-    if payload.kind() != header.kind {
+    if payload.kind() != kind {
         return Err(ProtoError::UnknownTag {
-            kind: header.kind as u8,
+            kind: kind as u8,
             tag: 0,
         });
     }
-    Ok((header, payload))
+    Ok(payload)
 }

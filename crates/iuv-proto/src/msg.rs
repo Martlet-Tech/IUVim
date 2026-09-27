@@ -340,11 +340,13 @@ pub enum ProtoError {
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum C2S {
-    /// 握手。连接后第一条帧，必须是它（49 §4.4）。
+    /// 握手。连接后第一条帧，必须是它（49 §4.4）。`caps` = 客户端请求的能力位
+    /// （服务端按自身支持集取交集后回 `HelloAck.caps`）。
     Hello {
         proto_min: u16,
         proto_max: u16,
         auth: Auth,
+        caps: Caps,
         resume: Option<ResumeToken>,
         client: ClientInfo,
     },

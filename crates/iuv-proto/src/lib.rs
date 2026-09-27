@@ -15,7 +15,9 @@ pub mod frame;
 pub mod msg;
 pub mod stream;
 
-pub use frame::{decode_frame, encode_frame, FrameHeader, FrameKind, HEADER_LEN, MAX_PAYLOAD};
+pub use frame::{
+    decode_frame, decode_payload, encode_frame, FrameHeader, FrameKind, HEADER_LEN, MAX_PAYLOAD,
+};
 pub use msg::{
     Auth, BuildId, Candidate, CandidateKind, Caps, CaretRect, ClientConfig, ClientInfo, CtlCmd,
     CtlResult, Effect, ImeMode, ImePunct, ImeScript, ImeState, ImeWidth, Key, KeyOutcome, KeyPhase,

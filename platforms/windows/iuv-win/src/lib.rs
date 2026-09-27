@@ -17,6 +17,7 @@ pub mod keys;
 pub mod logger;
 pub mod popup;
 pub mod shm;
+pub mod transport;
 pub mod ulw;
 
 pub use ipc::{
