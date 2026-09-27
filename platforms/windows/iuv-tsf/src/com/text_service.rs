@@ -452,12 +452,16 @@ impl TextService_Impl {
         // 引用 + 管道写；daemon 不在线 → 引擎写路径自动降级本地写盘（绝不挂键）。
         // 引擎可能在后台加载未完成（engine()=None），远端写后端延迟到首键补注册
         // （handle_key_down 的 remote_registered 兜底，set_user_remote 幂等）。
+        // M10：engine() 会触发本地引擎惰性加载（17MB 词库进每个宿主进程）——
+        // 远端模式必须跳过（49 §2「客户端无词库无引擎」）。
         let user_path = user_dict_path();
         let daemon = Arc::new(DaemonClient::new(user_path.clone()));
-        if let Some(engine) = engine() {
+        if crate::com::remote_host::use_server() {
+            log_line("[daemon] 远端模式：跳过本地引擎装配（用户库由服务端持有）");
+        } else if let Some(engine) = engine() {
             engine.set_user_remote(Some(daemon.clone()));
             self.remote_registered.set(true);
-        } else if !crate::com::remote_host::use_server() {
+        } else {
             log_line("[daemon] 引擎尚未加载完成：远端写后端延迟到首键注册");
         }
         *self.daemon.borrow_mut() = Some(daemon.clone());

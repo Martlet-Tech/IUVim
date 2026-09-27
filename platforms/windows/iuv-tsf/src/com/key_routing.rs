@@ -168,11 +168,14 @@ impl TextService {
         let vk = wparam.0 as u16;
         // M6：远端写后端在 Activate 注册；引擎后台加载未完成则此处补注册（幂等，无副作用）。
         // 必须先于 route_key 的 daemon 轮询（poll 回调可能重载引擎配置/重注册实例）。
-        if let Some(engine) = engine() {
-            if let Some(client) = self.daemon.borrow().as_ref() {
-                if !self.remote_registered.get() {
-                    engine.set_user_remote(Some(client.clone()));
-                    self.remote_registered.set(true);
+        // M10：engine() 触发本地引擎惰性加载——远端模式跳过（服务端持有引擎/词库）。
+        if !crate::com::remote_host::use_server() {
+            if let Some(engine) = engine() {
+                if let Some(client) = self.daemon.borrow().as_ref() {
+                    if !self.remote_registered.get() {
+                        engine.set_user_remote(Some(client.clone()));
+                        self.remote_registered.set(true);
+                    }
                 }
             }
         }

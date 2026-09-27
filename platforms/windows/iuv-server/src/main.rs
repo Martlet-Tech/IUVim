@@ -11,9 +11,7 @@ use std::sync::Arc;
 use iuv_core::{paths::iuv_dir, Config, Engine};
 use iuv_proto::{Auth, BuildId, Caps};
 use iuv_win::logger::log_line;
-use iuv_win::transport::{
-    load_or_create_token, TransportServer, CONNECT_RETRY_MS, SERVICE_PIPE_NAME,
-};
+use iuv_win::transport::{load_or_create_token, TransportServer, SERVICE_PIPE_NAME};
 
 const DICT_FILENAME: &str = "iuv.imedic";
 const USERDICT_FILENAME: &str = "iuv.user.imedic";
@@ -60,7 +58,9 @@ fn main() {
         }
     };
     log_line(&format!("iuv-server 就绪：{pipe}（等待连接）"));
-    let _ = (server, CONNECT_RETRY_MS);
+    // 存活到进程结束。**不能写 `let _ = server`**——`_` 模式的临时值在语句结束即析构，
+    // TransportServer::drop 会关管道/停 accept（实测：进程活着但管道消失，客户端全放行）。
+    let _server = server;
     loop {
         std::thread::park();
     }
