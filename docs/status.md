@@ -789,3 +789,32 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
   注：server **进程死亡**时保存的会话现场随进程消亡 → 重绑得全新会话（当前
   composition 丢弃、下一键重开），这是 C+A 设计内行为（现场回放只覆盖连接断开
   但服务端存活的场景）；无形态变化。
+
+- [x] **49 号 P4 服务端自渲染候选窗落地（待真机回归）**（2026-09-27，同分支）:
+  - **服务端**（新 `candwin` 模块）: 每连接一个 UI 线程 + ULW 窗口（命令驱动
+    Show/Update/MoveTo/Hide/SetTheme，latest-wins），渲染/定位/圆角命中与 TSF
+    客户端版同源（iuv-ui 软件光栅 → UpdateLayeredWindow）；**DPI 按 caret 所在
+    显示器 GetDpiForMonitor 自算**（main 置 PMv2）；无点击选词（UI 线程触达不了
+    连接线程的会话，待服务端主动 REQ 通道接线，键盘数字选词不受影响），悬停
+    高亮保留。会话接线: Effect → effect_to_snapshot → 窗口命令；结束/空快照 →
+    Hide；ConfigChanged 推送同时热载服务端窗主题。
+  - **光标上报**: `C2S::CaretMoved` 双侧落地——客户端**只在锚点变化时**上报
+    （打字期锚点恒定 → 绝大多数键零上报）；会话首键由 `query_insertion_caret`
+    （selection 起点量取，composition 尚不存在）先行上报 → 服务端首帧即定位
+    正确；dispatch 与 follow_layout 两路变化均上报（宿主拖拽/滚动时窗口跟随）。
+  - **载荷裁撤（49 §4.5.3 兑现）**: 抑制判定 = `candidate_owner_apps` ∩ 客户端
+    宿主进程名（每键读引擎配置 → 热载即时生效）。命中的连接（如 WoW）: 服务端
+    窗静默 + KeyOutcome 携带候选数据源（游戏桥 UI 元素所需）；普通应用: 零候选
+    载荷（显式空数组清客户端旧值，防增量合并留旧候选在游戏桥），**每键从几 KB
+    降到几十字节**；caps=0 客户端仍 None（契约不变）。
+  - **客户端**: 远端模式本地候选窗不画（`apply_effect` 增 `render_locally`，
+    跳过快照/显隐/跳变判定——本地窗从未 show 即从未创建，零开销）；桌宠 typing
+    信号撤销「候选非空」条件（服务端渲染后普通应用候选为空属常态）。
+  - **测试**: iuv-server 11/11（+抑制命中带候选数据源；普通应用断言改零候选；
+    无头测试不触发窗口——caret 未上报时 sync_candwin 早退）；iuv-tsf 42 通过
+    (+2 存量 SHM 红)；clippy 全 workspace 零警告。
+  - **待真机回归（管理员）**: dev-dep 后远端模式 ①普通应用打字：候选窗由服务端
+    画（观察 iuv-server 进程窗口/日志），首键定位正确、跟随打字/拖拽/滚动；
+    ②主题热载：设置页切主题 → 服务端窗即时切换；③WoW（wow.exe 在抑制名单）：
+    游戏内候选栏照旧（客户端桥），服务端窗不出现；④鼠标悬停高亮正常、点击候选
+    无效（已知过渡限制）。
