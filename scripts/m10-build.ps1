@@ -65,9 +65,9 @@ $artifacts = @(
 )
 $missing = @($artifacts | Where-Object { -not (Test-Path $_) })
 if ($missing.Count -gt 0) {
-    Write-Host "错误：以下产物缺失："
-    $missing | ForEach-Object { Write-Host "  $_" }
-    exit 1
+    # throw 而非 exit：被 m10-deploy 调用时能被 try/catch 捕获（exit 只退子脚本，
+    # 调用方的 LASTEXITCODE 检查不可靠——见 m10-deploy 同款注释）。
+    throw "以下构建产物缺失：$($missing -join '; ')"
 }
 Write-Host ""
 Write-Host "M10 构建完成（四产物齐全）。下一步：scripts\m10-deploy.ps1（需管理员）"

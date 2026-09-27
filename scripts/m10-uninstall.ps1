@@ -41,8 +41,13 @@ if ($backedUp.Count -gt 0) {
 }
 
 # ---- 3. 全清卸载（复用现有 uninstall.ps1：注册表键 + 安装目录 + 用户数据 + 延迟清理）----
-& (Join-Path $PSScriptRoot 'uninstall.ps1')
-if ($LASTEXITCODE -ne 0) { throw "uninstall 失败（exit=$LASTEXITCODE）" }
+# 成败不查 $LASTEXITCODE（子脚本成功不设置它，残留值会假失败）；uninstall 自身
+# 有残留自检（残留注册表键时 exit 1 + 输出警告）。
+try {
+    & (Join-Path $PSScriptRoot 'uninstall.ps1')
+} catch {
+    throw "uninstall 失败：$_"
+}
 
 Write-Host ""
 if ($backedUp.Count -gt 0) {

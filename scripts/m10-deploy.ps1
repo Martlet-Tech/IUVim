@@ -23,9 +23,14 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 # ---- 1. 构建（当前窗口；普通权限即可）----
+# 注意：调用 .ps1 子脚本后**不可**用 $LASTEXITCODE 判成败——子脚本成功时不设置它，
+# 查到的是 shell 里上一次原生命令的残留值（实测假失败）。子脚本失败走 throw → catch。
 if (-not $SkipBuild) {
-    & (Join-Path $PSScriptRoot 'm10-build.ps1')
-    if ($LASTEXITCODE -ne 0) { throw "m10-build 失败" }
+    try {
+        & (Join-Path $PSScriptRoot 'm10-build.ps1')
+    } catch {
+        throw "m10-build 失败：$_"
+    }
 } else {
     Write-Host "-SkipBuild：跳过构建"
 }
@@ -53,11 +58,22 @@ Trace-Script "m10-deploy: 管理员实例启动（SkipBuild=$SkipBuild NoServer=
 Write-Host "=== M10 测试部署（管理员）==="
 
 # ---- 3. dev-deploy 热替换（TSF DLL x64+x86 / 词库 / 简繁表 / daemon / 注册 / ctfmon）----
-& (Join-Path $PSScriptRoot 'dev-deploy.ps1') -SkipBuild
-if ($LASTEXITCODE -ne 0) {
-    Trace-Script "m10-deploy: dev-deploy 失败（exit=$LASTEXITCODE）"
-    throw "dev-deploy 失败（exit=$LASTEXITCODE），详见 %TEMP%\iuv-script.log"
+# 成败不查 $LASTEXITCODE（残留值问题同上），直接验产物：目标 DLL 不旧于源产物。
+$destDllCheck = Join-Path $env:ProgramFiles "iuv\iuv_tsf.dll"
+try {
+    & (Join-Path $PSScriptRoot 'dev-deploy.ps1') -SkipBuild
+} catch {
+    Trace-Script "m10-deploy: dev-deploy 异常：$_"
+    throw "dev-deploy 失败：$_，详见 %TEMP%\iuv-script.log"
 }
+$srcDll = Join-Path $repoRoot "target\release\iuv_tsf.dll"
+$srcTime = (Get-Item $srcDll).LastWriteTime
+$dstTime = (Get-Item $destDllCheck -ErrorAction SilentlyContinue).LastWriteTime
+if (-not $dstTime -or $dstTime -lt $srcTime.AddSeconds(-1)) {
+    Trace-Script "m10-deploy: dev-deploy 产物校验失败（dst=$dstTime src=$srcTime）"
+    throw "部署校验失败：$destDllCheck 未更新（详见 %TEMP%\iuv-script.log）"
+}
+Trace-Script "m10-deploy: dev-deploy 完成（产物已更新）"
 
 $destDir   = Join-Path $env:ProgramFiles "iuv"
 $serverSrc = Join-Path $repoRoot "target-server\release\iuv-server.exe"
