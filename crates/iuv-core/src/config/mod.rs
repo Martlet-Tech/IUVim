@@ -4,19 +4,18 @@
 //!
 //! 新增配置项的唯一入口：在本模块加字段 + `Default`，序列化自动跟随。
 //!
-//! P2.1 拆分：枚举/实例状态/IO 分别移入 `enums.rs`/`runtime.rs`/`io.rs`，
-//! 本文件保留 `Config` 本体与序列化测试。
+//! P2.1 拆分：枚举/实例状态/IO 分别移入 `enums.rs`/`io.rs`（runtime.rs 于 ③-2
+//! 沉底 iuv-data 后删除），本文件保留 `Config` 本体与序列化测试。
 
 pub mod keymap;
 pub use keymap::{Combo, GlobalAction, Keymap, SessionAction, TwoSlot};
 
 mod enums;
 mod io;
-mod runtime;
 
-pub use enums::{InitialMode, Orientation, PunctMode, ScriptMode, ThemeChoice, WidthMode};
+pub use enums::{ImeMode, ImePunct, ImeScript, ImeWidth, Orientation, ThemeChoice};
 pub use io::{default_config_path, migrate_keymap, strip_bom, strip_jsonc_comments};
-pub use runtime::ImeState;
+pub use iuv_data::ImeState;
 
 /// 性能埋点日志模块名（日志形如 `[perf] render 1748us update`）。
 /// 定义在此处（而非平台层）以保证配置默认值与平台层标签是同一个字符串。
@@ -325,10 +324,10 @@ mod tests {
     fn initial_state_defaults() {
         // 初始状态默认 = 主流（中文/半角/简体/中文标点），与旧版零行为变化。
         let c = Config::default();
-        assert_eq!(c.initial_state.mode, InitialMode::Chinese, "默认中文");
-        assert_eq!(c.initial_state.width, WidthMode::Half, "默认半角");
-        assert_eq!(c.initial_state.script, ScriptMode::Simplified, "默认简体");
-        assert_eq!(c.initial_state.punct, PunctMode::Chinese, "默认中文标点");
+        assert_eq!(c.initial_state.mode, ImeMode::Chinese, "默认中文");
+        assert_eq!(c.initial_state.width, ImeWidth::Half, "默认半角");
+        assert_eq!(c.initial_state.script, ImeScript::Simplified, "默认简体");
+        assert_eq!(c.initial_state.punct, ImePunct::Chinese, "默认中文标点");
         // 缺 initial_state 节点（旧配置）→ serde 补全默认
         let c2: Config = serde_json::from_str(r#"{ "page_size": 5 }"#).unwrap();
         assert_eq!(c2.initial_state, ImeState::default());
@@ -339,9 +338,9 @@ mod tests {
             r#"{ "initial_state": { "mode": "english", "punct": "english" } }"#,
         )
         .unwrap();
-        assert_eq!(c3.initial_state.mode, InitialMode::English);
-        assert_eq!(c3.initial_state.punct, PunctMode::English);
-        assert_eq!(c3.initial_state.width, WidthMode::Half, "未写字段补默认");
+        assert_eq!(c3.initial_state.mode, ImeMode::English);
+        assert_eq!(c3.initial_state.punct, ImePunct::English);
+        assert_eq!(c3.initial_state.width, ImeWidth::Half, "未写字段补默认");
     }
 
     #[test]
@@ -350,12 +349,12 @@ mod tests {
         let p = tmp_file("legacy_ep_true.json");
         std::fs::write(&p, r#"{ "english_punctuation": true }"#).unwrap();
         let c = Config::from_file(&p);
-        assert_eq!(c.initial_state.punct, PunctMode::English, "true → 英文标点");
-        assert_eq!(c.initial_state.mode, InitialMode::Chinese, "其余字段默认");
+        assert_eq!(c.initial_state.punct, ImePunct::English, "true → 英文标点");
+        assert_eq!(c.initial_state.mode, ImeMode::Chinese, "其余字段默认");
         let p2 = tmp_file("legacy_ep_false.json");
         std::fs::write(&p2, r#"{ "english_punctuation": false }"#).unwrap();
         let c2 = Config::from_file(&p2);
-        assert_eq!(c2.initial_state.punct, PunctMode::Chinese);
+        assert_eq!(c2.initial_state.punct, ImePunct::Chinese);
         // 新节点优先：残留旧键时不再迁移
         let p3 = tmp_file("legacy_ep_both.json");
         std::fs::write(
@@ -364,7 +363,7 @@ mod tests {
         )
         .unwrap();
         let c3 = Config::from_file(&p3);
-        assert_eq!(c3.initial_state.punct, PunctMode::Chinese, "新节点优先");
+        assert_eq!(c3.initial_state.punct, ImePunct::Chinese, "新节点优先");
     }
 
     #[test]

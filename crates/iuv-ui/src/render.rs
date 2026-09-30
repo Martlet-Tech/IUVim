@@ -384,13 +384,13 @@ mod tests {
         TOOLBAR_PAD,
     };
     use iuv_core::{
-        ImeState, InitialMode, Orientation, PageInfo, PunctMode, ScriptMode, WidthMode,
+        ImeState, ImeMode, Orientation, PageInfo, ImePunct, ImeScript, ImeWidth,
     };
 
     fn renderer() -> TextRenderer {
         TextRenderer::new()
     }
-    fn snap(reading: &str, candidates: &[&str], page: usize, page_count: usize) -> UiSnapshot {
+    fn snap(reading: &str, candidates: &[&str], page: u32, page_count: u32) -> UiSnapshot {
         UiSnapshot {
             reading: reading.to_string(),
             candidates: candidates.iter().map(|s| s.to_string()).collect(),
@@ -720,10 +720,10 @@ mod tests {
         let spec = ToolbarSpec {
             icons: &icons,
             state: ImeState {
-                mode: InitialMode::English,
-                width: WidthMode::Half,
-                punct: PunctMode::English,
-                script: ScriptMode::Simplified,
+                mode: ImeMode::English,
+                width: ImeWidth::Half,
+                punct: ImePunct::English,
+                script: ImeScript::Simplified,
             },
             hover: Some(TB_GEAR),
             pressed: None,

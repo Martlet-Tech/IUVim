@@ -8,16 +8,38 @@
 
 ## 活跃事项速览
 
+### M10 薄客户端重构（49 号，分支 `feat/m10-thin-client`）——已完成，2026-09-30 并 main
+
+**当前状态（2026-09-30，接手前必读）**：P0-P5、② daemon→server 全量迁移、③-1 删本地
+模式（远端唯一形态）、③-2 镜像归一（共享类型沉底 iuv-data，PROTO 1→2）全部落地并
+真机回归通过（注销重登全进程 0ms 首连）；过渡期死代码已清扫（本轮，见台账末条）。
+
+- **收尾可选增强**（不阻塞，已记录）：
+  `Push::Shutdown` 优雅停机接线（server 现只能 taskkill）、flush 原文 pending_text
+  （消除「composition 去撇号」近似，`remote_host.rs`）。
+- **架构现状**：iuv-server = 全系统唯一服务进程（引擎/用户库真相源/SHM 唯一写者/
+  服务端自绘候选窗/工具栏桌宠设置页全局热键）；iuv-tsf = 薄客户端（transport 长连接
+  三平面）；iuv-daemon 已删；旧四套 IPC（用户库管道/SHM 轮询/ctl 反向管道/toolbar
+  signal 管道）实体全部退役，SHM 保留为用户库发布只读面。协议 = `iuv-proto`
+  （PROTO 2），类型唯一定义在 `iuv-data`。
+- **另立任务**：设置页用户库单条删除入口；语言栏右键菜单部分程序不弹出（存量，
+  待复现定位）；ITfSource QI 失败（存量）。
+- **定档**：单键截止 300ms = 挂死保命线（非延迟策略）；引擎单键实测 17-58ms
+  （125 万词库，`iuv-server.log [perf]` 观测线 ≥10ms 持续收集）。
+- **测试**：`scripts\m10-build.ps1` → `m10-deploy.ps1`（-SkipBuild/-NoServer）→
+  `m10-uninstall.ps1`。日志 `%TEMP%\iuv-tsf.log` / `iuv-server.log` / `iuv-script.log`。
+- **环境注意**：本机测试进程做文件 IO 报 os error 5（存量环境问题，疑杀软，干净树
+  复现，与本仓库代码无关）——相关存量测试在本机红属正常（transport 的
+  `server_initiated_request_roundtrip` 同源，HEAD 基线即红）。
+
 ### 未开工 / 挂起
 
 - M3 整句增强(LMDG)/模糊音
 - 符号/emoji 候选、学习候选（微软对齐已知差距，见 M1.5 条目）
 - M9 可自定义贴图皮肤框架（调研定稿/挂起；前置 M8 工具栏已多轮打磨，可重新评估）
 - 点子库：Tab 键用途（`29-tab-ideas.md`，暂不做）
-- 设置页高级页缺外层 ScrollArea：第三个卡片（全屏行为）被挤出 640×480 固定窗口可视区且无
-  法滚动。**第二次踩此坑**——修法见 `keymap_tab` 2026-08-28 注释（包
-  `ScrollArea::vertical().max_height(ui.available_height() - 12.0)`）。本次提交未修，留待后续；
-  期间该开关恒为默认开启（全屏隐藏功能本身可用，仅入口不可达）。
+- ~~设置页高级页缺外层 ScrollArea~~（**已修 2026-09-30**，`advanced_tab` 包外层
+  ScrollArea，全屏行为卡片可达——见台账末条）
 
 ---
 
@@ -502,7 +524,7 @@
   恒为默认开启，不影响上述实测结论。
 
 - [x] **48 号 · 简拼键音节碰撞修复（dictc 编译期过滤）**（2026-09-19，任务书
-  `docs/plan/48-abbrev-syllable-collision.md`，**未提交**）：敲 `fa` 1 号出「方案」
+  `docs/plan/48-abbrev-syllable-collision.md`，同日入库 6b34917）：敲 `fa` 1 号出「方案」
   压过「发」——根因 = M1.5 预生成简拼键（`fang'an`→`fa`）无"非完整音节"守卫，撞
   完整单音节 exact 查询档（§4.2"完整单音节无歧义→纯单字"），满权重零罚分进池；
   判别实验 `la` 桶混入恋爱/立案/两岸等 l+a 形态词。修法：`compile.rs::abbrev_of`
@@ -513,5 +535,526 @@
   `data/iuv.imedic`（旧库备份 `iuv.imedic.bak-20260919`，gitignore 产物不入库）。
 - [x] **测试**：workspace 全绿（18 套件）+ clippy 零警告；repl 实测 `fa`→发/法纯单字、
   `la` 无恋爱、`n'h` 简拼出词、`fang'an` 方案 1 号、`x'a` 新旧库逐条一致（无误伤）。
-  分数列微移为词库 total_weight 分母变化，符合预期。**真机手测待管理员**
-  （dev-deploy 前装机器已装的旧 imedic 需换新：脚本按 install.ps1 词库链自动重编或手动拷贝）。
+  分数列微移为词库 total_weight 分母变化，符合预期。**真机手测通过**
+  （2026-09-27 管理员实测；dev-deploy 前装机器已装的旧 imedic 需换新：脚本按
+  install.ps1 词库链自动重编或手动拷贝）。
+
+- [x] **49 号 · M10 架构重构立项：薄客户端 + 引擎服务端，IPC 协议定稿**（2026-09-27，
+  任务书 `docs/plan/49-thin-client-arch.md`，分支 `feat/m10-thin-client`）：
+  「每应用进程一份引擎」→「全系统一个 iuv-server.exe + 薄 TSF 客户端」。现存 4 套 IPC
+  （用户库管道/SHM/ctl 反向通道/toolbar signal）收敛为一条长连接三平面
+  （热路径 REQ/RESP · 控制面 · 状态面 latest-wins PUSH）。§6 五项拍板：
+  ①失效语义 **C+A**（断连拉起 + ResumeToken 重绑重生；失败窗口透明降级；客户端兜底引擎否决）；
+  ②超时**放行按键** + 基线失效全量重同步（Key.full 位）；
+  ③**Effect 瘦身**（热路径只回 KeyOutcome，候选仅 CAP_UIELEMENT 走 Push::UiElement）；
+  ④认证密钥文件放用户配置目录、仅当前用户可读、不轮换；
+  ⑤codec **全量 serde**（放弃「iuv-proto 零依赖」的绝对化约束）。
+  实施顺序：P0 前置（perf_probe 新增 ipc_rtt 实测热路径往返，没有数据不开工）→
+  P1（iuv-proto crate）→ P2（transport + 握手/认证）→ P3（热路径打通）→
+  P4（四套旧 IPC 收敛、按键路径零轮询）→ P5（失效语义落地）。
+
+- [x] **49 号 P0+P1：`iuv-proto` crate 落地 + `ipc_rtt` 实测基建**（2026-09-27，分支
+  `feat/m10-thin-client`，协议定稿后按 §5 分期实施）：
+  - **P1**：新 crate `crates/iuv-proto`（线上契约唯一权威，49 §4）——8B 帧头
+    （payload_len u32 LE / kind / flags bit0=URGENT / stream_id u16 LE），kind 5 值
+    **双向分编号**（客户端REQ/服务端REQ/客户端RESP/服务端RESP/PUSH，帧自描述）；
+    C2S/S2C/Push 三方向枚举 + 线上载荷类型（Key/ImeState/瘦身版 Effect/Candidate 剔 score/
+    UserMutation/CtlCmd 镜像现有语义）；全量 serde+postcard（拍板 §6.5）；stream_id
+    偶奇分配器（回绕跳过在途，耗尽返回 None）。**恰好一帧**校验：截断/残留/保留 flags 位/
+    未知 kind/未知变体一律拒整帧（49 §4.8 纪律）。帧预算有测试锁死：Key 请求 ≤24B、
+    None 增量应答 ≤24B。同步：01-contract §2.1 快照校准 + §2.2 加 iuv-proto 行；
+    49 §4.2 kind 表改 5 值。
+  - **P0**：`iuv-win::ipc::rtt` 基准模块（同套管道原语测 per-request-connect vs
+    persistent 双形态 echo，预热 20 轮不计样本，NotFound 短重试过 accept 间隙）+
+    tsf `send_request` 挂 `ipc_rtt` 埋点（perf_probe 开关内，`request_kind` 明细分六类）。
+    开发机首批实测：persistent P50=8µs/P99=13µs，per-request P50=17µs/P99≈2.0ms
+    （accept 间隙主导），connect=1.5ms——**长连接 150×@P99**，印证 49 §4.0 推翻旧否决。
+    真机（打字机）数据待采集回填（`cargo test -p iuv-win --test rtt_bench -- --nocapture`）。
+  - **测试**：iuv-proto 18 项契约测试全绿（往返/拒整帧/帧预算/回绕/协商）；rtt_bench 绿；
+    clippy 全 workspace 零警告；`cargo check --workspace` 零警告。
+  - **存量环境问题（与本批无关，干净树复现）**：本机全新编译的测试进程做文件 IO
+    （%TEMP% 写/SHM 创建/配置读写）一律 os error 5「拒绝访问」，shell 直写同路径正常
+    ——疑似杀软/策略拦截未签名测试二进制，致 iuv-core config / iuv-data / SHM 等
+    **存量** IO 类测试在本机红。非沙箱同样复现；49 号相关测试不受影响。
+
+- [x] **49 号 P2：`iuv-win::transport` 长连接传输落地**（2026-09-27，同分支）：管道
+  `iuv.service.v1`（BYTE 模式，显式分帧），**std 线程 + overlapped IO**（实现层修订：
+  不引 async 运行时，避免 TSF DLL 依赖膨胀；overlapped 提供型别化截止时间，读写可限时
+  可取消——修订理由已写进 49 §4.1）。服务端：accept 线程（可取消）+ 每连接一线程 +
+  连接上限（§4.7）；握手三关 = 首帧 Hello → 版本协商（无交集回 `Err(VersionMismatch)`
+  断连）→ 密钥校验（不符回 `Err(Unauthenticated)`）；会话建立即推 `SessionAttached`
+  令牌（重绑语义 P5）。客户端：读线程分发 RESP/PUSH + 写互斥；`request(req, urgent,
+  deadline)` 同步有截止，**超时烧号不复用**（迟到应答绝不串号）；最后一个 client drop
+  关连接（读线程自然退出）。`Hello` 补 `caps` 能力位（服务端取交集回 `HelloAck.caps`）；
+  proto 新增 `decode_payload` 公开 API（transport 分帧后解载荷）。附 `auth_file`
+  load_or_create（BCryptGenRandom 生成 32B token，create_new 并发安全，ACL 随用户
+  profile 继承；显式 DACL 后置安装器）。
+  **测试**：`tests/transport.rs` 7 项集成全绿——互连+SessionAttached 推送、Ping/Pong +
+  热路径 Key + UserMutation、版本不匹配类型化报错、认证拒绝、超时 Deadline 后恢复（迟到
+  应答不串号）、4 线程并发多路复用、连接上限拒绝；clippy 零警告；iuv-proto 18 项仍绿。
+  存量 SHM 环境失败不变（见上条）。
+
+- [x] **49 号 P3a：`iuv-server.exe` 引擎服务落地（无头可测）**（2026-09-27，同分支）：
+  新 crate `platforms/windows/iuv-server`（lib+bin）。main 装配与 tsf engine_host 同源
+  （词库/配置/用户库/简繁表 → `Engine`；词库失败退出非零——服务端无透明模式意义）；
+  共享密钥 `load_or_create_token(iuv_dir)`；`--pipe` 可覆盖管道名。lib = `EngineService`
+  （transport `ConnHandler`）：**每连接一个 `EngineSession`**（对齐旧架构每实例一会话），
+  `Key` → `Session::on_key` → `Effect` 映射瘦身 `KeyOutcome`：
+  - composition 增量（基线相同回 `None`；`full=true` 强制全量——§4.5.2 重同步服务端侧）；
+  - `commit` 字段升级为 `end: Option<SessionEnd>`（Commit(text)/Cancel 语义精确，
+    proto 破坏性变更，未发布故版本仍 v1）；补 `reading` 过渡字段（P3b 客户端自绘候选窗需要）；
+  - `Caps::UIELEMENT`：`KeyOutcome` 带当前页候选 + 每键 `Push::UiElement` 全量候选
+    （过渡期客户端自绘；服务端自渲染落地后移除）；
+  - `C2S::ImeState` 新增（客户端 OPENCLOSE 真相源 → 服务端会话运行时四态）；
+  - 过渡边界：`UserMutation` 无独立入口（调权/造词/屏蔽只经按键在引擎内生效）；
+    配置热载待接（改动需重启服务端，P4 收敛）；`FocusChanged` 不断会话（38 号）。
+  **测试**：`tests/hot_path.rs` 6 项无头全绿——合成 `nihao`+Space 提交「你好」、
+  composition 增量（Left 页首夹紧语义核实）/Right 移动选中、`full=true` 强制全量、
+  `EndSession` 后新会话、Esc 取消、无 UIELEMENT 能力零候选推送。clippy 零警告。
+  服务端侧热路径契约全部可自动化验证；**P3b（TSF 薄客户端化 + Test/KeyDown 去重）待做，
+  完成后需真机打字回归**。
+
+- [x] **49 号 P3b：TSF 薄客户端化（A/B 开关，待真机回归）**（2026-09-27，同分支）：
+  新模块 `com/remote_host.rs`——进程级 `RemoteHandle` 连 iuv-server：
+  - **Test/KeyDown 单槽去重（§4.5.1）**：`key_test` 发请求缓存裁定（同键重复 Test 复用）；
+    `key_down` 命中缓存零 IPC、未命中现场处理；
+  - **截止时间（§4.5.2）**：每键 20ms；超时 → 放行 + degraded → 下一键 `full=true`
+    全量重同步（测试验证 full 标志真实翻转）；`Busy` 不触发；
+  - **失效语义 A（§4.5.4）**：断线/Closed → offline，按键全部放行（P5 补方案 C）；
+  - 路由判定**全部留在客户端**（keymap/passthrough/全角/中文标点依赖本地态）；
+    `KeyOutcome` 经 `merge_outcome` 以 `last_effect` 为基线组装 Effect，复用既有
+    dispatch/候选窗/composition 渲染路径（本地/远端共用一套 UI 代码）；
+  - 客户端配置副本（`Config::use_engine_server` 新字段，默认 false=现状零行为变化）：
+    远端模式不加载词库/引擎；daemon 配置纪元热载走新 `DaemonClient::poll_client`
+    （无引擎变体：用户库注入跳过，服务端持有）；
+  - 四态同步：`after_runtime_change`/会话开始时 `C2S::ImeState`（差量，未变化不发）；
+  - flush_session：远端原文 = composition 去撇号（过渡近似，服务端补 pending_text 后消除）。
+  **测试**：remote_host 3 项单测全绿（去重/超时→degraded→full 重同步真实翻转/
+  断线放行）；TSF 39 通过 + 2 存量 SHM 环境失败；clippy 零警告；workspace 编译通过。
+  **真机回归（管理员）**：dev-dep 后 ①默认 `use_engine_server=false` 回归现状；
+  ②config.json 加 `"use_engine_server": true` + 启动 `iuv-server.exe` → 打字验证：
+  中文拼音/候选窗/空格上屏/Esc 取消/Shift 中英/Ctrl+Space/点简繁/翻页/游戏内候选。
+
+- [x] **49 号 P3 真机回归通过（远端模式打字全链路）**（2026-09-27，记事本/多应用）：
+  远端模式连接 0ms、远端会话内提交、候选窗/uielem 数据流全部正常；失效语义 A 验证
+  通过（服务端不可达 → 全放行，应用零卡死）。真机暴露并修复三坑：
+  ① `let _ = server` 语句结束即析构 → 服务端管道消失（进程活着客户端全放行）；
+  ② 提权脚本直启 server → 高完整性管道，中完整性应用连不上 error 5 →
+     改受限计划任务（用户上下文）启动 + windows_subsystem 去黑窗；
+  ③ 单字母 400+ 候选三份全量载荷间歇顶破截止 → 裁每键 UiElement 推送（单份走
+     KeyOutcome.all_candidates）。
+  **定档数据（iuv-server.log `[perf]`）**：引擎单键 17-58ms（125 万词库 rime 生成），
+  据此单键截止定档 300ms（保命线语义，非延迟策略——放行漏字 + 基线分叉比等待更伤）。
+  过渡期遗留：`use_engine_server` 开关 + 客户端自绘候选（P4 服务端自渲染后收敛）；
+  服务端慢键 `[perf]` 观测线 >=10ms 持续收集。
+
+- [x] **49 号 P4 首切片：配置热载改服务端持有 + 远端模式按键路径零轮询**（2026-09-27，
+  同分支）：P3 过渡期两个已知限制一并消除——「远端模式改配置需重启 server」与
+  「按键路径读 SHM 检测配置纪元」。
+  - **根因**：daemon 设置页保存 config.json 后只 bump SHM `config_epoch`（原子量），
+    iuv-server 无人通知（引擎配置启动时一次性加载）；TSF 侧消费该纪元的唯一触发点
+    在按键路径 `route_key → daemon_poll_tick → poll_client`（每键读 SHM 两个原子量，
+    epoch 变化才 `Config::load`）。服务端主动推送通道在 transport 层不存在
+    （conn 线程阻塞读循环，外部线程无法插写），但 `Reply::push` 已支持捎带。
+  - **方案（传输层零改动）**：① iuv-server 新增 `config_watch` 后台线程——500ms
+    stat config.json（mtime+len 对，原子 rename 保存下两者同变），变化 →
+    `engine.set_config` + 日志禁用集热载 + 配置纪元（`AtomicU32`）自增；
+    ② `EngineSession` 每请求处理时比对纪元（进程内原子读，非轮询），变化则在
+    `Reply` 捎带 `Push::ConfigChanged{epoch, client_view}`——latest-wins 语义天然
+    成立（客户端按 epoch 判新旧），连接建立时点即基线（不推旧值，客户端连接时
+    自行 `Config::load`）；③ TSF 推送泵（原样丢弃推送）接 `ConfigChanged` →
+    `Config::load()` 刷新进程级配置副本 + 纪元自增（`RemoteHandle::set_config`）；
+    ④ 实例侧主题收敛：`daemon_poll_tick` 远端分支改 `apply_remote_theme_tick`——
+    比对 `RemoteHandle.config_epoch()` 与实例缓存 `remote_theme_epoch`（两个进程内
+    原子量，无 SHM/IPC/文件读），落后才 `ui.set_theme`。传播时序与旧路径相同
+    （改动 → 下一键生效），磁盘读移到推送泵后台线程。
+  - **P4b 按键路径零轮询**：远端模式 `poll_client` 删除（SHM 读取随之消失，本地
+    模式 `poll` 原样保留——A/B 开关保证 main 行为不变）。daemon 上线翻转重注册
+    随按键路径轮询一并移除：**已知盲区（接受）**= 远端模式下 daemon 重启后工具栏
+    自愈退回 Activate 重发（原「打字即恢复」不再有；daemon→server 合并后消失）。
+  - **顺手修复**：`iuv-win/tests/transport.rs` 存量编译错误——P3 修漏键给
+    `KeyOutcome` 加 `all_candidates` 字段（a1fa127）时测试初始化器漏改，该测试
+    文件在 HEAD 编译不过（与本次改动无关）。
+  - **改动**：iuv-server（lib.rs 纪元字段+捎带推送、config_watch.rs 新增、main.rs
+    装配、hot_path.rs +1 测试）、iuv-tsf（remote_host.rs 推送泵/纪元/apply_push、
+    daemon_host.rs 远端分支重写、text_service.rs remote_theme_epoch 字段、
+    daemon_client.rs 删 poll_client、key_routing.rs 注释）、iuv-win
+    （tests/transport.rs 存量编译修复）。
+  - **测试**：iuv-server 7/7（新增 config_epoch_change_pushes_config_changed_once：
+    无变更零推送/纪元变化下一请求捎带/同纪元只推一次/client_view 取引擎当前
+    配置视图）；iuv-tsf 40 通过 + 2 存量 SHM 环境红；iuv-win transport 7/7（修复后
+    可编译）；workspace 其余失败全部为已记录存量 os error 5（36 处，统一
+    PermissionDenied/SHM 0x80070005/PoisonError 派生）；clippy 全 workspace 零警告。
+  - **待真机回归（管理员）**：dev-dep 后远端模式（`use_engine_server=true` +
+    iuv-server）：设置页改主题/翻页数/键位 → 不重启 server，下一键生效（引擎 +
+    候选窗主题）；杀 daemon → 工具栏不再打字恢复（预期行为，切窗口恢复）。
+  - **P4 剩余（后续切片）**：服务端自渲染候选窗（KeyOutcome 候选字段裁撤）、
+    ctl/toolbar signal 收敛（依赖 daemon→server 演进）、用户库 SHM 写者移交服务端。
+
+- [x] **49 号 P4 真机回归:P4 首切片验证通过 + 修「间歇漏键」真凶(C2S::ImeState 无应答)**
+  （2026-09-27,同分支）:
+  - **P4 首切片真机验证**:新 server 日志出现 `[config] 配置热载监视`;远端模式连接
+    0-3ms、打字正常;daemon 重启窗口期信号管道报错后自愈。配置热载生效链路(改配置 →
+    `[config] 配置热载生效` → 下一键 Push::ConfigChanged)待管理员改一次配置验证。
+  - **真凶实锤(日志时间线)**:远端会话首键候选窗晚 300ms + 偶发「远端请求超时 →
+    degraded」,而服务端 on_key <10ms。notepad 会话逐行对齐:`.333 [key] 按键:j` →
+    `sync_state` 发 `C2S::ImeState`(连接后 last_state=None 必发)→ `.334~.634` TSF
+    线程阻塞在 recv_timeout(300ms)——**服务端 ImeState 臂只更新 runtime、无
+    reply.respond,客户端等一个永远不会来的应答** → 必然超时 + 误标 degraded →
+    `.635` 才继续走缓存命中的 key_down。今日 16 次超时全部同源;P3「间歇漏键」
+    当时只修了载荷问题,此为残余真凶——首会话必中,每次中英/全半角/简繁/标点
+    切换同样命中(各 300ms 卡顿)。
+  - **修复**:`EngineSession::on_c2s` 对 ImeState 与全部 fire-and-forget 变体
+    (FocusChanged/CaretMoved/SetMaintenance/CtlResult/UserMutation)回 `S2C::Ok`——
+    协议纪律「每个 C2S 请求必须有应答」,杜绝「等不来的应答」整类问题。
+  - **测试**:hot_path +`every_c2s_request_gets_a_reply`(ImeState/FocusChanged/
+    CaretMoved 应答契约回归钉),iuv-server 8/8 全绿;clippy 零警告。
+  - **待管理员**:重新 dev-dep(此修在 server 侧,需重启 iuv-server)后,远端模式
+    首键应即时出候选;切换中英/简繁等不再卡 300ms;`[backend] 远端请求超时` 应归零
+    (除非服务端真挂死)。
+
+- [x] **49 号 P4 真机回归(二轮)：ImeState 应答修复验证通过 + daemon 完整性继承坑**
+  （2026-09-27）:
+  - **修复验证**：新 server(pid 8848)后全量日志**零**「远端请求超时」；首个远端会话
+    首键 `[key] 按键:c → BeginUIElement 候选窗` 间隔 **1ms**（修复前 300ms）；
+    连打 ceshi 全程无 degraded。
+  - **新坑（M7 惰性拉起的完整性继承，待收敛）**：提权部署窗口的 conhost（高完整性）
+    在 16:54 惰性拉起 daemon → 其信号/数据管道拒绝所有中完整性应用（error 5，
+    notepad/Explorer/Edge/ZCode 全中招，工具栏断连）——与 P3 server 提权启动同款
+    （server 已改受限计划任务，daemon 还是 CreateProcessW 惰性拉起）。**现场处置**：
+    UAC 提权 taskkill 杀掉，下次任意普通应用 Activate 惰性重启即恢复中完整性。
+    **后续方向**：daemon→server 演进（P4 剩余）后问题消失；短期若复发，可考虑给
+    daemon 也套受限计划任务启动。
+- [x] **49 号 P4 配置热载服务端侧真机验证通过**（2026-09-27 三轮）：设置页切主题
+  Dark→Light，server 8848 日志 epoch 1→4（每次保存约 1.5s 内两次写，设置页双写、
+  幂等无害）`[config] 配置热载生效` → 引擎 set_config，**无需重启 server**。
+  Push→客户端接收链路本轮未被真机触发（改主题期间无远端客户端在线打字——
+  在打字的 ZCode 是本地模式；push 搭下一请求便车无车可搭，且随后 server 重启
+  epoch 清零、客户端重连时自行 Config::load 拿到新配置）。链路有无头测试覆盖；
+  真机验证法：notepad 保持打字状态改主题，下一键应即切主题 + tsf 日志出现
+  「配置推送 epoch=」。daemon 已以中完整性重启（ZCode 上线，error 5 归零）。
+
+- [x] **49 号 P5:失效语义 C+A 落地——断连拉起 server + ResumeToken 重绑重放**
+  （2026-09-27，分支 `feat/m10-thin-client`，待真机回归）:
+  - **服务端重绑**（§4.4）: transport `on_connect` 增 `resume`/`token` 参数；
+    iuv-server `EngineService` 持重绑注册表（token → 断连现场）——**断连时
+    `EngineSession::drop` 把仍活动的引擎会话（core Session + composition 基线 +
+    四态 runtime）按令牌存入**；EndSession/commit 已清空会话 → 无现场 = 令牌自然
+    作废（§4.4 语义）。带 `Hello.resume` 重连 → 回绑现场 → 客户端 degraded 置位
+    的下一键 `full=true` 强制全量应答 = **composition 重放**（复用 §4.5.2 机制，
+    无需专门的回放报文）。TTL 5 分钟，`on_connect` 取用时顺带清扫（零定时器）。
+  - **客户端重生**（§4.5.4 方案 C+A）: remote_host 推送泵捕获
+    `SessionAttached` 令牌（每次连接更新）；请求失败（Closed/IO）→ offline
+    透明放行（A）+ `schedule_revive` 后台重生线程（`reviving` 防重入）——
+    首次尝试即拉起 **TSF DLL 同目录 `iuv-server.exe`**（CreateProcessW 继承宿主
+    中完整性，P3 提权教训；在线时撞管道名静默退出无害）→ 带 `Hello.resume`
+    重连 → degraded → 下键全量重同步；6 次未果（约 2s/次重连上界 + 250ms 间隔）
+    保持透明，**Activate 兜底重试**（text_service Activate 挂 `schedule_revive`）。
+  - **transport 真 bug 修复（重连压测 1/5 帧错乱实锤）**: 旧连接 client drop 后
+    句柄值可被新连接 `CreateFileW` 复用，旧读线程的 `ReadFile` 会命中复用值、
+    与新读线程瓜分字节流 → 帧错乱（`Malformed` 载荷截断）。**收尾协议重构**——
+    ① 句柄改由读线程关闭（退出后无人再读旧值，复用无害）；② 读线程改 500ms
+    tick 有界超时读（每轮查 closed，Drop 最坏一个 tick 收尾）；③ Drop 只置
+    closed + 尽力 `CancelIoEx` + 有界 join；④ `wait_io` 超时路径修复「IO 恰在
+    超时瞬间完成 → 字节数被丢弃」的丢数据窗口（有界超时下必踩）。
+  - **测试**: iuv-server 10/10（+重绑回放：断连打 "ni" 重连后 full 首键回放
+    "ni…"；+EndSession 作废：重绑得全新会话）；iuv-tsf 42 通过（+令牌捕获/
+    重连恢复）+ 2 存量 SHM 环境红；transport 7/7；**重连压测 12 轮零失败**
+    （修复前 1/5 帧错乱）；clippy 全 workspace 零警告。
+  - **待真机回归（管理员）**: dev-dep 后远端模式 ①打字中杀 iuv-server → 按键
+    短暂放行后自动恢复（iuv-server.log/任务管理器可见新进程），**未提交的
+    composition 应保留**（重绑回放）；②服务端进程不存在时杀掉 → 打字自动拉起；
+    ③ `Hello.resume` 无现场（超期/作废）→ 全新会话不报错。
+- [x] **49 号 P5 真机回归通过：杀 server → 自动拉起 + 令牌重绑**（2026-09-27 18:22
+  管理员实测）：notepad 打字中经任务管理器杀 iuv-server——时间线全对：
+  `.206` 客户端请求失败「连接已断开」→ 透明放行 + 后台重生（失效语义 C）；
+  `.209` 判定服务端不可达 → **客户端自行拉起 iuv-server.exe**（新进程 32ms 就绪、
+  带 `[config]` 监视线程）；`.213` 首次重连未就绪（管道 error 2，预期）；
+  `.464` **重生成功（令牌重绑）**——检测到拉起仅 258ms；`.596` 下一键直接在重绑
+  连接上继续（会话内 Space），随后 ceshi 正常打字。全程零超时、零卡死。
+  注：server **进程死亡**时保存的会话现场随进程消亡 → 重绑得全新会话（当前
+  composition 丢弃、下一键重开），这是 C+A 设计内行为（现场回放只覆盖连接断开
+  但服务端存活的场景）；无形态变化。
+
+- [x] **49 号 P4 服务端自渲染候选窗落地（待真机回归）**（2026-09-27，同分支）:
+  - **服务端**（新 `candwin` 模块）: 每连接一个 UI 线程 + ULW 窗口（命令驱动
+    Show/Update/MoveTo/Hide/SetTheme，latest-wins），渲染/定位/圆角命中与 TSF
+    客户端版同源（iuv-ui 软件光栅 → UpdateLayeredWindow）；**DPI 按 caret 所在
+    显示器 GetDpiForMonitor 自算**（main 置 PMv2）；无点击选词（UI 线程触达不了
+    连接线程的会话，待服务端主动 REQ 通道接线，键盘数字选词不受影响），悬停
+    高亮保留。会话接线: Effect → effect_to_snapshot → 窗口命令；结束/空快照 →
+    Hide；ConfigChanged 推送同时热载服务端窗主题。
+  - **光标上报**: `C2S::CaretMoved` 双侧落地——客户端**只在锚点变化时**上报
+    （打字期锚点恒定 → 绝大多数键零上报）；会话首键由 `query_insertion_caret`
+    （selection 起点量取，composition 尚不存在）先行上报 → 服务端首帧即定位
+    正确；dispatch 与 follow_layout 两路变化均上报（宿主拖拽/滚动时窗口跟随）。
+  - **载荷裁撤（49 §4.5.3 兑现）**: 抑制判定 = `candidate_owner_apps` ∩ 客户端
+    宿主进程名（每键读引擎配置 → 热载即时生效）。命中的连接（如 WoW）: 服务端
+    窗静默 + KeyOutcome 携带候选数据源（游戏桥 UI 元素所需）；普通应用: 零候选
+    载荷（显式空数组清客户端旧值，防增量合并留旧候选在游戏桥），**每键从几 KB
+    降到几十字节**；caps=0 客户端仍 None（契约不变）。
+  - **客户端**: 远端模式本地候选窗不画（`apply_effect` 增 `render_locally`，
+    跳过快照/显隐/跳变判定——本地窗从未 show 即从未创建，零开销）；桌宠 typing
+    信号撤销「候选非空」条件（服务端渲染后普通应用候选为空属常态）。
+  - **测试**: iuv-server 11/11（+抑制命中带候选数据源；普通应用断言改零候选；
+    无头测试不触发窗口——caret 未上报时 sync_candwin 早退）；iuv-tsf 42 通过
+    (+2 存量 SHM 红)；clippy 全 workspace 零警告。
+  - **待真机回归（管理员）**: dev-dep 后远端模式 ①普通应用打字：候选窗由服务端
+    画（观察 iuv-server 进程窗口/日志），首键定位正确、跟随打字/拖拽/滚动；
+    ②主题热载：设置页切主题 → 服务端窗即时切换；③WoW（wow.exe 在抑制名单）：
+    游戏内候选栏照旧（客户端桥），服务端窗不出现；④鼠标悬停高亮正常、点击候选
+    无效（已知过渡限制）。
+  - **真机回归结果（2026-09-27 18:30 管理员实测）**：远端模式候选窗由服务端渲染
+    **全部正常**；唯一问题 = **悬停候选窗指针变漏斗**——根因：candwin UI 线程阻塞在
+    `rx.recv()`，无 Win32 消息泵 → WM_SETCURSOR（SendMessage）得不到响应 → 系统显
+    忙等光标；hover 高亮/圆角穿透（WM_MOUSEMOVE/NCHITTEST）同样实际未生效。**管理员
+    拍板暂不修**——待点击选词/服务端主动 REQ 落地时必须先补消息泵（GetMessage 循环
+    或事件唤醒 + 泵集成），届时一并根治。
+- [x] **49 号 P4 服务端候选窗真机回归通过 + ②用户库收敛第一刀**（2026-09-27）:
+  - **服务端候选窗真机验证通过**（管理员实测，远端模式候选窗由 iuv-server 绘制
+    正常）。唯一问题 = **悬停候选窗指针变漏斗**——根因：candwin UI 线程阻塞在
+    `rx.recv()`，无 Win32 消息泵 → WM_SETCURSOR（SendMessage）无响应 → 系统忙等
+    光标；hover 高亮/圆角穿透（WM_MOUSEMOVE/NCHITTEST）同样未实际生效。**拍板
+    暂不修**——待点击选词/服务端主动 REQ 落地时必须先补消息泵（GetMessage 集成
+    或事件唤醒），届时一并根治（悬停/穿透同批复活）。
+  - **②(daemon→server 演进)首切片**：远端模式下 iuv-server 是用户库文件真相源
+    （引擎调权/造词/隐藏走引擎本地写盘），daemon 内存态只是启动快照 → **设置页
+    用户词库面板打开时按 `use_engine_server` 从文件重载**（缺失/损坏保留快照）。
+    修掉已知限制「远端模式权重显示滞后」。文件写入无冲突（远端模式 daemon 管道
+    写路径无人触发）。**已知过渡边界**：混合模式（部分应用本地引擎）下 daemon
+    管道写会用陈旧内存态覆盖文件——待 `C2S::UserMutation` 接线（客户端统一经
+    transport 写 server）后整体消除。
+  - **M10 剩余路线图**：② 剩余——用户库混合模式收敛（C2S::UserMutation 接线）→
+    daemon→server 全量迁移（工具栏/设置页/全局热键）→ ctl/signal 收敛（服务端
+    主动 REQ + 客户端 reader 处理）＋candwin 消息泵补齐（根治悬停漏斗 + 复活
+    hover/穿透 + 接通点击选词）；③ 收口（删 A/B 开关、core/proto 镜像归一、
+    并 main）。
+- [x] **49 号 服务端候选窗 + ②首切片 真机回归通过**（2026-09-27 22:36 管理员实测，
+  21:38-22:36 日志窗口）: 零超时零异常；候选窗/主题热载（21:39 epoch=1 theme=Dark，
+  服务端窗 SetTheme 同批生效）/锚点上报全链路正常。**P5 重生链路再验两轮**——
+  21:42 WoW.exe 重生成功（令牌重绑，无现场→全新会话，抑制名单应用远端模式正常）；
+  22:21 notepad 杀 server → 客户端 2.5s 自愈（拉起 + 重绑），server 6996 由客户端
+  拉起后持续打字至 22:36 无异常。21:38 出现首例 `[resume] 断连保存现场`（真实
+  会话带 composition 断连，保存路径工作）。悬停漏斗维持已记录状态（消息泵缺失，
+  待点击选词批次根治）。
+
+## 2026-09-27 · 49 号 ② daemon→server 全量迁移完成（七子提交，待真机回归）
+
+- [x] **M10 ② 收敛全量落地**（同分支，子提交 `7f912e2`/`c05540e`/`ac2937c`/`19af3d2`
+  /`8543b8e`/`fc4ed5c`(前条)/`0ea9935`）:
+  - **proto**: 迁移变体补齐——`C2S::{TypingActivity, OpenSettings, ToggleToolbar,
+    ToolbarVisibleQuery}` + `S2C::ToolbarVisible{visible}`。
+  - **transport 控制面（49 §4.1 服务端主动 REQ 打通）**: 服务端每连接
+    `ConnShared`（写互斥 + 在途应答表 + 写者计数）+ `ConnSender`（clone；
+    `request(S2C::Ctl)` 同步等 `C2S::CtlResult`，3s 截止、超时烧号）；conn 帧
+    循环增 `ClientResp` 路由 + 收尾协议（closed → 等写者归零 → 清在途——防句柄
+    值复用错写连接，与客户端读线程收尾同类）。客户端 `ClientConfig.on_server_req`
+    处理器（独立线程执行，阻塞 3s 不阻塞读线程；应答帧带原 stream_id）。
+    测试 +`server_initiated_request_roundtrip`，transport 8/8。
+  - **用户库**: `Engine::apply_user_mutation`（外部变更应用 + 本地写盘，语义与
+    daemon 数据面管道同源）+ iuv-server `C2S::UserMutation` 臂 → 引擎应用 +
+    SHM 发布（EngineService 持唯一 ShmWriter；混合模式本地实例经共享段一致）。
+    测试 +`user_mutation_applies_to_engine`，hot_path 12/12。
+  - **daemon 模块整体迁入** `iuv-server/src/daemon/`（toolbar/prefs/tooltip/
+    fullscreen/window/settings/state/config/hotkey/capture/pet_assets/
+    toolbar_icons/log，~5400 行，`crate::` 路径重写零逻辑改动）。出向依赖抽象:
+    `CtlDispatch` trait（四态翻转分派）——window.rs 齿轮/热键 OpenSettings/
+    ToggleToolbar 改进程内直调；server 实现 `TransportCtlDispatcher`（pid/tid →
+    ConnSender）。`EngineSession` C2S 路由: FocusChanged/ImeState/TypingActivity →
+    ToolbarSignal（pid/tid=握手报备）；OpenSettings → 主循环标志；
+    ToggleToolbar/ToolbarVisibleQuery → toolbar 宿主。main: park 循环 → daemon
+    同款主循环（OpenSettings → 主线程 eframe 设置窗 + hotkeys_changed + 兜底
+    flush）；`DaemonState` 以 shm=None 构造（SHM 零双写者）。
+  - **TSF 侧改线**（远端模式）: 焦点/四态/打字信号 → `C2S::{FocusChanged,
+    ImeState, TypingActivity}`（`notify_*` 模式感知出口；四态信号远端 no-op——
+    sync_state 已覆盖）；langbar 显隐查询/设置/工具栏开关 → transport；
+    `C2S::Ctl` 经进程级提交钩子（ctl.rs `set_submit_hook`/`submit_cmd`，最近
+    激活实例端点 PostMessage 应用，与旧 accept 线程同模式）。本地模式全保留。
+  - **candwin 消息泵补齐（根治悬停漏斗）**: UI 线程 `WakeEvent`（CreateEvent）
+    + sender `SetEvent` 唤醒 + `MsgWaitForMultipleObjectsEx(QS_ALLINPUT)` +
+    PeekMessage 泵——WM_SETCURSOR 等 SendMessage 得到响应（漏斗根除），hover
+    高亮/圆角点击穿透复活；事件句柄 Arc 计数，销毁竞态回环收敛。
+  - **daemon 退役**: 删 `platforms/windows/iuv-daemon`（workspace members/AGENTS/
+    README/契约同步）；dev-deploy 三路并行 → 两路（x64∥x86 TSF），守护进程部署
+    节改为停历史残留进程；m10-build 四车道 → 三车道。
+  - **测试**: workspace 全绿（仅存量 os error 5 环境红；iuv-server --lib 的
+    7 失败 = 迁入的 daemon config/state 文件 IO 测试，同源存量）；clippy 全
+    workspace 零警告。
+  - **待真机回归（管理员，dev-dep + m10-deploy 后）**: ①远端打字 + 工具栏看板
+    （焦点跟随/四态/桌宠——现在由 server 驱动）；②工具栏/全局热键四态翻转
+    （transport Ctl 往返）；③语言栏菜单（设置页打开/工具栏开关/菜单文案）；
+    ④候选窗悬停：指针应正常（漏斗根除）、hover 高亮生效；⑤混合模式调权 →
+    server SHM 发布。**注意旧 daemon 需手动停**（deploy 脚本已处理）。
+- [x] **49 号 ② 迁移真机回归（第一轮，2026-09-28 05:33 部署）**:
+  - **核心链路全通**（05:33-05:40 日志窗口，server pid 19680 = 新架构进程）：
+    ① **工具栏看板由 server 驱动**——`C2S::FocusChanged` → ToolbarSignal →
+    激活/失焦/显示/隐藏全链路正常（ZCode/msedgewebview2 多实例焦点切换逐条
+    对应）；② 远端打字正常（290 慢键 15-51ms，无一超 300ms）；③ 配置热载
+    epoch 1-3；④ **零超时零 panic 零 candwin 错误**。
+  - **遗留观察**：① 工具栏按钮/热键 Ctl 翻转本轮未触发（无 `[toolbar] 翻转`
+    日志），transport 往返待实测；② 候选窗悬停指针/hover 高亮需肉眼确认（日志
+    无从观测）；③ **daemon 进程复活**：部署脚本停掉后 1s 内被旧 DLL 本地模式
+    进程（Explorer/taskmgr 等）惰性拉起（053313）——对远端客户端无害（互不相
+    通），但混合期存在双工具栏可能；随 ③ 删本地模式或全部进程换新 DLL 后消失，
+    过渡期可手动杀（无进程再自动拉起即稳定）。
+- [x] **daemon 复活根治 + 残留清除（2026-09-30）**:
+  - **根因（真机日志实证，非台账此前猜测的「旧 DLL 进程拉起」）**：TSF Activate
+    无条件调 `ensure_daemon()`（text_service.rs，M7 惰性拉起未按模式分流）——远端
+    模式薄客户端每次激活输入法都拉 `iuv-daemon.exe`（ZCode/taskmgr/Qoder 等逐条
+    「已拉起守护进程」日志），杀掉即被下一激活进程拉回；安装目录残留 9-27 旧 exe
+    使 CreateProcess 恒成功（deploy 只停进程不删文件）。
+  - **修复**：① `ensure_daemon` 包进 `!use_server()` 分支（本地基线保留 M7 自启，
+    远端 Activate 不再拉任何东西）；② dev-deploy 「停进程」升级为「停 + 删残留
+    iuv-daemon.exe」（幂等），修正「无进程再拉起它」错误注释；③ 已删安装目录
+    残留 exe。双保险：未重启的旧 DLL 进程再拉只会静默失败（文件已删）。
+  - **验证**：进程表仅 iuv-server；删后 45s 观察零拉起日志；安装目录仅剩
+    iuv-server.exe。
+- [x] **server 登录自启 + 首连失败重试闭环（2026-09-30，重启真机验证通过）**:
+  - **真机暴露双缺口**（重启后日志）：① server 无开机自启——deploy 的
+    Iuv-ServerStart 是一次性任务（注册→启动→立即注销），此前靠 M7 惰性拉起兜底，
+    关掉后重启即裸奔；② 首连失败永久放弃——`start_remote_load` 失败路径
+    `REMOTE.set(None)` 把 OnceLock 槽占死（守卫 `get().is_some()` 恒真 + 后续
+    `set(Some)` 静默失败），Explorer/notepad/ZCode 等全部「连接失败→远端模式
+    透明」且手动起 server 也无法挽回，须重启宿主进程（P5 重生只覆盖「连上过
+    再断开」，首连失败无重试无拉起）。
+  - **修复**：① m10-deploy 计划任务改常驻（AtLogOn + RunLevel Limited +
+    ExecutionTimeLimit 清零），m10-uninstall 对应注销；② `start_remote_load`
+    失败改「拉起 iuv-server.exe 再试一轮（connect_server 自带 2s 重试窗）」，
+    仍失败保透明、下次 Activate 重试（不再 set(None)）；加 `REMOTE_CONNECTING`
+    原子防多实例 Activate 线程风暴。
+  - **重启验证**：登录 server 即在位（PID 10848）；新进程全 0-3ms 首连成功
+    （conhost/msedgewebview2/Explorer/taskmgr/ZCode/WorkBuddy）；关机瞬间旧会话
+    三进程断连走 P5 重生全部成功；ZCode 实测打字上屏正常；重启后零连接失败。
+- [x] **49 号 ③-1/③-3 删本地模式——远端唯一形态（2026-09-30）**:
+  - 删除：`Config::use_engine_server` 开关字段（serde default，旧 config.json 残留行
+    静默忽略）、`iuv-tsf` engine_host.rs（进程内引擎/词库加载）、daemon_client.rs
+    （684 行：SHM 读取/旧管道/ensure_daemon）、全部 `use_server()` 分支（route_key/
+    dispatch/langbar/mode/daemon_host/text_service）、设置页 `remote_mode` 判定
+    （用户库面板恒从文件重载）、m10-deploy 的 A/B 指引。净删约 1300 行。
+  - `REMOTE` OnceLock 语义同步修正：失败路径不再 `set(None)` 占死单例槽（首连
+    失败可重试，见上条）。
+  - **测试**：iuv-tsf 38 全绿；core/server/win 的失败均为存量 os error 5 环境
+    红改动前后一致；clippy 四 crate 零警告。
+- [x] **② 剩余真机回归 + 两个交互闭环（2026-09-30，18:12/18:41 两轮部署）**:
+  - ② 遗留回归项用户实测通过：工具栏按钮/全局热键四态翻转（transport Ctl 往返）、
+    语言栏菜单（设置页/工具栏开关/文案）、候选窗悬停（高亮正常无漏斗）、设置页
+    （用户库可见/主题热载）；「混合模式调权」项随 ③-1 删本地模式作废。
+  - **点击选词闭环（原已知缺口）**：服务端候选窗 WM_LBUTTONDOWN → 后台线程经
+    ConnSender 发 `S2C::Ctl(CandidateClick(row))` → 客户端 TSF 线程 apply_ctl_cmd
+    以 `Digit(row+1)` 走远端会话（与数字键同语义）。proto/iuv-win CtlCmd 各加
+    CandidateClick(u8)（codec 序数 0x05）；客户端 ServerReq 独立线程处理无死锁。
+  - **焦点切换候选窗同步**：`C2S::CandwinHide`——OnSetFocus/OnKillThreadFocus 时
+    客户端通知 server 隐藏候选窗，**会话保留**（「焦点切换不打断会话」原则不变），
+    回焦后下键经 sync_candwin 重显。
+  - **composition 终止即收尾（脑裂修复）**：切焦点时 TSF 外部终止 composition，
+    原逻辑客户端槽清空而 server 会话仍活——切回后首键被降级吞掉且远端会话残留
+    （真机实锤：notepad 终止通知后必跟「降级丢弃会话」）。修复：Composition 挂
+    on_terminated 回调，终止时立即清 last_effect + EndSession；dispatch_outcome
+    对「composition 已死」的在途键兜底同步收尾。**部署后日志验证**：4 次终止
+    通知后零降级、切回打字即刻正常（13-46ms）。
+  - 遗留待办：设置页用户库**单条删除**入口（新功能，另立任务）；语言栏右键菜单
+    在部分程序不弹出（事件未达 iuv 按钮，非本轮引入，待复现程序名定位）。
+- [x] **49 号 ③-2 镜像归一——共享类型沉底 iuv-data（2026-09-30，四子提交）**:
+  - **决策**：proto↔core 平行类型全仓收敛为 iuv-data 唯一定义（依赖指向最稳定的
+    共享词汇层）；四态枚举统一 proto 系命名 ImeMode/ImeWidth/ImeScript/ImePunct
+    （core 的 InitialMode/WidthMode/ScriptMode/PunctMode 为历史名，59 处机械改名）；
+    CtlCmd/CtlResult（proto↔win 第三对镜像）一并下沉，CtlResult::Err 统一带 msg
+    （客户端应用失败原因透传，替代 server 端写死文案）；Candidate/Effect 保留
+    proto 瘦身版（49 §4.5.3 协议设计，非欠债）。
+  - **iuv-data**（`dcf97ee`）：新增 `ime.rs`（四态四枚举 + ImeState + [u8;4] 唯一
+    线编码自 core runtime.rs 迁移 + CtlCmd/CtlResult）、`key.rs`（Key 全 33 变体 +
+    name/from_name + SessionEnd + PageInfo 统一 u32 定宽）、`candidate.rs`
+    （CandidateKind + for_word）；UserMutation 迁入 userdict.rs 紧邻唯一消费者
+    UserDict + `UserDict::apply_mutation` 单方法；serde 进 data 依赖。
+  - **core/proto**（`9fcb7d7`）：core key.rs 仅剩 Effect、candidate.rs 仅剩
+    Candidate、config/enums.rs 删四态、runtime.rs 整删（类型与线编码沉底）；
+    proto msg.rs 删九组镜像定义（481→333 行）改 `pub use iuv_data`，WireImeState/
+    WireSessionEnd 别名失效删除；PROTO_MIN/MAX 1→2（Err 带 msg 线格式变更；
+    Key/UserMutation/四态变体声明序逐项核对不变，postcard 序号兼容）。
+  - **转换函数退役**（`840a76e`）：server 删 core_key（33 臂）/core_user_mutation/
+    core_ime_state/wire_session_end/wire_candidate_kind/proto_ctl_result +
+    dispatch_ctl 内联 CtlCmd 镜像 match；tsf 删 wire_key（33 臂）/wire_ime_state/
+    core_session_end/core_page/proto_to_win_ctl_cmd/win_to_proto_ctl_result；
+    win ipc/msg.rs 本地 CtlCmd/CtlResult 改 re-export（codec 手写 tag 序不受影响）；
+    core_candidate 零填充投影语义保留（客户端不需要 code/weight/seg_len）。
+    全部跨界点直通：Key Copy 传值、ImeState/UserMutation/CtlResult 原样。
+  - **验证**：workspace 编译零警告；clippy --all-targets 零警告；proto 18（含 Key
+    全变体 roundtrip = 线格式不变证明）/tsf 38/hot_path 12/engine_session 97/
+    transport 7 全绿；红项（core 12+3、data 6+13、server lib 7、win lib 3、
+    transport 1、ui 1）经 stash 回上一提交逐项对照 = 存量环境红（os error 5 及
+    同源 temp 文件类），改动前后一致。
+  - **遗留**：iuv-win `ipc/msg.rs::Request`（Swap/Set/Remove/Block，a_adj 命名的
+    UserMutation 第三镜像 + 手写 codec）：②迁移后数据面疑似死代码，待核实旧管道
+    存活消费者后另立删除任务；③-3 混合模式过渡代码与 49 号任务书终稿收尾。
+- [x] **iuv-server 单实例守卫（2026-09-30，③-2 部署时真机暴露）**:
+  - **现象**：m10-deploy 后进程表 3 个 iuv-server（3 秒内相继拉起）——计划任务
+    Start-ScheduledTask 与多个 TSF 客户端首连失败路径 spawn_server_process 并发；
+    命名管道支持多实例创建，无守卫即多 server 瓜分连接（工具栏/引擎分家）。
+  - **修复**：main 入口 CreateMutexW("iuv-server-singleton")——持有者存续 = 进程
+    生命周期，退出自动释放；后来者记日志即退（守卫前置，不浪费引擎加载）。
+  - **验证**：重部署后进程表恰 1 个 iuv-server。
+- [x] **③-2 部署 + 第一轮真机日志回归（2026-09-30 21:10/21:15 两轮部署）**:
+  - 部署即暴露 **server 多实例竞态**（计划任务 + 多客户端首连拉起，3 秒抢出 3 个；
+    败者热键注册 0x80070581 全灭）→ 修：main 入口 CreateMutexW 单实例守卫
+    （`0e6ec51`），重部署后恰 1 个，守卫两度正确拦截后来者（21:20/21:21 各一条）。
+  - **打字链路全通**：tsf 侧 246 key / 21 commit（notepad 主测）；server 侧工具栏
+    显隐/焦点跟随正常，全局热键 3/3 注册成功；ctl 路径 5 次四态翻转正常；慢键
+    51 条 max=58.9ms P50=26.1ms（远低于 300ms 截止）。
+  - **预期内混合期现象**：旧 DLL 进程（ZCode/msedge/taskmgr/leigod，部署前启动、
+    旧 DLL 仍映射）连新 server 报 VersionMismatch {client:1, server:2}——PROTO
+    1→2 的破坏性协商按设计拒绝混合，重启进程即恢复（新进程加载新 DLL）。
+  - **存量确认**：[follow] ITfSource QI 失败（OnSetFocus）部署前 31424 条/部署后
+    18 条 = 存量问题，与 ③-2 无关。
+- [x] **③-2 注销重登回归（2026-09-30 21:26，全进程新 DLL）**:
+  - server pid 1264 登录即就位（引擎 105ms），热键 3/3，工具栏焦点跟随正常；
+    全进程首连 **0ms**（Explorer/msedgewebview2/notepad/WorkBuddy/ZCode/taskmgr/
+    DeepSeek Harness 七进程，零 VersionMismatch 零失败零降级——PROTO bump 混合期
+    随注销翻页结束）；tsf 侧 146 key / 27 commit / 9 ctl 正常，慢键 max 52ms。
+  - 异常仅存量类：ITfSource QI 失败（E_NOINTERFACE，ZCode/WorkBuddy 等，部署前
+    31424 条同源）+ ZCode GetTextExt 重定位失败走"沿用旧光标"兜底。③-2 回归通过。
+- [x] **49 号 ③-3 过渡期死代码清扫 + 高级页 ScrollArea 修复（2026-09-30，真机回归通过，同日入库并 main）**:
+  - **起因**: ③-2 收尾扫描实锤旧 IPC 死代码（台账上条"遗留"项），本轮全部清掉——
+    旧四套 IPC 实体（用户库管道/SHM 轮询/ctl 反向管道/toolbar signal 管道）至此全部退役。
+  - **删除清单**:
+    ① **TSF per-实例 ctl 管道**（`iuv-tsf/src/ctl.rs`）: ② 迁移后 `CtlClient` 全仓零
+    消费者，每 TSF 实例的 accept 线程（`CtlServer::create` + 阻塞 `ConnectNamedPipe`）
+    纯空转——每实例白占一条 `\.\pipe\iuv-ctl-<pid>-<tid>` 命名空间 + 一条线程。删
+    accept_thread/句柄槽/CancelSynchronousIo 收尾机制；**保留**隐藏消息窗 + 进程级
+    提交钩子（transport `S2C::Ctl` → `submit_cmd` → PostMessage 的分发本体）。
+    `CtlEndpoint::attach` 去掉 pid/tid 参数，`text_service.rs` 死方法 `instance_id`
+    一并删除。
+    ② **`iuv-win::ipc::signal.rs` 整模块**: toolbar-signal 专用管道 tsf/server 两侧
+    零消费者（信号已走 transport C2S 路由）。
+    ③ **`iuv-win::ipc::ctl.rs` 整模块**: CtlServer/CtlClient（①删掉后无消费者）。
+    ④ **`iuv-win::ipc::pipe.rs` 数据面**: PipeClient/PipeServer（`iuv-userdict` 管道，
+    daemon_client ③-1 已删后零消费者）与 `pipe_name_wide` 删除；**保留** `imp` 原语
+    （唯一消费者 = `rtt.rs` 基准）。
+    ⑤ **`iuv-win::ipc::msg.rs` + `codec.rs` 瘦身**: Request 删数据面 11 变体
+    （Swap/Set/Remove/Block/Ping/OpenSettings/Quit/Register/StateSync/Active/
+    Unregister/GetToolbarVisible）仅存 ToggleToolbar（语言栏菜单，server 进程内直调）；
+    Response 整删；ctl/signal 四组手写编解码 + Reader 全删；`ctl_pipe_name` 删。
+    codec 仅存 `to_frame`/`parse_frame`（rtt 管道原语用）。`ToolbarSignal` 与
+    CtlCmd/CtlResult re-export 保留（server/tsf 进程内直通 + transport 载荷）。
+    `lib.rs` 导出面同步（删 CtlClient/CtlServer/PipeClient/PipeServer/Response/
+    SignalClient/SignalServer/ctl_pipe_name）。
+    ⑥ **iuv-server 零星**: `toolbar::ToolbarHost::handle_request` 简化（Request 单变体
+    后 matches 分支恒真）；UserMutation 臂"混合模式过渡"注释改写（混合期已随 ③-1 结束）。
+  - **净效果**: iuv-win ipc 五模块 → 四模块（删 2 文件 + 3 处大瘦身），约 -800 行；
+    每个远端 TSF 实例少一条空转线程 + 一条命名管道。协议/行为零变化（删除项全为
+    无线上形态的死代码；ToggleToolbar/ToolbarSignal/CtlCmd 线下语义不变）。
+  - **顺手修复**: 设置页高级页包外层 ScrollArea（`advanced_tab` → `advanced_tab_content`
+    + `ScrollArea::vertical().max_height(ui.available_height()-12.0)`，同 keymap_tab
+    2026-08-28 修法）——「全屏行为」第三卡片重新可达，第二次踩坑记录结案。
+  - **测试**: `cargo check --workspace` 零警告；clippy --all-targets 全 workspace 零警告;
+    iuv-proto 18/18；iuv-tsf 38/38；iuv-server hot_path 12/12（lib 7 失败 = daemon
+    config/state 文件 IO 存量 os error 5）；iuv-win lib 12 过（SHM 3 失败存量）+
+    transport 7/8（`server_initiated_request_roundtrip` 存量环境红，stash 回 HEAD
+    逐项对照同红）+ rtt_bench 1/1。
+  - **文档同步**: AGENTS.md（里程碑补 M10、活跃事项刷新）、README（架构数据流/里程碑/
+    M7 自启措辞）、49 号任务书 §5 表校准（P3/P4/P5 出口条件与 ③-3 剩余清单）、
+    49-handoff-m10.md ③ 清单标注进度、本速览重写。
+  - **真机回归通过（2026-09-30 23:44 部署，管理员实测）**: ①新进程标记
+    `[ctl] 控制端点就绪（transport 提交钩子已登记）`出现、旧「accept 线程」零出现；
+    ②notepad 48 键全链路（文件/测试/记事本 → Alt+Shift+F 切繁 → 測試/筆記本，简繁
+    转换 + ctl 往返正常）；③零超时零降级零 VersionMismatch（仅存量 ITfSource QI 红 +
+    部署瞬间 4 条失效语义 C 自动重生 = 设计内行为）。

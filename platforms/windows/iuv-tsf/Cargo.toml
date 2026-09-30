@@ -11,6 +11,7 @@ name = "iuv_tsf"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+iuv-proto = { workspace = true }
 iuv-data = { workspace = true }
 iuv-core = { workspace = true }
 iuv-ui = { workspace = true }

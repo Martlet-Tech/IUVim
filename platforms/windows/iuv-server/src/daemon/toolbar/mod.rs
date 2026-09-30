@@ -44,7 +44,7 @@ use std::time::Duration;
 
 use iuv_core::ImeState;
 use iuv_ui::{theme_dark, theme_light, Theme, ToolbarIcons};
-use iuv_win::{Request, ToolbarSignal};
+use iuv_win::{CtlCmd, CtlResult, Request, ToolbarSignal};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
@@ -63,9 +63,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 // WM_MOUSELEAVE 在 windows-rs 0.62 中位于 Controls 模块（值 0x02A3 = 675），本地定义。
 const WM_MOUSELEAVE: u32 = 675;
 
-use crate::log;
-use crate::pet_assets::PetArt;
-use crate::state::DaemonState;
+use crate::daemon::log;
+use crate::daemon::pet_assets::PetArt;
+use crate::daemon::state::DaemonState;
 
 /// 私有消息：FIFO 有新请求 → 唤醒工具条线程 drain（管道线程 PostMessage）。
 const WM_APP_REFRESH: u32 = WM_APP + 41;
@@ -96,10 +96,10 @@ struct Shared {
     pos: Option<(i32, i32)>,
 }
 
-/// 工具条事件（FIFO 载荷）：信号通道四消息 + 语言栏菜单开关 + 全局热键变更。
-/// FocusGained/FocusLost/StateChanged/Typing 来自信号管道；ToggleVisible 来自数据面
-/// 语言栏右键菜单（Request::ToggleToolbar）；HotkeysChanged 来自 daemon 主循环
-/// （设置页保存 keymap 后入队，见 main.rs）。单队列保证全局顺序。
+/// 工具条事件（FIFO 载荷）：transport 信号四消息 + 语言栏菜单开关 + 全局热键变更。
+/// FocusGained/FocusLost/StateChanged/Typing 来自 EngineSession 的 C2S 路由（transport，
+/// ② 迁移前为信号管道）；ToggleVisible 来自语言栏右键菜单（Request::ToggleToolbar）；
+/// HotkeysChanged 来自 daemon 主循环（设置页保存 keymap 后入队，见 main.rs）。单队列保证全局顺序。
 ///
 /// M1 桌宠骨架：新增 TypingState（来自 `ToolbarSignal::Typing`）——daemon 据此驱动
 /// PetModel.on_typing(active)，触发"敲键盘律动"动画 / 停打回静。
@@ -122,6 +122,13 @@ pub(super) enum BarEvent {
 }
 
 /// 工具栏宿主（daemon 主线程持有；信号线程/管道线程经它入队，工具条线程 drain 消费）。
+/// 四态翻转分派抽象（②迁移）：daemon 时代连旧 ctl 管道（CtlClient）；
+/// server 时代由 iuv-server 提供 transport 实现（ConnSender → S2C::Ctl）。
+pub trait CtlDispatch: Send + Sync {
+    /// 向目标实例（pid/tid）发四态命令，返回应用后的四态（Err = 失败原因）。
+    fn dispatch_ctl(&self, pid: u32, tid: u32, cmd: &CtlCmd) -> Result<CtlResult, String>;
+}
+
 pub struct ToolbarHost {
     shared: Arc<Mutex<Shared>>,
     /// FIFO 事件队列（信号线程/管道线程 push、工具条线程 pop；串行消费不丢不弃）。
@@ -137,12 +144,16 @@ impl ToolbarHost {
     /// （皮肤 + 已解码分层素材 + L0 帧表兜底，daemon 主循环装配一次传入，工具条线程独占）。
     /// 返回宿主（线程就绪后注册窗口句柄，可直接 wake）。启动失败 → 记录日志，
     /// 宿主仍可用（wake 空操作）。
-    pub fn spawn(state: Arc<DaemonState>, pet_art: Arc<PetArt>) -> Arc<ToolbarHost> {
+    pub fn spawn(
+        state: Arc<DaemonState>,
+        pet_art: Arc<PetArt>,
+        ctl: Arc<dyn CtlDispatch>,
+    ) -> Arc<ToolbarHost> {
         let shared = Arc::new(Mutex::new(Shared {
             visible: load_pref().visible,
             ..Default::default()
         }));
-        let icons = Arc::new(crate::toolbar_icons::load_icons());
+        let icons = Arc::new(crate::daemon::toolbar_icons::load_icons());
         let host = Arc::new(ToolbarHost {
             shared: shared.clone(),
             pending: Arc::new(Mutex::new(VecDeque::new())),
@@ -154,10 +165,11 @@ impl ToolbarHost {
         let t_icons = icons.clone();
         let t_pet = pet_art.clone();
         let t_pending = host.pending.clone();
+        let t_ctl = ctl.clone();
         let (tx, rx) = std::sync::mpsc::channel();
-        let spawned = std::thread::Builder::new()
-            .name("iuv-toolbar".to_string())
-            .spawn(move || toolbar_thread_main(t_shared, t_state, t_icons, t_pet, t_pending, tx));
+        let spawned = std::thread::Builder::new().name("iuv-toolbar".to_string()).spawn(
+            move || toolbar_thread_main(t_shared, t_state, t_icons, t_pet, t_pending, t_ctl, tx),
+        );
         match spawned {
             Ok(_h) => {
                 log::log_line("[toolbar] 工具条线程已启动");
@@ -175,7 +187,7 @@ impl ToolbarHost {
         host
     }
 
-    /// 当前全局显隐偏好（`Request::GetToolbarVisible` 应答用；语言栏菜单项文案）。
+    /// 当前全局显隐偏好（语言栏菜单项文案「显示/隐藏工具栏」二选一）。
     pub fn visible(&self) -> bool {
         self.shared
             .lock()
@@ -183,13 +195,10 @@ impl ToolbarHost {
             .visible
     }
 
-    /// 处理数据面管道请求：仅语言栏菜单开关（Request::ToggleToolbar）入队。
-    /// 其余工具条类 Request（Register/Active/…）已由信号通道取代——一律不消费
-    /// （返回 false 交调用方按未知请求处理；TSF 侧同版本起不再发送）。
-    pub fn handle_request(&self, req: &Request) -> bool {
-        if !matches!(req, Request::ToggleToolbar) {
-            return false;
-        }
+    /// 处理工具条命令：语言栏菜单开关（Request::ToggleToolbar）入队。
+    /// ③-3 清理：Request 仅存 ToggleToolbar 一个变体——其余旧管道请求（数据面写/
+    /// 注册/信号）已随 ② 迁移统一走 transport，此直调入口不再有其他形态。
+    pub fn handle_request(&self, _req: &Request) -> bool {
         self.enqueue(BarEvent::ToggleVisible);
         true
     }
@@ -273,6 +282,7 @@ fn toolbar_thread_main(
     icons: Arc<ToolbarIcons>,
     pet: Arc<PetArt>,
     pending: Arc<Mutex<VecDeque<BarEvent>>>,
+    ctl: Arc<dyn CtlDispatch>,
     tx: std::sync::mpsc::Sender<(usize, u32)>,
 ) {
     register_bar_class();
@@ -285,7 +295,7 @@ fn toolbar_thread_main(
         .unwrap_or_else(|p| p.into_inner())
         .keymap
         .clone();
-    let mut win = Box::new(ToolbarWindow::new(shared, state, icons, pet, pending));
+    let mut win = Box::new(ToolbarWindow::new(shared, state, icons, pet, pending, ctl));
     if win.hwnd.is_invalid() {
         log::log_line("[toolbar] 建窗失败，工具条线程退出");
         return;
@@ -296,7 +306,7 @@ fn toolbar_thread_main(
     // SAFETY: win 为 Box（地址稳定），线程存活期间有效；wnd_proc 经 GWLP_USERDATA 取回。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*win as *const ToolbarWindow as isize) };
     {
-        let (ok, fail) = crate::hotkey::register_all(hwnd, &keymap);
+        let (ok, fail) = crate::daemon::hotkey::register_all(hwnd, &keymap);
         log::log_line(&format!("[toolbar] 全局热键首注册：成功 {ok}，失败 {fail}"));
     }
     // SAFETY: GetCurrentThreadId 纯查询（PostThreadMessage 退出用）。

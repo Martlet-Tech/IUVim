@@ -42,21 +42,18 @@ $clsidKey32 = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\CLSID\{
 $tipKey32   = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\CTF\TIP\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
 $regsvr32Path = Join-Path $env:windir "SysWOW64\regsvr32.exe"
 
-# ---- 1. 构建（默认执行，三路并行；-SkipBuild 跳过）----
-# 三条链相互独立（x64 / x86 各自 target 目录、daemon 单独 CARGO_TARGET_DIR），
-# 并行执行取最长单链耗时（串行时 ~2 分钟）。daemon 独立目录的附带红利：与 x64 链
-# 同目录时会因 --features dev 特性集差异互踢共享依赖缓存——每轮固定重编的重要成分。
+# ---- 1. 构建（默认执行，两路并行；-SkipBuild 跳过）----
+# x64 / x86 各自 target 目录，并行执行取最长单链耗时。
+# （M10 ②：iuv-daemon 退役——工具栏/设置页并入 iuv-server，见 docs/status.md。）
 if (-not $SkipBuild) {
-    Trace-Script "dev-deploy: 开始并行构建（x64-tsf ∥ x86-tsf ∥ daemon，各自独立 target 目录互不持锁；首次 daemon 车道需全量编译一次）"
-    Write-Host "正在并行构建（x64 TSF / x86 TSF / iuv-daemon，三路同时进行）..."
+    Trace-Script "dev-deploy: 开始并行构建（x64-tsf ∥ x86-tsf）"
+    Write-Host "正在并行构建（x64 TSF / x86 TSF，两路同时进行）..."
     Push-Location $repoRoot
     try {
         $buildSpecs = @(
             @{ Name = 'x64-tsf'; Env = @{}; CargoArgs = @('build', '-p', 'iuv-tsf', '--release') },
             @{ Name = 'x86-tsf'; Env = @{};
-               CargoArgs = @('build', '-p', 'iuv-tsf', '--release', '--target', 'i686-pc-windows-msvc') },
-            @{ Name = 'daemon';  Env = @{ CARGO_TARGET_DIR = (Join-Path $repoRoot 'target-daemon') };
-               CargoArgs = @('build', '-p', 'iuv-daemon', '--release', '--features', 'dev') }
+               CargoArgs = @('build', '-p', 'iuv-tsf', '--release', '--target', 'i686-pc-windows-msvc') }
         )
         $jobs = foreach ($spec in $buildSpecs) {
             Start-Job -Name "iuv-build-$($spec.Name)" -ScriptBlock {
@@ -260,28 +257,21 @@ if ($r32.Renamed) {
     Trace-Script "dev-deploy: x86 DLL 复制成功 $destDll32"
 }
 
-# ---- 3.5 守护进程部署（M7：iuv-daemon.exe；会话进程首激活自动拉起）----
-# 产物在独立目录 target-daemon（第 1 步并行构建的 daemon 车道，见该处说明）。
-$daemonSrc  = Join-Path $repoRoot "target-daemon\release\iuv-daemon.exe"
-$destDaemon = Join-Path $destDir "iuv-daemon.exe"
-if (Test-Path $daemonSrc) {
-    # 先停运行中的 daemon（复制会锁；下次会话激活自动拉起新版本）。
-    $daemonProc = Get-Process -Name "iuv-daemon" -ErrorAction SilentlyContinue
-    if ($daemonProc) {
-        Trace-Script "dev-deploy: 停止运行中的 iuv-daemon（PID=$($daemonProc.Id -join ',')）"
-        Stop-Process -Name "iuv-daemon" -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 300
-    }
-    try {
-        Copy-Item $daemonSrc $destDaemon -Force -ErrorAction Stop
-        Trace-Script "dev-deploy: 守护进程复制成功 $destDaemon"
-        Write-Host "守护进程已部署（下次切换输入法自动拉起）：$destDaemon"
-    } catch {
-        Trace-Script "dev-deploy: 守护进程复制失败（$destDaemon）：$($_.Exception.Message)"
-        Write-Host "警告：守护进程复制失败（$destDaemon），本次仅部署 DLL。"
-    }
-} else {
-    Trace-Script "dev-deploy: 未找到守护进程产物 $daemonSrc（第 1 步 daemon 车道已构建：cargo build -p iuv-daemon --release --features dev，CARGO_TARGET_DIR=target-daemon）"
+# ---- 3.5 守护进程（已退役）----
+# M10 ②：iuv-daemon 并入 iuv-server（工具栏/设置页/热键随迁），本节删除。
+# 历史安装残留的 iuv-daemon.exe 停止并删除（TSF 客户端已按模式关闭惰性拉起：
+# 远端模式不再调 ensure_daemon，见 text_service Activate；此处删除是清旧安装残留，
+# 幂等——文件不存在即跳过）。
+$daemonProc = Get-Process -Name "iuv-daemon" -ErrorAction SilentlyContinue
+if ($daemonProc) {
+    Trace-Script "dev-deploy: 停止历史 iuv-daemon（已退役，PID=$($daemonProc.Id -join ',')）"
+    Stop-Process -Name "iuv-daemon" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
+}
+$daemonExe = Join-Path $env:ProgramFiles "iuv\iuv-daemon.exe"
+if (Test-Path $daemonExe) {
+    Remove-Item $daemonExe -Force -ErrorAction Stop
+    Trace-Script "dev-deploy: 已删除残留 $daemonExe"
 }
 
 # ---- 4. 注册（x64 native + x86 WOW6432Node；各自未注册或 CLSID 指向路径不符时重注册）----

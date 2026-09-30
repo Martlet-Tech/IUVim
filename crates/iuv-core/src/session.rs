@@ -1,7 +1,7 @@
 //! 会话状态机。契约 01-contract.md §4 session.rs / §4.1 按键行为。
 
 use crate::{
-    fullwidth_text, Candidate, Effect, Engine, ImeState, Key, PageInfo, ScriptMode, SessionEnd,
+    fullwidth_text, Candidate, Effect, Engine, ImeState, Key, PageInfo, ImeScript, SessionEnd,
 };
 use std::sync::{Arc, Mutex};
 
@@ -336,7 +336,7 @@ impl Session {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .script;
-        if script != ScriptMode::Traditional {
+        if script != ImeScript::Traditional {
             return text.to_string();
         }
         match self.engine.script_converter() {
@@ -464,7 +464,7 @@ impl Session {
                 page: PageInfo {
                     page: 0,
                     page_count: 0,
-                    page_size: self.page_size(),
+                    page_size: self.page_size() as u32,
                     total: 0,
                 },
                 end: self.end.clone(),
@@ -509,10 +509,10 @@ impl Session {
             all_candidates: self.all.iter().map(|c| self.convert_candidate(c)).collect(),
             selected: self.selected,
             page: PageInfo {
-                page: self.page,
-                page_count: self.page_count(),
-                page_size: self.page_size(),
-                total: self.all.len(),
+                page: self.page as u32,
+                page_count: self.page_count() as u32,
+                page_size: self.page_size() as u32,
+                total: self.all.len() as u32,
             },
             end: self.end.clone(),
         }

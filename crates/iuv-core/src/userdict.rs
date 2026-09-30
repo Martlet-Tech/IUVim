@@ -9,31 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-/// 用户库写操作（M6 daemon 管道请求的引擎侧视图，与 UserDict 方法一一对应，
-/// 见 18-m2-user-dict.md §Swap/Set/Remove/Block）。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum UserMutation {
-    /// Shift+←/→ 主动调权：a/b 两词**互写对方合成权重**（绝对值覆盖，双 code 签名，
-    /// 对应 UserDict::apply_swap）。
-    Swap {
-        a_code: String,
-        a_word: String,
-        a_eff: u32,
-        b_code: String,
-        b_word: String,
-        b_eff: u32,
-    },
-    /// 自造词/覆盖写入（upsert，对应 UserDict::set_entry）。
-    Set {
-        code: String,
-        word: String,
-        adj: u32,
-    },
-    /// 移除用户库条目（隐藏自造词/覆盖 = 撤销自造，对应 UserDict::remove_entry）。
-    Remove { code: String, word: String },
-    /// 屏蔽基础库词条（Shift+Delete 隐藏，对应 UserDict::block）。
-    Block { code: String, word: String },
-}
+pub use iuv_data::UserMutation;
 
 /// 用户库远端写后端（M6 daemon 模式，见 22-m6-daemon.md §3）。
 /// 返回 `true` = 远端已接受（本进程无需写盘）；`false` = 未接受（降级本地写盘兜底）。
@@ -182,6 +158,19 @@ impl Engine {
         }
         drop(state);
         self.dict.set_user(Arc::new(next));
+    }
+
+    /// 外部用户库变更（M10 ②：客户端经 transport 上报 UserMutation，服务端引擎
+    /// 应用并写盘）。语义与 daemon 数据面管道同源——Swap 的有效权重由客户端
+    /// **交叉**携带（a←b_eff、b←a_eff，与 apply_swap 契约一致）。走
+    /// [`Self::install_user`]：服务端无 UserRemote → 本地写盘 + mtime 基线同步。
+    pub fn apply_user_mutation(&self, m: &UserMutation) {
+        let user = self.dict.user();
+        let next = match user.as_deref() {
+            Some(u) => u.apply_mutation(m),
+            None => iuv_data::UserDict::empty().apply_mutation(m),
+        };
+        self.install_user(next, None);
     }
 
     /// 装配/更换用户库远端写后端（M6 daemon 客户端；`None` 拆除 = 回归本地写盘）。

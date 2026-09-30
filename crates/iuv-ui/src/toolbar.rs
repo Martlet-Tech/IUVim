@@ -10,7 +10,7 @@ use iuv_core::PetClip;
 use tiny_skia::{Color, FilterQuality, Pixmap, PixmapPaint, Transform};
 
 use iuv_core::{
-    FaceExpr, ImeState, InitialMode, PetAnim, PetSkin, PunctMode, ScriptMode, WidthMode,
+    FaceExpr, ImeState, ImeMode, PetAnim, PetSkin, ImePunct, ImeScript, ImeWidth,
 };
 
 use crate::layout::Rect as LayoutRect;
@@ -135,20 +135,20 @@ fn toolbar_icon<'a>(spec: &'a ToolbarSpec, i: usize) -> Option<&'a Pixmap> {
     match i {
         TB_LOGO => spec.icons.logo.as_ref(),
         TB_MODE => match spec.state.mode {
-            InitialMode::Chinese => spec.icons.lang_cn.as_ref(),
-            InitialMode::English => spec.icons.lang_en.as_ref(),
+            ImeMode::Chinese => spec.icons.lang_cn.as_ref(),
+            ImeMode::English => spec.icons.lang_en.as_ref(),
         },
         TB_WIDTH => match spec.state.width {
-            WidthMode::Half => spec.icons.width_half.as_ref(),
-            WidthMode::Full => spec.icons.width_full.as_ref(),
+            ImeWidth::Half => spec.icons.width_half.as_ref(),
+            ImeWidth::Full => spec.icons.width_full.as_ref(),
         },
         TB_PUNCT => match spec.state.punct {
-            PunctMode::Chinese => spec.icons.punct_cn.as_ref(),
-            PunctMode::English => spec.icons.punct_en.as_ref(),
+            ImePunct::Chinese => spec.icons.punct_cn.as_ref(),
+            ImePunct::English => spec.icons.punct_en.as_ref(),
         },
         TB_SCRIPT => match spec.state.script {
-            ScriptMode::Simplified => spec.icons.script_simplified.as_ref(),
-            ScriptMode::Traditional => spec.icons.script_traditional.as_ref(),
+            ImeScript::Simplified => spec.icons.script_simplified.as_ref(),
+            ImeScript::Traditional => spec.icons.script_traditional.as_ref(),
         },
         TB_GEAR => spec.icons.gear.as_ref(),
         _ => None,

@@ -6,8 +6,8 @@
 //! iuv_core::Session，Effect 由 composition + CandidateUi 应用；Deactivate 反向清理。
 //!
 //! P2.2 拆分：本文件 = COM 壳（实例结构 + 生命周期 + Ctl 端点 + COM trait 实现）；
-//! 引擎生命周期 → `engine_host.rs`；按键路由 → `key_routing.rs`；模式/会话外上屏
-//! → `mode.rs`；daemon 协作 → `daemon_host.rs`；Effect 应用 → `dispatch.rs`。
+//! 按键路由 → `key_routing.rs`；模式/会话外上屏
+//! → `mode.rs`；远端协作 → `daemon_host.rs`；Effect 应用 → `dispatch.rs`。
 
 use std::cell::{Cell, RefCell};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use iuv_core::{Config, ImeState, InitialMode, Key, PunctMode, ScriptMode, Session, WidthMode};
+use iuv_core::{Config, ImeState, ImeMode, Key, ImePunct, ImeScript, Session, ImeWidth};
 use iuv_win::{CtlCmd, CtlResult};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{
@@ -30,14 +30,12 @@ use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, B
 
 use crate::composition::Composition;
 use crate::ctl::{CtlApplier, CtlEndpoint};
-use crate::daemon_client::DaemonClient;
 use crate::langbar::{self, LangBarItemButton};
-use crate::log::{log_line, process_id, thread_id};
+use crate::log::log_line;
 use crate::ui::{CandidateUi, CandwinCandidateWindow, CaretRect};
 use crate::ui_element::CandidateElementHost;
 
 use super::dispatch::dispatch_effect;
-use super::engine_host::{engine, start_engine_load, user_dict_path};
 
 /// 全局活动对象计数（DllCanUnloadNow 用）：实例创建 +1，Drop −1。
 static INSTANCE_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -92,6 +90,9 @@ pub(crate) struct TextService {
     /// 活动会话；None = 无会话（字母键将开启新会话）。
     /// Rc 共享：候选窗点击/hover 回调（同线程）经克隆访问。
     pub(crate) session: Rc<RefCell<Option<Session>>>,
+    /// M10 远端模式：最近一次 Effect 基线（KeyOutcome 组装用；会话活性判定）。
+    /// Rc 共享：候选窗点击回调同线程访问。本地模式恒 None。
+    pub(crate) last_effect: Rc<RefCell<Option<iuv_core::Effect>>>,
     /// composition 封装（随会话创建/销毁）。Rc 共享：候选窗回调 dispatch 用。
     pub(crate) composition: Rc<RefCell<Option<Composition>>>,
     /// 候选窗：CandwinCandidateWindow（M4：ULW 呈现，iuv-ui 绘图）。Rc 共享：同上。
@@ -108,11 +109,9 @@ pub(crate) struct TextService {
     pub(crate) lang_bar: RefCell<Option<ComObject<LangBarItemButton>>>,
     /// TSF 候选 UI 元素宿主（WoW 游戏内候选框实验）。Rc 共享：dispatch 路径同线程访问。
     pub(crate) cand_elem: Rc<RefCell<CandidateElementHost>>,
-    /// M6 daemon 客户端（共享段读取 + 管道写；Arc 与引擎 UserRemote 共享）。
-    /// Deactivate 不撤——随进程/实例生命周期（TextService Drop 释放）。
-    pub(crate) daemon: RefCell<Option<Arc<DaemonClient>>>,
-    /// 远端写后端是否已注册到引擎（Activate 时引擎可能仍在后台加载，首键补注册）。
-    pub(crate) remote_registered: Cell<bool>,
+    /// M10 P4：已应用的配置纪元（服务端 ConfigChanged 推送驱动收敛，
+    /// 比对落后才切候选窗主题；进程内原子量比较，非轮询）。
+    pub(crate) remote_theme_epoch: Cell<u32>,
     /// 引号配对状态（`'`/`"` 交替开/关形）。会话开始/模式切换复位为开。
     pub(crate) punct_quote_open: Cell<bool>,
     /// 实例运行时四态（32-status-toolbar.md §5.1）：per-实例（非进程级 config），
@@ -122,9 +121,12 @@ pub(crate) struct TextService {
     /// 反向控制端点（32-toolbar §4.2/§4.3）：accept 线程 + 隐藏消息窗。Activate 起、
     /// Deactivate/Drop 停（懒建，每个实例一个）。
     ctl: RefCell<Option<CtlEndpoint>>,
-    /// M1 桌宠：上次 dispatch 后的"是否在打字中"状态（composition 存在 + 有候选 + 未 end）。
+    /// M1 桌宠：上次 dispatch 后的"是否在打字中"状态（composition 存在 + 未 end）。
     /// transition 时（true → false / false → true）发 `Typing` 信号驱动 daemon 宠物动画。
     pub(crate) was_typing: Cell<bool>,
+    /// P4 服务端渲染：已上报给 iuv-server 的光标锚点（变化才发 CaretMoved；
+    /// 打字期锚点恒定 → 绝大多数键零上报）。
+    pub(crate) caret_reported: Cell<CaretRect>,
 }
 
 impl TextService {
@@ -134,6 +136,7 @@ impl TextService {
         let composition = Rc::new(RefCell::new(None));
         let caret = Rc::new(Cell::new(CaretRect::default()));
         let cand_elem = Rc::new(RefCell::new(CandidateElementHost::new()));
+        let last_effect: Rc<RefCell<Option<iuv_core::Effect>>> = Rc::new(RefCell::new(None));
         // 候选窗交互接线（同线程回调；点击=页内行号→Digit 键上屏；悬停=纯视觉，
         // 窗口内部处理，不驱动会话）。
         // M4 主题：直接读 config.json（引擎可能仍在后台加载，engine() 不可依赖）：
@@ -153,6 +156,7 @@ impl TextService {
             let u = ui_rc.clone();
             let ca = caret.clone();
             let ce = cand_elem.clone();
+            let le = last_effect.clone();
             ui_rc
                 .borrow_mut()
                 .set_on_click(Some(Box::new(move |row: usize| {
@@ -160,12 +164,24 @@ impl TextService {
                     if row >= 9 {
                         return;
                     }
-                    let effect: Option<iuv_core::Effect> = s
-                        .borrow_mut()
-                        .as_mut()
-                        .map(|sess: &mut Session| sess.on_key(Key::Digit((row + 1) as u8)));
-                    if let Some(e) = effect {
-                        dispatch_effect(&s, &c, &u, &ca, &ce, &e);
+                    // M10 远端模式：点击 = Digit 键经远端会话，基线组装后走同一渲染路径。
+                    {
+                        let outcome = crate::com::remote_host::remote().and_then(|r| {
+                            r.key_down(Key::Digit((row + 1) as u8), Default::default())
+                        });
+                        if let Some(o) = outcome {
+                            let base = le.borrow_mut().take();
+                            let (effect, ended) = crate::com::dispatch::merge_outcome(base, o);
+                            dispatch_effect(&s, &c, &u, &ca, &ce, &effect, false);
+                            if ended {
+                                le.borrow_mut().take();
+                                if let Some(r) = crate::com::remote_host::remote() {
+                                    r.end_session();
+                                }
+                            } else {
+                                *le.borrow_mut() = Some(effect);
+                            }
+                        }
                     }
                 })));
         }
@@ -177,31 +193,25 @@ impl TextService {
             layout_sink: RefCell::new(None),
             thread_focus_cookie: Cell::new(0),
             session,
+            last_effect,
             composition,
             ui: ui_rc,
             caret,
             cand_elem,
             english_mode: Arc::new(AtomicBool::new(false)),
             lang_bar: RefCell::new(None),
-            daemon: RefCell::new(None),
-            remote_registered: Cell::new(false),
+            remote_theme_epoch: Cell::new(0),
             punct_quote_open: Cell::new(false),
             // 实例运行时四态：创建时（首次 Activate 前）从 config 初始值取一次
             // （32-toolbar §2.5：设置页默认值 = 新建实例时的初始值；热载不改运行实例）。
             runtime: Arc::new(Mutex::new(Config::load().initial_state)),
             ctl: RefCell::new(None),
             was_typing: Cell::new(false),
+            caret_reported: Cell::new(CaretRect::default()),
         }
     }
 
-    /// 实例标识（pid:tid）：pid = 进程 id，tid = **OS 线程 id**（`GetCurrentThreadId`，
-    /// 非 TSF client id）——前台看板判定 `GetWindowThreadProcessId` 返回 OS 线程 id，
-    /// 直接用同一标识匹配实例表（32-toolbar §4.1）。
-    pub(crate) fn instance_id(&self) -> (u32, u32) {
-        (process_id(), thread_id())
-    }
-
-    /// 启动反向控制端点（accept 线程 + 隐藏消息窗；§4.2/§4.3）。懒建：Deactivate 停、
+    /// 启动反向控制端点（隐藏消息窗 + 进程级提交钩子；§4.3）。懒建：Deactivate 停、
     /// Drop 清。失败静默（记日志——工具栏按钮无法到达本实例，其余功能不受影响）。
     fn start_ctl_endpoint(&self) {
         if self.ctl.borrow().is_some() {
@@ -213,16 +223,18 @@ impl TextService {
         // SAFETY: self 为 TextService（COM 对象内层，端点存活期间有效）；端点存于
         // self.ctl 的 RefCell 槽位（地址固定），attach 后 GWLP_USERDATA 指向该固定地址。
         let svc: *const dyn CtlApplier = self as *const TextService as *const dyn CtlApplier;
-        let (pid, tid) = self.instance_id();
         *self.ctl.borrow_mut() = Some(CtlEndpoint::new(hwnd, svc));
         let mut slot = self.ctl.borrow_mut();
-        slot.as_mut().map(|ep| ep.attach(pid, tid)).unwrap_or(false);
+        if let Some(ep) = slot.as_mut() {
+            ep.attach();
+        }
     }
 
-    /// 停反向控制端点（Deactivate：Drop 兜底清理，此处显式调以尽快释放窗口/线程）。
+    /// 停反向控制端点（Deactivate：Drop 兜底清理，此处显式调以尽快释放窗口）。
     fn stop_ctl_endpoint(&self) {
+        crate::ctl::clear_submit_hook();
         let ep = self.ctl.borrow_mut().take();
-        drop(ep); // CtlEndpoint::drop 停线程 + 清 GWLP_USERDATA + 销毁窗口
+        drop(ep); // CtlEndpoint::drop 清 GWLP_USERDATA + 销毁窗口
     }
 
     /// 应用反向控制命令（CtlCmd；TSF 线程 wndproc 调用，§4.3）。
@@ -248,9 +260,9 @@ impl TextService {
                 if !ok {
                     let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
                     runtime.mode = if english {
-                        InitialMode::English
+                        ImeMode::English
                     } else {
-                        InitialMode::Chinese
+                        ImeMode::Chinese
                     };
                     drop(runtime);
                     self.after_runtime_change();
@@ -259,9 +271,9 @@ impl TextService {
             CtlCmd::SetWidth(full) => {
                 let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
                 runtime.width = if full {
-                    WidthMode::Full
+                    ImeWidth::Full
                 } else {
-                    WidthMode::Half
+                    ImeWidth::Half
                 };
                 drop(runtime);
                 self.after_runtime_change();
@@ -269,9 +281,9 @@ impl TextService {
             CtlCmd::SetScript(traditional) => {
                 let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
                 runtime.script = if traditional {
-                    ScriptMode::Traditional
+                    ImeScript::Traditional
                 } else {
-                    ScriptMode::Simplified
+                    ImeScript::Simplified
                 };
                 drop(runtime);
                 self.after_runtime_change();
@@ -279,12 +291,22 @@ impl TextService {
             CtlCmd::SetPunct(english_punct) => {
                 let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
                 runtime.punct = if english_punct {
-                    PunctMode::English
+                    ImePunct::English
                 } else {
-                    PunctMode::Chinese
+                    ImePunct::Chinese
                 };
                 drop(runtime);
                 self.after_runtime_change();
+            }
+            CtlCmd::CandidateClick(row) => {
+                // 服务端候选窗点击选词（③ 闭环）：= Digit(row+1) 键走远端会话，
+                // 与数字键选词同语义（候选窗标注数字）。会话不活跃时静默忽略
+                // （窗口显示即会话活跃，此为防御）。
+                if let Some(outcome) = crate::com::remote_host::remote().and_then(|r| {
+                    r.key_down(Key::Digit(row + 1), Default::default())
+                }) {
+                    self.dispatch_outcome(outcome);
+                }
             }
         }
         CtlResult::Ok {
@@ -301,10 +323,7 @@ impl Drop for TextService {
         self.stop_ctl_endpoint();
         // 32-toolbar §4.1：实例 Drop = 失焦上报（daemon 解绑清理；纯信号模型下
         // 「注销」由「失焦」承担）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.focus_lost(pid, tid);
-        }
+        self.notify_focus_lost();
     }
 }
 
@@ -366,7 +385,7 @@ impl TextService_Impl {
                             // 在该窗口改过的中英重置回 config（违反 §2.4 per-实例保留语义）。
                             // 运行时值随实例存活（runtime 字段，本线程此前的设置天然保留）。
                             let default_open =
-                                Config::load().initial_state.mode == iuv_core::InitialMode::Chinese;
+                                Config::load().initial_state.mode == iuv_core::ImeMode::Chinese;
                             match langbar::read_openclose(&comp) {
                                 None => {
                                     if let Err(e) =
@@ -412,27 +431,19 @@ impl TextService_Impl {
             )),
         }
 
-        // 后台异步加载引擎（词库 17MB/65 万词条）：切到输入法即开始，
-        // 首次按键不再同步加载卡顿；加载完成前按键透明放行。
-        start_engine_load();
-
-        // M6 daemon 客户端装配：user_path = 现有 iuv.user.imedic 路径逻辑。共享段只读
-        // 引用 + 管道写；daemon 不在线 → 引擎写路径自动降级本地写盘（绝不挂键）。
-        // 引擎可能在后台加载未完成（engine()=None），远端写后端延迟到首键补注册
-        // （handle_key_down 的 remote_registered 兜底，set_user_remote 幂等）。
-        let user_path = user_dict_path();
-        let daemon = Arc::new(DaemonClient::new(user_path.clone()));
-        if let Some(engine) = engine() {
-            engine.set_user_remote(Some(daemon.clone()));
-            self.remote_registered.set(true);
-        } else {
-            log_line("[daemon] 引擎尚未加载完成：远端写后端延迟到首键注册");
+        // 后台连接 iuv-server（薄客户端唯一形态；客户端无词库无引擎，49 §2）。
+        // P5 失效语义 C 兜底：离线（重生失败窗口）→ Activate 再试一次；
+        // 正常在线时无副作用（reviving 防重入）。server 缺席 → 连接线程拉起再试。
+        {
+            if crate::com::remote_host::remote().is_some_and(|r| !r.ready()) {
+                crate::com::remote_host::schedule_revive();
+            }
+            crate::com::remote_host::start_remote_load();
         }
-        *self.daemon.borrow_mut() = Some(daemon.clone());
 
         // 挂载语言栏"中/英"切换图标（失败仅记日志，不影响输入法主体）。
         // 点击归一为写 OPENCLOSE compartment（OnChange 统一响应）；右键弹自定义菜单
-        // （设置/关于，经 daemon 客户端发管道命令，2026-08-17 决策：无独立托盘图标）。
+        // （设置/关于，经 transport 控制面，2026-08-17 决策：无独立托盘图标）。
         let menu_theme = match Config::load().theme {
             iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
             iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
@@ -443,7 +454,6 @@ impl TextService_Impl {
                 .borrow()
                 .as_ref()
                 .map(|(c, _)| (c.clone(), tid)),
-            daemon,
             menu_theme,
         ));
         match langbar::add_to_lang_bar(ptim, &lang_bar_com) {
@@ -461,12 +471,6 @@ impl TextService_Impl {
         self.start_ctl_endpoint();
 
         log_line(&format!("Activate：tid={tid}"));
-
-        // M7 daemon 自启（IME 惰性拉起，搜狗同款）：离线且冷却期满 → CreateProcess
-        // 拉起 DLL 同目录 iuv-daemon.exe（后台无控制台，异步不等待；失败静默降级）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            client.ensure_daemon();
-        }
 
         // 47 号：激活即尝试挂布局 sink。`OnSetFocus` 只在**焦点变化**时送达、且 TSF
         // 不会重放历史事件——"窗口先有焦点、之后才切到本输入法"（Ctrl+Space / 语言栏）
@@ -498,10 +502,7 @@ impl TextService_Impl {
         // 32-toolbar：停反向控制端点（accept 线程 + 隐藏窗）+ 失焦上报
         // （daemon 解绑 → 工具条隐藏）。同一实例再 Activate 会重发激活。
         self.stop_ctl_endpoint();
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.focus_lost(pid, tid);
-        }
+        self.notify_focus_lost();
 
         // 卸载语言栏"中/英"图标（失败仅记日志）。
         if let Some(lang_bar_com) = self.lang_bar.borrow_mut().take() {
@@ -597,8 +598,8 @@ impl TextService_Impl {
     }
 
     /// 布局变化处理：仅组词中响应（槽空/异 context 秒退）；只读会话重查**锚点**
-    /// （composition 起点）→ 更新共享 caret（跳变检测基线连续）→ 锚点位移才 move_to
-    /// 平移（隐藏态 no-op 不复活窗口）。
+    /// （composition 起点）→ 变化才上报 iuv-server（P4 服务端渲染：本地窗不跟随，
+    /// 服务端窗口随报移动；打字期锚点恒定 → 绝大多数事件零上报）。
     fn follow_layout(&self, pic: &ITfContext) {
         let rect = {
             let slot = self.composition.borrow();
@@ -615,29 +616,14 @@ impl TextService_Impl {
         let Some(rect) = rect else {
             return; // 文档锁定/clipped/全零矩形：保持原位
         };
-        let prev = self.caret.get();
         self.caret.set(rect);
-        // 47 号锚定后：打字期锚点坐标恒定（宿主仍每键发 layout 事件），锚点未动即跳过
-        // SetWindowPos——这是锚定语义下才有的真实去重（2026-08-29 曾在"跟随尾端"语义下
-        // 以收益测不出来撤销，那时坐标每键都在变）。
-        //
-        // 去重**只比锚点左上角 (x, y)，不比盒尺寸**：同一个锚点在"刚写完预编辑"与"宿主
-        // 布局稳定后"量到的盒高不同（真机实测 w/h = 23/21 字形盒 → 0/23 行盒，x/y 完全
-        // 相同）。比全字段会让首键 `show` 之后必然多一次移动，而 `position_in_area` 的
-        // 下方偏移含 `caret.h`，于是候选窗在出现瞬间往下挪 2px（用户实测的"出现即下沉"）。
-        // 锚点位移才是真正需要跟文档平移的事件，故只认 (x, y)。
-        if rect.x == prev.x && rect.y == prev.y {
-            return;
+        // P4 服务端渲染：本地窗不跟随——锚点变化上报 iuv-server（其窗口随报移动）。
+        if rect != self.caret_reported.get() {
+            self.caret_reported.set(rect);
+            if let Some(r) = crate::com::remote_host::remote() {
+                r.sync_caret(rect);
+            }
         }
-        // try_borrow_mut：回调可能嵌在按键路径 ui 更新中途同步触发，
-        // 抢不到借用即跳过（下一次布局事件自然补上）。
-        if let Ok(mut w) = self.ui.try_borrow_mut() {
-            w.move_to(rect);
-        }
-        log_line(&format!(
-            "[follow] 锚点平移：caret=({},{},{},{})",
-            rect.x, rect.y, rect.w, rect.h
-        ));
     }
 }
 
@@ -663,10 +649,7 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
         // 维度③：应用切入 → 「激活 + 四态」上报，daemon 绑定并立即重显工具栏
         // （Alt+Tab 回已激活应用必须靠此信号重显——log 实锤的「隐藏后永不重现」根因）。
         log_line("[focus] OnSetThreadFocus（线程焦点获得 → 激活上报）");
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.focus_gained(pid, tid, self.runtime_snapshot());
-        }
+        self.signal_focus_gained();
         Ok(())
     }
 
@@ -676,9 +659,12 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
         // M1 桌宠（QA P2-B）：切走必须复位打字态——否则 `was_typing` 卡 true，
         // 回焦后首段会话不发 `Typing(true)` → 宠物一直 Idle（边沿状态机不自洽）。
         self.force_typing_stop();
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            let (pid, tid) = self.instance_id();
-            client.focus_lost(pid, tid);
+        self.notify_focus_lost();
+        // M10 ③：服务端候选窗同步隐藏（跨应用切走；会话保留语义同 OnSetFocus）。
+        if self.composition.borrow().is_some() {
+            if let Some(r) = crate::com::remote_host::remote() {
+                r.hide_candwin();
+            }
         }
         Ok(())
     }
@@ -760,6 +746,13 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
         guard(|| {
             self.ui.borrow_mut().hide();
             self.cand_elem.borrow_mut().end();
+            // M10 ③：服务端候选窗同步隐藏（会话保留——「焦点切换不打断会话」
+            // 原则不变，仅窗口消失；回焦后下键经 sync_candwin 重显）。
+            if self.composition.borrow().is_some() {
+                if let Some(r) = crate::com::remote_host::remote() {
+                    r.hide_candwin();
+                }
+            }
             // 布局跟随（候选窗随宿主拖拽/缩放/滚动平移）：焦点文档就绪即挂
             // ITfTextLayoutSink（小狼毫同款挂载点；幂等，同 context 跳过）。
             // 焦点可落空文档（pdimfocus=null，小狼毫 _InitTextEditSink 同款显式判空）

@@ -5,7 +5,7 @@
 //! 顿号在 `\` 键（微软惯例）；书名号固定方向（`<`→`《`、`>`→`》`，搜狗习惯）。
 //! 引号 `'`/`"` 自动配对（开/关交替），配对状态由调用方（TSF）持有并传入。
 
-use crate::config::WidthMode;
+use crate::config::ImeWidth;
 
 /// ASCII 标点 → 中文全角标点。未命中返回 None（该字符直通给应用）。
 ///
@@ -120,8 +120,8 @@ pub fn fullwidth(c: char) -> Option<char> {
 /// 提交文本宽度转换（预编辑原文上屏，28-initial-state-settings.md §8 影响点 1）：
 /// `width == Full` 时逐字符套 `fullwidth`（汉字/全角字符不受影响原样保留）；
 /// `Half` 时原样返回。覆盖 Enter/无候选空格/flush/原文兜底候选等所有原文上屏路径。
-pub fn fullwidth_text(text: &str, width: WidthMode) -> String {
-    if width != WidthMode::Full {
+pub fn fullwidth_text(text: &str, width: ImeWidth) -> String {
+    if width != ImeWidth::Full {
         return text.to_string();
     }
     text.chars().map(|c| fullwidth(c).unwrap_or(c)).collect()
@@ -291,8 +291,8 @@ mod tests {
 
     #[test]
     fn fullwidth_text_converts_ascii_keeps_cjk() {
-        let full = WidthMode::Full;
-        let half = WidthMode::Half;
+        let full = ImeWidth::Full;
+        let half = ImeWidth::Half;
         // 全角：纯拼音 → 全角
         assert_eq!(fullwidth_text("nihao", full), "ｎｉｈａｏ");
         assert_eq!(

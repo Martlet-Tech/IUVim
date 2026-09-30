@@ -5,8 +5,11 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use iuv_core::Session;
+use iuv_proto::KeyOutcome;
 
-use crate::com::engine_host::engine;
+use crate::com::remote_host::{
+    backend_config, core_candidate, remote,
+};
 use crate::composition::Composition;
 use crate::log::{self, log_line, perf_record_with, perf_tick};
 use crate::session_bridge::{apply_effect, is_passthrough_app};
@@ -19,6 +22,8 @@ use super::text_service::TextService;
 impl TextService {
     pub(crate) fn dispatch(&self, effect: &iuv_core::Effect) {
         let t = perf_tick();
+        // P4 服务端渲染：本地候选窗不画（iuv-server 画），仅更新
+        // composition/caret 并在锚点变化时上报 CaretMoved。
         dispatch_effect(
             &self.session,
             &self.composition,
@@ -26,19 +31,23 @@ impl TextService {
             &self.caret,
             &self.cand_elem,
             effect,
+            false,
         );
+        let caret = self.caret.get();
+        if caret != self.caret_reported.get() {
+            self.caret_reported.set(caret);
+            if let Some(r) = crate::com::remote_host::remote() {
+                r.sync_caret(caret);
+            }
+        }
         // M1 桌宠（docs/pet/M1-IMPLEMENTATION.md §2.1 + §4.4）：组合状态 transition
-        // → Typing 信号。"正在打字" = composition 存在 + 候选非空 + 未 end（持续会话中）。
+        // → Typing 信号。"正在打字" = composition 存在 + 未 end（持续会话中）。
+        // （P4 前还有"候选非空"条件——服务端渲染后普通应用候选为空属常态，撤销。）
         // 边沿检测避免每键重复发。
-        let composing_now = self.composition.borrow().is_some()
-            && !effect.candidates.is_empty()
-            && effect.end.is_none();
+        let composing_now = self.composition.borrow().is_some() && effect.end.is_none();
         if composing_now != self.was_typing.get() {
             self.was_typing.set(composing_now);
-            if let Some(client) = self.daemon.borrow().as_ref() {
-                let (pid, tid) = self.instance_id();
-                client.typing(pid, tid, composing_now);
-            }
+            self.notify_typing(composing_now);
         }
         perf_record_with("dispatch", t, || {
             format!(
@@ -48,6 +57,59 @@ impl TextService {
             )
         });
     }
+
+    /// M10：应用 KeyOutcome（以 `last_effect` 为基线组装 Effect，
+    /// 复用既有 dispatch 渲染路径；会话结束 → 清基线 + 通知服务端 EndSession）。
+    pub(crate) fn dispatch_outcome(&self, outcome: KeyOutcome) {
+        let base = self.last_effect.borrow_mut().take();
+        let (effect, ended) = merge_outcome(base, outcome);
+        self.dispatch(&effect);
+        if ended {
+            self.last_effect.borrow_mut().take();
+            if let Some(r) = remote() {
+                r.end_session();
+            }
+        } else if self.composition.borrow().is_none() {
+            // composition 已死（外部终止与在途键的竞态兜底）：会话无法延续，
+            // 同步收尾防脑裂（下一键全新会话）。
+            self.last_effect.borrow_mut().take();
+            if let Some(r) = remote() {
+                r.end_session();
+            }
+        } else {
+            *self.last_effect.borrow_mut() = Some(effect);
+        }
+    }
+}
+
+/// KeyOutcome + 上帧 Effect 基线 → 完整 Effect（`Option = None` 沿用基线，49 §4.5.2 增量语义）。
+/// 返回 `(effect, ended)`。候选窗点击回调与 TextService::dispatch_outcome 共用。
+pub(crate) fn merge_outcome(
+    base: Option<iuv_core::Effect>,
+    outcome: KeyOutcome,
+) -> (iuv_core::Effect, bool) {
+    let mut e = base.unwrap_or_default();
+    if let Some(c) = outcome.composition {
+        e.composition = c;
+    }
+    if let Some(r) = outcome.reading {
+        e.reading = r;
+    }
+    if let Some(v) = outcome.candidates {
+        e.candidates = v.iter().map(core_candidate).collect();
+    }
+    if let Some(v) = outcome.all_candidates {
+        e.all_candidates = v.iter().map(core_candidate).collect();
+    }
+    if let Some(p) = outcome.page {
+        e.page = p;
+    }
+    if let Some(s) = outcome.selected {
+        e.selected = s as usize;
+    }
+    e.end = outcome.end;
+    let ended = e.end.is_some();
+    (e, ended)
 }
 
 /// dispatch 的自由函数版：候选窗点击回调（同线程）与 TextService 共用同一路径。
@@ -59,6 +121,7 @@ pub(crate) fn dispatch_effect(
     caret: &Rc<Cell<CaretRect>>,
     cand_elem: &Rc<RefCell<CandidateElementHost>>,
     effect: &iuv_core::Effect,
+    render_locally: bool,
 ) {
     // TSF 候选 UI 元素同步（与自绘窗平行）：候选非空 → Begin/Update；空 → End。
     // effect.end 的提交/取消路径统一走 ended 分支 End，这里跳过避免多余一次 Update。
@@ -66,8 +129,11 @@ pub(crate) fn dispatch_effect(
         let snap = crate::ui::effect_to_snapshot(effect);
         cand_elem.borrow_mut().sync(&snap);
     }
-    let orientation = engine()
-        .map(|e| e.config().candidate_orientation)
+    // M10：模式感知配置（local=engine.config / remote=客户端副本）。
+    let cfg = backend_config();
+    let orientation = cfg
+        .as_ref()
+        .map(|c| c.candidate_orientation)
         .unwrap_or_default();
     let mut caret_pos = caret.get();
     let mut degraded = false;
@@ -83,12 +149,22 @@ pub(crate) fn dispatch_effect(
                     true
                 } else {
                     let mut ui_guard = ui.borrow_mut();
-                    apply_effect(comp, &mut *ui_guard, &mut caret_pos, effect, orientation)
+                    apply_effect(
+                        comp,
+                        &mut *ui_guard,
+                        &mut caret_pos,
+                        effect,
+                        orientation,
+                        render_locally,
+                    )
                 }
             }
             // composition 缺失（异常路径）：仅更新候选窗并继续。
             None => {
                 log_line("dispatch：composition 缺失，仅更新候选窗");
+                if !render_locally {
+                    false // P4 服务端渲染：本地窗不画（match 臂值，非 return）
+                } else {
                 let mut snap = crate::ui::effect_to_snapshot(effect);
                 snap.orientation = orientation;
                 let mut ui_guard = ui.borrow_mut();
@@ -100,6 +176,7 @@ pub(crate) fn dispatch_effect(
                     ui_guard.show(&snap, caret_pos);
                 }
                 effect.end.is_some()
+                }
             }
         }
     };
@@ -107,8 +184,8 @@ pub(crate) fn dispatch_effect(
     // 自绘候选窗抑制（candidate_owner_apps 名单驱动，2026-08-20 弃矩形启发式）：
     // 命中进程（如 WoW 自绘游戏内候选栏）→ 抑制自绘窗（避免双候选栏）；默认空 = 恒自绘。
     // 名单空时零开销（不查进程名）。候选 UI 元素同步不受影响（游戏桥仍可拉取候选数据）。
-    let suppress = engine()
-        .map(|e| e.config().candidate_owner_apps)
+    let suppress = cfg
+        .map(|c| c.candidate_owner_apps)
         .map(|apps| should_suppress_candidate_window(&apps, &log::module_name()))
         .unwrap_or(false);
     ui.borrow_mut().set_suppressed(suppress);

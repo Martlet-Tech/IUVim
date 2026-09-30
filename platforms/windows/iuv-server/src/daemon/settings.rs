@@ -29,9 +29,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
 };
 
-use crate::config::{self, DaemonConfig};
-use crate::log;
-use crate::state::DaemonState;
+use crate::daemon::config::{self, DaemonConfig};
+use crate::daemon::log;
+use crate::daemon::state::DaemonState;
 
 /// 设置窗标题（eframe viewport 标题；`FindWindowW` 按此查找，两处必须一致）。
 const SETTINGS_TITLE: &str = "iuv 设置";
@@ -115,7 +115,7 @@ fn center_window_on_screen() {
 /// `toolbar` = 工具栏宿主（录入态开关通知：全局热键临时注销，41-keymap-settings.md §12）。
 pub fn run_settings(
     state: &Arc<DaemonState>,
-    toolbar: &Arc<crate::toolbar::ToolbarHost>,
+    toolbar: &Arc<crate::daemon::toolbar::ToolbarHost>,
 ) -> Result<(), String> {
     const WIDTH: f32 = 640.0;
     const HEIGHT: f32 = 480.0;
@@ -318,7 +318,7 @@ fn slot_combo_mut(slot: &mut iuv_core::TwoSlot, which: Slot) -> &mut Option<iuv_
 struct SettingsApp {
     state: Arc<DaemonState>,
     /// 工具栏宿主（录入态开关通知：全局热键临时注销，41-keymap-settings.md §12）。
-    toolbar: Arc<crate::toolbar::ToolbarHost>,
+    toolbar: Arc<crate::daemon::toolbar::ToolbarHost>,
     /// 当前标签页。
     tab: Tab,
     /// 主题单选值（"light"/"dark"）。
@@ -375,7 +375,7 @@ fn card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> 
 }
 
 impl SettingsApp {
-    fn new(state: Arc<DaemonState>, toolbar: Arc<crate::toolbar::ToolbarHost>) -> Self {
+    fn new(state: Arc<DaemonState>, toolbar: Arc<crate::daemon::toolbar::ToolbarHost>) -> Self {
         let cfg = state
             .config
             .lock()
@@ -468,38 +468,38 @@ impl SettingsApp {
                         ui.label("模式");
                         ui.radio_value(
                             &mut self.initial.mode,
-                            iuv_core::InitialMode::Chinese,
+                            iuv_core::ImeMode::Chinese,
                             "中文",
                         );
                         ui.radio_value(
                             &mut self.initial.mode,
-                            iuv_core::InitialMode::English,
+                            iuv_core::ImeMode::English,
                             "英文",
                         );
                     });
-                    let mut punct_en = self.initial.punct == iuv_core::PunctMode::English;
+                    let mut punct_en = self.initial.punct == iuv_core::ImePunct::English;
                     if ui.checkbox(&mut punct_en, "中文状态使用英文标点").changed() {
                         self.initial.punct = if punct_en {
-                            iuv_core::PunctMode::English
+                            iuv_core::ImePunct::English
                         } else {
-                            iuv_core::PunctMode::Chinese
+                            iuv_core::ImePunct::Chinese
                         };
                     }
                     ui.horizontal(|ui| {
                         ui.label("宽度");
-                        ui.radio_value(&mut self.initial.width, iuv_core::WidthMode::Half, "半角");
-                        ui.radio_value(&mut self.initial.width, iuv_core::WidthMode::Full, "全角");
+                        ui.radio_value(&mut self.initial.width, iuv_core::ImeWidth::Half, "半角");
+                        ui.radio_value(&mut self.initial.width, iuv_core::ImeWidth::Full, "全角");
                     });
                     ui.horizontal(|ui| {
                         ui.label("字形");
                         ui.radio_value(
                             &mut self.initial.script,
-                            iuv_core::ScriptMode::Simplified,
+                            iuv_core::ImeScript::Simplified,
                             "简体",
                         );
                         ui.radio_value(
                             &mut self.initial.script,
-                            iuv_core::ScriptMode::Traditional,
+                            iuv_core::ImeScript::Traditional,
                             "繁体",
                         );
                     });
@@ -740,7 +740,7 @@ impl SettingsApp {
             if !pressed || repeat {
                 continue;
             }
-            let Some(outcome) = crate::capture::process_key_event(key, &modifiers) else {
+            let Some(outcome) = crate::daemon::capture::process_key_event(key, &modifiers) else {
                 continue; // 纯修饰键等，继续等
             };
             // 捕获完成：复位 + 回填 + 恢复全局热键
@@ -756,8 +756,8 @@ impl SettingsApp {
     }
 
     /// 应用捕获结果到槽位（含校验/冲突检测）。
-    fn apply_capture(&mut self, target: CaptureTarget, outcome: crate::capture::CaptureOutcome) {
-        use crate::capture::CaptureOutcome;
+    fn apply_capture(&mut self, target: CaptureTarget, outcome: crate::daemon::capture::CaptureOutcome) {
+        use crate::daemon::capture::CaptureOutcome;
         match outcome {
             CaptureOutcome::Cancel => {
                 self.keymap_warn = None; // Esc 取消：槽位不变
@@ -986,6 +986,17 @@ impl SettingsApp {
     fn advanced_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("高级");
         ui.add_space(4.0);
+        // 2026-09-30：外层 ScrollArea——第三次卡片（全屏行为）曾被挤出 640×480 固定
+        // 窗口可视区且无滚动（第二次踩坑记录，修法同 keymap_tab 2026-08-28 注释）。
+        egui::ScrollArea::vertical()
+            .id_salt("advanced_scroll")
+            .max_height(ui.available_height() - 12.0)
+            .show(ui, |ui| {
+                self.advanced_tab_content(ui);
+            });
+    }
+
+    fn advanced_tab_content(&mut self, ui: &mut egui::Ui) {
         ui.columns(2, |cols| {
             // 左：按键直通（纯单机游戏整进程隐身——该进程内无法输中文）
             card(&mut cols[0], |ui| {
@@ -1004,7 +1015,7 @@ impl SettingsApp {
                 ui.small("命中进程全部按键放行（不建会话、无候选窗）——该进程内无法输中文。");
                 ui.add_space(2.0);
                 if ui.button("恢复默认名单").clicked() {
-                    self.passthrough = crate::config::DEFAULT_PASSTHROUGH_APPS.join("\n");
+                    self.passthrough = crate::daemon::config::DEFAULT_PASSTHROUGH_APPS.join("\n");
                 }
                 ui.small("默认 = 近五年 3A 单机大作");
             });
@@ -1025,7 +1036,7 @@ impl SettingsApp {
                 ui.small("命中进程 iuv 不绘制候选窗（游戏自带候选栏场景），数据仍供其拉取。");
                 ui.add_space(2.0);
                 if ui.button("恢复默认名单").clicked() {
-                    self.candidate_owner = crate::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
+                    self.candidate_owner = crate::daemon::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
                 }
                 ui.small("默认 = 预置知名游戏");
             });
@@ -1051,7 +1062,7 @@ impl SettingsApp {
             ui.label("清除 %TEMP% 下的 iuv 日志（daemon / tsf / script / cleanup）：");
             ui.add_space(4.0);
             if ui.button("清除日志").clicked() {
-                self.log_clear = Some(crate::log::clear_logs());
+                self.log_clear = Some(crate::daemon::log::clear_logs());
             }
             if let Some((ok, fail)) = self.log_clear {
                 ui.add_space(4.0);
@@ -1095,6 +1106,16 @@ impl SettingsApp {
 
     /// 用户库列表 + 清除全部。
     fn user_dict_snapshot(&self) -> (usize, usize, Vec<String>) {
+        // M10 ③：远端是唯一形态，用户库文件真相源在引擎本地写盘，内存态
+        // 只是启动快照 → 面板打开先重载（文件缺失/损坏保留现状，不炸面板）。
+        match UserDict::load(&self.state.user_dict_path) {
+            Ok(fresh) => {
+                *self.state.dict.lock().unwrap_or_else(|p| p.into_inner()) = fresh;
+            }
+            Err(e) => {
+                log::log_line(&format!("[settings] 用户库重载失败（保留快照）：{e}"));
+            }
+        }
         let dict = self.state.dict.lock().unwrap_or_else(|p| p.into_inner());
         let mut lines = Vec::new();
         for (code, word, adj) in dict.cover_iter() {

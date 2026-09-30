@@ -42,16 +42,26 @@ pub struct Composition {
     /// 不支持并停止尝试。量取成功即复位（宿主可能只是文档未就绪时短暂失败）。
     /// 本对象每会话新建，标记随会话结束自然失效，无需清理。
     caret_probe_fails: Rc<Cell<u8>>,
+    /// 外部终止回调（M10 ③）：远端会话的收尾必须**立即**跟随终止——否则客户端
+    /// 预编辑槽已清而 server 会话仍在（脑裂），下一键走会话内路径被降级吞掉
+    /// （2026-09-30 真机：notepad 切焦点回来首键丢失 + 预编辑失踪）。
+    /// TSF 线程内同步调用；None = 无会话语义的临时 composition（标点直上屏）。
+    on_terminated: Option<Rc<dyn Fn()>>,
 }
 
 impl Composition {
-    pub fn new(context: ITfContext, client_id: u32) -> Self {
+    pub fn new(
+        context: ITfContext,
+        client_id: u32,
+        on_terminated: Option<Rc<dyn Fn()>>,
+    ) -> Self {
         Composition {
             context,
             client_id,
             comp: Rc::new(RefCell::new(None)),
             terminated: Rc::new(Cell::new(false)),
             caret_probe_fails: Rc::new(Cell::new(0)),
+            on_terminated,
         }
     }
 
@@ -81,6 +91,7 @@ impl Composition {
             existing: self.comp.borrow().clone(),
             comp_slot: self.comp.clone(),
             terminated: self.terminated.clone(),
+            on_terminated: self.on_terminated.clone(),
             text: text.to_owned(),
             started: RefCell::new(None),
         };
@@ -196,6 +207,7 @@ impl Composition {
 struct CompositionSink {
     comp: Rc<RefCell<Option<ITfComposition>>>,
     terminated: Rc<Cell<bool>>,
+    on_terminated: Option<Rc<dyn Fn()>>,
 }
 
 impl ITfCompositionSink_Impl for CompositionSink_Impl {
@@ -209,6 +221,10 @@ impl ITfCompositionSink_Impl for CompositionSink_Impl {
         ));
         *self.comp.borrow_mut() = None;
         self.terminated.set(true);
+        // 远端会话立即收尾（清基线 + EndSession）：不等下一键降级（会吞键）。
+        if let Some(cb) = &self.on_terminated {
+            cb();
+        }
         Ok(())
     }
 }
@@ -227,6 +243,8 @@ struct SetTextSession {
     comp_slot: Rc<RefCell<Option<ITfComposition>>>,
     /// 终止标志（StartComposition 成功时复位）。
     terminated: Rc<Cell<bool>>,
+    /// 外部终止回调（透传给 CompositionSink；见 [`Composition::on_terminated`]）。
+    on_terminated: Option<Rc<dyn Fn()>>,
     text: String,
     /// 输出：本次新建的 composition。
     started: RefCell<Option<ITfComposition>>,
@@ -260,6 +278,7 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
                 let sink = ComObject::new(CompositionSink {
                     comp: self.comp_slot.clone(),
                     terminated: self.terminated.clone(),
+                    on_terminated: self.on_terminated.clone(),
                 });
                 let sink: ITfCompositionSink = sink.to_interface();
                 let c = trace_step("StartComposition", || unsafe {
@@ -417,6 +436,75 @@ impl ITfEditSession_Impl for EndSession_Impl {
         trace_step("end: comp.EndComposition", || unsafe {
             comp.EndComposition(ec)
         })?;
+        Ok(())
+    }
+}
+
+/// 只读量取**当前插入点**矩形（selection 起点；composition 尚不存在时的锚点）。
+/// P4 服务端渲染：会话首键由客户端先上报插入点，服务端首帧候选即定位正确
+/// （打字期锚点恒定，此后只在变化时上报）。失败一律 None（调用方跳过上报，
+/// 服务端沿用旧值/等下一键）。
+pub(crate) fn query_insertion_caret(
+    context: &ITfContext,
+    client_id: u32,
+) -> Option<crate::ui::CaretRect> {
+    let session = InsertionCaretSession {
+        context: context.clone(),
+        caret: RefCell::new(None),
+    };
+    let com = ComObject::new(session);
+    let sess: ITfEditSession = com.to_interface();
+    // SAFETY: RequestEditSession 是标准 TSF 调用；sess 在本调用期间存活。
+    let ok = unsafe {
+        context.RequestEditSession(client_id, &sess, TF_ES_SYNC | TF_ES_READ)
+    };
+    if ok.is_err() {
+        return None;
+    }
+    let caret = *com.caret.borrow();
+    caret
+}
+
+/// 插入点量取 edit session（selection 起点折叠 → GetTextExt；与
+/// RepositionSession 同口径，仅 range 来源不同——selection 而非 composition）。
+#[implement(ITfEditSession)]
+struct InsertionCaretSession {
+    context: ITfContext,
+    caret: RefCell<Option<crate::ui::CaretRect>>,
+}
+
+impl ITfEditSession_Impl for InsertionCaretSession_Impl {
+    fn DoEditSession(&self, ec: u32) -> Result<()> {
+        let mut sel = [TF_SELECTION::default()];
+        let mut fetched = 0u32;
+        // SAFETY: 标准 TSF 调用，ec 为当前只读 cookie。
+        unsafe {
+            self.context
+                .GetSelection(ec, TF_DEFAULT_SELECTION, &mut sel, &mut fetched)
+        }?;
+        if fetched == 0 || sel[0].range.is_none() {
+            return Ok(());
+        }
+        let Some(range) = sel[0].range.as_ref().cloned() else {
+            return Ok(());
+        };
+        // SAFETY: 标准 TSF 调用（与打字路径同锚点：起点折叠，47 号语义）。
+        unsafe { range.Collapse(ec, TF_ANCHOR_START) }?;
+        // SAFETY: GetActiveView 由 TSF 保证在 edit session 内可调用。
+        let view = unsafe { self.context.GetActiveView() }?;
+        let mut rc = RECT::default();
+        let mut clipped = BOOL(0);
+        // SAFETY: GetTextExt 由 TSF 保证在 edit session 内可调用。
+        unsafe { view.GetTextExt(ec, &range, &mut rc, &mut clipped) }?;
+        if clipped.as_bool() || (rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0) {
+            return Ok(()); // 文本不可见：None，调用方沿用旧值
+        }
+        *self.caret.borrow_mut() = Some(crate::ui::CaretRect {
+            x: rc.left,
+            y: rc.top,
+            w: rc.right - rc.left,
+            h: rc.bottom - rc.top,
+        });
         Ok(())
     }
 }

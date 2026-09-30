@@ -2,7 +2,7 @@
 //! 用 Dict::from_entries 造小词典，不依赖真实词库文件。
 
 use iuv_core::{
-    Candidate, CandidateKind, Config, Engine, ImeState, Key, Session, SessionEnd, WidthMode,
+    Candidate, CandidateKind, Config, Engine, ImeState, Key, Session, SessionEnd, ImeWidth,
 };
 use iuv_data::Dict;
 use std::sync::Arc;
@@ -2431,7 +2431,7 @@ fn preview_editorial_rules_aligned_with_mainstream() {
 fn full_width_enter_commits_fullwidth_raw() {
     let cfg = Config {
         initial_state: ImeState {
-            width: WidthMode::Full,
+            width: ImeWidth::Full,
             ..ImeState::default()
         },
         ..Config::default()
@@ -2462,7 +2462,7 @@ fn full_width_enter_commits_fullwidth_raw() {
 fn full_width_space_candidate_vs_fallback() {
     let cfg = Config {
         initial_state: ImeState {
-            width: WidthMode::Full,
+            width: ImeWidth::Full,
             ..ImeState::default()
         },
         ..Config::default()
@@ -2511,7 +2511,7 @@ fn traditional_candidates_converted() {
     ]);
     let cfg = Config {
         initial_state: ImeState {
-            script: iuv_core::ScriptMode::Traditional,
+            script: iuv_core::ImeScript::Traditional,
             ..ImeState::default()
         },
         ..Config::default()
@@ -2538,7 +2538,7 @@ fn traditional_single_char_converted() {
     let dict = Dict::from_entries(vec![("wang".into(), "网".into(), 500)]);
     let cfg = Config {
         initial_state: ImeState {
-            script: iuv_core::ScriptMode::Traditional,
+            script: iuv_core::ImeScript::Traditional,
             ..ImeState::default()
         },
         ..Config::default()
@@ -2563,7 +2563,7 @@ fn traditional_commit_converted() {
     let dict = Dict::from_entries(vec![("yi'hou".into(), "以后".into(), 8000)]);
     let cfg = Config {
         initial_state: ImeState {
-            script: iuv_core::ScriptMode::Traditional,
+            script: iuv_core::ImeScript::Traditional,
             ..ImeState::default()
         },
         ..Config::default()
@@ -2591,7 +2591,7 @@ fn traditional_selfmade_records_simplified() {
     ]);
     let cfg = Config {
         initial_state: ImeState {
-            script: iuv_core::ScriptMode::Traditional,
+            script: iuv_core::ImeScript::Traditional,
             ..ImeState::default()
         },
         ..Config::default()
@@ -2659,7 +2659,7 @@ fn simplified_mode_converter_inert() {
 fn traditional_no_converter_degraded() {
     let cfg = Config {
         initial_state: ImeState {
-            script: iuv_core::ScriptMode::Traditional,
+            script: iuv_core::ImeScript::Traditional,
             ..ImeState::default()
         },
         ..Config::default()

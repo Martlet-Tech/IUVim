@@ -210,14 +210,14 @@ impl CandidateElement {
     /// 当前页/页大小（dwPageStart/dwPageSize 数据源）。
     fn update_data(&self, snap: &UiSnapshot) {
         self.candidates.replace(snap.all_candidates.clone());
-        let ps = snap.page.page_size.max(1);
+        let ps = snap.page.page_size.max(1) as usize;
         // dwSelection 为全局索引（CANDIDATELIST 文档语义："Index of the selected
         // candidate string"）——翻页后游戏校验 dwSelection 是否落在 [dwPageStart,
         // dwPageStart+dwPageSize) 内，页内索引导致页≠0 时候选栏被游戏关闭
         // （2026-08-16 实测：页 0 正常、翻页消失、翻回恢复；QQ 全局索引翻页正常）。
         self.selected
-            .set((snap.page.page * ps + snap.selected.min(ps - 1)) as u32);
-        self.page.set(snap.page.page as u32);
+            .set((snap.page.page as usize * ps + snap.selected.min(ps - 1)) as u32);
+        self.page.set(snap.page.page);
         let total = self.candidates.borrow().len();
         self.page_count.set((total.div_ceil(ps)).max(1) as u32);
         self.page_size.set(ps as u32);

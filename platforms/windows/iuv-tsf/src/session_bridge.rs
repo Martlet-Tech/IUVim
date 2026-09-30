@@ -2,7 +2,7 @@
 //! 【Agent D】W1 实现。
 
 use iuv_core::{
-    chinese_punct, fullwidth, shifted_punct, Effect, Key, PunctMode, SessionEnd, WidthMode,
+    chinese_punct, fullwidth, shifted_punct, Effect, Key, ImePunct, SessionEnd, ImeWidth,
 };
 
 use crate::composition::Composition;
@@ -135,13 +135,13 @@ pub fn is_passthrough_app(exe: &str, list: &[String]) -> bool {
 /// - `width == Half`、非 ASCII、控制字符 → None（直通给应用）。
 pub fn fullwidth_pending(
     english_mode: bool,
-    width: WidthMode,
-    punct: PunctMode,
+    width: ImeWidth,
+    punct: ImePunct,
     base: char,
     shift: bool,
     caps: bool,
 ) -> Option<String> {
-    if width != WidthMode::Full || !base.is_ascii() {
+    if width != ImeWidth::Full || !base.is_ascii() {
         return None;
     }
     if english_mode {
@@ -162,7 +162,7 @@ pub fn fullwidth_pending(
         return None;
     }
     let ch = shifted_punct(base, shift);
-    if punct == PunctMode::Chinese && chinese_punct(ch, true).is_some() {
+    if punct == ImePunct::Chinese && chinese_punct(ch, true).is_some() {
         return None; // 标点表归属 → 由 chinese_punct_pending 处理，全角不接管
     }
     fullwidth(ch).map(|c| c.to_string())
@@ -192,6 +192,9 @@ fn jump_distance(a: CaretRect, b: CaretRect) -> f64 {
 
 /// 应用 Effect：composition 更新 → 候选窗快照 → 会话结束处理。
 /// 契约 13 任务书 §3.4：SetText → caret → ui.show/update → end 上屏/取消并 hide。
+/// P4 服务端渲染：`render_locally=false`（远端模式）时跳过候选窗快照/显隐——
+/// 窗口由 iuv-server 画，本函数只更新 composition 与 caret 量取（锚点变化由
+/// 调用方上报）；ui.hide 在 end 路径保留（本地窗未建 = 无操作）。
 ///
 /// 返回 `true` 表示会话已结束（effect.end 为 Some 或远跳清除），调用方应丢弃 Session。
 pub fn apply_effect(
@@ -200,6 +203,7 @@ pub fn apply_effect(
     caret: &mut CaretRect,
     effect: &Effect,
     orientation: iuv_core::Orientation,
+    render_locally: bool,
 ) -> bool {
     match &effect.end {
         Some(SessionEnd::Commit(text)) => {
@@ -241,6 +245,10 @@ pub fn apply_effect(
             perf_record_with("settext", t_settext, || {
                 format!("len={}", effect.composition.chars().count())
             });
+            if !render_locally {
+                // P4 服务端渲染：候选窗/跳变判定全跳过（caret 更新已供上报）。
+                return false;
+            }
             let mut snap = effect_to_snapshot(effect);
             snap.orientation = orientation;
             if snap.candidates.is_empty() && snap.reading.is_empty() {
@@ -580,8 +588,8 @@ mod tests {
         assert_eq!(
             fullwidth_pending(
                 false,
-                WidthMode::Half,
-                PunctMode::Chinese,
+                ImeWidth::Half,
+                ImePunct::Chinese,
                 '1',
                 false,
                 false
@@ -589,15 +597,15 @@ mod tests {
             None
         );
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Half, PunctMode::Chinese, 'a', false, false),
+            fullwidth_pending(true, ImeWidth::Half, ImePunct::Chinese, 'a', false, false),
             None
         );
         // 非 ASCII / 控制字符不转
         assert_eq!(
             fullwidth_pending(
                 true,
-                WidthMode::Full,
-                PunctMode::Chinese,
+                ImeWidth::Full,
+                ImePunct::Chinese,
                 '中',
                 false,
                 false
@@ -607,8 +615,8 @@ mod tests {
         assert_eq!(
             fullwidth_pending(
                 true,
-                WidthMode::Full,
-                PunctMode::Chinese,
+                ImeWidth::Full,
+                ImePunct::Chinese,
                 '\t',
                 false,
                 false
@@ -619,28 +627,28 @@ mod tests {
 
     #[test]
     fn fullwidth_chinese_mode_digits_symbols() {
-        let f = PunctMode::Chinese;
+        let f = ImePunct::Chinese;
         // 数字 → 全角
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, f, '1', false, false),
+            fullwidth_pending(false, ImeWidth::Full, f, '1', false, false),
             Some("１".into())
         );
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, f, '0', false, false),
+            fullwidth_pending(false, ImeWidth::Full, f, '0', false, false),
             Some("０".into())
         );
         // 非标点表符号 → 全角（含 Shift 推导：-+Shift=_ → ＿）
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, f, '/', false, false),
+            fullwidth_pending(false, ImeWidth::Full, f, '/', false, false),
             Some("／".into())
         );
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, f, '-', true, false),
+            fullwidth_pending(false, ImeWidth::Full, f, '-', true, false),
             Some("＿".into())
         );
         // 空格 → U+3000
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, f, ' ', false, false),
+            fullwidth_pending(false, ImeWidth::Full, f, ' ', false, false),
             Some("\u{3000}".into())
         );
     }
@@ -651,8 +659,8 @@ mod tests {
         assert_eq!(
             fullwidth_pending(
                 false,
-                WidthMode::Full,
-                PunctMode::Chinese,
+                ImeWidth::Full,
+                ImePunct::Chinese,
                 ',',
                 false,
                 false
@@ -662,8 +670,8 @@ mod tests {
         assert_eq!(
             fullwidth_pending(
                 false,
-                WidthMode::Full,
-                PunctMode::Chinese,
+                ImeWidth::Full,
+                ImePunct::Chinese,
                 '.',
                 false,
                 false
@@ -671,7 +679,7 @@ mod tests {
             None
         );
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, PunctMode::Chinese, '[', true, false),
+            fullwidth_pending(false, ImeWidth::Full, ImePunct::Chinese, '[', true, false),
             None,
             "花括号在标点表（『）内，不转全角 ｛"
         );
@@ -679,8 +687,8 @@ mod tests {
         assert_eq!(
             fullwidth_pending(
                 false,
-                WidthMode::Full,
-                PunctMode::English,
+                ImeWidth::Full,
+                ImePunct::English,
                 ',',
                 false,
                 false
@@ -691,8 +699,8 @@ mod tests {
         assert_eq!(
             fullwidth_pending(
                 false,
-                WidthMode::Full,
-                PunctMode::Chinese,
+                ImeWidth::Full,
+                ImePunct::Chinese,
                 'a',
                 false,
                 false
@@ -700,48 +708,48 @@ mod tests {
             None
         );
         assert_eq!(
-            fullwidth_pending(false, WidthMode::Full, PunctMode::Chinese, 'a', true, false),
+            fullwidth_pending(false, ImeWidth::Full, ImePunct::Chinese, 'a', true, false),
             None
         );
     }
 
     #[test]
     fn fullwidth_english_mode_letters_digits_symbols() {
-        let f = PunctMode::Chinese;
+        let f = ImePunct::Chinese;
         // 字母：大小写 = Shift⊕Caps
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Full, f, 'a', false, false),
+            fullwidth_pending(true, ImeWidth::Full, f, 'a', false, false),
             Some("ａ".into())
         );
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Full, f, 'a', true, false),
+            fullwidth_pending(true, ImeWidth::Full, f, 'a', true, false),
             Some("Ａ".into())
         );
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Full, f, 'a', false, true),
+            fullwidth_pending(true, ImeWidth::Full, f, 'a', false, true),
             Some("Ａ".into())
         );
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Full, f, 'a', true, true),
+            fullwidth_pending(true, ImeWidth::Full, f, 'a', true, true),
             Some("ａ".into()),
             "Caps+Shift 反转小写"
         );
         // 数字/符号/空格
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Full, f, '3', false, false),
+            fullwidth_pending(true, ImeWidth::Full, f, '3', false, false),
             Some("３".into())
         );
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Full, f, '.', false, false),
+            fullwidth_pending(true, ImeWidth::Full, f, '.', false, false),
             Some("．".into())
         );
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Full, f, ' ', false, false),
+            fullwidth_pending(true, ImeWidth::Full, f, ' ', false, false),
             Some("\u{3000}".into())
         );
         // 英文模式不受标点开关影响（. 不归标点表，全角直转）
         assert_eq!(
-            fullwidth_pending(true, WidthMode::Full, PunctMode::English, '.', false, false),
+            fullwidth_pending(true, ImeWidth::Full, ImePunct::English, '.', false, false),
             Some("．".into())
         );
     }

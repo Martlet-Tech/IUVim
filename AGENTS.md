@@ -24,13 +24,18 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 
 - ✅ **M1** 全拼 MVP · **M1.5** 候选策略对齐微软 · **M1.6** IMEDIC02 词库 mmap 零加工加载
 - ✅ **M2** 用户掌控排序（调权 + 用户词库/自造词/隐藏）——当前核心卖点
-- ✅ **M4** 跨平台渲染候选窗 · **M5** 语言栏右键菜单 · **M6** 守护进程 + 设置页
-- ◐ **M7** 安装器/x86（daemon 首会话自启 ✅；键位热载 ✅ 2026-08-28——快捷键双槽可配 + 全局热键 + 设置页游戏式录入，`41-keymap-settings.md`）
+- ✅ **M4** 跨平台渲染候选窗 · **M5** 语言栏右键菜单 · **M6** 守护进程 + 设置页（M10 ② iuv-daemon 并入 iuv-server 后退役）
+- ◐ **M7** 安装器/x86（server 登录自启 ✅；键位热载 ✅ 2026-08-28——快捷键双槽可配 + 全局热键 + 设置页游戏式录入，`41-keymap-settings.md`）
+- ◐ **M10** 薄客户端重构（49 号，分支 `feat/m10-thin-client`）：iuv-server 全系统唯一服务进程 + TSF 薄客户端，
+  一条长连接三平面（transport + iuv-proto）。P0-P5/②迁移/③-1 删本地模式/③-2 镜像归一全部落地并真机回归；
+  ③-3 已收口并并入 main（2026-09-30）。任务书 `docs/plan/49-thin-client-arch.md`
 - ⏸ **M9** 贴图皮肤框架（调研定稿挂起；前置 M8 工具栏已多轮打磨，可重新评估）
 - ⬜ **M3** 整句增强(LMDG)/模糊音 · 符号/emoji 候选 · 学习候选
 
 ### 活跃事项
 
+- **收尾可选增强**（不阻塞）： `Push::Shutdown` 优雅停机接线、flush 原文 pending_text（消除去撇号近似）
+- **另立任务**：设置页用户库单条删除入口 · 语言栏右键菜单部分程序不弹出（待复现定位）
 - **未开工**：M3 整句增强(LMDG)/模糊音 · 符号/emoji 候选 · 学习候选
 - **点子库**：Tab 键用途（`docs/plan/29-tab-ideas.md`，语义分配未定）
 
@@ -58,7 +63,7 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 | `crates/iuv-repl` | CLI 调试前端（跨平台） |
 | `platforms/windows/iuv-tsf` | cdylib：COM/TSF 管线 + 候选窗窗口层（ULW 呈现）+ 语言栏"中/英"切换图标/右键菜单（Windows） |
 | `platforms/windows/iuv-win` | Windows 共享层：ULW 呈现（`ulw.rs`）+ 自绘弹窗骨架（`popup.rs` LayeredWindow）+ M6 管道 IPC/共享段（`ipc/`+`shm.rs`，2026-08-21 自 iuv-data 移入） |
-| `platforms/windows/iuv-daemon` | 守护进程 exe：唯一持有用户库（共享段+管道 IPC）+ egui 设置页（M6 已实现，纯后台无图标） |
+| `platforms/windows/iuv-server` | 引擎服务进程 exe（M10）：全系统一份——引擎/用户库 + transport 服务 + 服务端自绘候选窗 + 工具栏/桌宠/egui 设置页/全局热键（M10 ② iuv-daemon 并入退役） |
 | `platforms/{macos,linux}/` | 占位：IMK / Fcitx5·IBus 适配层 + 门面规划（README，见各目录） |
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |
 | `docs/status.md` | 工作状态台账：每项落地的根因/方案/改动/测试记录（AGENTS.md 指向此处） |

@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use iuv_data::UserDict;
 use iuv_win::ShmWriter;
 
-use crate::config::DaemonConfig;
-use crate::log;
+use crate::daemon::config::DaemonConfig;
+use crate::daemon::log;
 
 /// 守护进程全局状态（Arc 分发给主线程 / 管道线程 / 设置窗口线程）。
 pub struct DaemonState {
@@ -140,7 +140,7 @@ mod tests {
     use iuv_data::UserDict;
 
     use super::DaemonState;
-    use crate::config::DaemonConfig;
+    use crate::daemon::config::DaemonConfig;
 
     /// publish → flush_if_dirty 落盘：设置页清除路径的持久化语义。
     /// 清除后脏标记必须被消费写盘，否则注销硬杀时磁盘残留旧库（复活 bug）。

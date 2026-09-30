@@ -13,7 +13,7 @@ fn decode(bytes: &[u8], name: &str) -> Option<Pixmap> {
     match Pixmap::decode_png(bytes) {
         Ok(p) => Some(p),
         Err(e) => {
-            crate::log::log_line(&format!("[toolbar] 图标解码失败 {name}: {e}"));
+            crate::daemon::log::log_line(&format!("[toolbar] 图标解码失败 {name}: {e}"));
             None
         }
     }

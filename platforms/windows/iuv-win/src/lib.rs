@@ -7,8 +7,8 @@
 //! P2.5 追加：`popup.rs`（LayeredWindow：类注册/创建/DPI/GWLP_USERDATA/wndproc 默认臂/Drop，
 //! candwin/menu_window/工具栏三处窗口样板收敛）。
 //!
-//! P3.2 追加：`ipc/`（M6 用户库管道 + 反向控制通道，自 iuv-data 移入）+ `shm.rs`（共享内存段，
-//! 自 iuv-data 移入）——iuv-data 恢复跨平台，纯 Windows 代码集中在本 crate。
+//! P3.2 追加：`ipc/`（M6 起家；49 号 ②/③ 迁移后收敛为消息类型残余 + rtt 基准）+
+//! `shm.rs`（共享内存段，自 iuv-data 移入）——iuv-data 恢复跨平台，纯 Windows 代码集中在本 crate。
 //!
 //! 全部公开函数不 panic：呈现失败记日志并静默降级（iuv 各进程硬性约定）。
 
@@ -17,12 +17,10 @@ pub mod keys;
 pub mod logger;
 pub mod popup;
 pub mod shm;
+pub mod transport;
 pub mod ulw;
 
-pub use ipc::{
-    ctl_pipe_name, CtlClient, CtlCmd, CtlResult, CtlServer, PipeClient, PipeServer, Request,
-    Response, SignalClient, SignalServer, ToolbarSignal,
-};
+pub use ipc::{CtlCmd, CtlResult, Request, ToolbarSignal};
 pub use keys::{base_key_to_vk, combo_from_vk, combo_mods, vk_to_base_key};
 pub use logger::{
     init_logger, log_line, log_path, module_name, process_id, set_log_modules_disabled, temp_dir,

@@ -40,7 +40,7 @@ use windows_core::{
 
 use crate::log::log_line;
 use iuv_ui::{MenuEntry, Theme};
-use iuv_win::Request;
+
 
 /// 「关于」对话框（自绘菜单与 InitMenu 菜单共用）。
 fn show_about() {
@@ -184,9 +184,6 @@ pub(crate) struct LangBarItemButton {
     sink: RefCell<Option<ITfLangBarItemSink>>,
     /// 状态位（TF_LBI_STATUS_*，MVP 仅 HIDDEN 会用到）。
     status: Cell<u32>,
-    /// M6 daemon 客户端：右键菜单「设置」→ 管道 `OpenSettings` 通知守护进程弹设置页
-    /// （2026-08-17 用户决策：无独立托盘图标，入口全走语言栏菜单）。
-    daemon: Arc<crate::daemon_client::DaemonClient>,
     /// 自绘右键菜单窗口（懒建；Win10/11 输入法区域右键走 OnClick(RIGHT)，InitMenu 不触发）。
     menu: RefCell<Option<crate::ui::menu_window::MenuWindow>>,
     /// 菜单主题（与候选窗一致，构造时由 text_service 从 config 注入）。
@@ -197,7 +194,6 @@ impl LangBarItemButton {
     pub(crate) fn new(
         mode: Arc<AtomicBool>,
         compartment: Option<(ITfCompartment, u32)>,
-        daemon: Arc<crate::daemon_client::DaemonClient>,
         menu_theme: Theme,
     ) -> Self {
         LangBarItemButton {
@@ -205,7 +201,6 @@ impl LangBarItemButton {
             compartment: RefCell::new(compartment),
             sink: RefCell::new(None),
             status: Cell::new(0),
-            daemon,
             menu: RefCell::new(None),
             menu_theme,
         }
@@ -249,11 +244,13 @@ impl LangBarItemButton {
         }
     }
 
-    /// 工具栏菜单项文案：按 daemon 当前全局显隐偏好二选一（2026-08-21 用户需求：
-    /// 已显示 →「隐藏工具栏」、已隐藏 →「显示工具栏」）。查询失败（离线/旧版 daemon）
+    /// 工具栏菜单项文案：按服务端当前全局显隐偏好二选一（2026-08-21 用户需求：
+    /// 已显示 →「隐藏工具栏」、已隐藏 →「显示工具栏」）。查询失败（离线）
     /// → 中性文案兜底。
     fn toolbar_menu_label(&self) -> String {
-        match self.daemon.toolbar_visible() {
+        // ② 收敛：ToolbarVisibleQuery 经 transport。
+        let visible = crate::com::remote_host::remote().and_then(|r| r.toolbar_visible());
+        match visible {
             Some(true) => "隐藏工具栏".to_string(),
             Some(false) => "显示工具栏".to_string(),
             None => "显示/隐藏工具栏".to_string(),
@@ -271,11 +268,10 @@ impl LangBarItemButton {
             MenuEntry::new(MENU_ABOUT_LABEL, MENU_ABOUT),
         ];
         if m.is_none() {
-            let daemon = self.daemon.clone();
             *m = Some(crate::ui::menu_window::MenuWindow::new(
                 self.menu_theme,
                 items,
-                Some(Box::new(move |id| handle_menu_id(&daemon, id as u32))),
+                Some(Box::new(move |id| handle_menu_id(id as u32))),
             ));
         } else if let Some(w) = m.as_mut() {
             w.set_items(items);
@@ -297,21 +293,18 @@ const MENU_SETTINGS_LABEL: &str = "设置";
 const MENU_ABOUT_LABEL: &str = "关于";
 
 /// 菜单项分发（自绘菜单闭包与 OnMenuSelect 共用；id 语义与 [`MENU_TOOLBAR`] 等常量绑定）。
-fn handle_menu_id(daemon: &Arc<crate::daemon_client::DaemonClient>, id: u32) {
-    match id as u16 {
-        MENU_TOOLBAR => {
-            log_line("语言栏菜单：显示/隐藏工具栏 → 通知守护进程切换全局偏好");
-            let _ = daemon.send_request(&Request::ToggleToolbar);
+fn handle_menu_id(id: u32) {
+    // ② 收敛：工具栏/设置页归 iuv-server，走 transport 控制面。
+    if let Some(r) = crate::com::remote_host::remote() {
+        match id as u16 {
+            MENU_TOOLBAR => r.toggle_toolbar(),
+            MENU_SETTINGS => r.open_settings(),
+            _ => {}
         }
-        MENU_SETTINGS => {
-            log_line("语言栏菜单：设置 → 通知守护进程打开设置页");
-            let _ = daemon.send_request(&Request::OpenSettings);
-        }
-        MENU_ABOUT => {
-            log_line("语言栏菜单：关于");
-            show_about();
-        }
-        _ => log_line(&format!("语言栏菜单：未知项 {id}")),
+    }
+    if id as u16 == MENU_ABOUT {
+        log_line("语言栏菜单：关于");
+        show_about();
     }
 }
 
@@ -385,7 +378,7 @@ impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
     }
 
     fn OnMenuSelect(&self, wid: u32) -> Result<()> {
-        handle_menu_id(&self.daemon, wid);
+        handle_menu_id(wid);
         Ok(())
     }
 

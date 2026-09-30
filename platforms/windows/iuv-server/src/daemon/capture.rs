@@ -32,11 +32,11 @@ pub fn process_key_event(key: egui::Key, modifiers: &egui::Modifiers) -> Option<
     // Esc 取消 / Backspace 清除（无论是否带修饰）
     match key {
         egui::Key::Escape => {
-            crate::log::log_line("[capture] 收到 Esc → 取消录入");
+            crate::daemon::log::log_line("[capture] 收到 Esc → 取消录入");
             return Some(CaptureOutcome::Cancel);
         }
         egui::Key::Backspace => {
-            crate::log::log_line("[capture] 收到 Backspace → 清除该槽");
+            crate::daemon::log::log_line("[capture] 收到 Backspace → 清除该槽");
             return Some(CaptureOutcome::Clear);
         }
         _ => {}
@@ -66,13 +66,13 @@ pub fn process_key_event(key: egui::Key, modifiers: &egui::Modifiers) -> Option<
     };
     // 纯字母无修饰 → 拒绝（会吃掉拼音/全局劫持）
     if !combo.has_modifier() && combo.base_is_letter() {
-        crate::log::log_line(&format!(
+        crate::daemon::log::log_line(&format!(
             "[capture] 纯字母无修饰被拒：{}（等待有效组合）",
             combo.name()
         ));
         return Some(CaptureOutcome::Rejected(combo.name()));
     }
-    crate::log::log_line(&format!("[capture] 捕获组合键：{}", combo.name()));
+    crate::daemon::log::log_line(&format!("[capture] 捕获组合键：{}", combo.name()));
     Some(CaptureOutcome::Captured(combo))
 }
 

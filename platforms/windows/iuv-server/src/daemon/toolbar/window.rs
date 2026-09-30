@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use iuv_core::pet_physics::FAST_INTERVAL_MS;
-use iuv_core::{InitialMode, PetAnim, PetModel, PunctMode, ScriptMode, WidthMode};
+use iuv_core::{ImeMode, PetAnim, PetModel, ImePunct, ImeScript, ImeWidth};
 use iuv_ui::layout::Rect;
 use iuv_ui::{
     hit_test, pet_alpha_at, pet_mask_hit, render_composite, CompositeSpec, LayeredPetSpec,
@@ -15,7 +15,7 @@ use iuv_ui::{
     TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
 };
 use iuv_win::UlwSurface;
-use iuv_win::{ctl_pipe_name, CtlClient, CtlCmd, CtlResult, PipeClient, Request};
+use iuv_win::{CtlCmd, CtlResult};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, LOGPIXELSY};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -33,18 +33,20 @@ use super::fullscreen;
 use super::prefs::{save_pref, ToolbarPref};
 use super::tooltip::TooltipWindow;
 use super::{
-    button_tooltip, clamp_to_work, client_pos, create_window, current_theme, cursor_screen,
+    button_tooltip, clamp_to_work, client_pos, create_window, current_theme, cursor_screen, CtlDispatch,
     default_pos, in_rounded_rect, BarEvent, Shared, ToolbarInstance, CLASS_BAR, WM_APP_REFRESH,
     WM_MOUSELEAVE,
 };
-use crate::log;
-use crate::pet_assets::PetArt;
-use crate::state::DaemonState;
+use crate::daemon::log;
+use crate::daemon::pet_assets::PetArt;
+use crate::daemon::state::DaemonState;
 /// 工具条窗口（仅工具条线程触碰；wnd_proc 经 GWLP_USERDATA 取回）。
 pub(super) struct ToolbarWindow {
     pub(super) hwnd: HWND,
     shared: Arc<Mutex<Shared>>,
     state: Arc<DaemonState>,
+    /// 四态翻转分派（②：transport ConnSender 实现，见 CtlDispatch）。
+    ctl: Arc<dyn CtlDispatch>,
     icons: Arc<ToolbarIcons>,
     /// FIFO 事件队列（信号线程/管道线程 push、本线程 drain；显隐决策唯一入口）。
     pending: Arc<Mutex<VecDeque<BarEvent>>>,
@@ -113,12 +115,14 @@ const PET_DRAG_THRESHOLD: i32 = 4;
 const PET_HIT_ALPHA: u8 = 0x20;
 
 impl ToolbarWindow {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         shared: Arc<Mutex<Shared>>,
         state: Arc<DaemonState>,
         icons: Arc<ToolbarIcons>,
         pet_art: Arc<PetArt>,
         pending: Arc<Mutex<VecDeque<BarEvent>>>,
+        ctl: Arc<dyn CtlDispatch>,
     ) -> ToolbarWindow {
         let hwnd = create_window(CLASS_BAR);
         let theme = current_theme(&state);
@@ -142,6 +146,7 @@ impl ToolbarWindow {
             hwnd,
             shared,
             state,
+            ctl,
             icons,
             pending,
             theme,
@@ -354,7 +359,7 @@ impl ToolbarWindow {
                 // 录入态：注销全部全局热键（41-keymap-settings.md §12）——RegisterHotKey
                 // 系统级抢键，不注销则设置窗录入按已注册热键时按键进 WM_HOTKEY 不进 egui 流。
                 log::log_line("[toolbar] 录入态：注销全部全局热键（吸收按键）");
-                crate::hotkey::unregister_all(self.hwnd);
+                crate::daemon::hotkey::unregister_all(self.hwnd);
             }
             BarEvent::CaptureMode(false) => {
                 // 退出录入：按当前配置重注册（若期间保存了 keymap，后续 HotkeysChanged 再全量重注册）。
@@ -467,8 +472,8 @@ impl ToolbarWindow {
             .unwrap_or_else(|p| p.into_inner())
             .keymap
             .clone();
-        crate::hotkey::unregister_all(self.hwnd);
-        let (ok, fail) = crate::hotkey::register_all(self.hwnd, &keymap);
+        crate::daemon::hotkey::unregister_all(self.hwnd);
+        let (ok, fail) = crate::daemon::hotkey::register_all(self.hwnd, &keymap);
         log::log_line(&format!("[toolbar] 全局热键注册：成功 {ok}，失败 {fail}"));
     }
 
@@ -630,10 +635,8 @@ impl ToolbarWindow {
             TB_LOGO => {} // 拖动把手（无动作）
             TB_GEAR => {
                 log::log_line("[toolbar] 齿轮 → 打开设置页");
-                // 设置页通知（独立管道请求，复用 M6 路径）。
-                if let Ok(c) = PipeClient::connect() {
-                    let _ = c.request(&Request::OpenSettings);
-                }
+                // ②迁移：server 内直置标志（daemon 时代经 PipeClient 回环）。
+                self.state.open_settings.store(true, Ordering::Release);
             }
             _ => {
                 // 按钮点击 = 该字段双态翻转：读实例表当前态，发目标态（true = 第二态 英/全/繁/英标）。
@@ -645,12 +648,12 @@ impl ToolbarWindow {
                         .map(|i| i.state)
                         .unwrap_or_default();
                     match index {
-                        TB_MODE => ("中英", CtlCmd::SetMode(st.mode == InitialMode::Chinese)),
-                        TB_WIDTH => ("全半角", CtlCmd::SetWidth(st.width == WidthMode::Half)),
-                        TB_PUNCT => ("标点", CtlCmd::SetPunct(st.punct == PunctMode::Chinese)),
+                        TB_MODE => ("中英", CtlCmd::SetMode(st.mode == ImeMode::Chinese)),
+                        TB_WIDTH => ("全半角", CtlCmd::SetWidth(st.width == ImeWidth::Half)),
+                        TB_PUNCT => ("标点", CtlCmd::SetPunct(st.punct == ImePunct::Chinese)),
                         TB_SCRIPT => (
                             "简繁",
-                            CtlCmd::SetScript(st.script == ScriptMode::Simplified),
+                            CtlCmd::SetScript(st.script == ImeScript::Simplified),
                         ),
                         _ => return,
                     }
@@ -663,38 +666,49 @@ impl ToolbarWindow {
     /// 全局热键触发（WM_HOTKEY → bar_wnd_proc → on_hotkey；41-keymap-settings.md §4）。
     /// 复用 on_click 的 focused → CtlClient 分派：四态 → 连 focused 实例控制管道；
     /// 设置/工具栏显隐 → PipeClient（与语言栏菜单同路径）。
-    fn on_hotkey(&mut self, action: crate::hotkey::GlobalAction) {
+    fn on_hotkey(&mut self, action: crate::daemon::hotkey::GlobalAction) {
         let (label, target_cmd) = match action {
-            crate::hotkey::GlobalAction::ToggleMode => {
+            crate::daemon::hotkey::GlobalAction::ToggleMode => {
                 let st = self.focused_state();
-                ("中英", CtlCmd::SetMode(st.mode == InitialMode::Chinese))
+                ("中英", CtlCmd::SetMode(st.mode == ImeMode::Chinese))
             }
-            crate::hotkey::GlobalAction::ToggleWidth => {
+            crate::daemon::hotkey::GlobalAction::ToggleWidth => {
                 let st = self.focused_state();
-                ("全半角", CtlCmd::SetWidth(st.width == WidthMode::Half))
+                ("全半角", CtlCmd::SetWidth(st.width == ImeWidth::Half))
             }
-            crate::hotkey::GlobalAction::ToggleScript => {
+            crate::daemon::hotkey::GlobalAction::ToggleScript => {
                 let st = self.focused_state();
                 (
                     "简繁",
-                    CtlCmd::SetScript(st.script == ScriptMode::Simplified),
+                    CtlCmd::SetScript(st.script == ImeScript::Simplified),
                 )
             }
-            crate::hotkey::GlobalAction::TogglePunct => {
+            crate::daemon::hotkey::GlobalAction::TogglePunct => {
                 let st = self.focused_state();
-                ("标点", CtlCmd::SetPunct(st.punct == PunctMode::Chinese))
+                ("标点", CtlCmd::SetPunct(st.punct == ImePunct::Chinese))
             }
-            crate::hotkey::GlobalAction::OpenSettings => {
+            crate::daemon::hotkey::GlobalAction::OpenSettings => {
                 log::log_line("[hotkey] 打开设置页");
-                if let Ok(c) = PipeClient::connect() {
-                    let _ = c.request(&Request::OpenSettings);
-                }
+                // ②迁移：server 内直置标志（daemon 时代经 PipeClient 回环）。
+                self.state.open_settings.store(true, Ordering::Release);
                 return;
             }
-            crate::hotkey::GlobalAction::ToggleToolbar => {
+            crate::daemon::hotkey::GlobalAction::ToggleToolbar => {
                 log::log_line("[hotkey] 切换工具栏显隐");
-                if let Ok(c) = PipeClient::connect() {
-                    let _ = c.request(&Request::ToggleToolbar);
+                // ②迁移：本线程自有队列直入（daemon 时代经 PipeClient 回环）。
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push_back(BarEvent::ToggleVisible);
+                // 本线程自有窗口：直接投刷新消息（wake 是宿主跨线程入口）。
+                // SAFETY: self.hwnd 由本线程创建、存活。
+                unsafe {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        Some(self.hwnd),
+                        WM_APP_REFRESH,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
                 }
                 return;
             }
@@ -724,8 +738,7 @@ impl ToolbarWindow {
     /// 按结果更新实例表 + 重绘。
     fn dispatch_state_toggle(&mut self, label: &str, cmd: &CtlCmd, pid: u32, tid: u32) {
         log::log_line(&format!("[toolbar] {label}翻转（实例 {pid}:{tid}）"));
-        let name = ctl_pipe_name(pid, tid);
-        match CtlClient::connect(&name).and_then(|c| c.request(cmd)) {
+        match self.ctl.dispatch_ctl(pid, tid, cmd) {
             Ok(CtlResult::Ok { state }) => {
                 log::log_line(&format!("[toolbar] 实例应用成功：{state:?}"));
                 let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
@@ -1061,7 +1074,7 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
         WM_HOTKEY => {
             // 全局热键触发（41-keymap-settings.md §4）：wParam 低 16 位 = 热键 id。
             let id = wparam.0 & 0xFFFF;
-            if let Some((action, _secondary)) = crate::hotkey::hotkey_from_id(id) {
+            if let Some((action, _secondary)) = crate::daemon::hotkey::hotkey_from_id(id) {
                 if let Some(w) = get_bar_mut(hwnd) {
                     w.on_hotkey(action);
                 }
