@@ -99,25 +99,27 @@ if ($NoServer) {
     Trace-Script "m10-deploy: iuv-server 复制成功 $serverDst"
     Write-Host "已部署引擎服务：$serverDst"
 
-    # 启动（**受限计划任务**，同 Restart-Ctfmon 模式）。**必须**在用户的中完整性
-    # 上下文运行：提权脚本直接 Start-Process 会创建**高完整性**管道，而 TSF 客户端
-    # 全部跑在普通应用的中完整性进程里 → 连接 error 5 拒绝访问（实测 2026-09-27）。
+    # 启动 + **常驻登录自启**（AtLogOn，同 Restart-Ctfmon 模式）。**必须**在用户的
+    # 中完整性上下文运行：提权脚本直接 Start-Process 会创建**高完整性**管道，而 TSF
+    # 客户端全部跑在普通应用的中完整性进程里 → 连接 error 5 拒绝访问（实测 2026-09-27）。
     # ExecutionTimeLimit 清零：计划任务默认 3 天限时会杀长驻服务进程。
+    # 2026-09-30 起任务**不再注册后注销**：一次性任务导致重启后 server 缺席，而远端
+    # 模式客户端首连失败即透明（此前无自启也无重试）——开机自启是服务在位的正道。
     $tn = 'Iuv-ServerStart'
     try {
         $u = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         $action = New-ScheduledTaskAction -Execute $serverDst -WorkingDirectory $destDir
-        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $u
         $principal = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited
         $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
         Register-ScheduledTask -TaskName $tn -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
         Start-ScheduledTask -TaskName $tn -ErrorAction Stop
+        Trace-Script "m10-deploy: 自启任务已常驻注册并启动（AtLogOn $u）"
     } catch {
-        Trace-Script "m10-deploy: 计划任务启动失败：$_"
-        Write-Host "警告：计划任务启动失败（$_），回退直启（可能高完整性不可连）"
+        Trace-Script "m10-deploy: 计划任务注册/启动失败：$_"
+        Write-Host "警告：计划任务注册/启动失败（$_），回退直启（可能高完整性不可连）"
         Start-Process -FilePath $serverDst -WorkingDirectory $destDir -WindowStyle Hidden
     }
-    try { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     Start-Sleep -Milliseconds 800
     if (Get-Process -Name "iuv-server" -ErrorAction SilentlyContinue) {
         Trace-Script "m10-deploy: iuv-server 已启动（用户中完整性上下文）"

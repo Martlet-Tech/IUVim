@@ -259,11 +259,19 @@ if ($r32.Renamed) {
 
 # ---- 3.5 守护进程（已退役）----
 # M10 ②：iuv-daemon 并入 iuv-server（工具栏/设置页/热键随迁），本节删除。
-# 历史安装残留的 iuv-daemon.exe 停止即可（无进程再拉起它）。
+# 历史安装残留的 iuv-daemon.exe 停止并删除（TSF 客户端已按模式关闭惰性拉起：
+# 远端模式不再调 ensure_daemon，见 text_service Activate；此处删除是清旧安装残留，
+# 幂等——文件不存在即跳过）。
 $daemonProc = Get-Process -Name "iuv-daemon" -ErrorAction SilentlyContinue
 if ($daemonProc) {
     Trace-Script "dev-deploy: 停止历史 iuv-daemon（已退役，PID=$($daemonProc.Id -join ',')）"
     Stop-Process -Name "iuv-daemon" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
+}
+$daemonExe = Join-Path $env:ProgramFiles "iuv\iuv-daemon.exe"
+if (Test-Path $daemonExe) {
+    Remove-Item $daemonExe -Force -ErrorAction Stop
+    Trace-Script "dev-deploy: 已删除残留 $daemonExe"
 }
 
 # ---- 4. 注册（x64 native + x86 WOW6432Node；各自未注册或 CLSID 指向路径不符时重注册）----

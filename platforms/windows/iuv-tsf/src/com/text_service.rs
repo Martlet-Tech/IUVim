@@ -511,8 +511,13 @@ impl TextService_Impl {
 
         // M7 daemon 自启（IME 惰性拉起，搜狗同款）：离线且冷却期满 → CreateProcess
         // 拉起 DLL 同目录 iuv-daemon.exe（后台无控制台，异步不等待；失败静默降级）。
-        if let Some(client) = self.daemon.borrow().as_ref() {
-            client.ensure_daemon();
+        // 仅本地模式：远端模式不拉任何东西（server 由计划任务拉起，断连自愈走
+        // schedule_revive）——否则薄客户端会持续复活已退役的 iuv-daemon.exe
+        // （2026-09-30 实测：Activate 无条件 ensure_daemon，杀掉即被下一激活进程拉回）。
+        if !crate::com::remote_host::use_server() {
+            if let Some(client) = self.daemon.borrow().as_ref() {
+                client.ensure_daemon();
+            }
         }
 
         // 47 号：激活即尝试挂布局 sink。`OnSetFocus` 只在**焦点变化**时送达、且 TSF

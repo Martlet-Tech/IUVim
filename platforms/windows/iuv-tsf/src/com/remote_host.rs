@@ -46,6 +46,8 @@ static USE_SERVER: AtomicBool = AtomicBool::new(false);
 static MODE_INIT: AtomicBool = AtomicBool::new(false);
 /// 远端连接（后台装配；None = 连接失败 → 恒透明放行）。
 static REMOTE: OnceLock<Option<Arc<RemoteHandle>>> = OnceLock::new();
+/// 连接线程在跑（防多实例同时 Activate 时线程风暴；成功后槽位自守卫）。
+static REMOTE_CONNECTING: AtomicBool = AtomicBool::new(false);
 
 /// 路由/渲染所需配置（模式感知）：local = engine.config()；remote = 客户端副本。
 /// None = 后端未就绪（透明放行——本地引擎加载中/远端未连接同语义）。
@@ -122,9 +124,16 @@ pub(crate) fn remote() -> Option<&'static Arc<RemoteHandle>> {
 }
 
 /// 后台连接 iuv-server（Activate 触发；加载中按键透明放行，语义同引擎后台加载）。
-/// 失败 → REMOTE.set(None)：远端模式永久透明（P5 补快速重生后改为可重试）。
+/// server 缺席（开机未自启/部署间隙）→ 拉起 iuv-server.exe 再试一轮（对齐原
+/// daemon 惰性拉起体验）；仍失败 → 保持透明，下次 Activate 重试。
+/// **不**往 REMOTE 写 None：OnceLock 一旦置 Some(None) 就占死单例槽，后续
+/// set(Some) 会静默失败、本进程永久放弃（2026-09-30 真机实测：重启后全部宿主
+/// 只能打英文，手动起 server 也无法挽回，须重启宿主进程）。失败只清 CONNECTING。
 pub(crate) fn start_remote_load() {
     if REMOTE.get().is_some() {
+        return;
+    }
+    if REMOTE_CONNECTING.swap(true, Ordering::SeqCst) {
         return;
     }
     std::thread::Builder::new()
@@ -136,11 +145,24 @@ pub(crate) fn start_remote_load() {
                 Ok(h) => h,
                 Err(e) => {
                     log_line(&format!(
-                        "[backend] iuv-server 连接失败（{:.0} ms）：{e} → 远端模式透明",
+                        "[backend] iuv-server 连接失败（{:.0} ms）：{e} → 拉起 iuv-server.exe 再试",
                         t0.elapsed().as_millis()
                     ));
-                    let _ = REMOTE.set(None);
-                    return;
+                    spawn_server_process();
+                    // connect_server 自带 2s 重试窗口（5ms 步进），server 起管道即连上
+                    match connect_server() {
+                        Ok(h) => {
+                            log_line("[backend] 拉起 server 后重连成功");
+                            h
+                        }
+                        Err(e2) => {
+                            log_line(&format!(
+                                "[backend] 拉起后仍连接失败（{e2}）→ 远端模式透明（下次 Activate 重试）"
+                            ));
+                            REMOTE_CONNECTING.store(false, Ordering::SeqCst);
+                            return;
+                        }
+                    }
                 }
             };
             log_line(&format!(
@@ -148,6 +170,7 @@ pub(crate) fn start_remote_load() {
                 t0.elapsed().as_millis()
             ));
             let _ = REMOTE.set(Some(handle));
+            REMOTE_CONNECTING.store(false, Ordering::SeqCst);
         })
         .expect("远端连接线程创建");
 }

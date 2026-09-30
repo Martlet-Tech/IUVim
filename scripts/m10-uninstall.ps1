@@ -24,6 +24,14 @@ foreach ($name in @('iuv-server', 'iuv-daemon')) {
 }
 Start-Sleep -Milliseconds 300
 
+# ---- 1.5 注销登录自启任务（m10-deploy 常驻注册的 AtLogOn server 自启）----
+try {
+    Unregister-ScheduledTask -TaskName 'Iuv-ServerStart' -Confirm:$false -ErrorAction Stop
+    Write-Host "已注销登录自启任务 Iuv-ServerStart"
+} catch {
+    Write-Host "自启任务 Iuv-ServerStart 不存在，跳过注销"
+}
+
 # ---- 2. 备份用户数据（config.json + 用户词库；密钥随之失效属预期——重装自动重新生成）----
 $dictDir   = Join-Path $env:LOCALAPPDATA "iuv"
 $backupDir = Join-Path $env:LOCALAPPDATA "iuv-m10-backup"

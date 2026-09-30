@@ -911,3 +911,31 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
     进程（Explorer/taskmgr 等）惰性拉起（053313）——对远端客户端无害（互不相
     通），但混合期存在双工具栏可能；随 ③ 删本地模式或全部进程换新 DLL 后消失，
     过渡期可手动杀（无进程再自动拉起即稳定）。
+- [x] **daemon 复活根治 + 残留清除（2026-09-30）**:
+  - **根因（真机日志实证，非台账此前猜测的「旧 DLL 进程拉起」）**：TSF Activate
+    无条件调 `ensure_daemon()`（text_service.rs，M7 惰性拉起未按模式分流）——远端
+    模式薄客户端每次激活输入法都拉 `iuv-daemon.exe`（ZCode/taskmgr/Qoder 等逐条
+    「已拉起守护进程」日志），杀掉即被下一激活进程拉回；安装目录残留 9-27 旧 exe
+    使 CreateProcess 恒成功（deploy 只停进程不删文件）。
+  - **修复**：① `ensure_daemon` 包进 `!use_server()` 分支（本地基线保留 M7 自启，
+    远端 Activate 不再拉任何东西）；② dev-deploy 「停进程」升级为「停 + 删残留
+    iuv-daemon.exe」（幂等），修正「无进程再拉起它」错误注释；③ 已删安装目录
+    残留 exe。双保险：未重启的旧 DLL 进程再拉只会静默失败（文件已删）。
+  - **验证**：进程表仅 iuv-server；删后 45s 观察零拉起日志；安装目录仅剩
+    iuv-server.exe。
+- [x] **server 登录自启 + 首连失败重试闭环（2026-09-30，重启真机验证通过）**:
+  - **真机暴露双缺口**（重启后日志）：① server 无开机自启——deploy 的
+    Iuv-ServerStart 是一次性任务（注册→启动→立即注销），此前靠 M7 惰性拉起兜底，
+    关掉后重启即裸奔；② 首连失败永久放弃——`start_remote_load` 失败路径
+    `REMOTE.set(None)` 把 OnceLock 槽占死（守卫 `get().is_some()` 恒真 + 后续
+    `set(Some)` 静默失败），Explorer/notepad/ZCode 等全部「连接失败→远端模式
+    透明」且手动起 server 也无法挽回，须重启宿主进程（P5 重生只覆盖「连上过
+    再断开」，首连失败无重试无拉起）。
+  - **修复**：① m10-deploy 计划任务改常驻（AtLogOn + RunLevel Limited +
+    ExecutionTimeLimit 清零），m10-uninstall 对应注销；② `start_remote_load`
+    失败改「拉起 iuv-server.exe 再试一轮（connect_server 自带 2s 重试窗）」，
+    仍失败保透明、下次 Activate 重试（不再 set(None)）；加 `REMOTE_CONNECTING`
+    原子防多实例 Activate 线程风暴。
+  - **重启验证**：登录 server 即在位（PID 10848）；新进程全 0-3ms 首连成功
+    （conhost/msedgewebview2/Explorer/taskmgr/ZCode/WorkBuddy）；关机瞬间旧会话
+    三进程断连走 P5 重生全部成功；ZCode 实测打字上屏正常；重启后零连接失败。
