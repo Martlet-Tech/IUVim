@@ -31,7 +31,7 @@ use windows_core::{implement, ComObject, IUnknownImpl, Interface, Ref, Result, B
 use crate::composition::Composition;
 use crate::ctl::{CtlApplier, CtlEndpoint};
 use crate::langbar::{self, LangBarItemButton};
-use crate::log::{log_line, process_id, thread_id};
+use crate::log::log_line;
 use crate::ui::{CandidateUi, CandwinCandidateWindow, CaretRect};
 use crate::ui_element::CandidateElementHost;
 
@@ -211,14 +211,7 @@ impl TextService {
         }
     }
 
-    /// 实例标识（pid:tid）：pid = 进程 id，tid = **OS 线程 id**（`GetCurrentThreadId`，
-    /// 非 TSF client id）——前台看板判定 `GetWindowThreadProcessId` 返回 OS 线程 id，
-    /// 直接用同一标识匹配实例表（32-toolbar §4.1）。
-    pub(crate) fn instance_id(&self) -> (u32, u32) {
-        (process_id(), thread_id())
-    }
-
-    /// 启动反向控制端点（accept 线程 + 隐藏消息窗；§4.2/§4.3）。懒建：Deactivate 停、
+    /// 启动反向控制端点（隐藏消息窗 + 进程级提交钩子；§4.3）。懒建：Deactivate 停、
     /// Drop 清。失败静默（记日志——工具栏按钮无法到达本实例，其余功能不受影响）。
     fn start_ctl_endpoint(&self) {
         if self.ctl.borrow().is_some() {
@@ -230,17 +223,18 @@ impl TextService {
         // SAFETY: self 为 TextService（COM 对象内层，端点存活期间有效）；端点存于
         // self.ctl 的 RefCell 槽位（地址固定），attach 后 GWLP_USERDATA 指向该固定地址。
         let svc: *const dyn CtlApplier = self as *const TextService as *const dyn CtlApplier;
-        let (pid, tid) = self.instance_id();
         *self.ctl.borrow_mut() = Some(CtlEndpoint::new(hwnd, svc));
         let mut slot = self.ctl.borrow_mut();
-        slot.as_mut().map(|ep| ep.attach(pid, tid)).unwrap_or(false);
+        if let Some(ep) = slot.as_mut() {
+            ep.attach();
+        }
     }
 
-    /// 停反向控制端点（Deactivate：Drop 兜底清理，此处显式调以尽快释放窗口/线程）。
+    /// 停反向控制端点（Deactivate：Drop 兜底清理，此处显式调以尽快释放窗口）。
     fn stop_ctl_endpoint(&self) {
         crate::ctl::clear_submit_hook();
         let ep = self.ctl.borrow_mut().take();
-        drop(ep); // CtlEndpoint::drop 停线程 + 清 GWLP_USERDATA + 销毁窗口
+        drop(ep); // CtlEndpoint::drop 清 GWLP_USERDATA + 销毁窗口
     }
 
     /// 应用反向控制命令（CtlCmd；TSF 线程 wndproc 调用，§4.3）。

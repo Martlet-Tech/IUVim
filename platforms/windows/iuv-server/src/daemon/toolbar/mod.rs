@@ -96,10 +96,10 @@ struct Shared {
     pos: Option<(i32, i32)>,
 }
 
-/// 工具条事件（FIFO 载荷）：信号通道四消息 + 语言栏菜单开关 + 全局热键变更。
-/// FocusGained/FocusLost/StateChanged/Typing 来自信号管道；ToggleVisible 来自数据面
-/// 语言栏右键菜单（Request::ToggleToolbar）；HotkeysChanged 来自 daemon 主循环
-/// （设置页保存 keymap 后入队，见 main.rs）。单队列保证全局顺序。
+/// 工具条事件（FIFO 载荷）：transport 信号四消息 + 语言栏菜单开关 + 全局热键变更。
+/// FocusGained/FocusLost/StateChanged/Typing 来自 EngineSession 的 C2S 路由（transport，
+/// ② 迁移前为信号管道）；ToggleVisible 来自语言栏右键菜单（Request::ToggleToolbar）；
+/// HotkeysChanged 来自 daemon 主循环（设置页保存 keymap 后入队，见 main.rs）。单队列保证全局顺序。
 ///
 /// M1 桌宠骨架：新增 TypingState（来自 `ToolbarSignal::Typing`）——daemon 据此驱动
 /// PetModel.on_typing(active)，触发"敲键盘律动"动画 / 停打回静。
@@ -187,7 +187,7 @@ impl ToolbarHost {
         host
     }
 
-    /// 当前全局显隐偏好（`Request::GetToolbarVisible` 应答用；语言栏菜单项文案）。
+    /// 当前全局显隐偏好（语言栏菜单项文案「显示/隐藏工具栏」二选一）。
     pub fn visible(&self) -> bool {
         self.shared
             .lock()
@@ -195,13 +195,10 @@ impl ToolbarHost {
             .visible
     }
 
-    /// 处理数据面管道请求：仅语言栏菜单开关（Request::ToggleToolbar）入队。
-    /// 其余工具条类 Request（Register/Active/…）已由信号通道取代——一律不消费
-    /// （返回 false 交调用方按未知请求处理；TSF 侧同版本起不再发送）。
-    pub fn handle_request(&self, req: &Request) -> bool {
-        if !matches!(req, Request::ToggleToolbar) {
-            return false;
-        }
+    /// 处理工具条命令：语言栏菜单开关（Request::ToggleToolbar）入队。
+    /// ③-3 清理：Request 仅存 ToggleToolbar 一个变体——其余旧管道请求（数据面写/
+    /// 注册/信号）已随 ② 迁移统一走 transport，此直调入口不再有其他形态。
+    pub fn handle_request(&self, _req: &Request) -> bool {
         self.enqueue(BarEvent::ToggleVisible);
         true
     }

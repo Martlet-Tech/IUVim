@@ -324,7 +324,7 @@ impl Session for EngineSession {
             }
             C2S::UserMutation(m) => {
                 // M10 ②：客户端用户库变更 → 引擎应用（写盘）→ SHM 发布
-                //（本地模式 TSF 实例经共享段保持一致，混合模式过渡）。
+                //（SHM 供系统内其他读者观察用户库版本/权重）。
                 self.engine.apply_user_mutation(&m);
                 if let Some(u) = self.engine.user_dict() {
                     let mut shm = self.shm.lock().unwrap_or_else(|e| e.into_inner());
