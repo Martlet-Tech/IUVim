@@ -1007,3 +1007,15 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
   - **修复**：main 入口 CreateMutexW("iuv-server-singleton")——持有者存续 = 进程
     生命周期，退出自动释放；后来者记日志即退（守卫前置，不浪费引擎加载）。
   - **验证**：重部署后进程表恰 1 个 iuv-server。
+- [x] **③-2 部署 + 第一轮真机日志回归（2026-09-30 21:10/21:15 两轮部署）**:
+  - 部署即暴露 **server 多实例竞态**（计划任务 + 多客户端首连拉起，3 秒抢出 3 个；
+    败者热键注册 0x80070581 全灭）→ 修：main 入口 CreateMutexW 单实例守卫
+    （`0e6ec51`），重部署后恰 1 个，守卫两度正确拦截后来者（21:20/21:21 各一条）。
+  - **打字链路全通**：tsf 侧 246 key / 21 commit（notepad 主测）；server 侧工具栏
+    显隐/焦点跟随正常，全局热键 3/3 注册成功；ctl 路径 5 次四态翻转正常；慢键
+    51 条 max=58.9ms P50=26.1ms（远低于 300ms 截止）。
+  - **预期内混合期现象**：旧 DLL 进程（ZCode/msedge/taskmgr/leigod，部署前启动、
+    旧 DLL 仍映射）连新 server 报 VersionMismatch {client:1, server:2}——PROTO
+    1→2 的破坏性协商按设计拒绝混合，重启进程即恢复（新进程加载新 DLL）。
+  - **存量确认**：[follow] ITfSource QI 失败（OnSetFocus）部署前 31424 条/部署后
+    18 条 = 存量问题，与 ③-2 无关。
