@@ -109,6 +109,8 @@ pub enum CtlCmd {
     SetScript(bool),
     /// 中文标点/英文标点。
     SetPunct(bool),
+    /// 服务端候选窗点击选词（row = 当前页内行号 0-8；M10 ③ 点击选词闭环）。
+    CandidateClick(u8),
 }
 
 /// TSF 应用命令后的响应（§6.5 点击协议：daemon 按结果更新实例表 + 按钮图标）。

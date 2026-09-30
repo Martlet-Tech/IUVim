@@ -45,7 +45,7 @@ fn profile_guid() -> GUID {
 
 /// 当前 DLL 的完整路径（regsvr32 场景即本文件）。
 /// 从 DllRegisterServer 自身地址反查模块句柄，避免取到宿主进程 exe 的路径。
-/// pub(crate)：daemon_client 自启用它解析同目录 iuv-daemon.exe。
+/// pub(crate)：remote_host 重生用它在 DLL 同目录定位 iuv-server.exe。
 pub(crate) fn dll_path() -> String {
     use std::os::raw::c_void;
     use windows_core::PCWSTR;

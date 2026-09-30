@@ -29,9 +29,6 @@ pub const PERF_LOG_TAG: &str = "perf";
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// M10 过渡开关（49 号 §5 P3b）：true = TSF 改连 iuv-server（薄客户端），
-    /// false = 现状进程内引擎（默认，零行为变化）。A/B 切换供真机回归；P4 收敛后移除。
-    pub use_engine_server: bool,
     /// 每页候选数（默认 5；建议 ≤9 保证数字键可全选当前页）
     pub page_size: usize,
     /// 全表候选上限（默认 1024：单字全量可达——wei 450/sh 978 同音字全给翻页可达，
@@ -85,7 +82,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            use_engine_server: false,
             page_size: 5,
             max_candidates: 1024,
             max_word_syllables: 7,

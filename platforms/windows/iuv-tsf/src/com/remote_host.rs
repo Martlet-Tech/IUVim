@@ -1,7 +1,6 @@
-//! M10 薄客户端远端引擎宿主（49 §5 P3b）：进程级 `RemoteHandle`，连接 iuv-server。
+//! M10 薄客户端远端引擎宿主（49 §5）：进程级 `RemoteHandle`，连接 iuv-server。
 //!
-//! 模式切换：config `use_engine_server`（默认 false = 现状本地引擎，零行为变化）。
-//! 进程级一次性判定（`init_mode`，Activate 调用），`use_server()` 供各处分支。
+//! ③ 收口：远端是**唯一**形态（A/B 开关 `use_engine_server` 与本地引擎路径已删）。
 //!
 //! 热路径契约（49 §4.5）：
 //! - **Test/KeyDown 单槽去重**（§4.5.1）：`key_test` 发请求并缓存裁定；`key_down`
@@ -41,22 +40,14 @@ use iuv_win::transport::{
 /// 最多拖 300ms 后放行。IPC 往返本身 P99 = 13µs，不构成预算项。
 const KEY_DEADLINE_MS: u64 = 300;
 
-/// 进程模式：true = 远端 iuv-server（薄客户端）。`init_mode` 一次性判定。
-static USE_SERVER: AtomicBool = AtomicBool::new(false);
-static MODE_INIT: AtomicBool = AtomicBool::new(false);
 /// 远端连接（后台装配；None = 连接失败 → 恒透明放行）。
 static REMOTE: OnceLock<Option<Arc<RemoteHandle>>> = OnceLock::new();
 /// 连接线程在跑（防多实例同时 Activate 时线程风暴；成功后槽位自守卫）。
 static REMOTE_CONNECTING: AtomicBool = AtomicBool::new(false);
 
-/// 路由/渲染所需配置（模式感知）：local = engine.config()；remote = 客户端副本。
-/// None = 后端未就绪（透明放行——本地引擎加载中/远端未连接同语义）。
+/// 路由/渲染所需配置（远端客户端副本）。None = 未连接（透明放行）。
 pub(crate) fn backend_config() -> Option<Config> {
-    if use_server() {
-        remote().filter(|r| r.ready()).map(|r| r.config())
-    } else {
-        super::engine_host::engine().map(|e| e.config())
-    }
+    remote().filter(|r| r.ready()).map(|r| r.config())
 }
 
 /// 当前修饰键 → 线上 Mods（key_routing 的 GetKeyState 语义）。
@@ -94,28 +85,6 @@ pub(crate) fn core_session_end(e: iuv_proto::SessionEnd) -> SessionEnd {
         iuv_proto::SessionEnd::Commit(text) => SessionEnd::Commit(text),
         iuv_proto::SessionEnd::Cancel => SessionEnd::Cancel,
     }
-}
-
-/// Activate 时调用（进程内首个实例）：读配置判定模式，随后调 `start_engine_load`
-/// 或 `start_remote_load`。
-pub(crate) fn init_mode() {
-    if MODE_INIT.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let use_server = Config::load().use_engine_server;
-    USE_SERVER.store(use_server, Ordering::SeqCst);
-    log_line(&format!(
-        "[backend] 引擎模式：{}",
-        if use_server {
-            "远端 iuv-server（薄客户端）"
-        } else {
-            "本地（现状）"
-        }
-    ));
-}
-
-pub(crate) fn use_server() -> bool {
-    USE_SERVER.load(Ordering::SeqCst)
 }
 
 /// 取远端句柄（未启动/连接失败 → None = 调用方透明放行）。
@@ -429,6 +398,11 @@ impl RemoteHandle {
         let _ = self.request(C2S::OpenSettings);
     }
 
+    /// 隐藏服务端候选窗（焦点切换；会话保留，回焦后下键重显）。
+    pub(crate) fn hide_candwin(&self) {
+        let _ = self.request(C2S::CandwinHide);
+    }
+
     /// 光标锚点上报（P4 服务端自渲染：客户端只在锚点变化时发；dpi 由服务端按
     /// caret 所在显示器自算，此处置 96 占位）。fire-and-forget（服务端回 Ok）。
     pub(crate) fn sync_caret(&self, caret: iuv_ui::CaretRect) {
@@ -624,6 +598,7 @@ fn proto_to_win_ctl_cmd(c: iuv_proto::CtlCmd) -> iuv_win::CtlCmd {
         iuv_proto::CtlCmd::SetWidth(v) => iuv_win::CtlCmd::SetWidth(v),
         iuv_proto::CtlCmd::SetScript(v) => iuv_win::CtlCmd::SetScript(v),
         iuv_proto::CtlCmd::SetPunct(v) => iuv_win::CtlCmd::SetPunct(v),
+        iuv_proto::CtlCmd::CandidateClick(v) => iuv_win::CtlCmd::CandidateClick(v),
     }
 }
 

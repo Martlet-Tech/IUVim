@@ -939,3 +939,32 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
   - **重启验证**：登录 server 即在位（PID 10848）；新进程全 0-3ms 首连成功
     （conhost/msedgewebview2/Explorer/taskmgr/ZCode/WorkBuddy）；关机瞬间旧会话
     三进程断连走 P5 重生全部成功；ZCode 实测打字上屏正常；重启后零连接失败。
+- [x] **49 号 ③-1/③-3 删本地模式——远端唯一形态（2026-09-30）**:
+  - 删除：`Config::use_engine_server` 开关字段（serde default，旧 config.json 残留行
+    静默忽略）、`iuv-tsf` engine_host.rs（进程内引擎/词库加载）、daemon_client.rs
+    （684 行：SHM 读取/旧管道/ensure_daemon）、全部 `use_server()` 分支（route_key/
+    dispatch/langbar/mode/daemon_host/text_service）、设置页 `remote_mode` 判定
+    （用户库面板恒从文件重载）、m10-deploy 的 A/B 指引。净删约 1300 行。
+  - `REMOTE` OnceLock 语义同步修正：失败路径不再 `set(None)` 占死单例槽（首连
+    失败可重试，见上条）。
+  - **测试**：iuv-tsf 38 全绿；core/server/win 的失败均为存量 os error 5 环境
+    红改动前后一致；clippy 四 crate 零警告。
+- [x] **② 剩余真机回归 + 两个交互闭环（2026-09-30，18:12/18:41 两轮部署）**:
+  - ② 遗留回归项用户实测通过：工具栏按钮/全局热键四态翻转（transport Ctl 往返）、
+    语言栏菜单（设置页/工具栏开关/文案）、候选窗悬停（高亮正常无漏斗）、设置页
+    （用户库可见/主题热载）；「混合模式调权」项随 ③-1 删本地模式作废。
+  - **点击选词闭环（原已知缺口）**：服务端候选窗 WM_LBUTTONDOWN → 后台线程经
+    ConnSender 发 `S2C::Ctl(CandidateClick(row))` → 客户端 TSF 线程 apply_ctl_cmd
+    以 `Digit(row+1)` 走远端会话（与数字键同语义）。proto/iuv-win CtlCmd 各加
+    CandidateClick(u8)（codec 序数 0x05）；客户端 ServerReq 独立线程处理无死锁。
+  - **焦点切换候选窗同步**：`C2S::CandwinHide`——OnSetFocus/OnKillThreadFocus 时
+    客户端通知 server 隐藏候选窗，**会话保留**（「焦点切换不打断会话」原则不变），
+    回焦后下键经 sync_candwin 重显。
+  - **composition 终止即收尾（脑裂修复）**：切焦点时 TSF 外部终止 composition，
+    原逻辑客户端槽清空而 server 会话仍活——切回后首键被降级吞掉且远端会话残留
+    （真机实锤：notepad 终止通知后必跟「降级丢弃会话」）。修复：Composition 挂
+    on_terminated 回调，终止时立即清 last_effect + EndSession；dispatch_outcome
+    对「composition 已死」的在途键兜底同步收尾。**部署后日志验证**：4 次终止
+    通知后零降级、切回打字即刻正常（13-46ms）。
+  - 遗留待办：设置页用户库**单条删除**入口（新功能，另立任务）；语言栏右键菜单
+    在部分程序不弹出（事件未达 iuv 按钮，非本轮引入，待复现程序名定位）。

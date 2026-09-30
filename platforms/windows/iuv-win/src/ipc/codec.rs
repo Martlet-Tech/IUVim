@@ -327,6 +327,10 @@ pub(crate) fn encode_ctl_cmd(cmd: &CtlCmd) -> Vec<u8> {
             out.push(0x04);
             out.push(u8::from(*v));
         }
+        CtlCmd::CandidateClick(row) => {
+            out.push(0x05);
+            out.push(*row);
+        }
     }
     out
 }
@@ -340,6 +344,7 @@ pub(crate) fn decode_ctl_cmd(payload: &[u8]) -> io::Result<CtlCmd> {
         0x02 => CtlCmd::SetWidth(r.bool()?),
         0x03 => CtlCmd::SetScript(r.bool()?),
         0x04 => CtlCmd::SetPunct(r.bool()?),
+        0x05 => CtlCmd::CandidateClick(r.u8()?),
         t => return Err(bad(&format!("未知 CtlCmd tag 0x{t:02X}"))),
     };
     r.finish()?;

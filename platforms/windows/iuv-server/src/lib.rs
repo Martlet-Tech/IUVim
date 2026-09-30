@@ -128,7 +128,7 @@ impl ConnHandler for EngineService {
         self.senders
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((client.pid, client.tid), sender);
+            .insert((client.pid, client.tid), sender.clone());
         // 连接时点即基线：不在建连时推当前配置（客户端连接时自行 Config::load），
         // 只推「连接之后发生的变化」。
         let seen_epoch = self.config_epoch.load(Ordering::Relaxed);
@@ -164,10 +164,13 @@ impl ConnHandler for EngineService {
             client_tid: client.tid,
             ui: self.ui.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             shm: self.shm.clone(),
-            candwin: CandwinHandle::spawn(match theme_choice {
-                iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
-                iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
-            }),
+            candwin: CandwinHandle::spawn(
+                match theme_choice {
+                    iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
+                    iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
+                },
+                sender.clone(),
+            ),
             caret: None,
             candwin_visible: false,
         })
@@ -291,6 +294,12 @@ impl Session for EngineSession {
             }
             C2S::EndSession { .. } => {
                 self.drop_session();
+                self.hide_candwin();
+                reply.respond(S2C::Ok);
+            }
+            C2S::CandwinHide { .. } => {
+                // 焦点切换不打断会话（2026-08-21 原则）的远端对应：客户端本地窗
+                // 隐藏时同步隐藏服务端窗口，会话保留，回焦后下键经 sync_candwin 重显。
                 self.hide_candwin();
                 reply.respond(S2C::Ok);
             }
@@ -554,6 +563,8 @@ impl daemon::toolbar::CtlDispatch for TransportCtlDispatcher {
             iuv_win::CtlCmd::SetWidth(v) => iuv_proto::CtlCmd::SetWidth(*v),
             iuv_win::CtlCmd::SetScript(v) => iuv_proto::CtlCmd::SetScript(*v),
             iuv_win::CtlCmd::SetPunct(v) => iuv_proto::CtlCmd::SetPunct(*v),
+            // 工具栏/热键路径不会产生点击（点击由候选窗 UI 线程直发 proto 变体）。
+            iuv_win::CtlCmd::CandidateClick(row) => iuv_proto::CtlCmd::CandidateClick(*row),
         };
         match sender.request(S2C::Ctl { cmd: proto_cmd }, Duration::from_secs(3)) {
             Ok(C2S::CtlResult(r)) => Ok(proto_ctl_result(r)),

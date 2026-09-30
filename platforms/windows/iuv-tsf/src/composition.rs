@@ -42,16 +42,26 @@ pub struct Composition {
     /// 不支持并停止尝试。量取成功即复位（宿主可能只是文档未就绪时短暂失败）。
     /// 本对象每会话新建，标记随会话结束自然失效，无需清理。
     caret_probe_fails: Rc<Cell<u8>>,
+    /// 外部终止回调（M10 ③）：远端会话的收尾必须**立即**跟随终止——否则客户端
+    /// 预编辑槽已清而 server 会话仍在（脑裂），下一键走会话内路径被降级吞掉
+    /// （2026-09-30 真机：notepad 切焦点回来首键丢失 + 预编辑失踪）。
+    /// TSF 线程内同步调用；None = 无会话语义的临时 composition（标点直上屏）。
+    on_terminated: Option<Rc<dyn Fn()>>,
 }
 
 impl Composition {
-    pub fn new(context: ITfContext, client_id: u32) -> Self {
+    pub fn new(
+        context: ITfContext,
+        client_id: u32,
+        on_terminated: Option<Rc<dyn Fn()>>,
+    ) -> Self {
         Composition {
             context,
             client_id,
             comp: Rc::new(RefCell::new(None)),
             terminated: Rc::new(Cell::new(false)),
             caret_probe_fails: Rc::new(Cell::new(0)),
+            on_terminated,
         }
     }
 
@@ -81,6 +91,7 @@ impl Composition {
             existing: self.comp.borrow().clone(),
             comp_slot: self.comp.clone(),
             terminated: self.terminated.clone(),
+            on_terminated: self.on_terminated.clone(),
             text: text.to_owned(),
             started: RefCell::new(None),
         };
@@ -196,6 +207,7 @@ impl Composition {
 struct CompositionSink {
     comp: Rc<RefCell<Option<ITfComposition>>>,
     terminated: Rc<Cell<bool>>,
+    on_terminated: Option<Rc<dyn Fn()>>,
 }
 
 impl ITfCompositionSink_Impl for CompositionSink_Impl {
@@ -209,6 +221,10 @@ impl ITfCompositionSink_Impl for CompositionSink_Impl {
         ));
         *self.comp.borrow_mut() = None;
         self.terminated.set(true);
+        // 远端会话立即收尾（清基线 + EndSession）：不等下一键降级（会吞键）。
+        if let Some(cb) = &self.on_terminated {
+            cb();
+        }
         Ok(())
     }
 }
@@ -227,6 +243,8 @@ struct SetTextSession {
     comp_slot: Rc<RefCell<Option<ITfComposition>>>,
     /// 终止标志（StartComposition 成功时复位）。
     terminated: Rc<Cell<bool>>,
+    /// 外部终止回调（透传给 CompositionSink；见 [`Composition::on_terminated`]）。
+    on_terminated: Option<Rc<dyn Fn()>>,
     text: String,
     /// 输出：本次新建的 composition。
     started: RefCell<Option<ITfComposition>>,
@@ -260,6 +278,7 @@ impl ITfEditSession_Impl for SetTextSession_Impl {
                 let sink = ComObject::new(CompositionSink {
                     comp: self.comp_slot.clone(),
                     terminated: self.terminated.clone(),
+                    on_terminated: self.on_terminated.clone(),
                 });
                 let sink: ITfCompositionSink = sink.to_interface();
                 let c = trace_step("StartComposition", || unsafe {

@@ -252,6 +252,9 @@ pub enum CtlCmd {
     SetWidth(bool),
     SetScript(bool),
     SetPunct(bool),
+    /// 服务端候选窗点击选词（row = 当前页内行号 0-8）：客户端以 Digit(row+1)
+    /// 键走远端会话（与数字键同语义），应用后应答。
+    CandidateClick(u8),
 }
 
 /// Ctl 应用结果（镜像 iuv-win `CtlResult`）：成功回**新**四态。
@@ -393,6 +396,9 @@ pub enum C2S {
     ToggleToolbar,
     /// 语言栏菜单：查询工具栏显隐（菜单文案动态化，需应答）。
     ToolbarVisibleQuery,
+    /// 隐藏服务端候选窗（会话**不**结束——焦点切换不打断会话原则的远端对应：
+    /// 本地窗 OnSetFocus 隐藏时，server 侧窗口同步隐藏，回焦后下键自然重显）。
+    CandwinHide,
     Ping {
         nonce: u32,
     },

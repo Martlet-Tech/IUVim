@@ -1,6 +1,8 @@
 //! 按键路由（P2.2 从 text_service.rs 拆出）：`test_key_down`/`handle_key_down`
 //! 判定与处理 + 键盘状态辅助函数（`char_code`/`capslock_on` 等，mode.rs 共用）。
 
+use std::rc::Rc;
+
 use iuv_core::{is_session_start_key, Key};
 use iuv_win::combo_from_vk;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -9,7 +11,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::TextServices::ITfContext;
 
-use crate::com::engine_host::engine;
 use crate::composition::Composition;
 use crate::log::{self, log_line, perf_record_with, perf_tick};
 use crate::session_bridge::{caps_passthrough, is_passthrough_app, map_key};
@@ -38,25 +39,20 @@ impl TextService {
     /// 应用在 OnTestKeyDown 返回 eaten 时即跳过自己的按键处理，若 Test 吃而
     /// OnKeyDown 放，字母会被静默吞掉（实测 2026-08-19：Caps 直通失效）。
     fn route_key(&self, vk: u16) -> KeyAction {
-        // 透明模式：全部放行（M10：local=engine / remote=iuv-server 客户端副本，
-        // 未就绪语义相同——引擎加载中/服务端未连接）。
+        // 透明模式：全部放行（M10：远端客户端副本未就绪 = 服务端未连接，
+        // 语义同原「引擎加载中」）。
         let Some(config) = crate::com::remote_host::backend_config() else {
             return KeyAction::Pass;
         };
-        // M6/P4：本地模式 = daemon 共享段轮询（用户库版本/配置纪元热载 + 上线翻转
-        // 重注册）；远端模式 = 配置更新 PUSH 驱动（daemon_poll_tick 内只剩进程内
-        // 原子量比较的主题收敛），按键路径零 SHM/IPC/文件读。
+        // P4：配置更新 PUSH 驱动——按键路径只剩进程内原子量比较的主题收敛，
+        // 零 SHM/IPC/文件读。
         self.daemon_poll_tick();
 
         let shift = shift_pressed();
         let ctrl = ctrl_pressed();
         let alt = alt_pressed();
-        // M10：远端模式会话活性 = last_effect（本地 = Session 槽）。
-        let session_active = if crate::com::remote_host::use_server() {
-            self.last_effect.borrow().is_some()
-        } else {
-            self.session.borrow().is_some()
-        };
+        // M10：会话活性 = last_effect（远端增量语义的基线槽）。
+        let session_active = self.last_effect.borrow().is_some();
 
         // 按键直通白名单：命中进程全部按键放行（不建会话/无候选窗/不转全角，
         // 输入法在该进程完全透明），名单为空零开销。
@@ -124,8 +120,8 @@ impl TextService {
     }
 
     /// OnTestKeyDown 判定：本键是否由本输入法消费。
-    /// M10 远端模式：Test 阶段**真正处理**（§4.5.1 去重的第一半）——发请求并缓存
-    /// 裁定；请求失败（超时/断线）返回 false 放行，绝不"Test 吃了 Down 却放"。
+    /// M10：Test 阶段**真正处理**（§4.5.1 去重的第一半）——发请求并缓存裁定；
+    /// 请求失败（超时/断线）返回 false 放行，绝不"Test 吃了 Down 却放"。
     pub(crate) fn test_key_down(&self, wparam: WPARAM, _lparam: LPARAM) -> bool {
         let vk = wparam.0 as u16;
         let action = self.route_key(vk);
@@ -133,18 +129,16 @@ impl TextService {
             return false;
         }
         if let Some(key) = Self::action_key(&action) {
-            if crate::com::remote_host::use_server() {
-                let Some(remote) = crate::com::remote_host::remote() else {
-                    return false;
-                };
-                let mods = crate::com::remote_host::wire_mods(
-                    shift_pressed(),
-                    ctrl_pressed(),
-                    alt_pressed(),
-                );
-                if remote.key_test(key, mods).is_none() {
-                    return false; // 超时/断线：放行（宁可漏吃不可吞键）
-                }
+            let Some(remote) = crate::com::remote_host::remote() else {
+                return false;
+            };
+            let mods = crate::com::remote_host::wire_mods(
+                shift_pressed(),
+                ctrl_pressed(),
+                alt_pressed(),
+            );
+            if remote.key_test(key, mods).is_none() {
+                return false; // 超时/断线：放行（宁可漏吃不可吞键）
             }
         }
         true
@@ -166,32 +160,18 @@ impl TextService {
         _lparam: LPARAM,
     ) -> bool {
         let vk = wparam.0 as u16;
-        // M6：远端写后端在 Activate 注册；引擎后台加载未完成则此处补注册（幂等，无副作用）。
-        // 必须先于 route_key 的 daemon 轮询（poll 回调可能重载引擎配置/重注册实例）。
-        // M10：engine() 触发本地引擎惰性加载——远端模式跳过（服务端持有引擎/词库）。
-        if !crate::com::remote_host::use_server() {
-            if let Some(engine) = engine() {
-                if let Some(client) = self.daemon.borrow().as_ref() {
-                    if !self.remote_registered.get() {
-                        engine.set_user_remote(Some(client.clone()));
-                        self.remote_registered.set(true);
-                    }
-                }
-            }
-        }
         let t_route = perf_tick();
         let action = self.route_key(vk);
         // 计时区间必须只包 route_key：dispatch 在下方 match 分支里，若被圈进来
         // 这一列就成了「整键总耗时」（实测 30904us ≈ onkey+settext+render+dispatch 之和）。
         perf_record_with("route", t_route, || format!("vk={vk:#x}"));
-        let remote_mode = crate::com::remote_host::use_server();
         let handled = match action {
             KeyAction::Pass => false,
             KeyAction::CommitText(text) => {
                 self.commit_punct(pic, &text);
                 true
             }
-            KeyAction::StartSession(key) if remote_mode => {
+            KeyAction::StartSession(key) => {
                 let Some(remote) = crate::com::remote_host::remote().filter(|r| r.ready()) else {
                     return false;
                 };
@@ -216,12 +196,23 @@ impl TextService {
                 let Some(outcome) = remote.key_down(key, mods) else {
                     return false; // 超时/断线：放行（§4.5.2）
                 };
-                *self.composition.borrow_mut() =
-                    Some(Composition::new(pic.clone(), self.client_id.get()));
+                let last_effect = self.last_effect.clone();
+                *self.composition.borrow_mut() = Some(Composition::new(
+                    pic.clone(),
+                    self.client_id.get(),
+                    Some(Rc::new(move || {
+                        // composition 被外部终止（焦点切换等）：远端会话立即收尾，
+                        // 下一键以全新会话开始（不再走会话内路径吞键）。
+                        last_effect.borrow_mut().take();
+                        if let Some(r) = crate::com::remote_host::remote() {
+                            r.end_session();
+                        }
+                    })),
+                ));
                 self.dispatch_outcome(outcome);
                 true
             }
-            KeyAction::SessionKey(key) if remote_mode => {
+            KeyAction::SessionKey(key) => {
                 log_line(&format!("[key] 按键：{}（远端会话内）", key.name()));
                 let mods = crate::com::remote_host::wire_mods(
                     shift_pressed(),
@@ -234,34 +225,6 @@ impl TextService {
                     return false;
                 };
                 self.dispatch_outcome(outcome);
-                true
-            }
-            KeyAction::StartSession(key) => {
-                let engine = engine().expect("route_key 已校验引擎非透明模式");
-                log_line(&format!("[key] 按键：{}（会话外）", key.name()));
-                // 注入实例运行时四态（32-toolbar §5.1：per-实例，live 读）。
-                let mut session = engine.start_session_with_runtime(self.runtime.clone());
-                self.punct_quote_open.set(false); // 拼音输入开始：引号配对复位为开形
-                let t_onkey = perf_tick();
-                let effect = session.on_key(key);
-                perf_record_with("onkey", t_onkey, || "start-session".to_owned());
-                *self.session.borrow_mut() = Some(session);
-                *self.composition.borrow_mut() =
-                    Some(Composition::new(pic.clone(), self.client_id.get()));
-                self.dispatch(&effect);
-                true
-            }
-            KeyAction::SessionKey(key) => {
-                log_line(&format!("[key] 按键：{}（会话内）", key.name()));
-                let t_onkey = perf_tick();
-                let effect = self
-                    .session
-                    .borrow_mut()
-                    .as_mut()
-                    .map(|s| s.on_key(key))
-                    .expect("会话存在性已由 route_key 判定");
-                perf_record_with("onkey", t_onkey, || key.name());
-                self.dispatch(&effect);
                 true
             }
         };

@@ -18,21 +18,13 @@ impl TextService {
         *self.runtime.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// 运行时四态变化后的收尾：live 重渲当前会话（点简繁/全半角/标点立即生效）+ StateSync 上报。
+    /// 运行时四态变化后的收尾：四态同步给服务端（会话运行时）。
+    /// 过渡期不重渲当前会话（四态只影响后续键的服务端处理，当前候选重渲需另发
+    /// 请求——P4 收敛时统一）。
     pub(crate) fn after_runtime_change(&self) {
-        // M10 远端模式：四态同步给服务端（会话运行时）；过渡期不重渲当前会话
-        // （四态只影响后续键的服务端处理，当前候选重渲需另发请求——P4 收敛时统一）。
-        if crate::com::remote_host::use_server() {
-            if let Some(r) = crate::com::remote_host::remote() {
-                r.sync_state(&self.runtime_snapshot());
-            }
-        } else if let Some(sess) = self.session.borrow().as_ref() {
-            let effect = sess.effect();
-            self.dispatch(&effect);
+        if let Some(r) = crate::com::remote_host::remote() {
+            r.sync_state(&self.runtime_snapshot());
         }
-        // 上报 daemon 看板（远端 no-op：上方 sync_state 已发 C2S::ImeState，
-        // 服务端转 StateChanged；重发双信号）。
-        self.notify_state_changed();
     }
 
     /// 翻转中/英模式（Shift / 语言栏点击共用入口）。
@@ -66,8 +58,6 @@ impl TextService {
         if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
             langbar::refresh_lang_bar(lang_bar);
         }
-        // 工具栏看板同步（远端 no-op 同上）。
-        self.notify_state_changed();
         // 关闭输入法：未确认输入按**原文上屏**语义结束（见 flush_session）。
         if !open && (self.session.borrow().is_some() || self.composition.borrow().is_some()) {
             self.flush_session();
@@ -98,12 +88,8 @@ impl TextService {
     pub(crate) fn flush_session(&self) {
         self.ui.borrow_mut().hide();
         self.cand_elem.borrow_mut().end();
-        // M10：远端模式原文 = 最近 composition 去切分撇号（过渡近似，见 remote_host）。
-        let text: Option<String> = if crate::com::remote_host::use_server() {
-            crate::com::remote_host::remote().and_then(|r| r.pending_raw_text())
-        } else {
-            self.session.borrow().as_ref().map(|s| s.pending_text())
-        };
+        // M10：原文 = 最近 composition 去切分撇号（过渡近似，见 remote_host）。
+        let text = crate::com::remote_host::remote().and_then(|r| r.pending_raw_text());
         if let Some(comp) = self.composition.borrow().as_ref() {
             match text.as_deref() {
                 Some(t) if !t.is_empty() => match comp.commit(t) {
@@ -119,11 +105,9 @@ impl TextService {
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
         *self.last_effect.borrow_mut() = None;
-        // M10：远端会话收尾（尽力而为，断线无副作用）。
-        if crate::com::remote_host::use_server() {
-            if let Some(r) = crate::com::remote_host::remote() {
-                r.end_session();
-            }
+        // 远端会话收尾（尽力而为，断线无副作用）。
+        if let Some(r) = crate::com::remote_host::remote() {
+            r.end_session();
         }
         // M1 桌宠：flush_session 强制结束会话 → 发 Typing(false)（若之前在打字）。
         // 与 dispatch 边沿检测互补：dispatch 走正常 end 路径；flush_session 走强制路径。
@@ -196,7 +180,7 @@ impl TextService {
     /// 会话外中文标点直接上屏：临时 composition 一次 set_text+commit（两次 edit session，
     /// 复用既有 Composition 方法；与 flush_session 原文上屏同款路径）。
     pub(crate) fn commit_punct(&self, pic: &ITfContext, text: &str) {
-        let comp = Composition::new(pic.clone(), self.client_id.get());
+        let comp = Composition::new(pic.clone(), self.client_id.get(), None);
         match comp.set_text(text) {
             Ok(_) => match comp.commit(text) {
                 Ok(()) => log_line(&format!("[punct] 中文标点直接上屏 {text}")),

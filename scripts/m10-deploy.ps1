@@ -10,8 +10,7 @@
 # 闪退无法看到错误。提权只做部署（部署不需要 cargo），失败信息落在
 # %TEMP%\iuv-script.log（dev-deploy 的 Trace-Script）。
 #
-# A/B 开关（49 号 P3b）：config.json 加 "use_engine_server": true → TSF 连 iuv-server
-#（薄客户端）；缺省/false = 现状本地引擎（基线）。改完重启输入法（Ctrl+Space 切换）生效。
+# M10 ③ 收口：远端 iuv-server 是唯一形态（A/B 开关与本地引擎路径已删除）。
 #requires -Version 5.1
 
 param(
@@ -130,22 +129,6 @@ if ($NoServer) {
     }
 }
 
-# ---- 5. A/B 开关指引 ----
-Write-Host ""
-Write-Host "==================== M10 A/B 测试指引 ===================="
-Write-Host '【基线回归】确保配置无 "use_engine_server": true（或缺省），'
-Write-Host "  重启输入法后正常打字——行为应与 main 完全一致。"
-if (-not $NoServer) {
-    Write-Host ""
-    Write-Host "【远端模式】config.json 顶层加一行后重启输入法："
-    Write-Host '    "use_engine_server": true,'
-    Write-Host "  打字验证：拼音预编辑/候选窗/空格上屏/Esc 取消/翻页/左右选候选/Shift 中英/"
-    Write-Host "  Ctrl+Space/点简繁全半角。杀掉 iuv-server 进程 → 应回落纯英文（透明降级），"
-    Write-Host "  应用绝不卡死。"
-    Write-Host ""
-    Write-Host "【切回本地】把该行改回 false（或删除），重启输入法即可，无需卸载。"
-}
 Write-Host ""
 Write-Host "日志：%TEMP%\iuv-tsf.log / %TEMP%\iuv-server.log / %TEMP%\iuv-script.log"
 Trace-Script "m10-deploy: 完成"
-Write-Host "=========================================================="

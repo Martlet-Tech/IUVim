@@ -9,14 +9,18 @@
 //! 与客户端版的差异：
 //! - **DPI 由服务端自算**（caret 所在显示器 `GetDpiForMonitor`；客户端只报
 //!   屏幕物理坐标）；进程需 PMv2（main 启动时置位）。
-//! - **无点击选词**（会话在连接线程，UI 线程无法触达——待服务端主动 REQ 通道
-//!   落地后接线；键盘数字选词不受影响），悬停高亮保留（纯视觉）。
+//! - **点击选词经 Ctl 控制面闭环**（③：ConnSender 主动 REQ `CandidateClick`
+//!   → 客户端 TSF 线程以 Digit 键走远端会话 → 正常上屏）；悬停高亮保留（纯视觉）。
 //! - 抑制判定（`candidate_owner_apps` 命中 → 客户端游戏桥自绘）在会话层完成，
 //!   命中的连接不启动窗口线程。
 
 use std::mem::size_of;
 use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::sync::Arc;
+use std::time::Duration;
+
+use iuv_proto::S2C;
+use iuv_win::transport::ConnSender;
 
 use windows::Win32::Foundation::{HANDLE, WAIT_EVENT, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Gdi::{
@@ -89,14 +93,15 @@ impl Drop for WakeEvent {
 
 impl CandwinHandle {
     /// 启动 UI 线程（每连接一个；隐藏态零渲染开销）。
-    pub(crate) fn spawn(theme: Theme) -> CandwinHandle {
+    /// `sender` = 本连接发送器（点击选词经 S2C::Ctl 回客户端，③ 点击闭环）。
+    pub(crate) fn spawn(theme: Theme, sender: ConnSender) -> CandwinHandle {
         let (tx, rx) = mpsc::channel::<CandwinCmd>();
         let wake = Arc::new(WakeEvent::new());
         let spawned = std::thread::Builder::new()
             .name("iuv-server-candwin".into())
             .spawn({
                 let wake = wake.clone();
-                move || run_ui_thread(rx, theme, wake)
+                move || run_ui_thread(rx, theme, wake, sender)
             });
         if let Err(e) = spawned {
             iuv_win::logger::log_line(&format!("[candwin] UI 线程创建失败（{e}）→ 该连接无候选窗"));
@@ -111,8 +116,13 @@ impl CandwinHandle {
     }
 }
 
-fn run_ui_thread(rx: mpsc::Receiver<CandwinCmd>, theme: Theme, wake: Arc<WakeEvent>) {
-    let mut wnd = ServerCandwin::new(theme);
+fn run_ui_thread(
+    rx: mpsc::Receiver<CandwinCmd>,
+    theme: Theme,
+    wake: Arc<WakeEvent>,
+    sender: ConnSender,
+) {
+    let mut wnd = ServerCandwin::new(theme, sender);
     loop {
         // 排空命令（按序应用，最后一条即最新）。
         let mut disconnected = false;
@@ -173,6 +183,8 @@ struct ServerCandwin {
     rows: Vec<iuv_ui::layout::Rect>,
     /// 鼠标悬停行（纯视觉）。
     hover_row: Option<usize>,
+    /// 本连接发送器（点击选词 → S2C::Ctl(CandidateClick) 回客户端）。
+    sender: ConnSender,
     theme: Theme,
     text: Option<TextRenderer>,
     ulw: iuv_win::UlwSurface,
@@ -181,7 +193,7 @@ struct ServerCandwin {
 }
 
 impl ServerCandwin {
-    fn new(theme: Theme) -> Self {
+    fn new(theme: Theme, sender: ConnSender) -> Self {
         ServerCandwin {
             layered: iuv_win::LayeredWindow::new(),
             snap: UiSnapshot::default(),
@@ -189,6 +201,7 @@ impl ServerCandwin {
             last_caret: None,
             rows: Vec::new(),
             hover_row: None,
+            sender,
             theme,
             text: None,
             ulw: iuv_win::UlwSurface::new(),
@@ -531,8 +544,33 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
-        // 点击选词待服务端主动 REQ 通道（UI 线程 → 连接线程不可触达）；吞掉防默认行为。
-        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => LRESULT(0),
+        // 点击选词（③ 闭环）：命中行 → 后台线程经 ConnSender 发 S2C::Ctl
+        // （CandidateClick），客户端 TSF 线程以 Digit(row+1) 走远端会话。短命线程
+        // 承担阻塞等待，UI 线程保持响应（悬停/重绘不被 3s 截止拖住）。
+        WM_LBUTTONDOWN => {
+            if let Some(wnd) =
+                unsafe { iuv_win::LayeredWindow::get_self::<ServerCandwin>(hwnd) }
+            {
+                let (x, y) = iuv_win::LayeredWindow::client_pos(lparam);
+                if let Some(row) = hit_test(&wnd.rows, x, y)
+                    .filter(|r| *r < wnd.snap.candidates.len())
+                {
+                    let sender = wnd.sender.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("iuv-candwin-click".into())
+                        .spawn(move || {
+                            let _ = sender.request(
+                                S2C::Ctl {
+                                    cmd: iuv_proto::CtlCmd::CandidateClick(row as u8),
+                                },
+                                Duration::from_secs(3),
+                            );
+                        });
+                }
+            }
+            LRESULT(0)
+        }
+        WM_RBUTTONDOWN | WM_MBUTTONDOWN => LRESULT(0),
         _ => iuv_win::LayeredWindow::default_wnd_proc(hwnd, msg, wparam, lparam),
     }
 }

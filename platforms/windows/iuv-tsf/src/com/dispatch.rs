@@ -8,7 +8,7 @@ use iuv_core::Session;
 use iuv_proto::KeyOutcome;
 
 use crate::com::remote_host::{
-    backend_config, core_candidate, core_page, core_session_end, remote, use_server,
+    backend_config, core_candidate, core_page, core_session_end, remote,
 };
 use crate::composition::Composition;
 use crate::log::{self, log_line, perf_record_with, perf_tick};
@@ -22,9 +22,8 @@ use super::text_service::TextService;
 impl TextService {
     pub(crate) fn dispatch(&self, effect: &iuv_core::Effect) {
         let t = perf_tick();
-        // P4 服务端渲染：远端模式本地候选窗不画（iuv-server 画），仅更新
+        // P4 服务端渲染：本地候选窗不画（iuv-server 画），仅更新
         // composition/caret 并在锚点变化时上报 CaretMoved。
-        let remote = crate::com::remote_host::use_server();
         dispatch_effect(
             &self.session,
             &self.composition,
@@ -32,15 +31,13 @@ impl TextService {
             &self.caret,
             &self.cand_elem,
             effect,
-            !remote,
+            false,
         );
-        if remote {
-            let caret = self.caret.get();
-            if caret != self.caret_reported.get() {
-                self.caret_reported.set(caret);
-                if let Some(r) = crate::com::remote_host::remote() {
-                    r.sync_caret(caret);
-                }
+        let caret = self.caret.get();
+        if caret != self.caret_reported.get() {
+            self.caret_reported.set(caret);
+            if let Some(r) = crate::com::remote_host::remote() {
+                r.sync_caret(caret);
             }
         }
         // M1 桌宠（docs/pet/M1-IMPLEMENTATION.md §2.1 + §4.4）：组合状态 transition
@@ -61,7 +58,7 @@ impl TextService {
         });
     }
 
-    /// M10 远端模式：应用 KeyOutcome（以 `last_effect` 为基线组装 Effect，
+    /// M10：应用 KeyOutcome（以 `last_effect` 为基线组装 Effect，
     /// 复用既有 dispatch 渲染路径；会话结束 → 清基线 + 通知服务端 EndSession）。
     pub(crate) fn dispatch_outcome(&self, outcome: KeyOutcome) {
         let base = self.last_effect.borrow_mut().take();
@@ -69,10 +66,15 @@ impl TextService {
         self.dispatch(&effect);
         if ended {
             self.last_effect.borrow_mut().take();
-            if use_server() {
-                if let Some(r) = remote() {
-                    r.end_session();
-                }
+            if let Some(r) = remote() {
+                r.end_session();
+            }
+        } else if self.composition.borrow().is_none() {
+            // composition 已死（外部终止与在途键的竞态兜底）：会话无法延续，
+            // 同步收尾防脑裂（下一键全新会话）。
+            self.last_effect.borrow_mut().take();
+            if let Some(r) = remote() {
+                r.end_session();
             }
         } else {
             *self.last_effect.borrow_mut() = Some(effect);

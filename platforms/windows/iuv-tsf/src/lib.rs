@@ -5,7 +5,6 @@
 
 pub mod composition;
 pub mod ctl;
-pub mod daemon_client;
 pub mod langbar;
 pub mod log;
 pub mod registration;
@@ -49,11 +48,12 @@ pub unsafe extern "system" fn DllGetClassObject(
     }
 }
 
-/// DllCanUnloadNow：无活动对象（实例/工厂引用）且引擎后台加载线程已结束时才允许卸载
-/// （加载线程运行中访问 DLL 代码，卸载会导致宿主进程崩溃）。
+/// DllCanUnloadNow：无活动对象（实例/工厂引用）时允许卸载。
+/// （M10 ③：本地引擎后台加载线程已随本地模式删除；远端连接/推送/重生线程经
+/// REMOTE 进程级静态持有，与 DLL 同生命周期，不构成卸载窗口。）
 #[no_mangle]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
-    if com::class_factory::active_count() == 0 && !com::engine_host::engine_loading() {
+    if com::class_factory::active_count() == 0 {
         S_OK
     } else {
         S_FALSE
