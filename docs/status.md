@@ -968,3 +968,35 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
     通知后零降级、切回打字即刻正常（13-46ms）。
   - 遗留待办：设置页用户库**单条删除**入口（新功能，另立任务）；语言栏右键菜单
     在部分程序不弹出（事件未达 iuv 按钮，非本轮引入，待复现程序名定位）。
+- [x] **49 号 ③-2 镜像归一——共享类型沉底 iuv-data（2026-09-30，四子提交）**:
+  - **决策**：proto↔core 平行类型全仓收敛为 iuv-data 唯一定义（依赖指向最稳定的
+    共享词汇层）；四态枚举统一 proto 系命名 ImeMode/ImeWidth/ImeScript/ImePunct
+    （core 的 InitialMode/WidthMode/ScriptMode/PunctMode 为历史名，59 处机械改名）；
+    CtlCmd/CtlResult（proto↔win 第三对镜像）一并下沉，CtlResult::Err 统一带 msg
+    （客户端应用失败原因透传，替代 server 端写死文案）；Candidate/Effect 保留
+    proto 瘦身版（49 §4.5.3 协议设计，非欠债）。
+  - **iuv-data**（`dcf97ee`）：新增 `ime.rs`（四态四枚举 + ImeState + [u8;4] 唯一
+    线编码自 core runtime.rs 迁移 + CtlCmd/CtlResult）、`key.rs`（Key 全 33 变体 +
+    name/from_name + SessionEnd + PageInfo 统一 u32 定宽）、`candidate.rs`
+    （CandidateKind + for_word）；UserMutation 迁入 userdict.rs 紧邻唯一消费者
+    UserDict + `UserDict::apply_mutation` 单方法；serde 进 data 依赖。
+  - **core/proto**（`9fcb7d7`）：core key.rs 仅剩 Effect、candidate.rs 仅剩
+    Candidate、config/enums.rs 删四态、runtime.rs 整删（类型与线编码沉底）；
+    proto msg.rs 删九组镜像定义（481→333 行）改 `pub use iuv_data`，WireImeState/
+    WireSessionEnd 别名失效删除；PROTO_MIN/MAX 1→2（Err 带 msg 线格式变更；
+    Key/UserMutation/四态变体声明序逐项核对不变，postcard 序号兼容）。
+  - **转换函数退役**（`840a76e`）：server 删 core_key（33 臂）/core_user_mutation/
+    core_ime_state/wire_session_end/wire_candidate_kind/proto_ctl_result +
+    dispatch_ctl 内联 CtlCmd 镜像 match；tsf 删 wire_key（33 臂）/wire_ime_state/
+    core_session_end/core_page/proto_to_win_ctl_cmd/win_to_proto_ctl_result；
+    win ipc/msg.rs 本地 CtlCmd/CtlResult 改 re-export（codec 手写 tag 序不受影响）；
+    core_candidate 零填充投影语义保留（客户端不需要 code/weight/seg_len）。
+    全部跨界点直通：Key Copy 传值、ImeState/UserMutation/CtlResult 原样。
+  - **验证**：workspace 编译零警告；clippy --all-targets 零警告；proto 18（含 Key
+    全变体 roundtrip = 线格式不变证明）/tsf 38/hot_path 12/engine_session 97/
+    transport 7 全绿；红项（core 12+3、data 6+13、server lib 7、win lib 3、
+    transport 1、ui 1）经 stash 回上一提交逐项对照 = 存量环境红（os error 5 及
+    同源 temp 文件类），改动前后一致。
+  - **遗留**：iuv-win `ipc/msg.rs::Request`（Swap/Set/Remove/Block，a_adj 命名的
+    UserMutation 第三镜像 + 手写 codec）：②迁移后数据面疑似死代码，待核实旧管道
+    存活消费者后另立删除任务；③-3 混合模式过渡代码与 49 号任务书终稿收尾。
