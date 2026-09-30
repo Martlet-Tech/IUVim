@@ -25,8 +25,8 @@ pub use config::keymap::{
     is_session_start_key, Combo, GlobalAction, Keymap, SessionAction, TwoSlot,
 };
 pub use config::{
-    default_config_path, migrate_keymap, strip_bom, strip_jsonc_comments, Config, ImeState,
-    InitialMode, Orientation, PunctMode, ScriptMode, ThemeChoice, WidthMode,
+    default_config_path, migrate_keymap, strip_bom, strip_jsonc_comments, Config, ImeMode,
+    ImePunct, ImeScript, ImeState, ImeWidth, Orientation, ThemeChoice,
 };
 pub use engine::Engine;
 pub use key::{Effect, Key, PageInfo, SessionEnd};

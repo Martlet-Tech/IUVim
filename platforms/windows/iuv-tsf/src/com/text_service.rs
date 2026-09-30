@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use iuv_core::{Config, ImeState, InitialMode, Key, PunctMode, ScriptMode, Session, WidthMode};
+use iuv_core::{Config, ImeState, ImeMode, Key, ImePunct, ImeScript, Session, ImeWidth};
 use iuv_win::{CtlCmd, CtlResult};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{
@@ -266,9 +266,9 @@ impl TextService {
                 if !ok {
                     let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
                     runtime.mode = if english {
-                        InitialMode::English
+                        ImeMode::English
                     } else {
-                        InitialMode::Chinese
+                        ImeMode::Chinese
                     };
                     drop(runtime);
                     self.after_runtime_change();
@@ -277,9 +277,9 @@ impl TextService {
             CtlCmd::SetWidth(full) => {
                 let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
                 runtime.width = if full {
-                    WidthMode::Full
+                    ImeWidth::Full
                 } else {
-                    WidthMode::Half
+                    ImeWidth::Half
                 };
                 drop(runtime);
                 self.after_runtime_change();
@@ -287,9 +287,9 @@ impl TextService {
             CtlCmd::SetScript(traditional) => {
                 let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
                 runtime.script = if traditional {
-                    ScriptMode::Traditional
+                    ImeScript::Traditional
                 } else {
-                    ScriptMode::Simplified
+                    ImeScript::Simplified
                 };
                 drop(runtime);
                 self.after_runtime_change();
@@ -297,9 +297,9 @@ impl TextService {
             CtlCmd::SetPunct(english_punct) => {
                 let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
                 runtime.punct = if english_punct {
-                    PunctMode::English
+                    ImePunct::English
                 } else {
-                    PunctMode::Chinese
+                    ImePunct::Chinese
                 };
                 drop(runtime);
                 self.after_runtime_change();
@@ -391,7 +391,7 @@ impl TextService_Impl {
                             // 在该窗口改过的中英重置回 config（违反 §2.4 per-实例保留语义）。
                             // 运行时值随实例存活（runtime 字段，本线程此前的设置天然保留）。
                             let default_open =
-                                Config::load().initial_state.mode == iuv_core::InitialMode::Chinese;
+                                Config::load().initial_state.mode == iuv_core::ImeMode::Chinese;
                             match langbar::read_openclose(&comp) {
                                 None => {
                                     if let Err(e) =

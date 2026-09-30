@@ -1635,6 +1635,7 @@ dependencies = [
 name = "iuv-data"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "windows",
  "windows-core",
 ]
@@ -1643,6 +1644,7 @@ dependencies = [
 name = "iuv-proto"
 version = "0.1.0"
 dependencies = [
+ "iuv-data",
  "postcard",
  "serde",
 ]

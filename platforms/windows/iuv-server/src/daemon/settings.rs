@@ -468,38 +468,38 @@ impl SettingsApp {
                         ui.label("模式");
                         ui.radio_value(
                             &mut self.initial.mode,
-                            iuv_core::InitialMode::Chinese,
+                            iuv_core::ImeMode::Chinese,
                             "中文",
                         );
                         ui.radio_value(
                             &mut self.initial.mode,
-                            iuv_core::InitialMode::English,
+                            iuv_core::ImeMode::English,
                             "英文",
                         );
                     });
-                    let mut punct_en = self.initial.punct == iuv_core::PunctMode::English;
+                    let mut punct_en = self.initial.punct == iuv_core::ImePunct::English;
                     if ui.checkbox(&mut punct_en, "中文状态使用英文标点").changed() {
                         self.initial.punct = if punct_en {
-                            iuv_core::PunctMode::English
+                            iuv_core::ImePunct::English
                         } else {
-                            iuv_core::PunctMode::Chinese
+                            iuv_core::ImePunct::Chinese
                         };
                     }
                     ui.horizontal(|ui| {
                         ui.label("宽度");
-                        ui.radio_value(&mut self.initial.width, iuv_core::WidthMode::Half, "半角");
-                        ui.radio_value(&mut self.initial.width, iuv_core::WidthMode::Full, "全角");
+                        ui.radio_value(&mut self.initial.width, iuv_core::ImeWidth::Half, "半角");
+                        ui.radio_value(&mut self.initial.width, iuv_core::ImeWidth::Full, "全角");
                     });
                     ui.horizontal(|ui| {
                         ui.label("字形");
                         ui.radio_value(
                             &mut self.initial.script,
-                            iuv_core::ScriptMode::Simplified,
+                            iuv_core::ImeScript::Simplified,
                             "简体",
                         );
                         ui.radio_value(
                             &mut self.initial.script,
-                            iuv_core::ScriptMode::Traditional,
+                            iuv_core::ImeScript::Traditional,
                             "繁体",
                         );
                     });

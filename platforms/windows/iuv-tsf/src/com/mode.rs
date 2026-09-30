@@ -1,7 +1,7 @@
 //! 模式与实例状态（P2.2 从 text_service.rs 拆出）：中英切换、会话清理、
 //! 会话外标点/全角直接上屏判定、运行时四态收尾。均挂 `impl TextService`。
 
-use iuv_core::{chinese_punct, shifted_punct, ImeState, InitialMode, PunctMode};
+use iuv_core::{chinese_punct, shifted_punct, ImeState, ImeMode, ImePunct};
 use windows::Win32::UI::TextServices::ITfContext;
 
 use crate::composition::Composition;
@@ -44,9 +44,9 @@ impl TextService {
         {
             let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
             runtime.mode = if open {
-                InitialMode::Chinese
+                ImeMode::Chinese
             } else {
-                InitialMode::English
+                ImeMode::English
             };
         }
         self.punct_quote_open.set(false); // 模式切换复位引号配对（下个引号从开形起）
@@ -136,7 +136,7 @@ impl TextService {
             return None;
         }
         let runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
-        if runtime.punct == PunctMode::English {
+        if runtime.punct == ImePunct::English {
             return None;
         }
         let base = char::from_u32(char_code)?;

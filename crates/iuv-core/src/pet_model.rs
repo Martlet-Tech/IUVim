@@ -17,7 +17,7 @@
 //!
 //! 可单测（无 I/O、无 panic 路径），`cargo test -p iuv-core` 全绿。
 
-use crate::config::{ImeState, InitialMode};
+use crate::config::{ImeState, ImeMode};
 use crate::pet_skin::FaceExpr;
 
 /// 动作片段标识（M1 内置集；M2 起由 mod 素材描述扩展）。
@@ -234,7 +234,7 @@ impl PetModel {
             PetMotion::Typing => PetClip::Typing,
             PetMotion::React => PetClip::React,
             PetMotion::Idle => {
-                if self.look.mode == InitialMode::English {
+                if self.look.mode == ImeMode::English {
                     PetClip::ModeEn
                 } else {
                     PetClip::Idle
@@ -272,8 +272,8 @@ impl PetModel {
 fn first_changed_clip(old: &ImeState, new: &ImeState) -> PetClip {
     if old.mode != new.mode {
         return match new.mode {
-            InitialMode::Chinese => PetClip::ModeCn,
-            InitialMode::English => PetClip::ModeEn,
+            ImeMode::Chinese => PetClip::ModeCn,
+            ImeMode::English => PetClip::ModeEn,
         };
     }
     if old.script != new.script {
@@ -292,7 +292,7 @@ fn first_changed_clip(old: &ImeState, new: &ImeState) -> PetClip {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{PunctMode, ScriptMode, WidthMode};
+    use crate::config::{ImePunct, ImeScript, ImeWidth};
 
     fn default_state() -> ImeState {
         ImeState::default()
@@ -300,10 +300,10 @@ mod tests {
 
     fn alt_state() -> ImeState {
         ImeState {
-            mode: InitialMode::English,
-            width: WidthMode::Full,
-            script: ScriptMode::Traditional,
-            punct: PunctMode::English,
+            mode: ImeMode::English,
+            width: ImeWidth::Full,
+            script: ImeScript::Traditional,
+            punct: ImePunct::English,
         }
     }
 
@@ -321,7 +321,7 @@ mod tests {
     fn on_ime_state_mode_change_triggers_flash_mode_kind() {
         let mut m = PetModel::new(default_state());
         let next = ImeState {
-            mode: InitialMode::English,
+            mode: ImeMode::English,
             ..default_state()
         };
         m.on_ime_state(next);
@@ -333,11 +333,11 @@ mod tests {
     #[test]
     fn on_ime_state_mode_cn_triggers_mode_cn_kind() {
         let mut m = PetModel::new(ImeState {
-            mode: InitialMode::English,
+            mode: ImeMode::English,
             ..default_state()
         });
         m.on_ime_state(ImeState {
-            mode: InitialMode::Chinese,
+            mode: ImeMode::Chinese,
             ..default_state()
         });
         assert_eq!(m.flash_kind, PetClip::ModeCn);
@@ -348,8 +348,8 @@ mod tests {
         // 多个字段变化时：mode 优先
         let mut m = PetModel::new(default_state());
         m.on_ime_state(ImeState {
-            mode: InitialMode::English,
-            width: WidthMode::Full,
+            mode: ImeMode::English,
+            width: ImeWidth::Full,
             ..default_state()
         });
         assert_eq!(m.flash_kind, PetClip::ModeEn);
@@ -360,8 +360,8 @@ mod tests {
         // mode 不变时：script 优先于 width
         let mut m = PetModel::new(default_state());
         m.on_ime_state(ImeState {
-            script: ScriptMode::Traditional,
-            width: WidthMode::Full,
+            script: ImeScript::Traditional,
+            width: ImeWidth::Full,
             ..default_state()
         });
         assert_eq!(m.flash_kind, PetClip::Script);
@@ -372,8 +372,8 @@ mod tests {
         // mode/script 不变时：width 优先于 punct
         let mut m = PetModel::new(default_state());
         m.on_ime_state(ImeState {
-            width: WidthMode::Full,
-            punct: PunctMode::English,
+            width: ImeWidth::Full,
+            punct: ImePunct::English,
             ..default_state()
         });
         assert_eq!(m.flash_kind, PetClip::Width);
@@ -383,7 +383,7 @@ mod tests {
     fn on_ime_state_only_punct_change() {
         let mut m = PetModel::new(default_state());
         m.on_ime_state(ImeState {
-            punct: PunctMode::English,
+            punct: ImePunct::English,
             ..default_state()
         });
         assert_eq!(m.flash_kind, PetClip::Punct);
@@ -396,11 +396,11 @@ mod tests {
         m.on_click();
         assert_eq!(m.motion, PetMotion::React);
         m.on_ime_state(ImeState {
-            mode: InitialMode::English,
+            mode: ImeMode::English,
             ..default_state()
         });
         assert_eq!(m.motion, PetMotion::React, "React 一次性态中不被打断");
-        assert_eq!(m.look().mode, InitialMode::English, "但 look 仍更新");
+        assert_eq!(m.look().mode, ImeMode::English, "但 look 仍更新");
     }
 
     // ===== on_typing =====
@@ -492,7 +492,7 @@ mod tests {
     fn on_click_interrupts_flash() {
         let mut m = PetModel::new(default_state());
         m.on_ime_state(ImeState {
-            mode: InitialMode::English,
+            mode: ImeMode::English,
             ..default_state()
         });
         assert_eq!(m.motion, PetMotion::StateFlash);
@@ -556,7 +556,7 @@ mod tests {
     fn advance_flash_returns_to_stable() {
         let mut m = PetModel::new(default_state());
         m.on_ime_state(ImeState {
-            width: WidthMode::Full,
+            width: ImeWidth::Full,
             ..default_state()
         });
         // 8 帧 * 100ms/帧 @10fps = 800ms = 8 ticks
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn clip_english_idle_returns_mode_en() {
         let m = PetModel::new(ImeState {
-            mode: InitialMode::English,
+            mode: ImeMode::English,
             ..default_state()
         });
         assert_eq!(m.clip(), PetClip::ModeEn);
@@ -611,7 +611,7 @@ mod tests {
     fn clip_flash_returns_flash_kind() {
         let mut m = PetModel::new(default_state());
         m.on_ime_state(ImeState {
-            width: WidthMode::Full,
+            width: ImeWidth::Full,
             ..default_state()
         });
         assert_eq!(m.clip(), PetClip::Width);
@@ -689,7 +689,7 @@ mod tests {
         let mut m = PetModel::new(default_state());
         m.on_typing(true);
         m.on_ime_state(ImeState {
-            width: WidthMode::Full,
+            width: ImeWidth::Full,
             ..default_state()
         });
         assert_eq!(m.motion, PetMotion::StateFlash);

@@ -110,7 +110,7 @@ fn c2s_samples() -> Vec<C2S> {
                 punct: ImePunct::English,
             },
         }),
-        C2S::CtlResult(CtlResult::Err),
+        C2S::CtlResult(CtlResult::Err { msg: "应用失败".into() }),
         C2S::Ping { nonce: 77 },
         C2S::Pong { nonce: 78 },
         C2S::Ok,

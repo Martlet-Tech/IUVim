@@ -591,10 +591,10 @@ mod tests {
     #[test]
     fn toolbar_requests_roundtrip() {
         let state = ImeState {
-            mode: iuv_core::InitialMode::English,
-            width: iuv_core::WidthMode::Half,
-            script: iuv_core::ScriptMode::Traditional,
-            punct: iuv_core::PunctMode::English,
+            mode: iuv_core::ImeMode::English,
+            width: iuv_core::ImeWidth::Half,
+            script: iuv_core::ImeScript::Traditional,
+            punct: iuv_core::ImePunct::English,
         };
         for req in [
             Request::Register {
@@ -684,10 +684,10 @@ mod tests {
     fn ctl_result_roundtrip() {
         let ok = CtlResult::Ok {
             state: ImeState {
-                mode: iuv_core::InitialMode::Chinese,
-                width: iuv_core::WidthMode::Full,
-                script: iuv_core::ScriptMode::Traditional,
-                punct: iuv_core::PunctMode::Chinese,
+                mode: iuv_core::ImeMode::Chinese,
+                width: iuv_core::ImeWidth::Full,
+                script: iuv_core::ImeScript::Traditional,
+                punct: iuv_core::ImePunct::Chinese,
             },
         };
         let bytes = encode_ctl_result(&ok);
@@ -739,10 +739,10 @@ mod tests {
     #[test]
     fn all_toolbar_signals_roundtrip() {
         let state = ImeState {
-            mode: iuv_core::InitialMode::English,
-            width: iuv_core::WidthMode::Half,
-            script: iuv_core::ScriptMode::Traditional,
-            punct: iuv_core::PunctMode::English,
+            mode: iuv_core::ImeMode::English,
+            width: iuv_core::ImeWidth::Half,
+            script: iuv_core::ImeScript::Traditional,
+            punct: iuv_core::ImePunct::English,
         };
         for sig in [
             ToolbarSignal::FocusGained {

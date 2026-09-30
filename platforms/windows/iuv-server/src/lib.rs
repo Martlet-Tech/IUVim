@@ -24,12 +24,11 @@ use std::time::{Duration, Instant};
 use iuv_win::logger::log_line;
 
 use iuv_core::{
-    Effect, Engine, ImeState, InitialMode, Key, PunctMode, ScriptMode, SessionEnd, WidthMode,
+    Effect, Engine, ImeState, ImeMode, Key, ImePunct, ImeScript, SessionEnd, ImeWidth,
 };
 use iuv_proto::{
-    Candidate, CandidateKind, Caps, ClientConfig, ClientInfo, ImeMode, ImePunct, ImeScript,
-    ImeState as WireImeState, ImeWidth, KeyOutcome, KeyVerdict, PageInfo, Push, ResumeToken,
-    SessionEnd as WireSessionEnd, C2S, S2C,
+    Candidate, CandidateKind, Caps, ClientConfig, ClientInfo, KeyOutcome, KeyVerdict, PageInfo,
+    Push, ResumeToken, C2S, S2C,
 };
 use iuv_win::transport::{ConnHandler, ConnSender, Reply, Session};
 use iuv_win::ToolbarSignal;
@@ -256,8 +255,8 @@ impl Session for EngineSession {
                 epoch,
                 client_view: ClientConfig {
                     initial_mode: match cfg.initial_state.mode {
-                        InitialMode::Chinese => ImeMode::Chinese,
-                        InitialMode::English => ImeMode::English,
+                        ImeMode::Chinese => ImeMode::Chinese,
+                        ImeMode::English => ImeMode::English,
                     },
                 },
             });
@@ -580,9 +579,7 @@ fn proto_ctl_result(r: iuv_proto::CtlResult) -> iuv_win::CtlResult {
         iuv_proto::CtlResult::Ok { state } => iuv_win::CtlResult::Ok {
             state: core_ime_state(&state),
         },
-        iuv_proto::CtlResult::Err => iuv_win::CtlResult::Err {
-            msg: "客户端应用失败".into(),
-        },
+        iuv_proto::CtlResult::Err { msg } => iuv_win::CtlResult::Err { msg },
     }
 }
 
@@ -670,10 +667,10 @@ fn core_key(k: &iuv_proto::Key) -> Key {
     }
 }
 
-fn wire_session_end(e: SessionEnd) -> WireSessionEnd {
+fn wire_session_end(e: SessionEnd) -> SessionEnd {
     match e {
-        SessionEnd::Commit(text) => WireSessionEnd::Commit(text),
-        SessionEnd::Cancel => WireSessionEnd::Cancel,
+        SessionEnd::Commit(text) => SessionEnd::Commit(text),
+        SessionEnd::Cancel => SessionEnd::Cancel,
     }
 }
 
@@ -685,23 +682,23 @@ fn wire_candidate_kind(k: iuv_core::CandidateKind) -> CandidateKind {
     }
 }
 
-fn core_ime_state(s: &WireImeState) -> ImeState {
+fn core_ime_state(s: &ImeState) -> ImeState {
     ImeState {
         mode: match s.mode {
-            ImeMode::Chinese => InitialMode::Chinese,
-            ImeMode::English => InitialMode::English,
+            ImeMode::Chinese => ImeMode::Chinese,
+            ImeMode::English => ImeMode::English,
         },
         width: match s.width {
-            ImeWidth::Half => WidthMode::Half,
-            ImeWidth::Full => WidthMode::Full,
+            ImeWidth::Half => ImeWidth::Half,
+            ImeWidth::Full => ImeWidth::Full,
         },
         script: match s.script {
-            ImeScript::Simplified => ScriptMode::Simplified,
-            ImeScript::Traditional => ScriptMode::Traditional,
+            ImeScript::Simplified => ImeScript::Simplified,
+            ImeScript::Traditional => ImeScript::Traditional,
         },
         punct: match s.punct {
-            ImePunct::Chinese => PunctMode::Chinese,
-            ImePunct::English => PunctMode::English,
+            ImePunct::Chinese => ImePunct::Chinese,
+            ImePunct::English => ImePunct::English,
         },
     }
 }

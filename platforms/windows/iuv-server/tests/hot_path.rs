@@ -277,8 +277,8 @@ fn config_epoch_change_pushes_config_changed_once() {
         Ok(Push::ConfigChanged { epoch: e, client_view }) => {
             assert_eq!(e, 1);
             let expected = match iuv_core::Config::default().initial_state.mode {
-                iuv_core::InitialMode::Chinese => iuv_proto::ImeMode::Chinese,
-                iuv_core::InitialMode::English => iuv_proto::ImeMode::English,
+                iuv_core::ImeMode::Chinese => iuv_proto::ImeMode::Chinese,
+                iuv_core::ImeMode::English => iuv_proto::ImeMode::English,
             };
             assert_eq!(client_view.initial_mode, expected, "client_view = 引擎当前配置视图");
         }

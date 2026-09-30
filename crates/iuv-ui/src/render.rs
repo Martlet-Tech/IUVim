@@ -384,7 +384,7 @@ mod tests {
         TOOLBAR_PAD,
     };
     use iuv_core::{
-        ImeState, InitialMode, Orientation, PageInfo, PunctMode, ScriptMode, WidthMode,
+        ImeState, ImeMode, Orientation, PageInfo, ImePunct, ImeScript, ImeWidth,
     };
 
     fn renderer() -> TextRenderer {
@@ -720,10 +720,10 @@ mod tests {
         let spec = ToolbarSpec {
             icons: &icons,
             state: ImeState {
-                mode: InitialMode::English,
-                width: WidthMode::Half,
-                punct: PunctMode::English,
-                script: ScriptMode::Simplified,
+                mode: ImeMode::English,
+                width: ImeWidth::Half,
+                punct: ImePunct::English,
+                script: ImeScript::Simplified,
             },
             hover: Some(TB_GEAR),
             pressed: None,

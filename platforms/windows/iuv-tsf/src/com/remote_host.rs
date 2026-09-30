@@ -72,12 +72,7 @@ pub(crate) fn core_candidate(c: &iuv_proto::Candidate) -> iuv_core::Candidate {
 }
 
 pub(crate) fn core_page(p: iuv_proto::PageInfo) -> iuv_core::PageInfo {
-    iuv_core::PageInfo {
-        page: p.page as usize,
-        page_count: p.page_count as usize,
-        page_size: p.page_size as usize,
-        total: p.total as usize,
-    }
+    p // ③-2 归一后同一类型（透传，commit ③ 随转换函数退役一并清理）
 }
 
 pub(crate) fn core_session_end(e: iuv_proto::SessionEnd) -> SessionEnd {
@@ -608,7 +603,7 @@ fn win_to_proto_ctl_result(r: iuv_win::CtlResult) -> iuv_proto::CtlResult {
         iuv_win::CtlResult::Ok { state } => iuv_proto::CtlResult::Ok {
             state: wire_ime_state(&state),
         },
-        iuv_win::CtlResult::Err { msg: _ } => iuv_proto::CtlResult::Err,
+        iuv_win::CtlResult::Err { msg } => iuv_proto::CtlResult::Err { msg },
     }
 }
 
@@ -655,20 +650,20 @@ fn wire_key(k: &Key) -> iuv_proto::Key {
 fn wire_ime_state(s: &iuv_core::ImeState) -> WireImeState {
     WireImeState {
         mode: match s.mode {
-            iuv_core::InitialMode::Chinese => iuv_proto::ImeMode::Chinese,
-            iuv_core::InitialMode::English => iuv_proto::ImeMode::English,
+            iuv_core::ImeMode::Chinese => iuv_proto::ImeMode::Chinese,
+            iuv_core::ImeMode::English => iuv_proto::ImeMode::English,
         },
         width: match s.width {
-            iuv_core::WidthMode::Half => iuv_proto::ImeWidth::Half,
-            iuv_core::WidthMode::Full => iuv_proto::ImeWidth::Full,
+            iuv_core::ImeWidth::Half => iuv_proto::ImeWidth::Half,
+            iuv_core::ImeWidth::Full => iuv_proto::ImeWidth::Full,
         },
         script: match s.script {
-            iuv_core::ScriptMode::Simplified => iuv_proto::ImeScript::Simplified,
-            iuv_core::ScriptMode::Traditional => iuv_proto::ImeScript::Traditional,
+            iuv_core::ImeScript::Simplified => iuv_proto::ImeScript::Simplified,
+            iuv_core::ImeScript::Traditional => iuv_proto::ImeScript::Traditional,
         },
         punct: match s.punct {
-            iuv_core::PunctMode::Chinese => iuv_proto::ImePunct::Chinese,
-            iuv_core::PunctMode::English => iuv_proto::ImePunct::English,
+            iuv_core::ImePunct::Chinese => iuv_proto::ImePunct::Chinese,
+            iuv_core::ImePunct::English => iuv_proto::ImePunct::English,
         },
     }
 }

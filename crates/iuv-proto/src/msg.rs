@@ -9,6 +9,13 @@
 
 use serde::{Deserialize, Serialize};
 
+// ③-2 镜像归一：共享词汇类型沉底 iuv-data，此处唯 re-export——线上类型（按键/
+// 四态/用户库写/Ctl）在本 crate 不再有本地定义，收口清单 ③-2 落地。
+pub use iuv_data::{
+    CandidateKind, CtlCmd, CtlResult, ImeMode, ImePunct, ImeScript, ImeState, ImeWidth, Key,
+    PageInfo, SessionEnd, UserMutation,
+};
+
 // ===================== 握手（49 §4.4） =====================
 
 /// 认证密钥：安装时生成、用户配置目录 ACL 保护的共享 token（拍板 §6.4），SHA-256 长度。
@@ -48,48 +55,6 @@ impl Caps {
 pub struct BuildId(pub String);
 
 // ===================== 按键路径（49 §4.5） =====================
-
-/// 归一化按键（镜像 `iuv_core::Key` 变体集；语义见其注释）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Key {
-    Char(char),
-    /// Shift/CapsLock 字母（大写；仅 TSF 产生）。
-    ShiftChar(char),
-    Backspace,
-    Space,
-    Enter,
-    Esc,
-    Digit(u8),
-    Tab,
-    Delete,
-    Home,
-    End,
-    Insert,
-    PageUp,
-    PageDown,
-    Up,
-    Down,
-    Left,
-    Right,
-    F1,
-    F2,
-    F3,
-    F4,
-    F5,
-    F6,
-    F7,
-    F8,
-    F9,
-    F10,
-    F11,
-    F12,
-    /// Alt+←：与左侧相邻候选交换权重（仅 TSF 产生）。
-    SwapLeft,
-    /// Alt+→：与右侧相邻候选交换权重（仅 TSF 产生）。
-    SwapRight,
-    /// Shift+Delete：隐藏候选（仅 TSF 产生）。
-    HideCandidate,
-}
 
 /// 修饰键位（物理键未捕获到的修饰；ShiftChar 等隐式修饰不在此重复）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,38 +114,12 @@ pub struct KeyOutcome {
 
 // ===================== 候选 / 翻页（49 §4.5.3 瘦身版） =====================
 
-/// 候选种类（镜像 `iuv_core::CandidateKind`）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CandidateKind {
-    Sentence,
-    Word,
-    Char,
-}
-
 /// 线上候选：**只带客户端渲染需要的东西**。引擎侧字段（code/weight/seg_len/score）
 /// 不上线——诊断走服务端日志，不占热路径带宽（49 §4.5.3）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Candidate {
     pub text: String,
     pub kind: CandidateKind,
-}
-
-/// 翻页信息（usize → u32 定宽）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageInfo {
-    pub page: u32,
-    pub page_count: u32,
-    pub page_size: u32,
-    pub total: u32,
-}
-
-/// 会话结束方式（镜像 `iuv_core::SessionEnd`）。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionEnd {
-    /// 上屏文本。
-    Commit(String),
-    /// 取消，不上屏。
-    Cancel,
 }
 
 /// UI 快照推送载荷（仅 `Push::UiElement` / `KeyOutcome.candidates` 消费）。
@@ -203,67 +142,6 @@ pub struct Effect {
 
 // ===================== 四态 / 控制（镜像 iuv-win ipc::msg 语义） =====================
 
-/// 中/英（镜像 OPENCLOSE compartment 真相源）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImeMode {
-    #[default]
-    Chinese,
-    English,
-}
-
-/// 半角/全角。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImeWidth {
-    #[default]
-    Half,
-    Full,
-}
-
-/// 简体/繁体。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImeScript {
-    #[default]
-    Simplified,
-    Traditional,
-}
-
-/// 中文标点/英文标点。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImePunct {
-    #[default]
-    Chinese,
-    English,
-}
-
-/// 四态（镜像 `iuv_core::ImeState`；iuv-win codec 的 [u8;4] 线编码由 P4 收敛到本定义）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImeState {
-    pub mode: ImeMode,
-    pub width: ImeWidth,
-    pub script: ImeScript,
-    pub punct: ImePunct,
-}
-
-/// 控制面命令：工具栏点击 → 服务端 → 客户端应用（镜像 iuv-win `CtlCmd`，bool 语义同源：
-/// mode 0=中文 1=英文；width 0=半角 1=全角；script 0=简 1=繁；punct 0=中文 1=英文标点）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CtlCmd {
-    SetMode(bool),
-    SetWidth(bool),
-    SetScript(bool),
-    SetPunct(bool),
-    /// 服务端候选窗点击选词（row = 当前页内行号 0-8）：客户端以 Digit(row+1)
-    /// 键走远端会话（与数字键同语义），应用后应答。
-    CandidateClick(u8),
-}
-
-/// Ctl 应用结果（镜像 iuv-win `CtlResult`）：成功回**新**四态。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CtlResult {
-    Ok { state: ImeState },
-    Err,
-}
-
 /// 光标矩形（屏幕坐标，服务端定位候选窗用）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaretRect {
@@ -279,32 +157,6 @@ pub struct CaretRect {
 pub struct ClientConfig {
     /// 新实例初始中/英（客户端本地 OPENCLOSE 初值，28-initial-state-settings.md）。
     pub initial_mode: ImeMode,
-}
-
-// ===================== 用户库写（原数据面管道迁入） =====================
-
-/// 用户库写操作（镜像 `iuv_core::UserMutation`，对应 UserDict Swap/Set/Remove/Block）。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UserMutation {
-    /// Shift+←/→ 主动调权：a/b 两词互写对方合成权重（绝对值覆盖，双 code 签名）。
-    Swap {
-        a_code: String,
-        a_word: String,
-        a_eff: u32,
-        b_code: String,
-        b_word: String,
-        b_eff: u32,
-    },
-    /// 自造词/覆盖写入（upsert）。
-    Set {
-        code: String,
-        word: String,
-        adj: u32,
-    },
-    /// 移除用户库条目（隐藏自造词/覆盖 = 撤销自造）。
-    Remove { code: String, word: String },
-    /// 屏蔽基础库词条（Shift+Delete 隐藏）。
-    Block { code: String, word: String },
 }
 
 // ===================== 错误模型（49 §4.8） =====================

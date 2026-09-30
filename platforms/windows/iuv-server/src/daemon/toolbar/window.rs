@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use iuv_core::pet_physics::FAST_INTERVAL_MS;
-use iuv_core::{InitialMode, PetAnim, PetModel, PunctMode, ScriptMode, WidthMode};
+use iuv_core::{ImeMode, PetAnim, PetModel, ImePunct, ImeScript, ImeWidth};
 use iuv_ui::layout::Rect;
 use iuv_ui::{
     hit_test, pet_alpha_at, pet_mask_hit, render_composite, CompositeSpec, LayeredPetSpec,
@@ -648,12 +648,12 @@ impl ToolbarWindow {
                         .map(|i| i.state)
                         .unwrap_or_default();
                     match index {
-                        TB_MODE => ("中英", CtlCmd::SetMode(st.mode == InitialMode::Chinese)),
-                        TB_WIDTH => ("全半角", CtlCmd::SetWidth(st.width == WidthMode::Half)),
-                        TB_PUNCT => ("标点", CtlCmd::SetPunct(st.punct == PunctMode::Chinese)),
+                        TB_MODE => ("中英", CtlCmd::SetMode(st.mode == ImeMode::Chinese)),
+                        TB_WIDTH => ("全半角", CtlCmd::SetWidth(st.width == ImeWidth::Half)),
+                        TB_PUNCT => ("标点", CtlCmd::SetPunct(st.punct == ImePunct::Chinese)),
                         TB_SCRIPT => (
                             "简繁",
-                            CtlCmd::SetScript(st.script == ScriptMode::Simplified),
+                            CtlCmd::SetScript(st.script == ImeScript::Simplified),
                         ),
                         _ => return,
                     }
@@ -670,22 +670,22 @@ impl ToolbarWindow {
         let (label, target_cmd) = match action {
             crate::daemon::hotkey::GlobalAction::ToggleMode => {
                 let st = self.focused_state();
-                ("中英", CtlCmd::SetMode(st.mode == InitialMode::Chinese))
+                ("中英", CtlCmd::SetMode(st.mode == ImeMode::Chinese))
             }
             crate::daemon::hotkey::GlobalAction::ToggleWidth => {
                 let st = self.focused_state();
-                ("全半角", CtlCmd::SetWidth(st.width == WidthMode::Half))
+                ("全半角", CtlCmd::SetWidth(st.width == ImeWidth::Half))
             }
             crate::daemon::hotkey::GlobalAction::ToggleScript => {
                 let st = self.focused_state();
                 (
                     "简繁",
-                    CtlCmd::SetScript(st.script == ScriptMode::Simplified),
+                    CtlCmd::SetScript(st.script == ImeScript::Simplified),
                 )
             }
             crate::daemon::hotkey::GlobalAction::TogglePunct => {
                 let st = self.focused_state();
-                ("标点", CtlCmd::SetPunct(st.punct == PunctMode::Chinese))
+                ("标点", CtlCmd::SetPunct(st.punct == ImePunct::Chinese))
             }
             crate::daemon::hotkey::GlobalAction::OpenSettings => {
                 log::log_line("[hotkey] 打开设置页");

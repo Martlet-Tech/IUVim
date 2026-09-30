@@ -123,9 +123,9 @@ pub fn load_config() -> DaemonConfig {
     } else if let Some(b) = v.get("english_punctuation").and_then(|x| x.as_bool()) {
         // 旧顶层 english_punctuation 迁移兜底（新节点缺失时读旧键，见 28-initial-state-settings.md）
         cfg.initial_state.punct = if b {
-            iuv_core::PunctMode::English
+            iuv_core::ImePunct::English
         } else {
-            iuv_core::PunctMode::Chinese
+            iuv_core::ImePunct::Chinese
         };
     }
     if let Some(arr) = v.get("passthrough_apps").and_then(|x| x.as_array()) {
@@ -295,10 +295,10 @@ mod tests {
             candidate_orientation: "horizontal".into(),
             page_size: 7,
             initial_state: iuv_core::ImeState {
-                mode: iuv_core::InitialMode::Chinese,
-                width: iuv_core::WidthMode::Half,
-                script: iuv_core::ScriptMode::Simplified,
-                punct: iuv_core::PunctMode::English,
+                mode: iuv_core::ImeMode::Chinese,
+                width: iuv_core::ImeWidth::Half,
+                script: iuv_core::ImeScript::Simplified,
+                punct: iuv_core::ImePunct::English,
             },
             passthrough_apps: vec!["notepad.exe".to_string()],
             candidate_owner_apps: vec!["wow.exe".to_string()],
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(cfg.page_size, 7);
         assert_eq!(
             cfg.initial_state.punct,
-            iuv_core::PunctMode::English,
+            iuv_core::ImePunct::English,
             "英文标点往返"
         );
         assert_eq!(cfg.passthrough_apps, vec!["notepad.exe".to_string()]);
@@ -373,12 +373,12 @@ mod tests {
         let cfg = load_config();
         assert_eq!(
             cfg.initial_state.punct,
-            iuv_core::PunctMode::English,
+            iuv_core::ImePunct::English,
             "旧键 true → 英文标点"
         );
         assert_eq!(
             cfg.initial_state.mode,
-            iuv_core::InitialMode::Chinese,
+            iuv_core::ImeMode::Chinese,
             "其余默认"
         );
         assert_eq!(cfg.theme, "dark");

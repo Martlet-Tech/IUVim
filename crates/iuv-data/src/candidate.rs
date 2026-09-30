@@ -10,3 +10,14 @@ pub enum CandidateKind {
     Word,
     Char,
 }
+
+impl CandidateKind {
+    /// 按词长定种类：≥2 字 → Word，否则 Char（整句/原文兜底候选由调用方显式传）。
+    pub fn for_word(text: &str) -> CandidateKind {
+        if text.chars().count() >= 2 {
+            CandidateKind::Word
+        } else {
+            CandidateKind::Char
+        }
+    }
+}

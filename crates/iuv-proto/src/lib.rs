@@ -6,8 +6,8 @@
 //!    方向即类型，穷尽 match；载荷一律 serde 派生（拍板：全量 serde，见 49 §6.5）；
 //! 3. **stream_id 分配**（[`stream`]）：客户端偶数 / 服务端奇数，回绕跳过在途号。
 //!
-//! 线上类型（Key/ImeState/PageInfo…）在这里拥有 wire 副本（与 iuv-core 语义镜像），
-//! P3 接线时由 engine/client 侧做 core ↔ proto 映射；最终态按 49 §3.1 收敛为唯一定义。
+//! 共享线上类型（Key/ImeState/PageInfo/UserMutation/Ctl…）自 ③-2 起沉底 iuv-data，
+//! 本 crate re-export（此前 wire 副本 + 手写 core↔proto 映射已删）。
 //!
 //! 传输无关：本 crate 不接触任何 Win32/管道 API，mac/linux 换传输不改这里。
 
@@ -27,9 +27,9 @@ pub use msg::{
 pub use stream::StreamIdAlloc;
 
 /// 协议版本下限（握手协商用，49 §4.4）。破坏性线格式变更 +1。
-pub const PROTO_MIN: u16 = 1;
+pub const PROTO_MIN: u16 = 2;
 /// 协议版本上限。区间 [PROTO_MIN, PROTO_MAX] 允许前后兼容窗口。
-pub const PROTO_MAX: u16 = 1;
+pub const PROTO_MAX: u16 = 2;
 
 /// 版本协商：取双方支持区间的**最大共同值**（= 双方上限的较小者）；无交集 →
 /// [`msg::ProtoError::VersionMismatch`]。

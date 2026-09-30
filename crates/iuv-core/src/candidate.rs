@@ -1,12 +1,7 @@
-//! 候选类型。W0 完整实现，冻结。
+//! 候选类型。W0 完整实现，冻结。③-2 镜像归一后 `CandidateKind` 沉底 iuv-data，
+//! 经本模块 re-export 维持 `crate::candidate::` 路径。
 
-/// 候选种类。M3+ 可扩：English / Symbol…
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CandidateKind {
-    Sentence,
-    Word,
-    Char,
-}
+pub use iuv_data::CandidateKind;
 
 /// 一个候选。
 #[derive(Clone, Debug, PartialEq)]
@@ -24,17 +19,6 @@ pub struct Candidate {
     /// （Σ(log_weight + λ)）。未打分路径（原文兜底等）恒 0.0，
     /// 仅诊断展示用，不参与排序（整句保底置顶 + 类别序结构不变）。
     pub score: f64,
-}
-
-impl CandidateKind {
-    /// 按词长定种类：≥2 字 → Word，否则 Char（整句/原文兜底候选由调用方显式传）。
-    pub(crate) fn for_word(text: &str) -> CandidateKind {
-        if text.chars().count() >= 2 {
-            CandidateKind::Word
-        } else {
-            CandidateKind::Char
-        }
-    }
 }
 
 impl Candidate {
