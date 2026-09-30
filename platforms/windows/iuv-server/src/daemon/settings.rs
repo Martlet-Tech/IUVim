@@ -986,6 +986,17 @@ impl SettingsApp {
     fn advanced_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("高级");
         ui.add_space(4.0);
+        // 2026-09-30：外层 ScrollArea——第三次卡片（全屏行为）曾被挤出 640×480 固定
+        // 窗口可视区且无滚动（第二次踩坑记录，修法同 keymap_tab 2026-08-28 注释）。
+        egui::ScrollArea::vertical()
+            .id_salt("advanced_scroll")
+            .max_height(ui.available_height() - 12.0)
+            .show(ui, |ui| {
+                self.advanced_tab_content(ui);
+            });
+    }
+
+    fn advanced_tab_content(&mut self, ui: &mut egui::Ui) {
         ui.columns(2, |cols| {
             // 左：按键直通（纯单机游戏整进程隐身——该进程内无法输中文）
             card(&mut cols[0], |ui| {
