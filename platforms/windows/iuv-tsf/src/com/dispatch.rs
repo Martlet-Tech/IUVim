@@ -8,7 +8,7 @@ use iuv_core::Session;
 use iuv_proto::KeyOutcome;
 
 use crate::com::remote_host::{
-    backend_config, core_candidate, core_page, core_session_end, remote,
+    backend_config, core_candidate, remote,
 };
 use crate::composition::Composition;
 use crate::log::{self, log_line, perf_record_with, perf_tick};
@@ -102,12 +102,12 @@ pub(crate) fn merge_outcome(
         e.all_candidates = v.iter().map(core_candidate).collect();
     }
     if let Some(p) = outcome.page {
-        e.page = core_page(p);
+        e.page = p;
     }
     if let Some(s) = outcome.selected {
         e.selected = s as usize;
     }
-    e.end = outcome.end.map(core_session_end);
+    e.end = outcome.end;
     let ended = e.end.is_some();
     (e, ended)
 }

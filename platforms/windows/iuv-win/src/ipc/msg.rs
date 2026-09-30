@@ -97,30 +97,9 @@ pub fn ctl_pipe_name(pid: u32, tid: u32) -> String {
     format!("{CTL_PIPE_PREFIX}-{pid}-{tid}")
 }
 
-/// daemon → TSF 的控制命令（按需连接 per-实例管道，32-status-toolbar.md §4.2）。
-/// 每字段一变体（无线字段序数协议）：true = 切到第二态（英/全/繁/英标），false = 第一态。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CtlCmd {
-    /// 中/英（mode 走 OPENCLOSE compartment 真相源，TSF 侧特殊处理）。
-    SetMode(bool),
-    /// 半角/全角。
-    SetWidth(bool),
-    /// 简体/繁体。
-    SetScript(bool),
-    /// 中文标点/英文标点。
-    SetPunct(bool),
-    /// 服务端候选窗点击选词（row = 当前页内行号 0-8；M10 ③ 点击选词闭环）。
-    CandidateClick(u8),
-}
-
-/// TSF 应用命令后的响应（§6.5 点击协议：daemon 按结果更新实例表 + 按钮图标）。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CtlResult {
-    /// 应用成功：返回**新**四态（成功后 TSF 还会 StateSync 上报，双路径一致）。
-    Ok { state: ImeState },
-    /// 应用失败（写 OPENCLOSE 失败等）。
-    Err { msg: String },
-}
+// ③-2 归一：CtlCmd/CtlResult 沉底 iuv-data 全仓唯一定义（bool 语义注释见其定义处），
+// 此处唯 re-export 维持 `ipc::msg::` 路径。
+pub use iuv_data::{CtlCmd, CtlResult};
 
 #[cfg(test)]
 mod tests {

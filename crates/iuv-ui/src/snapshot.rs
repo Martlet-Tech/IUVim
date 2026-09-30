@@ -35,7 +35,7 @@ pub fn effect_to_snapshot(e: &Effect) -> UiSnapshot {
         candidates: e.candidates.iter().map(|c| c.text.clone()).collect(),
         all_candidates: e.all_candidates.iter().map(|c| c.text.clone()).collect(),
         selected: e.selected,
-        page: e.page.clone(),
+        page: e.page,
         orientation: Orientation::default(),
     }
 }

@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use iuv_core::{Config, Key, SessionEnd};
+use iuv_core::{Config, Key};
 use iuv_proto::{
     Auth, ImeState as WireImeState, KeyOutcome, KeyPhase, KeyToken, KeyVerdict, Push,
     ResumeToken, C2S, S2C,
@@ -60,26 +60,11 @@ pub(crate) fn wire_mods(shift: bool, ctrl: bool, alt: bool) -> iuv_proto::Mods {
 pub(crate) fn core_candidate(c: &iuv_proto::Candidate) -> iuv_core::Candidate {
     iuv_core::Candidate::new(
         c.text.clone(),
-        match c.kind {
-            iuv_proto::CandidateKind::Sentence => iuv_core::CandidateKind::Sentence,
-            iuv_proto::CandidateKind::Word => iuv_core::CandidateKind::Word,
-            iuv_proto::CandidateKind::Char => iuv_core::CandidateKind::Char,
-        },
+        c.kind,
         String::new(),
         0,
         0,
     )
-}
-
-pub(crate) fn core_page(p: iuv_proto::PageInfo) -> iuv_core::PageInfo {
-    p // ③-2 归一后同一类型（透传，commit ③ 随转换函数退役一并清理）
-}
-
-pub(crate) fn core_session_end(e: iuv_proto::SessionEnd) -> SessionEnd {
-    match e {
-        iuv_proto::SessionEnd::Commit(text) => SessionEnd::Commit(text),
-        iuv_proto::SessionEnd::Cancel => SessionEnd::Cancel,
-    }
 }
 
 /// 取远端句柄（未启动/连接失败 → None = 调用方透明放行）。
@@ -144,11 +129,11 @@ pub(crate) fn start_remote_load() {
 fn ctl_req_handler() -> iuv_win::transport::ServerReqHandler {
     Arc::new(|req| match req {
         S2C::Ctl { cmd } => {
-            let win_cmd = proto_to_win_ctl_cmd(cmd);
-            let r = crate::ctl::submit_cmd(win_cmd).unwrap_or(iuv_win::CtlResult::Err {
+            // ③-2 归一：CtlCmd/CtlResult 沉底 iuv-data，win/proto 同型直通。
+            let r = crate::ctl::submit_cmd(cmd).unwrap_or(iuv_win::CtlResult::Err {
                 msg: "无控制端点（未激活？）".into(),
             });
-            C2S::CtlResult(win_to_proto_ctl_result(r))
+            C2S::CtlResult(r)
         }
         _ => C2S::Err(iuv_proto::ProtoError::Unauthenticated),
     })
@@ -315,7 +300,7 @@ impl RemoteHandle {
     fn send_key(&self, key: Key, mods: iuv_proto::Mods, phase: KeyPhase) -> Option<KeyOutcome> {
         let full = self.degraded.load(Ordering::Relaxed);
         let resp = self.request(C2S::Key {
-            key: wire_key(&key),
+            key,
             mods,
             token: KeyToken { seq: 0, phase },
             full,
@@ -352,7 +337,7 @@ impl RemoteHandle {
 
     /// 四态同步（客户端是 OPENCLOSE 真相源）：与上次相同则跳过（省一次往返）。
     pub(crate) fn sync_state(&self, state: &iuv_core::ImeState) {
-        let wire = wire_ime_state(state);
+        let wire = *state;
         {
             let mut last = self.last_state.lock().unwrap_or_else(|e| e.into_inner());
             if last.as_ref() == Some(&wire) {
@@ -586,87 +571,6 @@ fn spawn_server_process() -> bool {
     }
 }
 
-/// proto `CtlCmd` → win（ctl 端点消费 win 形；镜像显式，防字段序漂移）。
-fn proto_to_win_ctl_cmd(c: iuv_proto::CtlCmd) -> iuv_win::CtlCmd {
-    match c {
-        iuv_proto::CtlCmd::SetMode(v) => iuv_win::CtlCmd::SetMode(v),
-        iuv_proto::CtlCmd::SetWidth(v) => iuv_win::CtlCmd::SetWidth(v),
-        iuv_proto::CtlCmd::SetScript(v) => iuv_win::CtlCmd::SetScript(v),
-        iuv_proto::CtlCmd::SetPunct(v) => iuv_win::CtlCmd::SetPunct(v),
-        iuv_proto::CtlCmd::CandidateClick(v) => iuv_win::CtlCmd::CandidateClick(v),
-    }
-}
-
-/// win `CtlResult` → proto（应答回服务端）。
-fn win_to_proto_ctl_result(r: iuv_win::CtlResult) -> iuv_proto::CtlResult {
-    match r {
-        iuv_win::CtlResult::Ok { state } => iuv_proto::CtlResult::Ok {
-            state: wire_ime_state(&state),
-        },
-        iuv_win::CtlResult::Err { msg } => iuv_proto::CtlResult::Err { msg },
-    }
-}
-
-/// 核心 `Key` → 线上 `Key`（镜像变体集；与 iuv-server 的反向转换成对，P4 收敛后消失）。
-fn wire_key(k: &Key) -> iuv_proto::Key {
-    match *k {
-        Key::Char(c) => iuv_proto::Key::Char(c),
-        Key::ShiftChar(c) => iuv_proto::Key::ShiftChar(c),
-        Key::Backspace => iuv_proto::Key::Backspace,
-        Key::Space => iuv_proto::Key::Space,
-        Key::Enter => iuv_proto::Key::Enter,
-        Key::Esc => iuv_proto::Key::Esc,
-        Key::Digit(n) => iuv_proto::Key::Digit(n),
-        Key::Tab => iuv_proto::Key::Tab,
-        Key::Delete => iuv_proto::Key::Delete,
-        Key::Home => iuv_proto::Key::Home,
-        Key::End => iuv_proto::Key::End,
-        Key::Insert => iuv_proto::Key::Insert,
-        Key::PageUp => iuv_proto::Key::PageUp,
-        Key::PageDown => iuv_proto::Key::PageDown,
-        Key::Up => iuv_proto::Key::Up,
-        Key::Down => iuv_proto::Key::Down,
-        Key::Left => iuv_proto::Key::Left,
-        Key::Right => iuv_proto::Key::Right,
-        Key::F1 => iuv_proto::Key::F1,
-        Key::F2 => iuv_proto::Key::F2,
-        Key::F3 => iuv_proto::Key::F3,
-        Key::F4 => iuv_proto::Key::F4,
-        Key::F5 => iuv_proto::Key::F5,
-        Key::F6 => iuv_proto::Key::F6,
-        Key::F7 => iuv_proto::Key::F7,
-        Key::F8 => iuv_proto::Key::F8,
-        Key::F9 => iuv_proto::Key::F9,
-        Key::F10 => iuv_proto::Key::F10,
-        Key::F11 => iuv_proto::Key::F11,
-        Key::F12 => iuv_proto::Key::F12,
-        Key::SwapLeft => iuv_proto::Key::SwapLeft,
-        Key::SwapRight => iuv_proto::Key::SwapRight,
-        Key::HideCandidate => iuv_proto::Key::HideCandidate,
-    }
-}
-
-/// 核心 → 线上四态（iuv-server 有反向转换；此处 TSF 侧发送方向）。
-fn wire_ime_state(s: &iuv_core::ImeState) -> WireImeState {
-    WireImeState {
-        mode: match s.mode {
-            iuv_core::ImeMode::Chinese => iuv_proto::ImeMode::Chinese,
-            iuv_core::ImeMode::English => iuv_proto::ImeMode::English,
-        },
-        width: match s.width {
-            iuv_core::ImeWidth::Half => iuv_proto::ImeWidth::Half,
-            iuv_core::ImeWidth::Full => iuv_proto::ImeWidth::Full,
-        },
-        script: match s.script {
-            iuv_core::ImeScript::Simplified => iuv_proto::ImeScript::Simplified,
-            iuv_core::ImeScript::Traditional => iuv_proto::ImeScript::Traditional,
-        },
-        punct: match s.punct {
-            iuv_core::ImePunct::Chinese => iuv_proto::ImePunct::Chinese,
-            iuv_core::ImePunct::English => iuv_proto::ImePunct::English,
-        },
-    }
-}
 
 #[cfg(test)]
 mod tests {

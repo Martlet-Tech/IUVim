@@ -38,10 +38,10 @@ fn make_snapshot(page: usize) -> UiSnapshot {
         all_candidates: all,
         selected: page % PAGES[page].len(),
         page: PageInfo {
-            page,
-            page_count: PAGES.len(),
-            page_size: PAGES[page].len(),
-            total: PAGES.len() * PAGES[0].len(),
+            page: page as u32,
+            page_count: PAGES.len() as u32,
+            page_size: PAGES[page].len() as u32,
+            total: (PAGES.len() * PAGES[0].len()) as u32,
         },
         orientation: Orientation::default(),
     }

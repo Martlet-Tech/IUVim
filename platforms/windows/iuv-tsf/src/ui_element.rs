@@ -217,7 +217,7 @@ impl CandidateElement {
         // （2026-08-16 实测：页 0 正常、翻页消失、翻回恢复；QQ 全局索引翻页正常）。
         self.selected
             .set((snap.page.page as usize * ps + snap.selected.min(ps - 1)) as u32);
-        self.page.set(snap.page.page as u32);
+        self.page.set(snap.page.page);
         let total = self.candidates.borrow().len();
         self.page_count.set((total.div_ceil(ps)).max(1) as u32);
         self.page_size.set(ps as u32);

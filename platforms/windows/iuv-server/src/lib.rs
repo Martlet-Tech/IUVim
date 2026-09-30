@@ -23,13 +23,8 @@ use std::time::{Duration, Instant};
 
 use iuv_win::logger::log_line;
 
-use iuv_core::{
-    Effect, Engine, ImeState, ImeMode, Key, ImePunct, ImeScript, SessionEnd, ImeWidth,
-};
-use iuv_proto::{
-    Candidate, CandidateKind, Caps, ClientConfig, ClientInfo, KeyOutcome, KeyVerdict, PageInfo,
-    Push, ResumeToken, C2S, S2C,
-};
+use iuv_core::{Effect, Engine, ImeState, Key};
+use iuv_proto::{Candidate, Caps, ClientConfig, ClientInfo, KeyOutcome, KeyVerdict, Push, ResumeToken, C2S, S2C};
 use iuv_win::transport::{ConnHandler, ConnSender, Reply, Session};
 use iuv_win::ToolbarSignal;
 
@@ -254,10 +249,7 @@ impl Session for EngineSession {
             reply.push(Push::ConfigChanged {
                 epoch,
                 client_view: ClientConfig {
-                    initial_mode: match cfg.initial_state.mode {
-                        ImeMode::Chinese => ImeMode::Chinese,
-                        ImeMode::English => ImeMode::English,
-                    },
+                    initial_mode: cfg.initial_state.mode,
                 },
             });
             // 服务端候选窗主题热载（与客户端 set_theme 同语义）。
@@ -269,7 +261,7 @@ impl Session for EngineSession {
         match req {
             C2S::Key { key, full, .. } => {
                 let t0 = std::time::Instant::now();
-                let effect = self.on_key(core_key(&key));
+                let effect = self.on_key(key);
                 let outcome = self.outcome(&effect, full);
                 reply.respond(S2C::KeyResult(KeyVerdict::Consumed(outcome)));
                 // P4 服务端自渲染：Effect → 快照 → 候选窗命令（抑制命中的连接静默）。
@@ -296,14 +288,14 @@ impl Session for EngineSession {
                 self.hide_candwin();
                 reply.respond(S2C::Ok);
             }
-            C2S::CandwinHide { .. } => {
+            C2S::CandwinHide => {
                 // 焦点切换不打断会话（2026-08-21 原则）的远端对应：客户端本地窗
                 // 隐藏时同步隐藏服务端窗口，会话保留，回焦后下键经 sync_candwin 重显。
                 self.hide_candwin();
                 reply.respond(S2C::Ok);
             }
             C2S::ImeState(s) => {
-                let core = core_ime_state(&s);
+                let core = s;
                 *self.runtime.lock().unwrap_or_else(|e| e.into_inner()) = core;
                 // ②toolbar 信号迁入：四态变化 → StateChanged。
                 if let Some((_, tb)) = &self.ui {
@@ -333,7 +325,7 @@ impl Session for EngineSession {
             C2S::UserMutation(m) => {
                 // M10 ②：客户端用户库变更 → 引擎应用（写盘）→ SHM 发布
                 //（本地模式 TSF 实例经共享段保持一致，混合模式过渡）。
-                self.engine.apply_user_mutation(&core_user_mutation(&m));
+                self.engine.apply_user_mutation(&m);
                 if let Some(u) = self.engine.user_dict() {
                     let mut shm = self.shm.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(w) = shm.as_mut() {
@@ -449,7 +441,7 @@ impl EngineSession {
             list.iter()
                 .map(|c| Candidate {
                     text: c.text.clone(),
-                    kind: wire_candidate_kind(c.kind),
+                    kind: c.kind,
                 })
                 .collect::<Vec<_>>()
         };
@@ -477,15 +469,10 @@ impl EngineSession {
             eaten: true,
             composition,
             reading,
-            end: effect.end.clone().map(wire_session_end),
+            end: effect.end.clone(),
             candidates,
             all_candidates,
-            page: self.caps.has(Caps::UIELEMENT).then_some(PageInfo {
-                page: effect.page.page as u32,
-                page_count: effect.page.page_count as u32,
-                page_size: effect.page.page_size as u32,
-                total: effect.page.total as u32,
-            }),
+            page: self.caps.has(Caps::UIELEMENT).then_some(effect.page),
             selected: self.caps.has(Caps::UIELEMENT).then_some(effect.selected as u32),
         }
     }
@@ -556,149 +543,12 @@ impl daemon::toolbar::CtlDispatch for TransportCtlDispatcher {
         let Some(sender) = sender else {
             return Err("目标实例连接不存在（已断开？）".into());
         };
-        // proto CtlCmd 与 win CtlCmd 镜像转换（显式，防字段序漂移）
-        let proto_cmd = match cmd {
-            iuv_win::CtlCmd::SetMode(v) => iuv_proto::CtlCmd::SetMode(*v),
-            iuv_win::CtlCmd::SetWidth(v) => iuv_proto::CtlCmd::SetWidth(*v),
-            iuv_win::CtlCmd::SetScript(v) => iuv_proto::CtlCmd::SetScript(*v),
-            iuv_win::CtlCmd::SetPunct(v) => iuv_proto::CtlCmd::SetPunct(*v),
-            // 工具栏/热键路径不会产生点击（点击由候选窗 UI 线程直发 proto 变体）。
-            iuv_win::CtlCmd::CandidateClick(row) => iuv_proto::CtlCmd::CandidateClick(*row),
-        };
-        match sender.request(S2C::Ctl { cmd: proto_cmd }, Duration::from_secs(3)) {
-            Ok(C2S::CtlResult(r)) => Ok(proto_ctl_result(r)),
+        // ③-2 归一：CtlCmd/CtlResult 沉底 iuv-data，win/proto 同型直通。
+        match sender.request(S2C::Ctl { cmd: *cmd }, Duration::from_secs(3)) {
+            Ok(C2S::CtlResult(r)) => Ok(r),
             Ok(_) => Err("Ctl 应答类型错误".into()),
             Err(e) => Err(e.to_string()),
         }
     }
 }
 
-/// proto `CtlResult` → win/core 镜像（工具栏消费 core ImeState）。
-fn proto_ctl_result(r: iuv_proto::CtlResult) -> iuv_win::CtlResult {
-    match r {
-        iuv_proto::CtlResult::Ok { state } => iuv_win::CtlResult::Ok {
-            state: core_ime_state(&state),
-        },
-        iuv_proto::CtlResult::Err { msg } => iuv_win::CtlResult::Err { msg },
-    }
-}
-
-/// 线上 `UserMutation` → 核心（镜像，②控制面迁移期）。
-fn core_user_mutation(m: &iuv_proto::UserMutation) -> iuv_core::UserMutation {
-    use iuv_proto::UserMutation as M;
-    match *m {
-        M::Swap {
-            ref a_code,
-            ref a_word,
-            a_eff,
-            ref b_code,
-            ref b_word,
-            b_eff,
-        } => iuv_core::UserMutation::Swap {
-            a_code: a_code.clone(),
-            a_word: a_word.clone(),
-            a_eff,
-            b_code: b_code.clone(),
-            b_word: b_word.clone(),
-            b_eff,
-        },
-        M::Set {
-            ref code,
-            ref word,
-            adj,
-        } => iuv_core::UserMutation::Set {
-            code: code.clone(),
-            word: word.clone(),
-            adj,
-        },
-        M::Remove {
-            ref code,
-            ref word,
-        } => iuv_core::UserMutation::Remove {
-            code: code.clone(),
-            word: word.clone(),
-        },
-        M::Block {
-            ref code,
-            ref word,
-        } => iuv_core::UserMutation::Block {
-            code: code.clone(),
-            word: word.clone(),
-        },
-    }
-}
-
-/// 线上 `Key` → 核心 `Key`（镜像变体集，P3b 后 engine 直接消费 proto 类型时删除）。
-fn core_key(k: &iuv_proto::Key) -> Key {
-    match *k {
-        iuv_proto::Key::Char(c) => Key::Char(c),
-        iuv_proto::Key::ShiftChar(c) => Key::ShiftChar(c),
-        iuv_proto::Key::Backspace => Key::Backspace,
-        iuv_proto::Key::Space => Key::Space,
-        iuv_proto::Key::Enter => Key::Enter,
-        iuv_proto::Key::Esc => Key::Esc,
-        iuv_proto::Key::Digit(n) => Key::Digit(n),
-        iuv_proto::Key::Tab => Key::Tab,
-        iuv_proto::Key::Delete => Key::Delete,
-        iuv_proto::Key::Home => Key::Home,
-        iuv_proto::Key::End => Key::End,
-        iuv_proto::Key::Insert => Key::Insert,
-        iuv_proto::Key::PageUp => Key::PageUp,
-        iuv_proto::Key::PageDown => Key::PageDown,
-        iuv_proto::Key::Up => Key::Up,
-        iuv_proto::Key::Down => Key::Down,
-        iuv_proto::Key::Left => Key::Left,
-        iuv_proto::Key::Right => Key::Right,
-        iuv_proto::Key::F1 => Key::F1,
-        iuv_proto::Key::F2 => Key::F2,
-        iuv_proto::Key::F3 => Key::F3,
-        iuv_proto::Key::F4 => Key::F4,
-        iuv_proto::Key::F5 => Key::F5,
-        iuv_proto::Key::F6 => Key::F6,
-        iuv_proto::Key::F7 => Key::F7,
-        iuv_proto::Key::F8 => Key::F8,
-        iuv_proto::Key::F9 => Key::F9,
-        iuv_proto::Key::F10 => Key::F10,
-        iuv_proto::Key::F11 => Key::F11,
-        iuv_proto::Key::F12 => Key::F12,
-        iuv_proto::Key::SwapLeft => Key::SwapLeft,
-        iuv_proto::Key::SwapRight => Key::SwapRight,
-        iuv_proto::Key::HideCandidate => Key::HideCandidate,
-    }
-}
-
-fn wire_session_end(e: SessionEnd) -> SessionEnd {
-    match e {
-        SessionEnd::Commit(text) => SessionEnd::Commit(text),
-        SessionEnd::Cancel => SessionEnd::Cancel,
-    }
-}
-
-fn wire_candidate_kind(k: iuv_core::CandidateKind) -> CandidateKind {
-    match k {
-        iuv_core::CandidateKind::Sentence => CandidateKind::Sentence,
-        iuv_core::CandidateKind::Word => CandidateKind::Word,
-        iuv_core::CandidateKind::Char => CandidateKind::Char,
-    }
-}
-
-fn core_ime_state(s: &ImeState) -> ImeState {
-    ImeState {
-        mode: match s.mode {
-            ImeMode::Chinese => ImeMode::Chinese,
-            ImeMode::English => ImeMode::English,
-        },
-        width: match s.width {
-            ImeWidth::Half => ImeWidth::Half,
-            ImeWidth::Full => ImeWidth::Full,
-        },
-        script: match s.script {
-            ImeScript::Simplified => ImeScript::Simplified,
-            ImeScript::Traditional => ImeScript::Traditional,
-        },
-        punct: match s.punct {
-            ImePunct::Chinese => ImePunct::Chinese,
-            ImePunct::English => ImePunct::English,
-        },
-    }
-}

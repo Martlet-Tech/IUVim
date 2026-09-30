@@ -390,7 +390,7 @@ mod tests {
     fn renderer() -> TextRenderer {
         TextRenderer::new()
     }
-    fn snap(reading: &str, candidates: &[&str], page: usize, page_count: usize) -> UiSnapshot {
+    fn snap(reading: &str, candidates: &[&str], page: u32, page_count: u32) -> UiSnapshot {
         UiSnapshot {
             reading: reading.to_string(),
             candidates: candidates.iter().map(|s| s.to_string()).collect(),
