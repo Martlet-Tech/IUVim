@@ -1000,3 +1000,10 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
   - **遗留**：iuv-win `ipc/msg.rs::Request`（Swap/Set/Remove/Block，a_adj 命名的
     UserMutation 第三镜像 + 手写 codec）：②迁移后数据面疑似死代码，待核实旧管道
     存活消费者后另立删除任务；③-3 混合模式过渡代码与 49 号任务书终稿收尾。
+- [x] **iuv-server 单实例守卫（2026-09-30，③-2 部署时真机暴露）**:
+  - **现象**：m10-deploy 后进程表 3 个 iuv-server（3 秒内相继拉起）——计划任务
+    Start-ScheduledTask 与多个 TSF 客户端首连失败路径 spawn_server_process 并发；
+    命名管道支持多实例创建，无守卫即多 server 瓜分连接（工具栏/引擎分家）。
+  - **修复**：main 入口 CreateMutexW("iuv-server-singleton")——持有者存续 = 进程
+    生命周期，退出自动释放；后来者记日志即退（守卫前置，不浪费引擎加载）。
+  - **验证**：重部署后进程表恰 1 个 iuv-server。

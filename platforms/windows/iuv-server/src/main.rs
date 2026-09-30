@@ -22,6 +22,20 @@ const OPENCC_FILENAME: &str = "iuv.opencc";
 
 fn main() {
     iuv_win::logger::init_logger("iuv-server.log", true);
+    // 单实例守卫：部署（计划任务 Start-ScheduledTask）与客户端首连拉起
+    //（remote_host::spawn_server_process）在部署/重启瞬间并发，命名管道支持多
+    // 实例创建——无守卫会抢出多个 server 瓜分连接（工具栏/引擎分家）。后来者
+    // 记日志即退（退出自动释放互斥体；持有者存续期 = 进程生命周期，无需显式
+    // Release/Close）。
+    unsafe {
+        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows::Win32::System::Threading::CreateMutexW;
+        let _ = CreateMutexW(None, false, windows::core::w!("iuv-server-singleton"));
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            log_line("已有 iuv-server 实例在位 → 本实例退出（单实例守卫）");
+            return;
+        }
+    }
     // P4 服务端自渲染候选窗：PMv2（GetDpiForMonitor 按 caret 所在显示器返回
     // 真 per-monitor DPI；窗口创建前置位，晚于任何窗口创建则无效）。
     // SAFETY: 标准一次性进程属性设置；失败（已设置/不支持）忽略。
