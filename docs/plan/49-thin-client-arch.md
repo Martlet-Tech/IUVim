@@ -281,9 +281,15 @@ pub enum ProtoError {
 | P3 | 热路径打通（§4.5.1 去重 + §4.5.3 瘦身 + 截止时间 + 超时后全量重同步）。**P3a 已落地**（2026-09-27）：`iuv-server.exe`（引擎托管 + KeyOutcome 瘦身 + 增量基线 + full 重同步 + UiElement 过渡推送）+ 6 项无头测试；**P3b 已落地**（2026-09-27）：TSF 改薄客户端——`com/remote_host.rs`（进程级 RemoteHandle：
 Test/KeyDown 单槽去重、20ms 截止、Deadline→degraded→full 重同步、断线透明降级 A、
 四态同步、客户端配置副本），config `use_engine_server` 开关 A/B 切换（默认 false=现状）。
-路由判定（keymap/passthrough/全角/标点）**留客户端**；待真机打字回归 | 能打字（真机），往返数 = 1/键；服务端侧契约已全测 |
-| P4 | 四套旧 IPC 收敛至协议；`daemon_poll_tick` 从按键路径**删除**（改 PUSH） | 按键路径零轮询。**首切片已落地（2026-09-27）**：配置热载改服务端持有（iuv-server `config_watch` 后台监视 config.json → 引擎热载 + 纪元自增，`EngineSession` 每请求比对捎带 `Push::ConfigChanged`，传输层零改动）+ 远端模式按键路径零轮询（`poll_client` 删除，主题收敛 = 进程内原子量比较）。**剩余**：服务端自渲染候选窗（候选字段裁撤）、ctl/toolbar signal 收敛（依赖 daemon→server 演进）、用户库 SHM 写者移交 |
-| P5 | §4.5.4 失效语义落地（方案 C+A，依赖 §4.4 `ResumeToken` 重绑） | 杀服务端进程仍能优雅降级/重生 |
+路由判定（keymap/passthrough/全角/标点）**留客户端**。**真机回归通过（2026-09-27）**；③-1 已删 A/B 开关与本地路径，远端唯一形态 | 能打字（真机），往返数 = 1/键；服务端侧契约已全测 ✅ |
+| P4 | 四套旧 IPC 收敛至协议；`daemon_poll_tick` 从按键路径**删除**（改 PUSH） | **全部落地（2026-09-27/30，真机回归通过）**：配置热载改服务端持有（`config_watch` + `Push::ConfigChanged` 捎带）；按键路径零轮询；服务端自渲染候选窗 + 候选载荷裁撤；daemon→server 全量迁移（工具栏/设置页/全局热键/SHM 唯一写者）+ UserMutation 接线 + transport 控制面（S2C::Ctl）+ candwin 消息泵。**③-2 镜像归一**：proto↔core 平行类型沉底 iuv-data 唯一定义，转换函数全退役（PROTO 1→2） |
+| P5 | §4.5.4 失效语义落地（方案 C+A，依赖 §4.4 `ResumeToken` 重绑） | **已落地（2026-09-27）+ 真机两轮回归通过**：杀 server → 透明放行 + 客户端拉起（258ms 自愈）+ 令牌重绑重放 ✅ |
+
+**③-3 收口剩余（2026-09-30 快照）**：并 main；可选增强 = `Push::Shutdown` 优雅停机接线
+（server 现只能 taskkill）、flush 原文 pending_text（消除「composition 去撇号」近似）。
+过渡期死代码已清（2026-09-30）：TSF per-实例 ctl 管道（accept 线程/CtlServer）、
+`iuv-win::ipc` 的 signal.rs/ctl.rs/PipeClient/PipeServer、Request 数据面 11 变体与
+Response/手写 codec——旧四套 IPC 实体全部退役，仅存 rtt 基准用的管道原语。
 
 **P4 值得单独强调**：现状「所有自愈路径都汇聚在按键驱动的 poll，**不打字不恢复**」
 （`docs/status.md:126`）是**已记录在案的缺陷**。改为 PUSH 后，该缺陷**自然消失**——

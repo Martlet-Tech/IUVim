@@ -3,7 +3,7 @@
 Rust + TSF 的 Windows 中文输入法。  
 **用户掌控排序**——静态词频序默认稳定 找回肌肉记忆打字的感觉  
 Shift+←/→ 主动调权（绝对值覆盖，反复调整收敛），支持自造词与隐藏。  
-尝试研究游戏兼容问题（按键直通 / 候选自绘抑制，守护进程设置页可配）。
+尝试研究游戏兼容问题（按键直通 / 候选自绘抑制，设置页可配）。
 
 > 日常开发导航与里程碑台账见 [AGENTS.md](AGENTS.md) 与 [docs/status.md](docs/status.md)；
 > 本文件只保留项目概览。
@@ -14,7 +14,10 @@ Shift+←/→ 主动调权（绝对值覆盖，反复调整收敛），支持自
 - [x] M2 用户掌控排序：主动调权 + 用户词库/自造词/隐藏
 - [x] M4 跨平台渲染候选窗（tiny-skia + cosmic-text 自绘，iuv-ui）· M5 语言栏右键菜单 · M6 守护进程 + 设置页 · M8 工具栏
 - [x] rime 管线（pure-Rust 移植 syllabifier/translator/poet）：候选核心已收敛为 rime 唯一引擎（classic 已删，见 `docs/plan/39-rime-pipeline.md`）
-- ◐ M7 安装器/x86（daemon 自启、键位热载已落地）
+- ◐ M7 安装器/x86（server 登录自启、键位热载已落地）
+- ◐ M10 薄客户端重构（49 号，`feat/m10-thin-client`）：全系统一个 `iuv-server.exe` + 薄 TSF 客户端，
+  四套旧 IPC 收敛为一条长连接三平面（transport + iuv-proto），本地模式已删、远端唯一形态；
+  已并 main（2026-09-30，见 `docs/plan/49-thin-client-arch.md`）
 - ⏸ M9 贴图皮肤框架（调研挂起）
 - ⬜ M3 整句增强（语言模型）/模糊音 · 符号/emoji 候选 · 学习候选
 
@@ -35,8 +38,9 @@ platforms/
   macos/, linux/      占位（IMK / Fcitx5·IBus，README）
 ```
 
-运行时数据流：按键 → TSF → session_bridge 映射为 `iuv_core::Key` → `Session::on_key` →
-预编辑/上屏 + iuv-ui 自绘候选窗（ULW 呈现）；用户库由 daemon 独占持有，TSF 经管道 IPC + 共享段读取。
+运行时数据流（M10 远端唯一形态）：按键 → TSF 薄客户端 → transport 长连接（iuv-proto 契约）→
+iuv-server 引擎 `Session::on_key` → 服务端自绘候选窗；断连自动拉起 + ResumeToken 重绑，
+不可达窗口期按键透明放行。用户库由 server 独占持有并发布共享段。
 
 ## 快速开始
 

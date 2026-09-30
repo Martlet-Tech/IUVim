@@ -67,12 +67,14 @@ iuv-daemon：已删除（crate/workspace/脚本/文档同步）
 
 ## ③ 收口清单（最后一步，建议顺序）
 
-1. 真机回归通过后：删 A/B 开关——`use_engine_server`、TSF 本地引擎路径
-   （engine_host/DaemonClient 旧管道/SHM 读取）、`Config::use_engine_server` 字段；
-2. 镜像归一：core_key/wire_key/core_ime_state/core_user_mutation 等 proto↔core
-   显式镜像删掉（proto 类型下沉或 core 类型上收，二选一，需管理员拍板）;
-3. 远端成为唯一形态后：混合模式边界、settings remote_mode 判定等过渡代码清理；
-4. 并 main（squash 与否管理员定）；AGENTS.md/README/49 号任务书终稿。
+> **2026-09-30 进度**：1/2/3 已完成（③-1 删 A/B 开关与本地路径、③-2 镜像归一沉底
+> iuv-data、过渡代码清理 + 死代码清扫——TSF per-实例 ctl 管道、`ipc::signal`/`ctl`/
+> `PipeClient/PipeServer`/Request 数据面 11 变体全删）；4（并 main + 文档终稿）待办。
+
+1. ~~真机回归通过后：删 A/B 开关~~ ✅（③-1，2026-09-30）；
+2. ~~镜像归一~~ ✅（③-2，proto↔core 平行类型沉底 iuv-data 唯一定义，转换函数全退役，PROTO 1→2）；
+3. ~~远端成为唯一形态后：混合模式边界、settings remote_mode 判定等过渡代码清理~~ ✅（随 ③-1/③-2 + 死代码清扫完成）；
+4. 并 main（squash 与否管理员定）；AGENTS.md/README/49 号任务书终稿（本次已同步，余并 main）。
 
 ## 常用入口
 

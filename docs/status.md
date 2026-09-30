@@ -8,41 +8,29 @@
 
 ## 活跃事项速览
 
-### 进行中：M10 薄客户端重构（49 号，分支 `feat/m10-thin-client`，未并 main）
+### M10 薄客户端重构（49 号，分支 `feat/m10-thin-client`）——已完成，2026-09-30 并 main
 
-**当前状态（2026-09-27，接手前必读）**：P0-P3 全部落地并真机回归通过，共 10 commits；
-main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随时可回。
+**当前状态（2026-09-30，接手前必读）**：P0-P5、② daemon→server 全量迁移、③-1 删本地
+模式（远端唯一形态）、③-2 镜像归一（共享类型沉底 iuv-data，PROTO 1→2）全部落地并
+真机回归通过（注销重登全进程 0ms 首连）；过渡期死代码已清扫（本轮，见台账末条）。
 
-- **已交付**：P0（`iuv-win::ipc::rtt` 实测：长连接 P99=13µs vs 一请求一连接 ≈2ms）→
-  P1（`crates/iuv-proto` 线上契约：帧格式/三枚举/serde codec）→ P2（`iuv-win::transport`
-  长连接：握手/认证/推送/截止时间）→ P3a（`platforms/windows/iuv-server` 引擎服务进程）→
-  P3b（TSF 薄客户端 A/B 接入）。真机已验证：本地/远端双模式打字、杀 server 透明降级。
-- **真机坑已修**（细节见文末 M10 各条）：`let _ = server` 语句末析构毁管道；
-  提权启动 = 高完整性管道中完整性应用连不上（改受限计划任务启动 + windows_subsystem
-  去黑窗）；400+ 候选三份载荷顶破截止（裁每键 UiElement 推送）。
+- **收尾可选增强**（不阻塞，已记录）：
+  `Push::Shutdown` 优雅停机接线（server 现只能 taskkill）、flush 原文 pending_text
+  （消除「composition 去撇号」近似，`remote_host.rs`）。
+- **架构现状**：iuv-server = 全系统唯一服务进程（引擎/用户库真相源/SHM 唯一写者/
+  服务端自绘候选窗/工具栏桌宠设置页全局热键）；iuv-tsf = 薄客户端（transport 长连接
+  三平面）；iuv-daemon 已删；旧四套 IPC（用户库管道/SHM 轮询/ctl 反向管道/toolbar
+  signal 管道）实体全部退役，SHM 保留为用户库发布只读面。协议 = `iuv-proto`
+  （PROTO 2），类型唯一定义在 `iuv-data`。
+- **另立任务**：设置页用户库单条删除入口；语言栏右键菜单部分程序不弹出（存量，
+  待复现定位）；ITfSource QI 失败（存量）。
 - **定档**：单键截止 300ms = 挂死保命线（非延迟策略）；引擎单键实测 17-58ms
   （125 万词库，`iuv-server.log [perf]` 观测线 ≥10ms 持续收集）。
 - **测试**：`scripts\m10-build.ps1` → `m10-deploy.ps1`（-SkipBuild/-NoServer）→
   `m10-uninstall.ps1`。日志 `%TEMP%\iuv-tsf.log` / `iuv-server.log` / `iuv-script.log`。
-- **P4 首切片已落地（2026-09-27）**：配置热载改服务端持有（iuv-server 后台监视
-  config.json → 引擎热载 + 请求捎带 `Push::ConfigChanged`）+ 远端模式按键路径零轮询
-  （`poll_client`/SHM 读取从按键路径删除，`daemon_poll_tick` 远端分支只剩进程内原子量
-  比较的主题收敛）。细节见台账。
-- **P4 剩余**：服务端自渲染候选窗（届时 KeyOutcome 的 candidates/all_candidates/reading
-  过渡字段与每键全量载荷随之裁撤）；ctl 反向通道与 toolbar signal 收敛至 transport
-  （依赖 daemon→server 演进，工具栏/设置页迁入服务端后整体消失）；用户库 SHM 写者
-  移交服务端（修工具栏权重显示滞后）。
-- **远端模式已知盲区（P4 首切片引入，接受）**：daemon 重启自愈退回 Activate 重发——
-  原按键路径轮询承担的「打字即恢复」不再有；正式使用不重启 daemon，daemon→server
-  合并后问题消失。
-- **下一步 P5**：失效语义 C 落地（TSF 检测断连 → 拉起 iuv-server → ResumeToken
-  重绑；协议字段已留位：`Hello.resume` / `Push::SessionAttached`，服务端尚未实现重绑）。
-- **过渡期已知限制**（P4 剩余项，非 bug）：远端模式下调权/造词不经旧 daemon（工具栏
-  SHM 权重显示可能滞后）；用户库版本注入跳过（服务端持有用户库）；flush 原文 =
-  composition 去撇号（用户手打引号边角）。~~服务端配置热载未接~~（P4 首切片已消除，
-  改配置即时生效）。
 - **环境注意**：本机测试进程做文件 IO 报 os error 5（存量环境问题，疑杀软，干净树
-  复现，与本仓库代码无关）——相关存量测试在本机红属正常。
+  复现，与本仓库代码无关）——相关存量测试在本机红属正常（transport 的
+  `server_initiated_request_roundtrip` 同源，HEAD 基线即红）。
 
 ### 未开工 / 挂起
 
@@ -50,10 +38,8 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
 - 符号/emoji 候选、学习候选（微软对齐已知差距，见 M1.5 条目）
 - M9 可自定义贴图皮肤框架（调研定稿/挂起；前置 M8 工具栏已多轮打磨，可重新评估）
 - 点子库：Tab 键用途（`29-tab-ideas.md`，暂不做）
-- 设置页高级页缺外层 ScrollArea：第三个卡片（全屏行为）被挤出 640×480 固定窗口可视区且无
-  法滚动。**第二次踩此坑**——修法见 `keymap_tab` 2026-08-28 注释（包
-  `ScrollArea::vertical().max_height(ui.available_height() - 12.0)`）。本次提交未修，留待后续；
-  期间该开关恒为默认开启（全屏隐藏功能本身可用，仅入口不可达）。
+- ~~设置页高级页缺外层 ScrollArea~~（**已修 2026-09-30**，`advanced_tab` 包外层
+  ScrollArea，全屏行为卡片可达——见台账末条）
 
 ---
 
@@ -1026,3 +1012,49 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
     随注销翻页结束）；tsf 侧 146 key / 27 commit / 9 ctl 正常，慢键 max 52ms。
   - 异常仅存量类：ITfSource QI 失败（E_NOINTERFACE，ZCode/WorkBuddy 等，部署前
     31424 条同源）+ ZCode GetTextExt 重定位失败走"沿用旧光标"兜底。③-2 回归通过。
+- [x] **49 号 ③-3 过渡期死代码清扫 + 高级页 ScrollArea 修复（2026-09-30，真机回归通过，同日入库并 main）**:
+  - **起因**: ③-2 收尾扫描实锤旧 IPC 死代码（台账上条"遗留"项），本轮全部清掉——
+    旧四套 IPC 实体（用户库管道/SHM 轮询/ctl 反向管道/toolbar signal 管道）至此全部退役。
+  - **删除清单**:
+    ① **TSF per-实例 ctl 管道**（`iuv-tsf/src/ctl.rs`）: ② 迁移后 `CtlClient` 全仓零
+    消费者，每 TSF 实例的 accept 线程（`CtlServer::create` + 阻塞 `ConnectNamedPipe`）
+    纯空转——每实例白占一条 `\.\pipe\iuv-ctl-<pid>-<tid>` 命名空间 + 一条线程。删
+    accept_thread/句柄槽/CancelSynchronousIo 收尾机制；**保留**隐藏消息窗 + 进程级
+    提交钩子（transport `S2C::Ctl` → `submit_cmd` → PostMessage 的分发本体）。
+    `CtlEndpoint::attach` 去掉 pid/tid 参数，`text_service.rs` 死方法 `instance_id`
+    一并删除。
+    ② **`iuv-win::ipc::signal.rs` 整模块**: toolbar-signal 专用管道 tsf/server 两侧
+    零消费者（信号已走 transport C2S 路由）。
+    ③ **`iuv-win::ipc::ctl.rs` 整模块**: CtlServer/CtlClient（①删掉后无消费者）。
+    ④ **`iuv-win::ipc::pipe.rs` 数据面**: PipeClient/PipeServer（`iuv-userdict` 管道，
+    daemon_client ③-1 已删后零消费者）与 `pipe_name_wide` 删除；**保留** `imp` 原语
+    （唯一消费者 = `rtt.rs` 基准）。
+    ⑤ **`iuv-win::ipc::msg.rs` + `codec.rs` 瘦身**: Request 删数据面 11 变体
+    （Swap/Set/Remove/Block/Ping/OpenSettings/Quit/Register/StateSync/Active/
+    Unregister/GetToolbarVisible）仅存 ToggleToolbar（语言栏菜单，server 进程内直调）；
+    Response 整删；ctl/signal 四组手写编解码 + Reader 全删；`ctl_pipe_name` 删。
+    codec 仅存 `to_frame`/`parse_frame`（rtt 管道原语用）。`ToolbarSignal` 与
+    CtlCmd/CtlResult re-export 保留（server/tsf 进程内直通 + transport 载荷）。
+    `lib.rs` 导出面同步（删 CtlClient/CtlServer/PipeClient/PipeServer/Response/
+    SignalClient/SignalServer/ctl_pipe_name）。
+    ⑥ **iuv-server 零星**: `toolbar::ToolbarHost::handle_request` 简化（Request 单变体
+    后 matches 分支恒真）；UserMutation 臂"混合模式过渡"注释改写（混合期已随 ③-1 结束）。
+  - **净效果**: iuv-win ipc 五模块 → 四模块（删 2 文件 + 3 处大瘦身），约 -800 行；
+    每个远端 TSF 实例少一条空转线程 + 一条命名管道。协议/行为零变化（删除项全为
+    无线上形态的死代码；ToggleToolbar/ToolbarSignal/CtlCmd 线下语义不变）。
+  - **顺手修复**: 设置页高级页包外层 ScrollArea（`advanced_tab` → `advanced_tab_content`
+    + `ScrollArea::vertical().max_height(ui.available_height()-12.0)`，同 keymap_tab
+    2026-08-28 修法）——「全屏行为」第三卡片重新可达，第二次踩坑记录结案。
+  - **测试**: `cargo check --workspace` 零警告；clippy --all-targets 全 workspace 零警告;
+    iuv-proto 18/18；iuv-tsf 38/38；iuv-server hot_path 12/12（lib 7 失败 = daemon
+    config/state 文件 IO 存量 os error 5）；iuv-win lib 12 过（SHM 3 失败存量）+
+    transport 7/8（`server_initiated_request_roundtrip` 存量环境红，stash 回 HEAD
+    逐项对照同红）+ rtt_bench 1/1。
+  - **文档同步**: AGENTS.md（里程碑补 M10、活跃事项刷新）、README（架构数据流/里程碑/
+    M7 自启措辞）、49 号任务书 §5 表校准（P3/P4/P5 出口条件与 ③-3 剩余清单）、
+    49-handoff-m10.md ③ 清单标注进度、本速览重写。
+  - **真机回归通过（2026-09-30 23:44 部署，管理员实测）**: ①新进程标记
+    `[ctl] 控制端点就绪（transport 提交钩子已登记）`出现、旧「accept 线程」零出现；
+    ②notepad 48 键全链路（文件/测试/记事本 → Alt+Shift+F 切繁 → 測試/筆記本，简繁
+    转换 + ctl 往返正常）；③零超时零降级零 VersionMismatch（仅存量 ITfSource QI 红 +
+    部署瞬间 4 条失效语义 C 自动重生 = 设计内行为）。
