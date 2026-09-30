@@ -16,6 +16,36 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
+/// 用户库写操作（M2 主动调权/自造词/隐藏 + M6/M10 远端写，见 18-m2-user-dict.md）。
+/// 与 [`UserDict`] 方法一一对应；线上serde 派生（postcard 变体序号）。
+/// Swap 的有效权重由发送方**交叉**携带（a←b_eff、b←a_eff，与 [`UserDict::apply_swap`]
+/// 契约一致）；任一不在库 → apply_mutation 侧忽略（防御即可）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UserMutation {
+    /// Shift+←/→ 主动调权：a/b 两词**互写对方合成权重**（绝对值覆盖，双 code 签名，
+    /// 对应 UserDict::apply_swap）。
+    Swap {
+        a_code: String,
+        a_word: String,
+        a_eff: u32,
+        b_code: String,
+        b_word: String,
+        b_eff: u32,
+    },
+    /// 自造词/覆盖写入（upsert，对应 UserDict::set_entry）。
+    Set {
+        code: String,
+        word: String,
+        adj: u32,
+    },
+    /// 移除用户库条目（隐藏自造词/覆盖 = 撤销自造，对应 UserDict::remove_entry）。
+    Remove { code: String, word: String },
+    /// 屏蔽基础库词条（Shift+Delete 隐藏，对应 UserDict::block）。
+    Block { code: String, word: String },
+}
+
 /// 文件头 magic。`IUVUSR01` = 仅覆盖表（旧）；`IUVUSR02` = 覆盖表 + 屏蔽表。
 const MAGIC_V1: &[u8; 8] = b"IUVUSR01";
 const MAGIC_V2: &[u8; 8] = b"IUVUSR02";
@@ -237,6 +267,35 @@ impl UserDict {
         UserDict {
             map: self.map.clone(),
             block,
+        }
+    }
+
+    /// 应用一条用户库写操作（M10 ②③：transport/引擎侧统一入口，语义与逐方法调用
+    /// 同源）。Swap 双 code 任一不在库时忽略该侧（防御，与 Engine::swap_weights 一致）；
+    /// Remove 对不存在的条目 = no-op。返回新 UserDict（写时复制）。
+    pub fn apply_mutation(&self, m: &UserMutation) -> UserDict {
+        match *m {
+            UserMutation::Swap {
+                ref a_code,
+                ref a_word,
+                a_eff,
+                ref b_code,
+                ref b_word,
+                b_eff,
+            } => self.apply_swap(a_code, a_word, b_eff, b_code, b_word, a_eff),
+            UserMutation::Set {
+                ref code,
+                ref word,
+                adj,
+            } => self.set_entry(code, word, adj),
+            UserMutation::Remove {
+                ref code,
+                ref word,
+            } => self.remove_entry(code, word),
+            UserMutation::Block {
+                ref code,
+                ref word,
+            } => self.block(code, word),
         }
     }
 
