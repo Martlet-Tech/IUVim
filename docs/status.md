@@ -1019,3 +1019,10 @@ main 未动，`use_engine_server` 开关（默认 false）保证 main 行为随�
     1→2 的破坏性协商按设计拒绝混合，重启进程即恢复（新进程加载新 DLL）。
   - **存量确认**：[follow] ITfSource QI 失败（OnSetFocus）部署前 31424 条/部署后
     18 条 = 存量问题，与 ③-2 无关。
+- [x] **③-2 注销重登回归（2026-09-30 21:26，全进程新 DLL）**:
+  - server pid 1264 登录即就位（引擎 105ms），热键 3/3，工具栏焦点跟随正常；
+    全进程首连 **0ms**（Explorer/msedgewebview2/notepad/WorkBuddy/ZCode/taskmgr/
+    DeepSeek Harness 七进程，零 VersionMismatch 零失败零降级——PROTO bump 混合期
+    随注销翻页结束）；tsf 侧 146 key / 27 commit / 9 ctl 正常，慢键 max 52ms。
+  - 异常仅存量类：ITfSource QI 失败（E_NOINTERFACE，ZCode/WorkBuddy 等，部署前
+    31424 条同源）+ ZCode GetTextExt 重定位失败走"沿用旧光标"兜底。③-2 回归通过。
