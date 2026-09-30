@@ -841,7 +841,7 @@
 ## 2026-09-27 · 49 号 ② daemon→server 全量迁移完成（七子提交，待真机回归）
 
 - [x] **M10 ② 收敛全量落地**（同分支，子提交 `7f912e2`/`c05540e`/`ac2937c`/`19af3d2`
-  /`8543b8e`/`fc4ed5c`(前条)/`0ea9935`）:
+  /`8543b8e`/`fc4ed5c`(前条)/`205ce30`）:
   - **proto**: 迁移变体补齐——`C2S::{TypingActivity, OpenSettings, ToggleToolbar,
     ToolbarVisibleQuery}` + `S2C::ToolbarVisible{visible}`。
   - **transport 控制面（49 §4.1 服务端主动 REQ 打通）**: 服务端每连接
@@ -961,17 +961,17 @@
     CtlCmd/CtlResult（proto↔win 第三对镜像）一并下沉，CtlResult::Err 统一带 msg
     （客户端应用失败原因透传，替代 server 端写死文案）；Candidate/Effect 保留
     proto 瘦身版（49 §4.5.3 协议设计，非欠债）。
-  - **iuv-data**（`dcf97ee`）：新增 `ime.rs`（四态四枚举 + ImeState + [u8;4] 唯一
+  - **iuv-data**（`6eb80d3`）：新增 `ime.rs`（四态四枚举 + ImeState + [u8;4] 唯一
     线编码自 core runtime.rs 迁移 + CtlCmd/CtlResult）、`key.rs`（Key 全 33 变体 +
     name/from_name + SessionEnd + PageInfo 统一 u32 定宽）、`candidate.rs`
     （CandidateKind + for_word）；UserMutation 迁入 userdict.rs 紧邻唯一消费者
     UserDict + `UserDict::apply_mutation` 单方法；serde 进 data 依赖。
-  - **core/proto**（`9fcb7d7`）：core key.rs 仅剩 Effect、candidate.rs 仅剩
+  - **core/proto**（`8758b5b`）：core key.rs 仅剩 Effect、candidate.rs 仅剩
     Candidate、config/enums.rs 删四态、runtime.rs 整删（类型与线编码沉底）；
     proto msg.rs 删九组镜像定义（481→333 行）改 `pub use iuv_data`，WireImeState/
     WireSessionEnd 别名失效删除；PROTO_MIN/MAX 1→2（Err 带 msg 线格式变更；
     Key/UserMutation/四态变体声明序逐项核对不变，postcard 序号兼容）。
-  - **转换函数退役**（`840a76e`）：server 删 core_key（33 臂）/core_user_mutation/
+  - **转换函数退役**（`bcd5d79`）：server 删 core_key（33 臂）/core_user_mutation/
     core_ime_state/wire_session_end/wire_candidate_kind/proto_ctl_result +
     dispatch_ctl 内联 CtlCmd 镜像 match；tsf 删 wire_key（33 臂）/wire_ime_state/
     core_session_end/core_page/proto_to_win_ctl_cmd/win_to_proto_ctl_result；
@@ -996,7 +996,7 @@
 - [x] **③-2 部署 + 第一轮真机日志回归（2026-09-30 21:10/21:15 两轮部署）**:
   - 部署即暴露 **server 多实例竞态**（计划任务 + 多客户端首连拉起，3 秒抢出 3 个；
     败者热键注册 0x80070581 全灭）→ 修：main 入口 CreateMutexW 单实例守卫
-    （`0e6ec51`），重部署后恰 1 个，守卫两度正确拦截后来者（21:20/21:21 各一条）。
+    （`eafd88f`），重部署后恰 1 个，守卫两度正确拦截后来者（21:20/21:21 各一条）。
   - **打字链路全通**：tsf 侧 246 key / 21 commit（notepad 主测）；server 侧工具栏
     显隐/焦点跟随正常，全局热键 3/3 注册成功；ctl 路径 5 次四态翻转正常；慢键
     51 条 max=58.9ms P50=26.1ms（远低于 300ms 截止）。
