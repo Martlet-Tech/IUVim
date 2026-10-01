@@ -14,16 +14,20 @@
 模式（远端唯一形态）、③-2 镜像归一（共享类型沉底 iuv-data，PROTO 1→2）全部落地并
 真机回归通过（注销重登全进程 0ms 首连）；过渡期死代码已清扫（本轮，见台账末条）。
 
-- **收尾可选增强**（不阻塞，已记录）：
-  `Push::Shutdown` 优雅停机接线（server 现只能 taskkill）、flush 原文 pending_text
-  （消除「composition 去撇号」近似，`remote_host.rs`）。
+- **收尾可选增强**：~~`Push::Shutdown` 优雅停机、flush 原文 pending_text~~
+  （**已完成并真机回归通过 2026-10-01**，见台账末三条。PROTO 2→3，
+  部署后旧 DLL 进程 VersionMismatch 属预期，重启进程/注销即恢复）。
 - **架构现状**：iuv-server = 全系统唯一服务进程（引擎/用户库真相源/SHM 唯一写者/
   服务端自绘候选窗/工具栏桌宠设置页全局热键）；iuv-tsf = 薄客户端（transport 长连接
   三平面）；iuv-daemon 已删；旧四套 IPC（用户库管道/SHM 轮询/ctl 反向管道/toolbar
   signal 管道）实体全部退役，SHM 保留为用户库发布只读面。协议 = `iuv-proto`
-  （PROTO 2），类型唯一定义在 `iuv-data`。
+  （PROTO 3），类型唯一定义在 `iuv-data`。
 - **另立任务**：设置页用户库单条删除入口；语言栏右键菜单部分程序不弹出（存量，
-  待复现定位）；ITfSource QI 失败（存量）。
+  待复现定位——**2026-10-01 已布诊断日志**，复现时看 `%TEMP%\iuv-tsf.log` 的
+  `[langbar]` 行：`OnClick` 缺失 = 事件未达 COM 对象（系统路由层），与菜单代码
+  无关；首要假设 = 管理员权限程序，见台账末条）；ITfSource QI 失败（存量，
+  **2026-10-01 已降噪**：每进程首条日志 + 计数，Electron 类宿主恒失败属不支持
+  布局 sink，非本仓缺陷）。
 - **定档**：单键截止 300ms = 挂死保命线（非延迟策略）；引擎单键实测 17-58ms
   （125 万词库，`iuv-server.log [perf]` 观测线 ≥10ms 持续收集）。
 - **测试**：`scripts\m10-build.ps1` → `m10-deploy.ps1`（-SkipBuild/-NoServer）→
@@ -1058,3 +1062,112 @@
     ②notepad 48 键全链路（文件/测试/记事本 → Alt+Shift+F 切繁 → 測試/筆記本，简繁
     转换 + ctl 往返正常）；③零超时零降级零 VersionMismatch（仅存量 ITfSource QI 红 +
     部署瞬间 4 条失效语义 C 自动重生 = 设计内行为）。
+
+- [x] **M10 收尾两件 + 两个存量处理（2026-10-01，真机回归通过）**：
+  - **① `Push::Shutdown` 优雅停机**（proto 变体早已定义、全仓零消费者 → 全链接线）：
+    - 触发 = **哨兵文件** `%LOCALAPPDATA%\iuv\server.stop`：`config_watch` 既有
+      500ms 轮询顺带检测（复用线程零新增），检测到即删文件（幂等防重触发）→
+      广播 → 宽限退出。选哨兵而非命名事件/ctl 命令：PowerShell 一行
+      `New-Item` 即可请求停机，脚本侧零依赖。
+    - 广播载体 = transport `ConnSender::push()` 新增（单向 fire-and-forget，
+      kind=4 帧 stream_id=0 与 conn 线程写 Reply 推送同惯例；过 closed/
+      write_lock/writers 三关与 `request` 同纪律）。
+    - 服务端 `graceful_stop`：向全部连接推 `Push::Shutdown{grace_ms:300}` →
+      睡 300ms 让帧下行 → `exit(0)`（单实例互斥体随进程释放，计划任务可随即
+      拉起新版）。客户端 `apply_push` 收 Shutdown → 立即 offline 透明放行，
+      **不**schedule_revive——刻意停机场景（升级/卸载）重生会把磁盘旧 exe 拉起
+      锁住文件替换；恢复走 Activate 兜底（`!ready()` → schedule_revive，P5 已有），
+      部署完成后下一键/切窗口即接上新 server。卸载场景永不重生 = 预期行为。
+    - 脚本：`iuv-common.ps1` 新增 `Stop-IuvServerGraceful`（写哨兵 → 轮询等
+      5s → 强杀兜底防旧版无哨兵逻辑）；`m10-deploy.ps1`/`m10-uninstall.ps1`
+      停 server 改走该函数。
+  - **② flush 原文 pending_text**（「composition 去撇号」近似退役）：
+    - proto 新增 `C2S::PendingTextQuery` / `S2C::PendingText{text}`（均**追加
+      枚举末尾**不动既有变体序号）；PROTO 2→3（新变体混合期旧端解不出整帧，
+      按 VersionMismatch 拒绝——③-2 同款纪律）。
+    - 服务端 `EngineSession` 臂 = `Session::pending_text()`（core 现成方法，
+      picked+raw 真相源，含用户强制撇号）；客户端 `pending_raw_text()` 改发
+      查询（flush 低频路径，一次往返可接受），`last_composition` 字段及三处
+      维护代码全删。空串/离线 → None → 调用方走 cancel 分支（语义不变）。
+  - **③ 语言栏右键菜单不弹出（存量，布诊断日志）**：`OnClick`/`InitMenu`/
+    `Show`/`AddItem` 补 `[langbar]` 前缀日志（此前全静默——复现时事件未达
+    COM 对象，日志无从定位）。判读：复现程序里右键若**无任何 `[langbar]` 行**
+    = 事件未达本对象（系统路由层，进程内无解）；首要假设 = **管理员权限程序**
+    （explorer 中完整性经 COM 调高完整性进程内的语言栏项对象被 COM 安全拒绝；
+    验证：管理员身份开记事本 → 右键图标 → 查日志），次要假设 = 系统把项
+    `Show(FALSE)` 隐藏（`[langbar] 系统 Show(false)` 行可证实/证伪）。
+  - **④ ITfSource QI 失败降噪**：Electron 类宿主（Trae CN/ZCode/WorkBuddy，
+    真机日志 31747 条/月）的 context 恒报 E_NOINTERFACE（不支持布局 sink，
+    不可恢复），每次焦点切换重试成日志噪音——而日志 IO 正是 perf 收尾实锤的
+    卡顿主因。处理：QI **尝试照常**（宿主升级可恢复跟随），日志改每进程首条
+    （含"同类后续静默"提示）+ `LAYOUT_QI_FAILS` 计数，挂载成功时清零并汇报
+    （"此前 N 次 QI 失败已清零"）。
+  - **改动**：iuv-proto（msg.rs 两变体 + lib.rs PROTO 3）、iuv-win
+    （transport/server.rs `ConnSender::push`）、iuv-server（lib.rs PendingText
+    臂、config_watch 哨兵检测 + `graceful_stop` + spawn 签名加 senders、
+    main.rs 接线、hot_path +2 测试）、iuv-tsf（remote_host Shutdown 臂 +
+    pending_raw_text 改查询 + 删 last_composition + 测试 +2、mode.rs 注释、
+    langbar.rs 诊断日志、text_service.rs QI 降噪 + `LAYOUT_QI_FAILS`）、
+    scripts（iuv-common `Stop-IuvServerGraceful` + deploy/uninstall 接线）、
+    AGENTS/status 同步。
+  - **测试**：iuv-proto 18/18；iuv-tsf 40+2/40+2（新增 pending_text 查询/空串
+    两测）；iuv-server hot_path 13/13（新增 PendingTextQuery 会话中=zhujincheng/
+    会话后=空串两测）；clippy --all-targets 全 workspace 零警告；
+    `cargo test --workspace --no-fail-fast` 474 通过 / 46 失败——与 ③-2 台账
+    记录的存量 os error 5 环境红基线（core 12+3、data 6+13、server lib 7、
+    win lib 3+transport 1、ui 1）**逐项一致**，本次改动零新增失败。
+  - **待真机回归（管理员，dev-dep/m10-deploy 后，注意 PROTO 3 需重启旧进程
+    或注销翻页）**：①优雅停机：`New-Item $env:LOCALAPPDATA\iuv\server.stop`
+    → server 日志出现 `[shutdown] 广播` 并退出、客户端日志出现
+    `[backend] 服务端优雅停机`、打字透明；重新启动 server 后 Activate/打字
+    自动恢复；m10-deploy 全程应走「优雅停机→换文件→启动」无强杀。②flush
+    原文：组词中按 Ctrl+Space → 原文上屏（手打撇号场景 `zhu'jin` 应带撇号
+    上屏——旧近似会丢撇号）。③语言栏：在日常用到的程序里复现右键不弹出，
+    对照 `%TEMP%\iuv-tsf.log` `[langbar]` 行定位；可顺手验证管理员记事本假设。
+    ④QI 噪音：新日志中 `ITfSource QI 失败` 每进程至多 1 条。
+
+- [x] **上一条真机回归第一轮：优雅停机链路通，暴露「停机后旧进程不恢复」修复
+  （2026-10-01）**：
+  - **验证通过**：哨兵停机两次全链路正确——server 日志 `[shutdown] 哨兵文件到位
+    → 广播 → 宽限 300ms → 退出`；客户端日志 `[backend] 服务端优雅停机` 逐条
+    对应；`Stop-IuvServerGraceful` 对旧版 server（无哨兵逻辑）超时强杀兜底
+    符合设计。
+  - **真机暴露（管理员）**：server 重启回来后，**停机前就开着的程序不恢复**
+    （notepad 打不出汉字、工具栏不显示），必须关掉重开；只有焦点切来切去的
+    进程（ZCode 15s、Explorer 123s）靠 Activate 兜底复活了。
+  - **根因（日志实锤）**：`Push::Shutdown` 处理只置 offline 不重生（防部署
+    窗口拉起旧 exe 锁文件替换），恢复全押 Activate——但 Activate 只在 TIP
+    线程被重新激活（焦点变化）时触发；**正打字的进程焦点不变 → Activate 永不
+    再来**；而 `request()` 对 offline 提前返回 None，也不走重生分支 → 死锁
+    在透明态，直到进程重开。
+  - **修复 = 延迟重连（只连不拉）**：`schedule_revive_deferred(1500ms)`——
+    收到 Shutdown 后 1.5s 起步、500ms 步进、16 次纯重连（**绝不 spawn**，
+    部署换文件/卸载场景安全），窗口 ~9s 覆盖部署/重启流程的 server 缺位期；
+    客户端在新 server 上位后 2-3s 自动恢复，**零交互**。与 `schedule_revive`
+    共用 `reviving` 闸；超窗失败 → 保持透明，Activate 兜底（带 spawn）仍在。
+    附带收益：延迟窗内 Activate 驱动的 spawn 型重生被闸住，部署竞态窗口缩小。
+  - **顺手修**：`graceful_stop` 广播改 `retain`——push 失败即摘除陈旧连接条目
+    （真机日志 2 条「句柄无效」噪音；senders 表此前只增不清）。
+  - **测试**：tsf 40 全绿、hot_path 13/13、clippy 全 workspace 零警告。
+  - **待复测**：sentinel 停机 → 不动任何窗口 → 重启 server → 停机前开着的
+    notepad 应在几秒内自动恢复打字/工具栏（客户端日志
+    `[backend] 停机后延迟重连成功`）。
+
+- [x] **上一条真机回归通过（2026-10-01，管理员实测 + 日志核验）**：
+  - **延迟重连（核心修复）**：sentinel 停机（server 20988）→ 管理员 ~15s 后
+    重启 → **停机前开着的 7 个进程全部自动恢复**（ZCode/Explorer/msedgewebview2/
+    WindowsTerminal/leigod/WorkBuddy/**notepad 23584**——上一轮必须关掉重开的
+    场景），日志 `[backend] 停机后延迟重连成功（新 server 已上位，令牌重绑）`
+    同秒齐到；重连期间 0 次拉起旧 exe、0 次 spawn。实测窗口比设计值宽（失败
+    尝试各带 ~2s 握手超时 → 步进 ~2.5s，总窗 ~40s），对管理员手动重启更从容。
+  - **陈旧条目清理生效**：新日志格式 `通知 7 条存活连接（另清理 1 条陈旧条目）`，
+    「句柄无效」噪音归零。
+  - **flush 原文**：`会话清理：原文上屏 zhengchang`/`zhujin`（服务端
+    pending_text 真相源，Ctrl+Space 关闭输入法原文上屏正常）。
+  - **QI 降噪生效**：新日志为每进程首条（带「同类后续静默」提示）；ZCode 因
+    混合 context（部分支持 ITfSource 的原生窗口成功挂载 → 计数清零）同进程
+    可能再出 1-2 条首条——设计内行为，频率从 3.1 万条/月降到个位数。
+  - **[langbar] 诊断日志生效**：新进程 `图标已挂载（AddItem + Show）` +
+    `系统 Show(true)` 逐条可见；右键不弹出场景待下次复现对照。
+  - **状态**：本轮四件（优雅停机/flush 原文/QI 降噪/langbar 诊断）全部落地
+    并真机验证，已提交。
