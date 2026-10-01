@@ -51,18 +51,30 @@ impl Default for TextRenderer {
     }
 }
 
-impl TextRenderer {
-    /// 创建渲染器：fontdb 扫系统字体 + 主家族重映射 + 空 Buffer（无换行）。
-    ///
-    /// 首次调用有一次性开销（fontdb 扫 C:\Windows\Fonts 元数据，几十 ms ~ 1s），
-    /// 应在候选窗创建时（而非每键）调用。失败不 panic：任何路径返回可用实例，
-    /// 缺字体时 measure 返回 (0, 0)、draw 静默不画。
-    pub fn new() -> Self {
+/// 进程级系统字体库缓存：`load_system_fonts` 全盘扫描有一次性开销，每渲染器
+/// 一份不可接受（服务端每连接一渲染器，首显路径创建 = 首键候选帧被拖慢）。
+/// 扫描一次共享；clone = SlotMap 深拷贝（~ms，无磁盘 IO）。
+fn system_font_db() -> fontdb::Database {
+    static DB: std::sync::OnceLock<fontdb::Database> = std::sync::OnceLock::new();
+    DB.get_or_init(|| {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
         // generic sans-serif 重映射到主家族（回退链首项）
         db.set_sans_serif_family(FALLBACK_FAMILIES[0]);
-        let font_system = FontSystem::new_with_locale_and_db("zh-CN".into(), db);
+        db
+    })
+    .clone()
+}
+
+impl TextRenderer {
+    /// 创建渲染器：系统字体库装配 + 主家族重映射 + 空 Buffer（无换行）。
+    ///
+    /// fontdb 扫 C:\Windows\Fonts 元数据有一次性开销（几十 ms ~ 1s），进程内
+    /// 共享一份扫描结果（[`system_font_db`]），本函数只剩内存拷贝（~ms）。
+    /// 失败不 panic：任何路径返回可用实例，缺字体时 measure 返回 (0, 0)、
+    /// draw 静默不画。
+    pub fn new() -> Self {
+        let font_system = FontSystem::new_with_locale_and_db("zh-CN".into(), system_font_db());
         let mut buffer =
             Buffer::new_empty(Metrics::new(FONT_PX_96, FONT_PX_96 * LINE_HEIGHT_SCALE));
         // 宽度/高度均不限制：单行布局不换行（measure 取 max line）

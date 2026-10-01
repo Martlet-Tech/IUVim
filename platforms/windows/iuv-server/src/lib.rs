@@ -167,6 +167,7 @@ impl ConnHandler for EngineService {
             ),
             caret: None,
             candwin_visible: false,
+            awaiting_caret: None,
         })
     }
 }
@@ -213,6 +214,11 @@ pub struct EngineSession {
     /// 客户端最近上报的光标锚点（屏幕物理坐标；None = 未上报，不渲染）。
     caret: Option<iuv_ui::CaretRect>,
     candwin_visible: bool,
+    /// 锚点未上报时的待渲染快照（首会话首键竞态）：会话首键的引擎推进发生在
+    /// Test 请求里，早于客户端 StartSession 的 CaretMoved 上报，此时 caret=None
+    /// 无法渲染；而 Down 阶段命中 Test 缓存零 IPC，服务端不会再收到本键的 Key。
+    /// 快照存此，CaretMoved 首报即补 Show（否则首键候选整帧丢失，下一键才见）。
+    awaiting_caret: Option<iuv_ui::UiSnapshot>,
 }
 
 /// 断连时保存会话现场（49 §4.4/§4.5.4 方案 C）：连接线程释放
@@ -317,8 +323,15 @@ impl Session for EngineSession {
                 let c = iuv_ui::CaretRect { x: rect.left, y: rect.top, w: rect.right - rect.left, h: rect.bottom - rect.top };
                 let moved = self.caret != Some(c);
                 self.caret = Some(c);
-                if moved && self.candwin_visible {
-                    self.candwin.send(CandwinCmd::MoveTo { caret: c });
+                if moved {
+                    if self.candwin_visible {
+                        self.candwin.send(CandwinCmd::MoveTo { caret: c });
+                    } else if let Some(snap) = self.awaiting_caret.take() {
+                        // 首会话首键补位：候选在 Test 请求已产出、因锚点未上报未
+                        // 渲染（见 awaiting_caret 字段注释），锚点首报即补 Show。
+                        self.candwin.send(CandwinCmd::Show { snap, caret: c });
+                        self.candwin_visible = true;
+                    }
                 }
                 reply.respond(S2C::Ok);
             }
@@ -510,8 +523,10 @@ impl EngineSession {
             return;
         }
         // 尚未收到客户端锚点（连接后首个会话的首键早于 CaretMoved 到达）：
-        // 不渲染，等客户端上报后由 MoveTo/下一键 Show 补位。
+        // 快照挂起，锚点首报时补 Show（Down 阶段命中 Test 缓存零 IPC，
+        // 服务端不会再来本键的 Key——直接丢弃 = 首键候选整帧丢失）。
         let Some(caret) = self.caret else {
+            self.awaiting_caret = Some(snap);
             return;
         };
         if self.candwin_visible {
@@ -523,6 +538,9 @@ impl EngineSession {
     }
 
     fn hide_candwin(&mut self) {
+        // 挂起快照随会话收尾一并作废（EndSession/CandwinHide/end 都收敛到此），
+        // 防陈旧快照在后续 CaretMoved 上意外补 Show。
+        self.awaiting_caret = None;
         if self.candwin_visible {
             self.candwin_visible = false;
             self.candwin.send(CandwinCmd::Hide);
