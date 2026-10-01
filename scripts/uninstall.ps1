@@ -1,11 +1,14 @@
-﻿# 卸载 iuv 输入法：删注册表键 → 重启 ctfmon → 删文件 → 自检。
+﻿# 卸载 iuv 输入法（赶尽杀绝）：停服务 → 删注册表键 → 重启 ctfmon → 删文件 → 自检。
 # 需管理员权限（自动弹 UAC 提权）。用法：scripts\uninstall.ps1
+#
+# 卸载的完成形态：系统输入法列表里看不到 iuv、iuv-server 服务与自启任务消失、
+# 文件（含被占用残留）清理干净。DLL 被运行中应用映射属输入法常态——残留交给
+# 延迟清理（注销/重启后自动执行），**注销一次收尾不可避免**。
 #
 # 设计要点：
 # - 不调用 regsvr32 /u（会加载 DLL，被占用时挂起）；注册键直接删，效果相同。
 # - 不杀 explorer、不要求关闭应用：DLL 被占用只影响文件删除，不影响注册表与列表刷新。
-# - 被占用残留登记延迟清理（注销/重启后自动执行，SYSTEM 权限，不依赖用户登录）。
-# - ctfmon 重启后，托盘语言栏中的 "iuv 输入法" 即从列表消失。
+# - 用户数据（config.json / 用户词库）删除前备份，误卸可恢复；共享密钥随之失效属预期。
 #requires -Version 5.1
 
 $ErrorActionPreference = "Stop"
@@ -15,8 +18,38 @@ Exit-IfNotAdmin -ScriptPath $PSCommandPath
 Trace-Script "uninstall: 提升实例启动"
 Write-Host "正在卸载 IUV 输入法（管理员窗口）..."
 
-$destDir = Join-Path $env:ProgramFiles "iuv"
+$p = Get-IuvPaths
+$destDir = $p.DestDir
 $clsid = '{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
+
+# ---- 0. 停服务进程 + 注销登录自启 ----
+if (Get-Process -Name 'iuv-server' -ErrorAction SilentlyContinue) {
+    Stop-IuvServerGraceful | Out-Null
+}
+# 历史安装残留（daemon 已退役，2026-10 并入 server）：存在即杀。
+Stop-Process -Name 'iuv-daemon' -Force -ErrorAction SilentlyContinue
+try {
+    Unregister-ScheduledTask -TaskName 'Iuv-ServerStart' -Confirm:$false -ErrorAction Stop
+    Write-Host "已注销登录自启任务 Iuv-ServerStart"
+} catch {
+    Write-Host "自启任务 Iuv-ServerStart 不存在，跳过注销"
+}
+Start-Sleep -Milliseconds 300
+
+# ---- 0.5 备份用户数据（config.json + 用户词库；重装后拷回即恢复个人设置）----
+$backupDir = Join-Path $env:LOCALAPPDATA 'iuv-backup'
+$backedUp = @()
+foreach ($f in @('config.json', 'iuv.user.imedic')) {
+    $src = Join-Path $p.DictDir $f
+    if (Test-Path $src) {
+        New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+        Copy-Item $src (Join-Path $backupDir $f) -Force
+        $backedUp += $f
+    }
+}
+if ($backedUp.Count -gt 0) {
+    Write-Host "已备份用户数据到 $backupDir ：$($backedUp -join ', ')"
+}
 
 # 本输入法注册的键（对应 crates/iuv-tsf/src/registration.rs）：
 # 1) HKCR\CLSID\{GUID}             COM 类注册（DllRegisterServer 写，x64 native 视图）
@@ -57,9 +90,9 @@ if (Test-Path $destDir) {
     $locked = @()
     Get-ChildItem -LiteralPath $destDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
         if ($_.PSIsContainer) { return }
-        $p = $_.FullName
-        try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop }
-        catch { $locked += $p }
+        $file = $_.FullName
+        try { Remove-Item -LiteralPath $file -Force -ErrorAction Stop }
+        catch { $locked += $file }
     }
     if ($locked.Count -gt 0) { Trace-Script ("uninstall: 发现锁定文件 " + ($locked -join ', ')) }
     # 目录：未锁文件删完后若已空则删除；否则保留（延迟清理连壳删掉）。
@@ -106,7 +139,7 @@ if ($delayed) {
     $paths = @($destDir, $userData) + @($legacyDirs | Where-Object { Test-Path -LiteralPath $_ })
     Trace-Script ("uninstall: 残留路径待延迟清理 [" + ($paths -join ';') + "]")
     # 双保险：无前缀 PendingFileRenameOperations（重启时 SmSs 无条件执行）+ 计划任务（注销/重启触发）
-    foreach ($p in $paths) { Add-PendingOp -Source $p }
+    foreach ($path in $paths) { Add-PendingOp -Source $path }
     if (Register-DelayedOps -Deletes $paths) {
         Write-Host "以下残留正被占用，已安排自动清理（注销或重启后生效，无需手动操作）："
         $paths | ForEach-Object { Write-Host "  $_" }
@@ -126,7 +159,7 @@ if ($delayed) {
     if (Get-ScheduledTask -TaskName Iuv-DelayedOps -ErrorAction SilentlyContinue) {
         Trace-Script "uninstall: 完成（延迟清理任务已注册）"
         Write-Host ""
-        Write-Host "卸载完成。残留文件将在注销或重启后自动清理。"
+        Write-Host "卸载完成。残留文件将在注销或重启后自动清理（注销一次收尾属输入法卸载常态）。"
     } else {
         Trace-Script "uninstall: 完成但延迟清理任务未确认"
         Write-Host ""
@@ -136,4 +169,7 @@ if ($delayed) {
     Trace-Script "uninstall: 完成（无残留）"
     Write-Host ""
     Write-Host "卸载完成，已完全清除。"
+}
+if ($backedUp.Count -gt 0) {
+    Write-Host "个人设置/用户词备份在：$backupDir（重装后把其中的文件拷回 $($p.DictDir) 即可恢复）"
 }

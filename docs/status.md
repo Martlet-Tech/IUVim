@@ -30,8 +30,9 @@
   布局 sink，非本仓缺陷）。
 - **定档**：单键截止 300ms = 挂死保命线（非延迟策略）；引擎单键实测 17-58ms
   （125 万词库，`iuv-server.log [perf]` 观测线 ≥10ms 持续收集）。
-- **测试**：`scripts\m10-build.ps1` → `m10-deploy.ps1`（-SkipBuild/-NoServer）→
-  `m10-uninstall.ps1`。日志 `%TEMP%\iuv-tsf.log` / `iuv-server.log` / `iuv-script.log`。
+- **测试**：`scripts\build.ps1`（三车道构建）→ `dev-deploy.ps1`（热部署，-SkipBuild 可跳构建）→
+  `install.ps1`（全新安装）→ `uninstall.ps1`（卸载，注销收尾）。
+  日志 `%TEMP%\iuv-tsf.log` / `iuv-server.log` / `iuv-script.log`。
 - **环境注意**：本机测试进程做文件 IO 报 os error 5（存量环境问题，疑杀软，干净树
   复现，与本仓库代码无关）——相关存量测试在本机红属正常（transport 的
   `server_initiated_request_roundtrip` 同源，HEAD 基线即红）。

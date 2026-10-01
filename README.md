@@ -49,12 +49,10 @@ iuv-server 引擎 `Session::on_key` → 服务端自绘候选窗；断连自动�
 ```powershell
 cargo check --workspace       # 检查
 cargo test --workspace        # 测试
-cargo build -p iuv-tsf --release
-scripts\download-dict.ps1     # 下载词库（白霜拼音，GPL-3.0，不入库）
-scripts\download-opencc.ps1   # 下载 OpenCC 简繁表（简繁转换用）
-scripts\install.ps1           # 安装（管理员，自动弹 UAC）
-scripts\uninstall.ps1         # 卸载
-scripts\dev-deploy.ps1        # 热部署：改完代码免注销生效
+scripts\build.ps1             # 三车道并行构建（x64/x86 TSF ∥ server）
+scripts\install.ps1           # 安装（管理员，自动弹 UAC；词库缺失自动下载编译）
+scripts\uninstall.ps1         # 卸载（注销一次收尾）
+scripts\dev-deploy.ps1        # 热部署：改完代码免注销生效，新开窗口加载新 DLL
 ```
 
 注册后需在系统设置中将该输入法设为默认，并在高级键设置把「输入法/非输入法切换」热键设为 Ctrl+Space。
