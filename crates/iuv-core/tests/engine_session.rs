@@ -2682,10 +2682,12 @@ fn colon_enters_literal_tail_and_enter_commits_verbatim() {
     s.on_key(Key::Char('d'));
     s.on_key(Key::Char(':'));
     let e = s.effect();
-    // 字面态：预编辑显示 拼音+尾巴，无汉字候选（对齐搜狗）
+    // 字面态：预编辑显示 拼音+尾巴，无汉字候选（对齐搜狗）；候选窗呈现一条
+    // 不编号原文条目（text == reading 去撇号）——会话可见性指示（空格/回车会上屏）
     assert_eq!(e.composition, "d:");
-    assert!(e.reading.is_empty());
-    assert!(e.candidates.is_empty());
+    assert_eq!(e.reading, "d:");
+    assert_eq!(e.candidates.len(), 1);
+    assert_eq!(e.candidates[0].text, "d:");
     // Enter 原样上屏
     match s.on_key(Key::Enter).end {
         Some(SessionEnd::Commit(text)) => assert_eq!(text, "d:"),
@@ -2743,5 +2745,30 @@ fn literal_esc_cancels_whole_session() {
     match s.on_key(Key::Esc).end {
         Some(SessionEnd::Cancel) => {}
         other => panic!("期望字面态 Esc 取消会话，实际 {other:?}"),
+    }
+}
+
+#[test]
+fn literal_space_commits_verbatim_url() {
+    // 方案 B（对齐搜狗）：字面态空格 = 上屏整串原文——URL/端口一口气敲完，
+    // `localhost:8000/path` 空格即收，不再需要回车。
+    let engine = default_engine();
+    let mut s = engine.start_session();
+    for k in [
+        Key::Char('d'),
+        Key::Char(':'),
+        Key::Digit(8),
+        Key::Digit(0),
+        Key::Digit(0),
+        Key::Digit(0),
+    ] {
+        s.on_key(k);
+    }
+    assert_eq!(s.effect().composition, "d:8000");
+    assert_eq!(s.effect().candidates.len(), 1);
+    assert_eq!(s.effect().candidates[0].text, "d:8000");
+    match s.on_key(Key::Space).end {
+        Some(SessionEnd::Commit(text)) => assert_eq!(text, "d:8000"),
+        other => panic!("期望字面态 Space 提交 d:8000，实际 {other:?}"),
     }
 }

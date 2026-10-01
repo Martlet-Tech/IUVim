@@ -42,7 +42,8 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 
 > 已结（2026-10-01，见台账）：`Push::Shutdown` 优雅停机（哨兵 `server.stop` +
 > 广播 + 客户端延迟重连——停机后开着的程序自动恢复）、flush 原文 pending_text
-> （PROTO 2→3）、ITfSource QI 失败降噪（每进程首条）、langbar 诊断日志。
+> （PROTO 2→3）、ITfSource QI 失败降噪（每进程首条）、langbar 诊断日志、
+> 字面尾巴三件——Space 上屏/候选窗常驻/数字映射缺口（issue「d冒号表现不一致」闭环）。
 
 ### 关键设计决策（防反复横杠）
 

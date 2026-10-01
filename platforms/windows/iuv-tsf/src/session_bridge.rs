@@ -44,7 +44,7 @@ pub fn map_key(
     // 导航/翻页键常量已移除：这些物理键的会话内语义由 keymap 决定（41-keymap-settings.md
     // §10.6），不再经 map_key 硬编码；combo 构造用 iuv-win keys.rs 的 vk_to_base_key。
     const VK_DELETE: u16 = 0x2E;
-    const VK_1: u16 = 0x31;
+    const VK_0: u16 = 0x30;
     const VK_9: u16 = 0x39;
     const VK_A: u16 = 0x41;
     const VK_Z: u16 = 0x5A;
@@ -75,7 +75,17 @@ pub fn map_key(
         // （会话外本就放行，行为不变）。候选移动由 keymap candidate_prev/next 归一化
         // 为 Key::Left/Right 后进入 Session，不再经物理方向键直通。
         VK_DELETE => None, // 裸 Delete 放行给应用编辑；Shift+Delete 由组合键表映射 HideCandidate
-        VK_1..=VK_9 if !with_shift => Some(Key::Digit((char_code - 0x30) as u8)),
+        // 数字（主行 0-9；小键盘 NumLock 开时由 route_key 归一为主行）：无 Shift →
+        // Digit（会话内选词/字面态追加）；Shift 形态（!@#$%^&*()）→ ShiftChar 字面
+        // 字符。此前 0 与 Shift 数字整族漏映射 → 会话内放行给应用，而活动 composition
+        // 期间应用把漏出字符插到 composition **开头**（真机 2026-10-01：
+        // http://localhost:8000 → 000http://localhost:8）。拼音态 Digit(0)/ShiftChar(符号)
+        // 落会话防御臂消费忽略；字面态进尾巴；会话外非开会话键照旧 Pass 放行。
+        VK_0..=VK_9 if !with_shift => Some(Key::Digit((char_code - 0x30) as u8)),
+        VK_0..=VK_9 => Some(Key::ShiftChar(shifted_punct(
+            (char_code as u8) as char,
+            true,
+        ))),
         VK_A..=VK_Z => {
             // 字母：优先用布局字符（无 Shift 态恒小写），退化用 vk 推算。
             let c = if (0x61..=0x7A).contains(&char_code) {
@@ -325,15 +335,15 @@ mod tests {
 
     #[test]
     fn map_key_capslock_does_not_affect_non_letters() {
-        // CapsLock 只影响字母：数字/标点照常（Shift+数字 = 符号仍放行）
+        // CapsLock 只影响字母：数字/标点照常（Shift+数字 = 符号字面收编）
         assert_eq!(
             map_key(0x31, 0x31, false, true, false, false),
             Some(Key::Digit(1))
         );
         assert_eq!(
             map_key(0x31, 0x31, true, true, false, false),
-            None,
-            "Shift+数字放行"
+            Some(Key::ShiftChar('!')),
+            "Shift+数字 = 字面符号字符"
         );
         assert_eq!(
             map_key(0xDE, 0x27, false, true, false, false),
@@ -351,8 +361,23 @@ mod tests {
             map_key(0x39, 0x39, false, false, false, false),
             Some(Key::Digit(9))
         );
-        // Shift+数字 = 符号，放行给应用
-        assert_eq!(map_key(0x31, 0x31, true, false, false, false), None);
+        // 0 此前漏映射（VK_1 起点笔误）：会话内放行 → 应用插到 composition 开头
+        // （真机 2026-10-01：http://localhost:8000 → 000http://localhost:8）
+        assert_eq!(
+            map_key(0x30, 0x30, false, false, false, false),
+            Some(Key::Digit(0)),
+            "0 必须进会话映射"
+        );
+        // Shift+数字 = 符号字面（URL 的 & = Shift+7；!@#$%^&*() 同族），
+        // 字面态进尾巴、拼音态消费忽略；放行会重演 composition 开头插入
+        assert_eq!(
+            map_key(0x37, 0x37, true, false, false, false),
+            Some(Key::ShiftChar('&'))
+        );
+        assert_eq!(
+            map_key(0x30, 0x30, true, false, false, false),
+            Some(Key::ShiftChar(')'))
+        );
     }
 
     #[test]
@@ -574,8 +599,12 @@ mod tests {
     /// 断言"某事没发生"必须配正向用例：Digit(9) 存在即 Digit 边界可控。
     #[test]
     fn map_key_digit_range_bounds() {
-        // VK_0 不在 1..=9 语义内（契约 §3.4），必须放行给应用。
-        assert_eq!(map_key(0x30, 0x30, false, false, false, false), None);
+        // 0 在会话映射内（2026-10-01 修正：此前 VK_1 起点漏映射，会话内放行的 0
+        // 被应用插到 composition 开头——http://localhost:8000 → 000http://localhost:8）
+        assert_eq!(
+            map_key(0x30, 0x30, false, false, false, false),
+            Some(Key::Digit(0))
+        );
         assert_eq!(
             map_key(0x31, 0x31, false, false, false, false),
             Some(Key::Digit(1))

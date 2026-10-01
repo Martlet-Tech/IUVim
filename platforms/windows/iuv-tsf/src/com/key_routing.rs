@@ -51,6 +51,13 @@ impl TextService {
         let shift = shift_pressed();
         let ctrl = ctrl_pressed();
         let alt = alt_pressed();
+        // 小键盘数字（VK_NUMPAD0..9）：NumLock 开 → 归一为主行数字 VK（两者
+        // char_code 相同，后续组合键/映射判定统一）；NumLock 关 → 保持原 VK
+        // （map_key 不映射 → 放行，End/方向键等导航语义照旧）。
+        let vk = match vk {
+            0x60..=0x69 if numlock_on() => vk - 0x30,
+            _ => vk,
+        };
         // M10：会话活性 = last_effect（远端增量语义的基线槽）。
         let session_active = self.last_effect.borrow().is_some();
 
@@ -242,6 +249,12 @@ fn shift_pressed() -> bool {
 pub(crate) fn capslock_on() -> bool {
     // SAFETY: GetKeyState 对 VK_CAPITAL 返回切换状态（最低位 1 = 生效）。
     (unsafe { GetKeyState(VK_CAPITAL.0 as i32) }) & 1 != 0
+}
+
+/// NumLock 是否生效（切换状态位，决定小键盘数字键的归一，见 route_key）。
+fn numlock_on() -> bool {
+    // SAFETY: GetKeyState 对 VK_NUMLOCK(0x90) 返回切换状态（最低位 1 = 生效）。
+    (unsafe { GetKeyState(0x90) }) & 1 != 0
 }
 
 /// 当前 Ctrl 是否按下。Ctrl/Alt 组合键一律放行给应用（map_key 内约定）。

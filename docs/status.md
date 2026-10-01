@@ -1171,3 +1171,31 @@
     `系统 Show(true)` 逐条可见；右键不弹出场景待下次复现对照。
   - **状态**：本轮四件（优雅停机/flush 原文/QI 降噪/langbar 诊断）全部落地
     并真机验证，已提交。
+
+- [x] **字面尾巴三件收档（2026-10-01，issue「d冒号表现不一致」闭环）**：
+  M10 重构后字面态（会话内符号键 → tail 锁定）已消除跨程序表现分叉（整段单一
+  composition + 一次 commit，TSF 无加工窗口；`:d` 乱序/Excel 光标错位的根因
+  End→Start 重建与部分上屏不复存在），本轮补齐三件使其达到搜狗级可用：
+  - **字面态 Space = 上屏**（session.rs）：tail 锁定块 Space 从追加空格改为
+    `Commit(all_text())`——`d:`/URL 一口气敲完空格即收（对齐搜狗「空格回车都
+    上屏 d:」）。代价 = 字面态内无法输入字面空格（URL 无空格，接受；回车语义
+    不变，Esc 整串取消、退格删空回拼音态不变）。
+  - **字面态候选窗常驻**（session.rs effect）：tail 非空不再返回空快照（旧实现
+    触发两侧「空快照 hide」收窗 → 会话存活无可见指示，真机反馈「看不出来会话
+    结束没结束」，空格突然上屏整串 = 惊吓），改为呈现一条不编号原文条目
+    （text == reading 去撇号 → 复用 layout/render 现成「原文兜底不编号」规则，
+    `window` 兜底同款视觉）。会话可见性 = 窗口可见性；服务端自绘与本地渲染
+    两路径同源生效（effect_to_snapshot 同条件）。
+  - **数字映射缺口修复**（iuv-tsf session_bridge/key_routing）：map_key 数字臂
+    `VK_1..=VK_9` 起点笔误漏 `0`，且 Shift+数字（`!@#$%^&*()`）与小键盘整族
+    放行——活动 composition 期间应用把漏出字符插到 composition **开头**
+    （真机：敲 `http://localhost:8000` → `000http://localhost:8`，`8000` 变前缀
+    `000`；Pass 键不打日志，一度误判为会话外输入）。修复：`VK_0..=VK_9` 全段
+    映射；Shift+数字 → `ShiftChar(shifted_punct)` 字面收编（URL 的 `&` = Shift+7）；
+    小键盘 NumLock 开归一主行（关保持放行，End/方向导航语义不变）；拼音态
+    `Digit(0)`/`ShiftChar(符号)` 落防御臂消费忽略；会话外非开会话键照旧 Pass。
+  - **测试**：iuv-core engine_session 字面态 6 用例（新增
+    `literal_space_commits_verbatim_url`）+ iuv-tsf map_key 40 全绿（更新 3 处
+    旧行为断言）；真机三轮回归（15:08 部署后）：`http:localhost:8000` 一次上屏
+    （日志 8/0/0/0 全「远端会话内」+ 单条 commit）、`d:\books`、`d:/project`、
+    拼音态数字选词（`4`→路/`9`→路）不受影响。issue 文件已附收档结论。
