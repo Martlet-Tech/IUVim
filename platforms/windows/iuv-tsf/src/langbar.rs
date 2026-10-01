@@ -322,6 +322,10 @@ impl ITfLangBarItem_Impl for LangBarItemButton_Impl {
     }
 
     fn Show(&self, fshow: BOOL) -> Result<()> {
+        // 诊断（[langbar] tag 可配置关闭）：系统驱动显隐——「右键菜单部分程序
+        // 不弹出」的排查线索（若该程序把项 Show(FALSE) 隐藏/从未 AddItem，事件
+        // 根本不会到达本对象，只能靠这侧日志定位）。
+        log_line(&format!("[langbar] 系统 Show({})", fshow.as_bool()));
         self.set_status(TF_LBI_STATUS_HIDDEN, !fshow.as_bool());
         Ok(())
     }
@@ -335,6 +339,12 @@ impl ITfLangBarItem_Impl for LangBarItemButton_Impl {
 
 impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
     fn OnClick(&self, click: TfLBIClick, pt: &POINT, _prcarea: *const RECT) -> Result<()> {
+        // 诊断：右键菜单不弹出的定位依据——本行缺失 = 事件未达本对象（系统路由
+        // 层问题，如管理员权限程序的跨完整性 COM 限制），与自绘菜单代码无关。
+        log_line(&format!(
+            "[langbar] OnClick({})",
+            if click == TF_LBI_CLK_RIGHT { "RIGHT" } else { "LEFT" }
+        ));
         if click == TF_LBI_CLK_LEFT {
             self.toggle_mode();
         } else if click == TF_LBI_CLK_RIGHT {
@@ -349,6 +359,7 @@ impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
         // 右键"中/英"按钮 → 语言栏上下文菜单（TSF 官方机制：语言栏弹菜单前调 InitMenu，
         // 我们经 ITfMenu::AddMenuItem 塞入自定义项；OnMenuSelect 分发）。
         // 2026-08-17 用户决策：入口全走语言栏菜单，无独立托盘图标。菜单项无"退出"。
+        log_line("[langbar] InitMenu（TSF 官方菜单路径）");
         let Some(menu) = pmenu.as_ref() else {
             log_line("语言栏菜单：InitMenu 收到空 ITfMenu");
             return Ok(());
@@ -439,6 +450,7 @@ pub(crate) fn add_to_lang_bar(
     // Weasel 同款：AddItem 后 Show(true) 确保项可见（默认可能被语言栏隐藏）。
     // SAFETY: item 仍存活；Show 只改状态位。
     unsafe { item.Show(true) }?;
+    log_line("[langbar] 图标已挂载（AddItem + Show）");
     Ok(())
 }
 

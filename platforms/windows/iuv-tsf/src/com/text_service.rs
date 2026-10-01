@@ -40,6 +40,10 @@ use super::dispatch::dispatch_effect;
 /// 全局活动对象计数（DllCanUnloadNow 用）：实例创建 +1，Drop −1。
 static INSTANCE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// 布局 sink 的 `ITfSource` QI 连续失败计数（advise_layout 降噪：Electron 类宿主
+/// 恒失败，日志只留每进程首条；挂载成功时清零并汇报——见 advise_layout 注释）。
+static LAYOUT_QI_FAILS: AtomicU32 = AtomicU32::new(0);
+
 pub(crate) fn instance_count() -> u32 {
     INSTANCE_COUNT.load(Ordering::SeqCst)
 }
@@ -556,6 +560,12 @@ impl TextService_Impl {
     ///
     /// `origin` 只用于日志（`OnSetFocus` / `Activate` / `首键`）——**成功也留一行**：
     /// "没挂上"这类缺陷此前只能靠"整场没有 follow 行"反推（47 号归因实况）。
+    ///
+    /// QI 失败降噪（2026-10-01）：Electron 类宿主的 context 不支持 `ITfSource`
+    ///（E_NOINTERFACE，恒失败不可恢复），每次焦点切换都尝试 → 日志月累计 3 万+
+    /// 条（真机实锤 Trae CN/ZCode/WorkBuddy），日志 IO 本身成了负担（perf 收尾
+    /// 同款教训）。处理：**尝试照常**（宿主升级后恢复跟随），日志只留每进程首条
+    /// + 累计计数，挂载成功时顺带汇报清零。
     fn advise_layout(&self, pic: &ITfContext, origin: &'static str) {
         if let Some((ctx, _)) = self.layout_sink.borrow().as_ref() {
             if std::ptr::eq(ctx.as_raw(), pic.as_raw()) {
@@ -566,9 +576,12 @@ impl TextService_Impl {
         let source: ITfSource = match pic.cast() {
             Ok(s) => s,
             Err(e) => {
-                log_line(&format!(
-                    "[follow] ITfSource QI 失败（来源={origin}）：{e:?}（无跟随）"
-                ));
+                let n = LAYOUT_QI_FAILS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if n == 0 {
+                    log_line(&format!(
+                        "[follow] ITfSource QI 失败（来源={origin}）：{e:?}（宿主不支持布局 sink，无跟随；同类后续静默）"
+                    ));
+                }
                 return;
             }
         };
@@ -576,8 +589,14 @@ impl TextService_Impl {
         // SAFETY: 标准 TSF advise；sink 为本 COM 对象自身，deactivate 卸载。
         match unsafe { source.AdviseSink(&<ITfTextLayoutSink as Interface>::IID, &sink) } {
             Ok(cookie) => {
+                let n = LAYOUT_QI_FAILS.swap(0, std::sync::atomic::Ordering::Relaxed);
+                let noted = if n > 0 {
+                    format!("（此前 {n} 次 QI 失败已清零）")
+                } else {
+                    String::new()
+                };
                 *self.layout_sink.borrow_mut() = Some((pic.clone(), cookie));
-                log_line(&format!("[follow] 布局 sink 已挂载（来源={origin}）"));
+                log_line(&format!("[follow] 布局 sink 已挂载（来源={origin}）{noted}"));
             }
             Err(e) => {
                 log_line(&format!(
