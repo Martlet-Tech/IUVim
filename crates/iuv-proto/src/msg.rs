@@ -261,6 +261,10 @@ pub enum C2S {
     Ok,
     /// 通用否定应答。
     Err(ProtoError),
+    /// 待上屏原文查询（flush_session 原文上屏的真相源；低频，仅 Ctrl+Space 关闭
+    /// 输入法/Deactivate 时一发——服务端会话持 `Session::pending_text()`，
+    /// 替代客户端「composition 去撇号」近似）。
+    PendingTextQuery,
 }
 
 // —— S2C：服务端 → 客户端 ——
@@ -289,6 +293,8 @@ pub enum S2C {
     },
     /// 工具栏显隐查询应答（`C2S::ToolbarVisibleQuery`；daemon 查询迁移）。
     ToolbarVisible { visible: bool },
+    /// 待上屏原文应答（`C2S::PendingTextQuery`；空串 = 无待上屏内容，客户端走 cancel）。
+    PendingText { text: String },
 }
 
 // —— PUSH：服务端 → 客户端 单向推送（latest-wins，49 §4.6）——

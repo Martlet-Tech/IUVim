@@ -212,6 +212,38 @@ fn cancel_via_esc_ends_session() {
     assert_eq!(esc.end, Some(SessionEnd::Cancel), "Esc = 取消会话");
 }
 
+/// flush_session 原文真相源：会话中查询 → picked+raw；无会话 → 空串。
+#[test]
+fn pending_text_query_returns_session_original() {
+    let pipe = test_pipe("pending");
+    let _server = start_server(&pipe);
+    let (client, _ack, _pushes) = connect_ok(&pipe);
+
+    type_str(&client, "zhujincheng");
+    let r = client
+        .request(C2S::PendingTextQuery, true, Duration::from_secs(2))
+        .expect("PendingTextQuery 应答");
+    match r {
+        S2C::PendingText { text } => {
+            assert_eq!(text, "zhujincheng", "无已选词时原文 = 全部 raw");
+        }
+        other => panic!("应答类型错误: {other:?}"),
+    }
+
+    // 会话结束后查询：空串（客户端走 cancel 分支）。
+    let _ = client.request(
+        C2S::EndSession {
+            end: SessionEnd::Cancel,
+        },
+        true,
+        Duration::from_secs(2),
+    );
+    let r = client
+        .request(C2S::PendingTextQuery, true, Duration::from_secs(2))
+        .expect("PendingTextQuery 应答");
+    assert_eq!(r, S2C::PendingText { text: String::new() });
+}
+
 #[test]
 fn no_uielement_caps_means_no_candidate_payload() {
     let pipe = test_pipe("nocand");

@@ -174,7 +174,6 @@ fn connect_server() -> Result<Arc<RemoteHandle>, String> {
         degraded: AtomicBool::new(false),
         offline: AtomicBool::new(false),
         reviving: AtomicBool::new(false),
-        last_composition: Mutex::new(None),
     });
     // 推送泵（P4 配置热载 + P5 令牌捕获）：连接关闭 → 泵退出。
     spawn_push_pump(handle.clone(), pushes);
@@ -217,8 +216,6 @@ pub(crate) struct RemoteHandle {
     offline: AtomicBool,
     /// 重生循环在跑（防线程风暴）。
     reviving: AtomicBool,
-    /// 最近一次 composition（flush_session 原文上屏用；撇号为切分显示层）。
-    last_composition: Mutex<Option<String>>,
 }
 
 impl RemoteHandle {
@@ -258,6 +255,21 @@ impl RemoteHandle {
             }
             Push::SessionAttached { token } => {
                 *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(*token);
+            }
+            Push::Shutdown { grace_ms } => {
+                // 优雅停机（部署/重启/卸载）：立即透明放行。恢复走**延迟重连**
+                //（只连不拉）——立即重生会把磁盘旧 exe 拉起锁住文件替换，立即
+                // 重连又必然失败（进程正在退）；新 server 通常 1-2s 内上位
+                //（部署/重启流程），延迟窗内自动恢复，**无需用户切焦点**。
+                // 真机教训（2026-10-01）：只押 Activate 兜底不行——焦点不变的
+                // 进程（正打字的 notepad）Activate 永不再触发 → 永久透明，
+                // 用户只能关掉重开。延迟窗超时仍失败 → 保持透明，Activate
+                // 兜底（带 spawn）仍在。
+                log_line(&format!(
+                    "[backend] 服务端优雅停机（grace={grace_ms}ms）→ 透明放行 + 延迟重连"
+                ));
+                self.offline.store(true, Ordering::Relaxed);
+                schedule_revive_deferred(SHUTDOWN_RECONNECT_DELAY_MS);
             }
             // ImeState / UiElement 等：无消费方（P4 服务端自渲染后回归）。
             _ => {}
@@ -311,12 +323,6 @@ impl RemoteHandle {
             _ => return None,
         };
         self.degraded.store(false, Ordering::Relaxed);
-        if outcome.composition.is_some() {
-            *self
-                .last_composition
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = outcome.composition.clone();
-        }
         Some(outcome)
     }
 
@@ -326,10 +332,6 @@ impl RemoteHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
-        *self
-            .last_composition
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
         let _ = self.request(C2S::EndSession {
             end: iuv_proto::SessionEnd::Cancel,
         });
@@ -397,14 +399,14 @@ impl RemoteHandle {
         });
     }
 
-    /// flush_session 原文上屏：最近 composition 去切分撇号（过渡近似：
-    /// 用户手打引号的极端场景原文会少一个撇号，P4 服务端补 pending_text 后消除）。
+    /// flush_session 原文上屏：向服务端查 `Session::pending_text()`（picked + raw
+    /// 真相源，含用户强制撇号）。None/空 = 无待上屏内容，调用方走 cancel 分支。
+    /// 低频路径（Ctrl+Space 关闭输入法/Deactivate），一次往返可接受。
     pub(crate) fn pending_raw_text(&self) -> Option<String> {
-        self.last_composition
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .map(|c| c.replace('\'', ""))
+        match self.request(C2S::PendingTextQuery) {
+            Some(S2C::PendingText { text }) if !text.is_empty() => Some(text),
+            _ => None,
+        }
     }
 
     /// 单请求（截止 [`KEY_DEADLINE_MS`]）。None = 降级放行（Deadline/Closed/协议错误）。
@@ -482,6 +484,54 @@ pub(crate) fn schedule_revive() {
             ));
         })
         .expect("重生线程创建");
+}
+
+/// 停机后的延迟重连窗（毫秒）：部署/重启流程实测 server 缺位 ~1-2s（哨兵轮询
+/// 500ms + 宽限 300ms + 换文件 + 计划任务拉起），首试 1.5s 起步、500ms 步进，
+/// 16 次覆盖 ~9s——足够跨过手动重启的间隙。
+const SHUTDOWN_RECONNECT_DELAY_MS: u64 = 1500;
+
+/// 优雅停机后的延迟重连（**只连不拉**）：`Push::Shutdown` = 刻意停机（部署换
+/// 文件/管理员重启/卸载），立即 `schedule_revive` 会把磁盘旧 exe 拉起锁住文件
+/// 替换；纯延迟重连则安全——连接失败只是重试，永不 spawn。超窗失败 → 保持
+/// 透明，Activate 兜底（带 spawn）仍在。与 `schedule_revive` 共用 `reviving`
+/// 闸（防两路并发；延迟窗内 Activate 来的重生会被跳过，窗口结束后再试）。
+pub(crate) fn schedule_revive_deferred(delay_ms: u64) {
+    let Some(handle) = remote().cloned() else {
+        return;
+    };
+    if handle.reviving.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("iuv-remote-deferred".into())
+        .spawn(move || {
+            const ATTEMPTS: usize = 16;
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            let dir = iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
+            let auth = match iuv_win::transport::load_or_create_token(&dir) {
+                Ok(a) => a,
+                Err(e) => {
+                    handle.reviving.store(false, Ordering::SeqCst);
+                    log_line(&format!("[backend] 共享密钥装配失败 → 延迟重连放弃：{e}"));
+                    return;
+                }
+            };
+            for i in 0..ATTEMPTS {
+                if i > 0 {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                if let Ok(pushes) = handle.try_reconnect_once(false, auth.clone()) {
+                    spawn_push_pump(handle.clone(), pushes);
+                    log_line("[backend] 停机后延迟重连成功（新 server 已上位，令牌重绑）");
+                    handle.reviving.store(false, Ordering::SeqCst);
+                    return;
+                }
+            }
+            handle.reviving.store(false, Ordering::SeqCst);
+            log_line("[backend] 停机后延迟重连未果（server 未回来？）→ 保持透明，Activate 兜底");
+        })
+        .expect("延迟重连线程创建");
 }
 
 impl RemoteHandle {
@@ -599,6 +649,9 @@ mod tests {
                     })));
                 }
                 C2S::Ping { nonce } => reply.respond(S2C::Pong { nonce }),
+                C2S::PendingTextQuery => reply.respond(S2C::PendingText {
+                    text: "pending-zhujincheng".into(),
+                }),
                 _ => {}
             }
         }
@@ -708,7 +761,6 @@ mod tests {
             last_state: Mutex::new(None),
             degraded: AtomicBool::new(false),
             offline: AtomicBool::new(false),
-            last_composition: Mutex::new(None),
         }
     }
 
@@ -725,7 +777,6 @@ mod tests {
             last_state: Mutex::new(None),
             degraded: AtomicBool::new(false),
             offline: AtomicBool::new(false),
-            last_composition: Mutex::new(None),
         };
         assert_eq!(h.config_epoch(), 0);
         let cfg = Config {
@@ -812,8 +863,50 @@ mod tests {
         assert_eq!(
             h.pending_raw_text(),
             None,
-            "无 composition 时原文上屏应为 None（走 cancel 分支）"
+            "离线时原文上屏应为 None（走 cancel 分支）"
         );
+    }
+
+    /// flush 原文真相源：PendingTextQuery → 服务端 `Session::pending_text()`
+    /// 原样返回（含撇号——测试 echo 固定值即可，形状契约在此钉死）。
+    #[test]
+    fn pending_text_queries_server() {
+        let (pipe, _server) = start_with("pending", Arc::new(Factory));
+        let h = connect_handle(&pipe);
+        assert_eq!(
+            h.pending_raw_text().as_deref(),
+            Some("pending-zhujincheng"),
+            "原文上屏 = 服务端 pending_text，不再客户端去撇号近似"
+        );
+    }
+
+    /// 服务端报告空串（无待上屏内容）→ None，调用方走 cancel 分支。
+    #[test]
+    fn pending_text_empty_maps_to_none() {
+        struct EmptyPendingFactory;
+        impl ConnHandler for EmptyPendingFactory {
+            fn on_connect(
+                &self,
+                _client: &iuv_proto::ClientInfo,
+                _caps: Caps,
+                _resume: Option<iuv_proto::ResumeToken>,
+                _token: iuv_proto::ResumeToken,
+                _sender: iuv_win::transport::ConnSender,
+            ) -> Box<dyn Session> {
+                struct EmptyPendingSession;
+                impl Session for EmptyPendingSession {
+                    fn on_c2s(&mut self, req: C2S, reply: &mut Reply) {
+                        if let C2S::PendingTextQuery = req {
+                            reply.respond(S2C::PendingText { text: String::new() });
+                        }
+                    }
+                }
+                Box::new(EmptyPendingSession)
+            }
+        }
+        let (pipe, _server) = start_with("pending-empty", Arc::new(EmptyPendingFactory));
+        let h = connect_handle(&pipe);
+        assert_eq!(h.pending_raw_text(), None);
     }
 
     #[test]

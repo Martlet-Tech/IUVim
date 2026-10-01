@@ -402,6 +402,16 @@ impl Session for EngineSession {
                     .unwrap_or(false);
                 reply.respond(S2C::ToolbarVisible { visible });
             }
+            C2S::PendingTextQuery => {
+                // flush_session 原文上屏的真相源：picked + raw（核心会话现成方法）。
+                // 空串 = 无待上屏内容（客户端走 cancel 清空预编辑）。
+                let text = self
+                    .session
+                    .as_ref()
+                    .map(|s| s.pending_text())
+                    .unwrap_or_default();
+                reply.respond(S2C::PendingText { text });
+            }
             // 握手/通用应答/服务端心跳回执不经会话处理；新增变体在语义接入前落这里。
             _ => {}
         }

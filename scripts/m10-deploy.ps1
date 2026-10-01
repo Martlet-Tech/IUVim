@@ -87,12 +87,10 @@ if ($NoServer) {
         Write-Host "错误：未找到 $serverSrc（m10-build 的 server 车道产物）"
         exit 1
     }
-    # 停旧实例（复制会锁；密钥文件共享，重启无缝）。
-    $old = Get-Process -Name "iuv-server" -ErrorAction SilentlyContinue
-    if ($old) {
-        Write-Host "停止运行中的 iuv-server（PID=$($old.Id -join ',')）..."
-        Stop-Process -Name "iuv-server" -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 300
+    # 停旧实例（复制会锁；密钥文件共享，重启无缝）。优雅停机：server 广播
+    # Push::Shutdown（客户端立即透明）后退出；超时强杀兜底（旧版无哨兵逻辑）。
+    if (Get-Process -Name "iuv-server" -ErrorAction SilentlyContinue) {
+        Stop-IuvServerGraceful | Out-Null
     }
     Copy-Item $serverSrc $serverDst -Force -ErrorAction Stop
     Trace-Script "m10-deploy: iuv-server 复制成功 $serverDst"

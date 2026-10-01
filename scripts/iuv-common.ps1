@@ -38,6 +38,33 @@ function Trace-Script {
     try { Add-Content -LiteralPath (Join-Path $env:TEMP 'iuv-script.log') ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $Msg) } catch {}
 }
 
+# ---- iuv-server 优雅停机（哨兵文件 + 强杀兜底）----
+# server 监视 %LOCALAPPDATA%\iuv\server.stop（config_watch 500ms 周期），检测到
+# 即广播 Push::Shutdown（客户端立即透明放行）后自行退出。等待至多 5s，仍未退出
+# （如旧版 server 无哨兵逻辑）回退 Stop-Process -Force。返回 $true = 进程已停止。
+function Stop-IuvServerGraceful {
+    $stopFile = Join-Path $env:LOCALAPPDATA 'iuv\server.stop'
+    $running = Get-Process -Name 'iuv-server' -ErrorAction SilentlyContinue
+    if (-not $running) { return $true }
+    Write-Host "请求 iuv-server 优雅停机（哨兵 $stopFile）..."
+    Trace-Script "Stop-IuvServerGraceful: 写哨兵（PID=$($running.Id -join ',')）"
+    New-Item -ItemType File -Force -Path $stopFile | Out-Null
+    for ($i = 0; $i -lt 10; $i++) {
+        Start-Sleep -Milliseconds 500
+        if (-not (Get-Process -Name 'iuv-server' -ErrorAction SilentlyContinue)) {
+            Remove-Item $stopFile -Force -ErrorAction SilentlyContinue
+            Write-Host "iuv-server 已优雅退出"
+            return $true
+        }
+    }
+    Write-Host "警告：优雅停机超时（5s），强杀兜底（旧版 server 无哨兵逻辑？）"
+    Trace-Script "Stop-IuvServerGraceful: 超时强杀兜底"
+    Stop-Process -Name 'iuv-server' -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
+    Remove-Item $stopFile -Force -ErrorAction SilentlyContinue
+    return -not (Get-Process -Name 'iuv-server' -ErrorAction SilentlyContinue)
+}
+
 # ---- ctfmon 重启（受限用户上下文）----
 # 提升进程直接启动 ctfmon 会带管理员 token，TSF 文本服务无法服务普通进程（"只能输入英文"）。
 # 改用一次性计划任务（受限 token、交互式）在用户会话拉起 ctfmon，任务用完即删。

@@ -68,7 +68,8 @@ fn main() {
     let service = Arc::new(iuv_server::EngineService::new(engine.clone()));
     // P4 配置热载：后台监视 config.json → 引擎热载 + 纪元自增（会话捎带
     // Push::ConfigChanged 通知客户端）；改配置不再需要重启 server。
-    iuv_server::config_watch::spawn(engine, service.config_epoch());
+    // 同线程兼停机哨兵（server.stop）：优雅停机广播 Push::Shutdown 后退出。
+    iuv_server::config_watch::spawn(engine, service.config_epoch(), service.senders_handle());
 
     // ---- ② daemon UI 迁入：daemon 状态/工具栏（含桌宠、全局热键、设置页）----
     let daemon_config = iuv_server::daemon::config::load_config();

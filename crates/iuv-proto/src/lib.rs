@@ -27,9 +27,12 @@ pub use msg::{
 pub use stream::StreamIdAlloc;
 
 /// 协议版本下限（握手协商用，49 §4.4）。破坏性线格式变更 +1。
-pub const PROTO_MIN: u16 = 2;
+/// 2→3：新增 `C2S::PendingTextQuery` / `S2C::PendingText` /（消费）`Push::Shutdown`
+/// ——混合期旧端解不出新变体会整帧拒收，按 VersionMismatch 拒绝（③-2 同款纪律，
+/// 部署后旧 DLL 进程重启/注销翻页即恢复）。
+pub const PROTO_MIN: u16 = 3;
 /// 协议版本上限。区间 [PROTO_MIN, PROTO_MAX] 允许前后兼容窗口。
-pub const PROTO_MAX: u16 = 2;
+pub const PROTO_MAX: u16 = 3;
 
 /// 版本协商：取双方支持区间的**最大共同值**（= 双方上限的较小者）；无交集 →
 /// [`msg::ProtoError::VersionMismatch`]。

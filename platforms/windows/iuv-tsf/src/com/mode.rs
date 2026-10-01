@@ -88,7 +88,8 @@ impl TextService {
     pub(crate) fn flush_session(&self) {
         self.ui.borrow_mut().hide();
         self.cand_elem.borrow_mut().end();
-        // M10：原文 = 最近 composition 去切分撇号（过渡近似，见 remote_host）。
+        // M10：原文 = 服务端 `Session::pending_text()`（picked+raw 真相源，含用户
+        // 强制撇号——「composition 去撇号」近似已退役）。
         let text = crate::com::remote_host::remote().and_then(|r| r.pending_raw_text());
         if let Some(comp) = self.composition.borrow().as_ref() {
             match text.as_deref() {

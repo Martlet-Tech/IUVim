@@ -14,13 +14,14 @@ Exit-IfNotAdmin -ScriptPath $PSCommandPath -PassArgs @()
 
 Write-Host "=== M10 测试卸载 ==="
 
-# ---- 1. 停服务进程（iuv-server 引擎服务 / iuv-daemon 工具栏守护）----
-foreach ($name in @('iuv-server', 'iuv-daemon')) {
-    $p = Get-Process -Name $name -ErrorAction SilentlyContinue
-    if ($p) {
-        Write-Host "停止 $name（PID=$($p.Id -join ',')）..."
-        Stop-Process -Name $name -Force -ErrorAction SilentlyContinue
-    }
+# ---- 1. 停服务进程（iuv-server 走优雅停机（广播 Push::Shutdown）；iuv-daemon 强杀残留）----
+if (Get-Process -Name 'iuv-server' -ErrorAction SilentlyContinue) {
+    Stop-IuvServerGraceful | Out-Null
+}
+$p = Get-Process -Name 'iuv-daemon' -ErrorAction SilentlyContinue
+if ($p) {
+    Write-Host "停止 iuv-daemon（PID=$($p.Id -join ',')）..."
+    Stop-Process -Name 'iuv-daemon' -Force -ErrorAction SilentlyContinue
 }
 Start-Sleep -Milliseconds 300
 

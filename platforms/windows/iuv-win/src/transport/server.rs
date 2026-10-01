@@ -155,6 +155,21 @@ impl ConnSender {
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
         }
     }
+
+    /// 单向推送（fire-and-forget，无应答无流号）：优雅停机广播 `Push::Shutdown`
+    /// 等服务端主动下行。连接已关/写失败返回 Err，调用方按连接死亡处理。
+    pub fn push(&self, p: Push) -> Result<(), TransportError> {
+        use std::sync::atomic::Ordering;
+        if self.shared.closed.load(Ordering::Acquire) {
+            return Err(TransportError::Closed);
+        }
+        let _guard = crate::transport::WriteGuard::new(&self.shared.writers);
+        let _w = self.shared.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.shared.closed.load(Ordering::Acquire) {
+            return Err(TransportError::Closed);
+        }
+        write_frame_ov(self.shared.h.get(), 0, false, &Payload::Push(p), WRITE_TIMEOUT_MS)
+    }
 }
 
 /// 一次 `on_c2s` 的产出：0/1 条应答 + 任意条推送。
