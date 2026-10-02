@@ -453,7 +453,7 @@ mod tests {
             e.dict.user().unwrap().is_blocked("shou'xuan", "手癣"),
             "基础库词 → 屏蔽"
         );
-        // 屏蔽词条 + 整句拦截：exact 与 viterbi 都不再出现（集成测试已验证候选层）
+        // 屏蔽词条 + 整句拦截：exact 与整句 poet 都不再出现（集成测试已验证候选层）
         let hits = e.dict.exact("shou'xuan");
         assert!(!hits.iter().any(|x| x.word == "手癣"));
     }

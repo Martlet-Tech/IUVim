@@ -1,10 +1,11 @@
-//! 守护进程共享状态 + 用户库发布链路（写共享段 → bump version → 聚合写盘）。
+//! 服务进程共享状态 + 用户库发布链路（写共享段 → bump version → 聚合写盘）。
 //!
-//! 所有写用户库的入口（管道线程、设置页「清除全部」）统一走 `publish()`：
+//! 所有写用户库的入口（客户端 UserMutation、设置页「清除全部」）统一走 `publish()`：
 //! 锁 dict → 序列化 → 写共享段（ShmWriter::write 内部按"数据区 → data_len → version"
-//! 顺序原子发布）→ 置 dirty。落盘：管道路径 publish 后紧接 `flush_now()`（立即）；
-//! 设置页清除路径同样立即 `flush_now()`；主循环另有 `flush_if_dirty()` 兜底
-//! （覆盖任何非管道 dirty 路径，防注销硬杀丢写）。
+//! 顺序原子发布）→ 置 dirty。落盘：设置页清除路径立即 `flush_now()`；主循环
+//! 50ms 轮询 `flush_if_dirty()` 兜底（覆盖其余 dirty 路径，防注销硬杀丢写）。
+//! （2026-10-02 品质审查：模块头旧描述的「管道线程数据面 / 2s 定时器」均为
+//! daemon 时代口径，随本轮死链清扫一并归一。）
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,18 +23,14 @@ pub struct DaemonState {
     pub dict: Mutex<UserDict>,
     /// 共享段写者（None = 建段失败，发布仅置 dirty，仍可写盘）。
     pub shm: Mutex<Option<ShmWriter>>,
-    /// 待写盘标记（管道写请求/设置页改动置位；主线程 2s 定时器消费）。
+    /// 待写盘标记（设置页改动/客户端 UserMutation 置位；主循环 50ms 轮询消费）。
     pub dirty: AtomicBool,
-    /// 退出信号：主线程置位 → 设置线程收到后关闭窗口。
-    pub close_settings: AtomicBool,
     /// 语言栏菜单「设置」命令：主线程轮询发现后 run_settings 弹窗（egui 常驻线程）。
     pub open_settings: AtomicBool,
-    /// 设置窗口运行中（主线程进 run_settings 前置位、返回后复位）：管道线程据此
+    /// 设置窗口运行中（主线程进 run_settings 前置位、返回后复位）：客户端据此
     /// 把重复的 OpenSettings 转发为 Win32 还原/置前而非积压重开（防关窗后幽灵重开）。
     pub settings_open: AtomicBool,
-    /// 语言栏菜单/卸载「退出」命令：主线程轮询发现后退出主循环。
-    pub quit_flag: AtomicBool,
-    /// 当前配置快照（设置页保存后更新；托盘菜单主题读取）。
+    /// 当前配置快照（设置页保存后更新；工具栏主题读取）。
     pub config: Mutex<DaemonConfig>,
     /// 用户库文件路径（写盘目标）。
     pub user_dict_path: PathBuf,
@@ -50,10 +47,8 @@ impl DaemonState {
             dict: Mutex::new(dict),
             shm: Mutex::new(shm),
             dirty: AtomicBool::new(false),
-            close_settings: AtomicBool::new(false),
             open_settings: AtomicBool::new(false),
             settings_open: AtomicBool::new(false),
-            quit_flag: AtomicBool::new(false),
             config: Mutex::new(config),
             user_dict_path,
         })
@@ -81,29 +76,7 @@ impl DaemonState {
         v
     }
 
-    /// 当前共享段 version（Ping 响应用）；shm 缺失 → 0。
-    pub fn current_version(&self) -> u32 {
-        let shm = self.shm.lock().unwrap_or_else(|p| p.into_inner());
-        shm.as_ref().map(|w| w.version()).unwrap_or(0)
-    }
-
-    /// 递增共享段 config_epoch（设置页保存后调用；会话进程检测变化重载 config）。
-    pub fn bump_config_epoch(&self) -> u32 {
-        let mut shm = self.shm.lock().unwrap_or_else(|p| p.into_inner());
-        match shm.as_mut() {
-            Some(w) => {
-                let e = w.bump_config_epoch();
-                log::log_line(&format!("[state] config_epoch 递增 → {e}"));
-                e
-            }
-            None => {
-                log::log_line("[state] config_epoch 递增跳过（共享段缺失）");
-                0
-            }
-        }
-    }
-
-    /// 2s 聚合写盘（主线程定时器回调）：dirty → 用户库写文件。失败保留 dirty 重试。
+    /// 50ms 轮询聚合写盘（主循环）：dirty → 用户库写文件。失败保留 dirty 重试。
     pub fn flush_if_dirty(&self) {
         if !self.dirty.swap(false, Ordering::AcqRel) {
             return;

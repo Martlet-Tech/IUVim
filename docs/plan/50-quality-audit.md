@@ -1,8 +1,9 @@
 # 50 · 全仓库品质检查（M10 后首次，新特性前置）
 
-> 状态：**§1 高危 H1-H5 已修复；§2.1 transport 五项 + §2.2 四项快赢已修复
-> （2026-10-02，全带留痕注释，526 过/3 败=shm 环境项）；其余中危/死代码/文档
-> 漂移待修**。
+> 状态：**§1 高危 H1-H5 已修复；§2.1 transport 五项 + §2.2 四项快赢已修复；
+> §3 死代码清扫 D1-D3 已完成（viterbi/server 死链/tsf 本地候选窗，净 -1100 行），
+> 改动在工作区待提交。进度交接 = `50-handoff-quality-sweep.md`（下一棒从这里接手），
+> 全量回归：fmt 干净、clippy 0 警告、518 过/3 败=shm 环境项。
 > 方式：cargo fmt/clippy/test 全仓自动化 + 6 路模块代理逐文件通读（core/data、server、
 > tsf、win+proto、ui+repl、横切脚本/文档）+ 高危项人工逐行核实。
 > 范围：main @ e9f2dc1，全仓库 ~31k 行 Rust（8 crate）+ scripts + docs，

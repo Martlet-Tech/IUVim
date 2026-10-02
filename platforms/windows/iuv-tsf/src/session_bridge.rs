@@ -7,7 +7,7 @@ use iuv_core::{
 
 use crate::composition::Composition;
 use crate::log::{log_line, perf_record_with, perf_tick};
-use crate::ui::{effect_to_snapshot, CandidateUi, CaretRect};
+use crate::ui::CaretRect;
 
 /// 虚拟键 → 归一化 Key。未识别键返回 None（放行给应用）。
 ///
@@ -187,41 +187,20 @@ pub fn fullwidth_pending(
 /// 完整版（保留 composition、候选框在下一键重新出现）见 14-mod-iuv-tsf-candwin.md §5。
 /// 判定基准 = 共享 `caret` 槽，**47 号起其语义是 composition 起点（锚点）**：
 /// 打字期锚点恒定（预编辑从它向右/向下生长）→ 正常打字零误触发，折行也只移动尾端、
-/// 不再被判为远跳而藏窗；点击远处/拖拽窗口仍产生大位移 → 照旧清理。
-/// 历史（47 号前基准为尾端 caret）：连续打字每键仅前进一个字符宽（~15px）不触发，
-/// 折行/长 composition 会（2026-08-13 实测 qingnixiangyong 15 键后起点到末尾
-/// 167px > 阈值，当时据此把基准改为"与上次 caret 的增量"）。
-const JUMP_THRESHOLD: f64 = 150.0;
-
-/// 两点距离（像素）。
-fn jump_distance(a: CaretRect, b: CaretRect) -> f64 {
-    let dx = (a.x - b.x) as f64;
-    let dy = (a.y - b.y) as f64;
-    (dx * dx + dy * dy).sqrt()
-}
-
-/// 应用 Effect：composition 更新 → 候选窗快照 → 会话结束处理。
-/// 契约 13 任务书 §3.4：SetText → caret → ui.show/update → end 上屏/取消并 hide。
-/// P4 服务端渲染：`render_locally=false`（远端模式）时跳过候选窗快照/显隐——
-/// 窗口由 iuv-server 画，本函数只更新 composition 与 caret 量取（锚点变化由
-/// 调用方上报）；ui.hide 在 end 路径保留（本地窗未建 = 无操作）。
+/// 应用 Effect：composition 更新 → caret 量取 → 会话结束处理。
+/// 契约 13 任务书 §3.4 的候选窗部分随 P4 服务端渲染退役（窗口由 iuv-server 画，
+/// 本函数只更新 composition 与 caret 量取，锚点变化由调用方上报）。
+/// 本地渲染分支/跳变检测已于 2026-10-02 品质审查 D3 清扫（render_locally
+/// 恒 false，分支生产不可达）。
 ///
-/// 返回 `true` 表示会话已结束（effect.end 为 Some 或远跳清除），调用方应丢弃 Session。
-pub fn apply_effect(
-    composition: &Composition,
-    ui: &mut dyn CandidateUi,
-    caret: &mut CaretRect,
-    effect: &Effect,
-    orientation: iuv_core::Orientation,
-    render_locally: bool,
-) -> bool {
+/// 返回 `true` 表示会话已结束（effect.end 为 Some），调用方应丢弃 Session。
+pub fn apply_effect(composition: &Composition, caret: &mut CaretRect, effect: &Effect) -> bool {
     match &effect.end {
         Some(SessionEnd::Commit(text)) => {
             match composition.commit(text) {
                 Ok(()) => log_line(&format!("[commit] commit：{text}")),
                 Err(e) => log_line(&format!("[commit] commit 失败：{e}")),
             }
-            ui.hide();
             true
         }
         Some(SessionEnd::Cancel) => {
@@ -229,13 +208,11 @@ pub fn apply_effect(
                 Ok(()) => log_line("cancel：清空预编辑"),
                 Err(e) => log_line(&format!("cancel 失败：{e}")),
             }
-            ui.hide();
             true
         }
         None => {
             // 悬空状态（选中中间级词后）：无 commit 信号——已选词仅在预编辑混合文本中
             // 显示（汉字+尾巴拼音），composition 全程覆盖整个混合文本，set_text 全量更新。
-            let prev_caret = *caret; // 跳变检测基准：上一次光标（增量位移）
             let t_settext = perf_tick();
             match composition.set_text(&effect.composition) {
                 Ok(Some(rect)) => {
@@ -255,44 +232,7 @@ pub fn apply_effect(
             perf_record_with("settext", t_settext, || {
                 format!("len={}", effect.composition.chars().count())
             });
-            if !render_locally {
-                // P4 服务端渲染：候选窗/跳变判定全跳过（caret 更新已供上报）。
-                return false;
-            }
-            let mut snap = effect_to_snapshot(effect);
-            snap.orientation = orientation;
-            if snap.candidates.is_empty() && snap.reading.is_empty() {
-                log_line("[candwin] 快照为空，hide");
-                ui.hide();
-                false
-            } else if ui.is_visible() {
-                if jump_distance(prev_caret, *caret) > JUMP_THRESHOLD {
-                    // 输入点跳变（点击远处/拖拽窗口跨屏/自动换行）：
-                    // 仅隐藏候选窗、保留 composition 与 Session；下一键 set_text 后
-                    // 自然走 show 分支用新光标重新定位。换行场景输入不丢失。
-                    // 基准为增量（与上次 caret 位移）——正常打字每键 ~15px 不触发。
-                    log_line(&format!(
-                        "[candwin] 光标跳变（prev=({},{}), caret=({},{}), dist={:.0}px），隐藏候选窗待下一键重现",
-                        prev_caret.x,
-                        prev_caret.y,
-                        caret.x,
-                        caret.y,
-                        jump_distance(prev_caret, *caret)
-                    ));
-                    ui.hide();
-                    false
-                } else {
-                    let t_render = perf_tick();
-                    ui.update(&snap);
-                    perf_record_with("render", t_render, || "update".to_owned());
-                    false
-                }
-            } else {
-                let t_render = perf_tick();
-                ui.show(&snap, *caret);
-                perf_record_with("render", t_render, || "show".to_owned());
-                false
-            }
+            false
         }
     }
 }

@@ -187,7 +187,7 @@ fn builtin_girl_art() -> Option<(PetSkin, LayerImages)> {
 }
 
 /// `PetSprites` 装配失败时使用的空集。
-pub fn empty_sprites() -> PetSprites {
+fn empty_sprites() -> PetSprites {
     PetSprites::new(Vec::new(), HashMap::new())
 }
 

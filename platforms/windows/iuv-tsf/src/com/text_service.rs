@@ -32,10 +32,8 @@ use crate::composition::Composition;
 use crate::ctl::{CtlApplier, CtlEndpoint};
 use crate::langbar::{self, LangBarItemButton};
 use crate::log::log_line;
-use crate::ui::{CandidateUi, CandwinCandidateWindow, CaretRect};
+use crate::ui::CaretRect;
 use crate::ui_element::CandidateElementHost;
-
-use super::dispatch::dispatch_effect;
 
 /// 全局活动对象计数（DllCanUnloadNow 用）：实例创建 +1，Drop −1。
 static INSTANCE_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -99,9 +97,6 @@ pub(crate) struct TextService {
     pub(crate) last_effect: Rc<RefCell<Option<iuv_core::Effect>>>,
     /// composition 封装（随会话创建/销毁）。Rc 共享：候选窗回调 dispatch 用。
     pub(crate) composition: Rc<RefCell<Option<Composition>>>,
-    /// 候选窗：CandwinCandidateWindow（M4：ULW 呈现，iuv-ui 绘图）。Rc 共享：同上。
-    /// 具体类型（非 `Box<dyn>`）：M6 配置热载需直调 `set_theme`；交互/效果应用同槽。
-    pub(crate) ui: Rc<RefCell<CandwinCandidateWindow>>,
     /// 最近一次**锚点**矩形（composition 起点；47 号起语义由"尾端光标"反转为
     /// "会话起点"——起点打字期恒定，候选窗因此不再随预编辑延长而抖动）。
     /// GetTextExt 失败时复用旧值；首次用屏幕中央。Rc 共享：同上。
@@ -113,9 +108,6 @@ pub(crate) struct TextService {
     pub(crate) lang_bar: RefCell<Option<ComObject<LangBarItemButton>>>,
     /// TSF 候选 UI 元素宿主（WoW 游戏内候选框实验）。Rc 共享：dispatch 路径同线程访问。
     pub(crate) cand_elem: Rc<RefCell<CandidateElementHost>>,
-    /// M10 P4：已应用的配置纪元（服务端 ConfigChanged 推送驱动收敛，
-    /// 比对落后才切候选窗主题；进程内原子量比较，非轮询）。
-    pub(crate) remote_theme_epoch: Cell<u32>,
     /// 引号配对状态（`'`/`"` 交替开/关形）。会话开始/模式切换复位为开。
     pub(crate) punct_quote_open: Cell<bool>,
     /// 实例运行时四态（32-status-toolbar.md §5.1）：per-实例（非进程级 config），
@@ -141,54 +133,6 @@ impl TextService {
         let caret = Rc::new(Cell::new(CaretRect::default()));
         let cand_elem = Rc::new(RefCell::new(CandidateElementHost::new()));
         let last_effect: Rc<RefCell<Option<iuv_core::Effect>>> = Rc::new(RefCell::new(None));
-        // 候选窗交互接线（同线程回调；点击=页内行号→Digit 键上屏；悬停=纯视觉，
-        // 窗口内部处理，不驱动会话）。
-        // M4 主题：直接读 config.json（引擎可能仍在后台加载，engine() 不可依赖）：
-        // `theme` 字段（默认 light）→ theme_light()/theme_dark()。M6 起可经 set_theme 热载。
-        let theme = match Config::load().theme {
-            iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
-            iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
-        };
-        let ui_rc = Rc::new(RefCell::new(CandwinCandidateWindow::new(theme)));
-        log_line(&format!(
-            "候选窗主题：{}（config theme；M6 起可热载）",
-            theme.name
-        ));
-        {
-            let s = session.clone();
-            let c = composition.clone();
-            let u = ui_rc.clone();
-            let ca = caret.clone();
-            let ce = cand_elem.clone();
-            let le = last_effect.clone();
-            ui_rc
-                .borrow_mut()
-                .set_on_click(Some(Box::new(move |row: usize| {
-                    // Digit 键位上限 1-9（row 0-8）；超限忽略（page_size 配置极端时防御）。
-                    if row >= 9 {
-                        return;
-                    }
-                    // M10 远端模式：点击 = Digit 键经远端会话，基线组装后走同一渲染路径。
-                    {
-                        let outcome = crate::com::remote_host::remote().and_then(|r| {
-                            r.key_down(Key::Digit((row + 1) as u8), Default::default())
-                        });
-                        if let Some(o) = outcome {
-                            let base = le.borrow_mut().take();
-                            let (effect, ended) = crate::com::dispatch::merge_outcome(base, o);
-                            dispatch_effect(&s, &c, &u, &ca, &ce, &effect, false);
-                            if ended {
-                                le.borrow_mut().take();
-                                if let Some(r) = crate::com::remote_host::remote() {
-                                    r.end_session();
-                                }
-                            } else {
-                                *le.borrow_mut() = Some(effect);
-                            }
-                        }
-                    }
-                })));
-        }
         TextService {
             thread_mgr: RefCell::new(None),
             client_id: Cell::new(0),
@@ -199,12 +143,10 @@ impl TextService {
             session,
             last_effect,
             composition,
-            ui: ui_rc,
             caret,
             cand_elem,
             english_mode: Arc::new(AtomicBool::new(false)),
             lang_bar: RefCell::new(None),
-            remote_theme_epoch: Cell::new(0),
             // 引号配对状态初值 true = 下个引号从开形起（chinese_punct 语义
             // quote_open=true → ‘/“，2026-10-02 品质审查 H3 纠正旧初值 false）。
             punct_quote_open: Cell::new(true),
@@ -499,8 +441,7 @@ impl TextService_Impl {
 
     /// Deactivate 公共清理。
     fn deactivate(&self) {
-        // 焦点清理：隐藏候选窗、结束候选元素、丢弃会话与 composition。
-        self.ui.borrow_mut().hide();
+        // 焦点清理：结束候选元素、丢弃会话与 composition。
         self.cand_elem.borrow_mut().clear();
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
@@ -772,7 +713,6 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
         _pdimprevfocus: Ref<ITfDocumentMgr>,
     ) -> Result<()> {
         guard(|| {
-            self.ui.borrow_mut().hide();
             self.cand_elem.borrow_mut().end();
             // M10 ③：服务端候选窗同步隐藏（会话保留——「焦点切换不打断会话」
             // 原则不变，仅窗口消失；回焦后下键经 sync_candwin 重显）。

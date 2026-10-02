@@ -39,7 +39,7 @@ impl TooltipWindow {
         self.hide(); // 下轮悬停用新主题重绘（简单起见不缓存标签）
     }
 
-    pub(super) fn show_near(&mut self, _theme: &Theme, label: &str, _bar: HWND) {
+    pub(super) fn show_near(&mut self, label: &str) {
         if self.hwnd.is_invalid() {
             return;
         }

@@ -17,7 +17,6 @@ pub mod schema;
 pub mod script;
 pub mod session;
 pub(crate) mod userdict;
-pub mod viterbi;
 
 pub use api::{EngineCtx, ImeEngine, PendingInput, Span, Translation};
 pub use candidate::{Candidate, CandidateKind};

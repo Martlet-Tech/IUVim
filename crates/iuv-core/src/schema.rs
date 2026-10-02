@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 
 /// üe 去点输入形 → 词库规范形（v=ü，GB《通用键盘表示规范》）。
-/// lue→lve、nue→nve：唯一归一单点，seg/plans/viterbi 键/dict 查询
+/// lue→lve、nue→nve：唯一归一单点，seg/plans 键/dict 查询
 /// 全部消费规范形（24-ue-input-alias.md）。
 fn canonical(syl: &str) -> &str {
     match syl {

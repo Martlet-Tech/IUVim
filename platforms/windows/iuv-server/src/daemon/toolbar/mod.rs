@@ -44,7 +44,7 @@ use std::time::Duration;
 
 use iuv_core::ImeState;
 use iuv_ui::{theme_dark, theme_light, Theme, ToolbarIcons};
-use iuv_win::{CtlCmd, CtlResult, Request, ToolbarSignal};
+use iuv_win::{CtlCmd, CtlResult, ToolbarSignal};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
@@ -56,9 +56,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW, PostMessageW,
-    PostThreadMessageW, RegisterClassExW, SetWindowLongPtrW, TranslateMessage, CS_HREDRAW,
-    CS_VREDRAW, GWLP_USERDATA, IDC_ARROW, MSG, WM_APP, WM_QUIT, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    RegisterClassExW, SetWindowLongPtrW, TranslateMessage, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
+    IDC_ARROW, MSG, WM_APP, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 // WM_MOUSELEAVE 在 windows-rs 0.62 中位于 Controls 模块（值 0x02A3 = 675），本地定义。
 const WM_MOUSELEAVE: u32 = 675;
@@ -200,10 +200,10 @@ impl ToolbarHost {
             .visible
     }
 
-    /// 处理工具条命令：语言栏菜单开关（Request::ToggleToolbar）入队。
-    /// ③-3 清理：Request 仅存 ToggleToolbar 一个变体——其余旧管道请求（数据面写/
-    /// 注册/信号）已随 ② 迁移统一走 transport，此直调入口不再有其他形态。
-    pub fn handle_request(&self, _req: &Request) -> bool {
+    /// 工具条显隐开关（唯一存活的服务端请求 = C2S::ToggleToolbar）：入队切换。
+    /// （2026-10-02 品质审查：旧签名收 `_req: &Request` 但无视内容，任何变体
+    /// 一律当 ToggleVisible——语义误导，改为无参直名。）
+    pub fn toggle_visible(&self) -> bool {
         self.enqueue(BarEvent::ToggleVisible);
         true
     }
@@ -270,15 +270,6 @@ impl ToolbarHost {
         }
         // SAFETY: hwnd 由工具条线程创建、线程存活期间有效；跨线程 PostMessage 合法。
         let _ = unsafe { PostMessageW(Some(HWND(h)), WM_APP_REFRESH, WPARAM(0), LPARAM(0)) };
-    }
-
-    /// 停止工具条线程（daemon 退出时；PostThreadMessage WM_QUIT 唤醒消息循环）。
-    pub fn shutdown(&self) {
-        let tid = self.thread_id.load(Ordering::SeqCst);
-        if tid != 0 {
-            // SAFETY: PostThreadMessageW 向工具条线程投递 WM_QUIT（GetMessage 返回 0）。
-            let _ = unsafe { PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0)) };
-        }
     }
 }
 

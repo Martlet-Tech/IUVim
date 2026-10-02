@@ -32,8 +32,8 @@ pub(crate) enum KeyAction {
 
 impl TextService {
     /// 按键路由唯一判定点：透明模式/直通名单/英文全角/中文标点/全角直接上屏/
-    /// 会话开关，全部决策收敛于此。含 M6 daemon 轮询副作用（config_epoch 热载、
-    /// 实例重注册；Test 阶段即消费，见 test_key_down 注释）。
+    /// 会话开关，全部决策收敛于此。（旧 daemon 轮询副作用随本地候选窗退役，
+    /// 2026-10-02 品质审查 D3——配置热载走 remote_host 推送泵。）
     ///
     /// test_key_down 与 handle_key_down **必须**共用同一判定（对称保证）：
     /// 应用在 OnTestKeyDown 返回 eaten 时即跳过自己的按键处理，若 Test 吃而
@@ -49,10 +49,6 @@ impl TextService {
         let Some(config) = crate::com::remote_host::backend_config() else {
             return KeyAction::Pass;
         };
-        // P4：配置更新 PUSH 驱动——按键路径只剩进程内原子量比较的主题收敛，
-        // 零 SHM/IPC/文件读。
-        self.daemon_poll_tick();
-
         let shift = shift_pressed();
         let ctrl = ctrl_pressed();
         let alt = alt_pressed();

@@ -781,7 +781,7 @@ impl ToolbarWindow {
         if let Some(i) = hit {
             if let Some(label) = button_tooltip(i) {
                 if changed_hover {
-                    self.tip.show_near(&self.theme, label, self.hwnd);
+                    self.tip.show_near(label);
                 }
             } else {
                 self.tip.hide();

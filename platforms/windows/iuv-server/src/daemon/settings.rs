@@ -14,7 +14,6 @@
 //! run_settings 包 `catch_unwind`。
 
 use std::mem::size_of;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use eframe::egui;
@@ -1191,9 +1190,11 @@ impl SettingsApp {
                     // 全屏隐藏：内存态即时生效（工具条线程下一次 should_show 判定即读到）。
                     c.hide_on_fullscreen = self.hide_on_fullscreen;
                 }
-                self.state.bump_config_epoch();
-                msgs.push("配置已保存并广播 config_epoch（会话进程检测后重载）".into());
-                log::log_line("[settings] 配置已保存 + config_epoch 已广播");
+                // 旧实现此处 bump_config_epoch（shm 恒 None → 纯空转还提示
+                // 「已广播」）；config 重载实际由 config_watch 500ms 轮询文件驱动
+                // （2026-10-02 品质审查：死链清扫 + 文案对齐事实）。
+                msgs.push("配置已保存（客户端将随 config_watch 轮询自动重载）".into());
+                log::log_line("[settings] 配置已保存");
             }
             Err(e) => {
                 msgs.push(format!("配置保存失败：{e}"));
@@ -1227,9 +1228,6 @@ impl eframe::App for SettingsApp {
     /// 聚焦不走这里——最小化窗口无 WM_PAINT → 无帧 → 本函数停摆，改走
     /// `focus_existing_window()` 的 Win32 直操路径。
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.state.close_settings.swap(false, Ordering::AcqRel) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
         // 录入轮询：捕获完成 → 校验回填（41-keymap-settings.md §5）。
         self.poll_capture(ctx);
     }

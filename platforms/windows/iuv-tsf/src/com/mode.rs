@@ -8,7 +8,6 @@ use crate::composition::Composition;
 use crate::langbar;
 use crate::log::log_line;
 use crate::session_bridge::fullwidth_pending;
-use crate::ui::CandidateUi;
 
 use super::text_service::TextService;
 
@@ -92,7 +91,6 @@ impl TextService {
     /// 残留在文档（实测 2026-08-14：Ctrl+Space 后 zhu'jin'cheng 残留上屏）。
     /// 文本为空（异常态）→ cancel 清空；commit/cancel 失败记日志不阻断（残留由系统终止兜底）。
     pub(crate) fn flush_session(&self) {
-        self.ui.borrow_mut().hide();
         self.cand_elem.borrow_mut().end();
         // M10：原文 = 服务端 `Session::pending_text()`（picked+raw 真相源，含用户
         // 强制撇号——「composition 去撇号」近似已退役）。

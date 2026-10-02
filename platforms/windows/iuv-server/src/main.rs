@@ -126,7 +126,6 @@ fn main() {
     loop {
         use std::sync::atomic::Ordering;
         if state.open_settings.swap(false, Ordering::AcqRel) {
-            state.close_settings.store(false, Ordering::Release);
             state.settings_open.store(true, Ordering::Release);
             log_line("[main] 收到 OpenSettings，运行设置窗口");
             let _ = iuv_server::daemon::settings::run_settings(&state, &toolbar, &engine);

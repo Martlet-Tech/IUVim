@@ -437,7 +437,7 @@ impl Session for EngineSession {
             }
             C2S::ToggleToolbar => {
                 if let Some((_, tb)) = &self.ui {
-                    tb.handle_request(&iuv_win::Request::ToggleToolbar);
+                    tb.toggle_visible();
                 }
                 reply.respond(S2C::Ok);
             }

@@ -14,7 +14,7 @@ pub mod ui_element;
 
 pub(crate) mod com;
 
-pub use ui::{effect_to_snapshot, CandidateUi, CaretRect, UiSnapshot};
+pub use ui::{effect_to_snapshot, CaretRect, UiSnapshot};
 
 use std::ffi::c_void;
 

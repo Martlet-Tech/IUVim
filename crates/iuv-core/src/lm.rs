@@ -5,9 +5,6 @@ pub trait LmProvider: Send + Sync {
     fn log_prob(&self, prev: Option<&str>, word: &str, weight: u32) -> f64;
 }
 
-/// OOV（词典查不到）惩罚，由 viterbi 层加到兜底边。
-pub(crate) const OOV_PENALTY: f64 = -10.0;
-
 /// unigram 模型：ln(weight+1) - ln(total_weight)。
 pub struct UnigramLm {
     total: u64,

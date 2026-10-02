@@ -236,6 +236,9 @@ impl RemoteHandle {
     }
 
     /// 当前配置纪元（实例侧主题应用收敛用）。
+    /// 客户端侧 config 纪元观测（服务端 ConfigChanged 推送自增）。生产消费者
+    /// （旧本地候选窗主题收敛）已随 D3 退役，当前仅测试断言推送泵语义用。
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn config_epoch(&self) -> u32 {
         self.config_epoch.load(Ordering::Acquire)
     }
