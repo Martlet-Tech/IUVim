@@ -236,9 +236,29 @@ impl ToolbarWindow {
         }
     }
 
+    /// 解绑实例（标记 inactive + 清 focused）并按需隐藏工具条。
+    /// `FocusLost`（设置窗粘性放行后）与 `Deactivated`（强信号）共用。
+    fn unbind_instance(&mut self, pid: u32, tid: u32, tag: &str) {
+        let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(i) = sh.instances.get_mut(&(pid, tid)) {
+            i.active = false;
+        }
+        let was_bound = sh.focused == Some((pid, tid));
+        if was_bound {
+            sh.focused = None;
+        }
+        drop(sh);
+        log::log_line(&format!("[toolbar] {tag}（{pid}:{tid}）"));
+        if was_bound && self.visible {
+            log::log_line(&format!("[toolbar] 工具条 → 隐藏（解绑 {pid}:{tid}）"));
+            self.hide();
+        }
+    }
+
     /// 单条事件应用（纯信号判定，零前台查询——TSF 线程焦点信号即真相源）：
     /// - `FocusGained`：绑定该实例并立即显示（偏好关闭 → 仅绑定；已可见 → 仅重绘换内容）
     /// - `FocusLost`：绑定者本人 → 解绑并立即隐藏；他人 → 仅改表
+    /// - `Deactivated`：同 FocusLost 解绑，但**不受设置窗粘性抑制**
     fn apply_event(&mut self, ev: BarEvent) {
         match ev {
             BarEvent::FocusGained { pid, tid, state } => {
@@ -295,20 +315,14 @@ impl ToolbarWindow {
                     ));
                     return;
                 }
-                let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                if let Some(i) = sh.instances.get_mut(&(pid, tid)) {
-                    i.active = false;
-                }
-                let was_bound = sh.focused == Some((pid, tid));
-                if was_bound {
-                    sh.focused = None;
-                }
-                drop(sh);
-                log::log_line(&format!("[toolbar] 失焦（{pid}:{tid}）"));
-                if was_bound && self.visible {
-                    log::log_line(&format!("[toolbar] 工具条 → 隐藏（解绑 {pid}:{tid}）"));
-                    self.hide();
-                }
+                self.unbind_instance(pid, tid, "失焦");
+            }
+            BarEvent::Deactivated { pid, tid } => {
+                // 实例停用（TSF Deactivate / 实例 Drop）= iuv 被整体切走或卸载：
+                // 强于失焦，**不受设置窗粘性抑制**——粘性前提「iuv 仍在被使用」已
+                // 不成立（2026-10-02：设置窗开着切到搜狗，工具栏不消失的修复）。
+                // 切回 iuv 时 Activate → FocusGained 自然恢复绑定与显示。
+                self.unbind_instance(pid, tid, "实例停用");
             }
             BarEvent::StateChanged { pid, tid, state } => {
                 let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());

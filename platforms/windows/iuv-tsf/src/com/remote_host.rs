@@ -389,6 +389,13 @@ impl RemoteHandle {
         let _ = self.request(C2S::FocusChanged { focused });
     }
 
+    /// 实例停用（TSF Deactivate / 实例 Drop）：比失焦强的信号——服务端解绑工具栏
+    /// 时不受设置窗失焦粘性抑制（粘性只服务「焦点移走但 iuv 仍在用」的热键场景，
+    /// iuv 都停用了该前提不成立）。
+    pub(crate) fn instance_deactivated(&self) {
+        let _ = self.request(C2S::InstanceDeactivated);
+    }
+
     /// 打字活动（原 toolbar signal Typing；桌宠动画驱动）。
     pub(crate) fn send_typing(&self, active: bool) {
         let _ = self.request(C2S::TypingActivity { active });
