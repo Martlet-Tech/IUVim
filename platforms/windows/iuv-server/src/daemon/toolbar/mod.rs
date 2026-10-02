@@ -108,6 +108,9 @@ pub(super) enum BarEvent {
     FocusGained { pid: u32, tid: u32, state: ImeState },
     /// 失焦：绑定者本人 → 解绑并隐藏；他人 → 仅改表。
     FocusLost { pid: u32, tid: u32 },
+    /// 实例停用（TSF Deactivate / 实例 Drop）：绑定者本人 → 无条件解绑并隐藏
+    /// （**不受设置窗失焦粘性抑制**）；他人 → 仅改表。
+    Deactivated { pid: u32, tid: u32 },
     /// 态变更：更新四态（可见且绑定 → 重绘）。
     StateChanged { pid: u32, tid: u32, state: ImeState },
     /// 全局显隐偏好切换（语言栏菜单）。
@@ -212,6 +215,10 @@ impl ToolbarHost {
                 state: *state,
             },
             ToolbarSignal::FocusLost { pid, tid } => BarEvent::FocusLost {
+                pid: *pid,
+                tid: *tid,
+            },
+            ToolbarSignal::Deactivated { pid, tid } => BarEvent::Deactivated {
                 pid: *pid,
                 tid: *tid,
             },

@@ -62,6 +62,15 @@ impl TextService {
         }
     }
 
+    /// 实例停用上报（TSF Deactivate / 实例 Drop）：强于失焦——服务端解绑工具栏
+    /// 不受设置窗粘性抑制（切到别的输入法 = 用户明确弃用 iuv，热键前提不成立）。
+    pub(crate) fn notify_instance_deactivated(&self) {
+        crate::com::remote_host::note_focus(false);
+        if let Some(r) = crate::com::remote_host::remote() {
+            r.instance_deactivated();
+        }
+    }
+
     pub(crate) fn notify_typing(&self, active: bool) {
         if let Some(r) = crate::com::remote_host::remote() {
             r.send_typing(active);

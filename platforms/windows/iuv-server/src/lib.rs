@@ -373,6 +373,18 @@ impl Session for EngineSession {
                 }
                 reply.respond(S2C::Ok);
             }
+            C2S::InstanceDeactivated => {
+                // 实例停用（TSF Deactivate / 实例 Drop）= iuv 被整体切走：强于失焦，
+                // 服务端解绑工具栏不受设置窗失焦粘性抑制（粘性只服务「焦点移走但
+                // iuv 仍在用」的热键场景；切到别的输入法时该前提不成立）。
+                if let Some((_, tb)) = &self.ui {
+                    tb.handle_signal(&ToolbarSignal::Deactivated {
+                        pid: self.client_pid,
+                        tid: self.client_tid,
+                    });
+                }
+                reply.respond(S2C::Ok);
+            }
             C2S::SetMaintenance { .. } | C2S::CtlResult(_) => {
                 reply.respond(S2C::Ok);
             }

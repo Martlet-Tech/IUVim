@@ -325,9 +325,9 @@ impl Drop for TextService {
         // 先停反向控制端点（accept 线程 join + 隐藏窗销毁），再注销——避免 Drop 期间
         // 字段仍存活时 wndproc 并发访问（TSF 线程 Drop 内不泵消息，但防御性先停干净）。
         self.stop_ctl_endpoint();
-        // 32-toolbar §4.1：实例 Drop = 失焦上报（daemon 解绑清理；纯信号模型下
-        // 「注销」由「失焦」承担）。
-        self.notify_focus_lost();
+        // 32-toolbar §4.1：实例 Drop = 实例停用上报（强于失焦：服务端解绑不受
+        // 设置窗粘性抑制；纯信号模型下「注销」由「停用」承担）。
+        self.notify_instance_deactivated();
     }
 }
 
@@ -503,10 +503,11 @@ impl TextService_Impl {
         // 再次 Activate 后首段会话能重新触发 Typing(true) transition）。
         self.force_typing_stop();
 
-        // 32-toolbar：停反向控制端点（accept 线程 + 隐藏窗）+ 失焦上报
-        // （daemon 解绑 → 工具条隐藏）。同一实例再 Activate 会重发激活。
+        // 32-toolbar：停反向控制端点（accept 线程 + 隐藏窗）+ 实例停用上报
+        // （强于失焦：服务端解绑不受设置窗粘性抑制 → 工具条隐藏）。同一实例再
+        // Activate 会重发激活。
         self.stop_ctl_endpoint();
-        self.notify_focus_lost();
+        self.notify_instance_deactivated();
 
         // 卸载语言栏"中/英"图标（失败仅记日志）。
         if let Some(lang_bar_com) = self.lang_bar.borrow_mut().take() {

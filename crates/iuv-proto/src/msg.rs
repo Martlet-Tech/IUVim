@@ -265,6 +265,12 @@ pub enum C2S {
     /// 输入法/Deactivate 时一发——服务端会话持 `Session::pending_text()`，
     /// 替代客户端「composition 去撇号」近似）。
     PendingTextQuery,
+    /// 实例停用（TSF Deactivate / 实例 Drop：iuv 被整体切走或卸载）。强于失焦——
+    /// 服务端解绑工具栏时**不受设置窗粘性抑制**（粘性只服务「焦点移走但 iuv 仍在
+    /// 用」的全局热键场景；iuv 都停用了，该前提不成立）。
+    /// **必须追加在枚举末尾**：postcard 按变体序号编码，中间插入会使全部后续序号
+    /// 错位，旧客户端 DLL（进程级常驻，部署后仍存活）连新 server 即解码失败掉线。
+    InstanceDeactivated,
 }
 
 // —— S2C：服务端 → 客户端 ——

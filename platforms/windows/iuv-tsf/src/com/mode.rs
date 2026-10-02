@@ -54,6 +54,10 @@ impl TextService {
             "OPENCLOSE 变化：open={open} → {}模式",
             if next { "英文" } else { "中文" }
         ));
+        // 四态同步给服务端（工具栏中英按钮重绘）：系统侧改动 OPENCLOSE 的全部入口
+        // （托盘图标点击 / Shift / Ctrl+Space / 系统热键）都经此处——工具栏按钮路径
+        // 下 server 已自应用同值（Ctl 应答），此同步为无害 echo。
+        self.after_runtime_change();
         // 同步语言栏"中/英"图标。
         if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
             langbar::refresh_lang_bar(lang_bar);

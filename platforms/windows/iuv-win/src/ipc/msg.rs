@@ -34,6 +34,9 @@ pub enum ToolbarSignal {
     FocusGained { pid: u32, tid: u32, state: ImeState },
     /// 失焦：「有一个实例持有者宣布了自己失焦」。
     FocusLost { pid: u32, tid: u32 },
+    /// 实例停用：TSF Deactivate / 实例 Drop——iuv 被整体切走或卸载，强于失焦
+    /// （解绑不受设置窗失焦粘性抑制）。
+    Deactivated { pid: u32, tid: u32 },
     /// 态变更：会话中途四态变化（工具栏按钮/系统级切换后实例自报新态）。
     StateChanged { pid: u32, tid: u32, state: ImeState },
     /// 打字中：组合开始（active=true）/ 结束-提交-取消（active=false）。
