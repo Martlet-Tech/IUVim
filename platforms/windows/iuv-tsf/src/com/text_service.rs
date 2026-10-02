@@ -302,18 +302,59 @@ impl TextService_Impl {
         self.cand_elem.borrow_mut().attach(ptim);
 
         // AdviseKeyEventSink：按键事件走本对象（经 ITfKeystrokeMgr，TSF 标准流程）。
+        // Activate 中途失败必须回滚已完成步骤（50 号 §2.3）：Activate 返回 Err 后
+        // TSF 不保证回发 Deactivate，泄漏的 advise 会随宿主线程存活到实例销毁。
         let key_sink: ITfKeyEventSink = self.to_object().to_interface();
-        let keystroke: ITfKeystrokeMgr = ptim.cast()?;
+        let keystroke: ITfKeystrokeMgr = match ptim.cast() {
+            Ok(k) => k,
+            Err(e) => {
+                log_line(&format!(
+                    "AdviseKeyEventSink 前置 QI 失败：{e:?}（Activate 中止）"
+                ));
+                return Err(e);
+            }
+        };
         // SAFETY: 标准 TSF advise；sink 在本对象生命周期内有效，Deactivate 时 Unadvise。
-        unsafe { keystroke.AdviseKeyEventSink(tid, &key_sink, true)? };
+        if let Err(e) = unsafe { keystroke.AdviseKeyEventSink(tid, &key_sink, true) } {
+            log_line(&format!("AdviseKeyEventSink 失败：{e:?}（Activate 中止）"));
+            return Err(e);
+        }
 
         // AdviseSink：线程管理器焦点事件（焦点离开时清理会话）。经 ITfSource。
+        // 本步失败 → 回滚上一步已完成的 key sink advise（50 号 §2.3）。
         let thread_sink: ITfThreadMgrEventSink = self.to_object().to_interface();
-        let source: ITfSource = ptim.cast()?;
+        let source: ITfSource = match ptim.cast() {
+            Ok(s) => s,
+            Err(e) => {
+                log_line(&format!(
+                    "ITfSource QI 失败：{e:?}（Activate 中止，回滚 key sink advise）"
+                ));
+                // SAFETY: 上一步 AdviseKeyEventSink 已成功，按 tid 正常 unadvise。
+                if let Ok(ks) = ptim.cast::<ITfKeystrokeMgr>() {
+                    unsafe {
+                        let _ = ks.UnadviseKeyEventSink(tid);
+                    }
+                }
+                return Err(e);
+            }
+        };
         // SAFETY: 同上；cookie 记录用于 UnadviseSink。
-        let cookie =
-            unsafe { source.AdviseSink(&<ITfThreadMgrEventSink as Interface>::IID, &thread_sink)? };
-        self.event_cookie.set(cookie);
+        match unsafe { source.AdviseSink(&<ITfThreadMgrEventSink as Interface>::IID, &thread_sink) }
+        {
+            Ok(cookie) => self.event_cookie.set(cookie),
+            Err(e) => {
+                log_line(&format!(
+                    "AdviseSink(ThreadMgrEventSink) 失败：{e:?}（Activate 中止，回滚 key sink advise）"
+                ));
+                // SAFETY: 同上。
+                if let Ok(ks) = ptim.cast::<ITfKeystrokeMgr>() {
+                    unsafe {
+                        let _ = ks.UnadviseKeyEventSink(tid);
+                    }
+                }
+                return Err(e);
+            }
+        }
 
         // 监听系统"输入法/非输入法切换"（GUID_COMPARTMENT_KEYBOARD_OPENCLOSE）：
         // 系统按热键翻转该 compartment，我们经 OnChange 统一响应（中英切换真相源）。
@@ -441,7 +482,18 @@ impl TextService_Impl {
 
     /// Deactivate 公共清理。
     fn deactivate(&self) {
-        // 焦点清理：结束候选元素、丢弃会话与 composition。
+        // 会话收尾（50 号 §2.3）：活动会话按**原文上屏**语义结束（与关闭输入法
+        // 同款路径，见 flush_session）——旧实现只清本地内存态，不发 EndSession、
+        // 不清 last_effect：服务端会话残留，且重激活后首键被当会话内续接吞掉。
+        // 无活动会话时跳过（省一次 PendingTextQuery 往返）。
+        if self.last_effect.borrow().is_some()
+            || self.session.borrow().is_some()
+            || self.composition.borrow().is_some()
+        {
+            self.flush_session();
+        }
+        // 焦点清理：结束候选元素、丢弃会话与 composition（flush_session 已做，
+        // 此处兜底幂等清一次）。
         self.cand_elem.borrow_mut().clear();
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;

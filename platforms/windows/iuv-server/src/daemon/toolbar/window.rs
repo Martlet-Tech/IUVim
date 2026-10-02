@@ -23,10 +23,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect, KillTimer, LoadCursorW,
-    SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA, HTCLIENT,
-    HTTRANSPARENT, IDC_ARROW, IDC_HAND, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSIZE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WM_TIMER,
+    PostMessageW, SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA,
+    HTCLIENT, HTTRANSPARENT, IDC_ARROW, IDC_HAND, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+    SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
+    WM_SETCURSOR, WM_TIMER,
 };
 
 use super::fullscreen;
@@ -113,6 +114,33 @@ const PET_DRAG_THRESHOLD: i32 = 4;
 
 /// pet_alpha_at 命中阈值（§5.2：宠物像素点 > 0x20 视为可点击/拖拽）。
 const PET_HIT_ALPHA: u8 = 0x20;
+
+/// 翻转结果落账（UI 线程与短命分派线程共用）：成功写实例表，失败只记日志。
+/// 短命线程路径的重绘经 `WM_APP_REFRESH` 唤醒 reconcile 完成（不能跨线程碰窗口）。
+fn apply_toggle_result(
+    shared: &Arc<Mutex<Shared>>,
+    pid: u32,
+    tid: u32,
+    result: Result<CtlResult, String>,
+) {
+    match result {
+        Ok(CtlResult::Ok { state }) => {
+            log::log_line(&format!("[toolbar] 实例应用成功：{state:?}"));
+            let mut sh = shared.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(i) = sh.instances.get_mut(&(pid, tid)) {
+                i.state = state;
+            }
+        }
+        Ok(CtlResult::Err { msg }) => {
+            log::log_line(&format!("[toolbar] 实例应用失败：{msg}"));
+        }
+        Err(e) => {
+            log::log_line(&format!(
+                "[toolbar] 控制管道不可达（实例离线/未注册？）：{e}"
+            ));
+        }
+    }
+}
 
 impl ToolbarWindow {
     #[allow(clippy::too_many_arguments)]
@@ -750,26 +778,44 @@ impl ToolbarWindow {
 
     /// 四态翻转分派（on_click 与 on_hotkey 共用）：连 focused 实例控制管道发 cmd →
     /// 按结果更新实例表 + 重绘。
+    ///
+    /// 分派在**短命线程**执行（server candwin 点击选词同款先例）：`dispatch_ctl`
+    /// 是 3s 同步请求，客户端挂起时不能把工具栏 UI 线程一并冻结（50 号 §2.2）。
+    /// UI 线程只出请求立即返回；结果由线程写实例表 + `WM_APP_REFRESH` 跨线程
+    /// 唤醒 reconcile 重绘（on_hotkey ToggleVisible 同款 wake 通道）。
     fn dispatch_state_toggle(&mut self, label: &str, cmd: &CtlCmd, pid: u32, tid: u32) {
         log::log_line(&format!("[toolbar] {label}翻转（实例 {pid}:{tid}）"));
-        match self.ctl.dispatch_ctl(pid, tid, cmd) {
-            Ok(CtlResult::Ok { state }) => {
-                log::log_line(&format!("[toolbar] 实例应用成功：{state:?}"));
-                let mut sh = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                if let Some(i) = sh.instances.get_mut(&(pid, tid)) {
-                    i.state = state;
-                }
-            }
-            Ok(CtlResult::Err { msg }) => {
-                log::log_line(&format!("[toolbar] 实例应用失败：{msg}"));
-            }
-            Err(e) => {
-                log::log_line(&format!(
-                    "[toolbar] 控制管道不可达（实例离线/未注册？）：{e}"
-                ));
-            }
+        let spawned = {
+            let ctl = self.ctl.clone();
+            let shared = self.shared.clone();
+            // HWND 为裸指针（!Send），按 ToolbarHost::wake 同款经 usize 过线程。
+            let hwnd = self.hwnd.0 as usize;
+            let cmd = *cmd;
+            std::thread::Builder::new()
+                .name("iuv-toolbar-ctl".into())
+                .spawn(move || {
+                    let result = ctl.dispatch_ctl(pid, tid, &cmd);
+                    apply_toggle_result(&shared, pid, tid, result);
+                    // 跨线程唤醒 UI 线程重绘（wake 是宿主跨线程入口）。
+                    // SAFETY: hwnd 由工具栏线程创建、线程存活期间有效；
+                    // 跨线程 PostMessage 合法（ToolbarHost::wake 同款）。
+                    unsafe {
+                        let _ = PostMessageW(
+                            Some(HWND(hwnd as *mut core::ffi::c_void)),
+                            WM_APP_REFRESH,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
+                })
+        };
+        if spawned.is_err() {
+            // 线程创建失败（极端资源紧张）：回退原同步路径，功能不丢。
+            log::log_line("[toolbar] 翻转线程创建失败 → 回退同步分派");
+            let result = self.ctl.dispatch_ctl(pid, tid, cmd);
+            apply_toggle_result(&self.shared, pid, tid, result);
+            self.repaint();
         }
-        self.repaint();
     }
 
     /// 悬停更新（WM_MOUSEMOVE 命中）：改 hover 行 + 刷新 tooltip。

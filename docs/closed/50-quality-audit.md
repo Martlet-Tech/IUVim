@@ -1,9 +1,14 @@
 # 50 · 全仓库品质检查（M10 后首次，新特性前置）
 
-> 状态：**§1 高危 H1-H5 已修复；§2.1 transport 五项 + §2.2 四项快赢已修复；
-> §3 死代码清扫 D1-D3 已完成（viterbi/server 死链/tsf 本地候选窗，净 -1100 行），
-> 改动在工作区待提交。进度交接 = `50-handoff-quality-sweep.md`（下一棒从这里接手），
-> 全量回归：fmt 干净、clippy 0 警告、518 过/3 败=shm 环境项。
+> 状态：**结案（2026-10-02）**——全部批次修复完成并真机回归通过：
+> §1 高危 H1-H5；§2.1 transport 五项；§2.2 四项快赢 + toolbar 同步 dispatch；
+> §2.3 Activate 回滚/deactivate 清会话/reviving 闸挂号/重试差别化；
+> §3 死代码清扫 D1-D3（`71c2098`，净 -1100 行）；§3.2 文档对账（00-overview/
+> tsf-interaction/README/AGENTS/Cargo.toml/.gitignore）。末批台账见 status.md 末条。
+> 有意不修的欠账：langbar/wnd_proc panic guard、
+> 部分代码内注释漂移（文中已标注）。
+> 全量回归：fmt 干净、clippy 0 警告、非 shm 测试全绿（shm 三测试需管理员终端）；
+> 真机：两轮优雅停机全部客户端 ~1.5s 自动恢复，零 panic/零未果。
 > 方式：cargo fmt/clippy/test 全仓自动化 + 6 路模块代理逐文件通读（core/data、server、
 > tsf、win+proto、ui+repl、横切脚本/文档）+ 高危项人工逐行核实。
 > 范围：main @ e9f2dc1，全仓库 ~31k 行 Rust（8 crate）+ scripts + docs，
@@ -55,7 +60,7 @@
 ### 2.2 server 迁移收尾
 
 - ~~`src/lib.rs:129` — 重绑注册表只在带令牌重连时清扫~~（✅ 已修：sweep_resumes 每次 on_connect 调用）。
-- `src/daemon/toolbar/window.rs:755` — 工具栏四态翻转在 UI 线程**同步 dispatch 3s**，客户端挂起时工具栏冻结；candwin.rs:551 同场景已改短命线程，两处口径不一。
+- ~~`src/daemon/toolbar/window.rs:755` — 工具栏四态翻转在 UI 线程**同步 dispatch 3s**~~（✅ 已修：分派改短命线程（server candwin 点击选词同款先例），结果写实例表 + WM_APP_REFRESH 跨线程唤醒重绘；HWND 经 usize 过线程对齐 ToolbarHost::wake 惯例）。
 - ~~`src/daemon/log.rs:54` — `install_panic_hook` 定义后全仓无调用~~（✅ 已修：main.rs 安装）。
 - ~~`src/main.rs:24` vs `src/daemon/log.rs:10` — 两套日志装配、设置页清错文件~~（✅ 已修：clear_logs 目标改 iuv-server.log，模块头注释归一）。
 - `src/daemon/settings.rs:271-284` — dev 页 LOG_MODULES 的 tag 是 daemon 时代清单，与 server 实际 tag（`[toolbar]`/`[config]`…）大面积错位。
@@ -63,17 +68,26 @@
 
 ### 2.3 tsf COM
 
-- `src/langbar.rs:13` — 文件头声称「全部 COM 回调经 guard 包装捕获 panic」，**实际一个都没包**（langbar 回调、candwin.rs:429 / menu_window.rs:199 的 wnd_proc 均裸奔）；panic 穿透 `extern "system"` 拖垮宿主（text_service.rs:779 记载过 0xC0000409 事故）。guard 定义在 text_service.rs:53 是私有，应抽公共。
-- `src/com/text_service.rs:357-367` — Activate 多处 `?` 中途失败无回滚已完成的 advise/attach。
-- `src/com/text_service.rs:495-510` — deactivate 直接清 session/composition，**不发 end_session 不清 last_effect**：服务端会话残留、重激活后首键被吞。
-- `src/com/remote_host.rs:539-576` — 延迟重连窗内 `reviving` 闸吞掉 Activate 兜底重生（注释自认）；焦点不变进程两次失败后再次永久透明。
+> 修复纪要（2026-10-02，工作区待真机回归）：Activate 改显式失败处理，中途失败回滚
+> 已完成的 AdviseKeyEventSink；deactivate 活动会话走 flush_session（原文上屏 +
+> EndSession + 清 last_effect），服务端会话不再残留、重激活首键不再被吞；
+> remote_host 增 `REVIVE_REQUESTED` 挂号——reviving 闸被占时 Activate 兜底/离线
+> 持续按键不再被丢弃，窗口失败由 `finish_revive` 代跑（带 spawn），焦点不变进程
+> 不再永久透明；两份重连循环归一 `spawn_revive_loop`，`Proto`（版本/令牌拒绝）
+> 提前放弃、瞬时不可达才按窗重试（重试不再无差别）。四条路径均无头测试不可达，
+> 留真机回归验证。
+
+- `src/langbar.rs:13` — 文件头声称「全部 COM 回调经 guard 包装捕获 panic」，**实际一个都没包**（langbar 回调、candwin.rs:429 / menu_window.rs:199 的 wnd_proc 均裸奔）；panic 穿透 `extern "system"` 拖垮宿主（text_service.rs:779 记载过 0xC0000409 事故）。guard 定义在 text_service.rs:53 是私有，应抽公共。（未列入本批修复，仍欠。）
+- ~~`src/com/text_service.rs:357-367` — Activate 多处 `?` 中途失败无回滚已完成的 advise/attach~~（✅ 已修，见上纪要）。
+- ~~`src/com/text_service.rs:495-510` — deactivate 直接清 session/composition，**不发 end_session 不清 last_effect**~~（✅ 已修，见上纪要）。
+- ~~`src/com/remote_host.rs:539-576` — 延迟重连窗内 `reviving` 闸吞掉 Activate 兜底重生；焦点不变进程两次失败后再次永久透明~~（✅ 已修：挂号机制，见上纪要）。
 
 ### 2.4 横切
 
 - `scripts/install.ps1:37-44` — Ensure-Imedic/Ensure-Opencc 在**提权窗口内跑 cargo**，违反 iuv-common.ps1:469 自家红线（提权进程丢 PATH）。
 - `scripts/iuv-common.ps1:71-96` — Restart-Ctfmon 先杀 ctfmon 再注册计划任务，注册失败则系统留在无 ctfmon 态直到注销。
 - `crates/iuv-proto/Cargo.toml:12`、`crates/iuv-data/Cargo.toml:9`、`iuv-server/Cargo.toml:17`（eframe）— 依赖声明绕过 workspace 集中管理。
-- `README.md:47` 写 Rust 1.85+，workspace 实际 rust-version=1.89。
+- ~~`README.md:47` 写 Rust 1.85+，workspace 实际 rust-version=1.89~~（✅ 已修：README 改 1.89+）。
 
 ## 3. 死代码与文档漂移（迁移收尾症状，一批清）
 
@@ -87,10 +101,10 @@
 
 ### 3.2 文档漂移（重点修三份，其余批量对账）
 
-- **`docs/plan/00-overview.md:28,34,68`** — 仍列 iuv-daemon 为活跃组件、旧数据流；README.md:63 还把它当架构入口。**误导源之首**。
-- **`docs/knowledge/tsf-interaction.md:16,20`** — 机制规格仍是旧「ctl 管道 + 共享段」多套 IPC 形态。
-- **`README.md:36` / AGENTS.md:71** — iuv-win 职责描述还是 M6 的「管道 IPC/共享段」，现主力是 transport/ULW。
-- 代码内漂移（批量）：`remote_host.rs:8-9`「每请求 20ms」实际 300ms；`shm.rs:31-33` 句柄注释与 Drop 实现矛盾；`lib.rs:14-16`「UserMutation 空实现」实际已全量接线；`candwin.rs:14`「抑制命中不启动窗口线程」与 lib.rs:161 无条件 spawn 矛盾；`pet.rs:10-11` R/B 交换位置已变；`toolbar.rs:247` toolbar_size「已抽出复用」实际两处未调用；`text.rs/snapshot.rs` 仍引「iuv-tsf/src/...」旧路径；`Cargo.toml:4` 注释还提 iuv-daemon；`.gitignore` `/target-daemon` 死条目。
+- ~~**`docs/plan/00-overview.md:28,34,68`** — 仍列 iuv-daemon 为活跃组件、旧数据流~~（✅ 已修：架构图/数据流改 M10 现状，Viterbi/M6 表述同步标注；**误导源之首**已拔）。
+- ~~**`docs/knowledge/tsf-interaction.md:16,20`** — 机制规格仍是旧「ctl 管道 + 共享段」多套 IPC 形态~~（✅ 已修：进程模型/呈现通道/源码映射对齐 transport 长连接 + 服务端自绘，补变更记录）。
+- ~~**`README.md:36` / AGENTS.md:71** — iuv-win 职责描述还是 M6 的「管道 IPC/共享段」~~（✅ 已修：两处职责行对齐 transport/ULW 现状；README 版本要求同步改 1.89+）。
+- 代码内漂移（批量，部分已修）：~~`remote_host.rs:8-9`「每请求 20ms」实际 300ms~~、~~`Cargo.toml:4` 注释还提 iuv-daemon~~、~~`.gitignore` `/target-daemon` 死条目~~（✅ 均已修）；其余（`shm.rs:31-33` 句柄注释与 Drop 实现矛盾；`lib.rs:14-16`「UserMutation 空实现」实际已全量接线；`candwin.rs:14`「抑制命中不启动窗口线程」与 lib.rs:161 无条件 spawn 矛盾；`pet.rs:10-11` R/B 交换位置已变；`toolbar.rs:247` toolbar_size「已抽出复用」实际两处未调用；`text.rs/snapshot.rs` 仍引「iuv-tsf/src/...」旧路径）仍欠。
 - 杂项：`docs/plan/48` 状态行「未提交」已过时；`docs/pet/GIRL-PET-SPEC.md:62-65` 四表情回退已过期（素材与映射均已落地）；`docs/issue/d冒号表现不一致.txt` 已闭环未归档。
 
 ## 4. 自动化检查明细

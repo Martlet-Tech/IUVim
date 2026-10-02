@@ -8,7 +8,7 @@
 在 Windows 10/11 上注册本输入法后，能在记事本等应用中**用全拼打字**：输入拼音出现预编辑文本与候选窗，
 空格/数字选词上屏，支持翻页、退格、Esc、Enter 原文上屏。中英切换走系统机制
 （「输入法/非输入法切换」热键，如 Ctrl+Space；Shift 临时英文方案已废弃，见 13 号任务书）。
-整句用 unigram Viterbi（只用词库自带 weight），候选排序为**纯静态词频序**。
+整句组句 M1 为 unigram Viterbi（现已退役，M10 起由 rime poet 承担，见 39 号），候选排序为**纯静态词频序**。
 
 M1 **不做**（已留槽位，见各任务书"槽位"节）：滞回/学习/钉选、跨平台渲染/托盘/守护进程（M4~M6）、
 n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构、逐词确认。
@@ -20,23 +20,27 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 ┌─────────────────────────── workspace ───────────────────────────┐
 │ crates/（跨平台层）                                               │
 │   iuv-data   词库编译器(dictc) + 二进制格式 + Dict 查询层   │  叶 crate，无 workspace 内依赖
-│   iuv-core   引擎：切分/查词/Viterbi/会话状态机/排序管线    │  依赖 iuv-data
+│   iuv-proto  M10 IPC 协议：帧格式 + 三平面消息 + 握手协商    │  叶 crate
+│   iuv-core   引擎：切分/查词/rime poet 组句/会话状态机/排序  │  依赖 iuv-data
 │   iuv-ui     候选窗/菜单绘图：tiny-skia + cosmic-text       │  依赖 iuv-core（UiSnapshot/Theme 消费）
 │   iuv-repl   CLI 调试前端（不注册输入法即可测引擎）         │  依赖 iuv-core, iuv-data
 │ platforms/（平台层，每平台一套：系统适配 + 门面）                 │
-│   windows/iuv-tsf    cdylib：COM/TSF 管线 + 候选窗窗口层   │  依赖 iuv-core, iuv-data, iuv-ui
-│   windows/iuv-daemon 守护进程 exe：持有用户库 + 设置页（M6）│  依赖 iuv-data（共享段）, iuv-ui, egui
+│   windows/iuv-tsf    cdylib：COM/TSF 管线（M10 薄客户端）   │  依赖 iuv-core, iuv-data, iuv-win
+│   windows/iuv-win    共享层：transport 长连接 + ULW + 日志  │  依赖 iuv-proto
+│   windows/iuv-server 引擎服务进程 exe：引擎 + 用户库 + 设置页│（M10 ② iuv-daemon 并入退役）
 │   macos/          占位（IMK 适配 + 门面规划，README）            │
 │   linux/          占位（Fcitx5/IBus 适配 + 门面规划，README）     │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-运行时数据流（M1，全在应用进程内）：
+运行时数据流（M10 起远端唯一形态，49 号定稿；M1 进程内形态已成历史）：
 
 ```
-按键 → TSF(OnTestKeyDown/OnKeyDown) → session_bridge 映射为 iuv_core::Key
-      → Session::on_key → Effect ─┬→ composition.rs：更新预编辑文本 / 上屏
-                                   └→ ui: CandidateUi.show/update/hide（iuv-ui 渲染，M4 起）
+按键 → TSF 薄客户端(OnTestKeyDown/OnKeyDown) → session_bridge 映射为 iuv_core::Key
+      → transport 长连接（iuv-proto 契约）→ iuv-server 引擎 Session::on_key → Effect
+      ─┬→ composition 回传应用：更新预编辑文本 / 上屏
+        └→ 服务端自绘候选窗（iuv-ui 渲染 + ULW 上屏，不经过 TSF）
+（断连自动拉起 + ResumeToken 重绑；不可达窗口期按键透明放行）
 ```
 
 ## 3. 执行流程（三波）
@@ -65,22 +69,23 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
   主题浅色/深色可配；候选窗交互已支持
   鼠标点击选词、悬停高亮、翻页环绕、布局方向配置（2026-08-13，见 `d1dcfb8`/`2cc189b`）
 - 引擎进程级单例，词库 IMEDIC02 平面格式 mmap 零加工加载——冷加载 ~70ms、物理内存全系统一份
-  （页缓存共享，M1.6 落地，见 `17-imedic02-mmap.md`）；M6 起用户库移守护进程共享（`22-m6-daemon.md`）
+  （页缓存共享，M1.6 落地，见 `17-imedic02-mmap.md`）；用户库现由 iuv-server 独占持有
+  （M10 起 iuv-daemon 已并入 server，`22-m6-daemon.md` 已结案）
 - 仅 x64；需管理员权限注册
 - 词库（白霜拼音，GPL-3.0）由脚本下载，不进仓库；发布时注意 NOTICE 声明
 
 ## 5. 文档索引
 
-本目录只保留**活跃**任务书；已结案的迁移至 `docs/closed/`（10/11/12/13/14/15/17/18/19/20/21/22/24/25/26/28/31/32/39/40/41/46/47 等均已在 closed）。
+本目录只保留**活跃**任务书；已结案的迁移至 `docs/closed/`（10/11/12/13/14/15/17/18/19/20/21/22/24/25/26/28/31/32/39/40/41/46/47/49/50 等均已在 closed）。
 
 | 文件 | 内容 |
 |---|---|
 | `01-contract.md` | **共享契约**：依赖版本、全部公共 API、行为契约、文件属主矩阵、词典二进制格式 |
 | `02-conventions.md` | 全局约定：代码风格、错误处理、日志、测试纪律（原编号 30，2026-08 改号） |
 | `38-keyboard-flow.md` | 按键路由与会话语义的**权威行为规格**（常驻文档，不结案） |
-| `49-thin-client-arch.md` | **M10 架构重构·协议定稿**（2026-09-27 §6 五项拍板）：薄客户端 + 引擎服务端；含 **§4 IPC 协议**（`iuv-proto`：帧格式/三平面/热路径契约/握手协商）与拍板记录；分支 `feat/m10-thin-client` |
 | 其余（16/23/27/29/30/42/43/44/48） | 各活跃专题任务书，见文件头部状态行 |
 
 > 2026-09-10 清理：原表列的 `39`/`41` 早已结案迁入 `closed/`（本表滞后）；同日结案迁入的还有
 > **47 号**（候选窗锚定会话起点，真机通过）与 **46 号**（长串性能 P1+P2 已并 main，§5 验收计时未达标、
-> 残项另立项——见该文 §11 实况）。
+> 残项另立项——见该文 §11 实况）。2026-10-02 结案迁入：**49 号**（M10 薄客户端，已并 main）及其
+> 交接文档、**50 号**（全仓品质检查，全部修复 + 真机回归通过）。

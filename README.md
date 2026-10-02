@@ -17,7 +17,7 @@ Shift+←/→ 主动调权（绝对值覆盖，反复调整收敛），支持自
 - ◐ M7 安装器/x86（server 登录自启、键位热载已落地）
 - ◐ M10 薄客户端重构（49 号，`feat/m10-thin-client`）：全系统一个 `iuv-server.exe` + 薄 TSF 客户端，
   四套旧 IPC 收敛为一条长连接三平面（transport + iuv-proto），本地模式已删、远端唯一形态；
-  已并 main（2026-09-30，见 `docs/plan/49-thin-client-arch.md`）
+  已并 main（2026-09-30，见 `docs/closed/49-thin-client-arch.md`）
 - ⏸ M9 贴图皮肤框架（调研挂起）
 - ⬜ M3 整句增强（语言模型）/模糊音 · 符号/emoji 候选 · 学习候选
 
@@ -32,8 +32,8 @@ crates/（跨平台纯 Rust）
   iuv-ui     候选窗/菜单绘图层：tiny-skia + cosmic-text + Theme
   iuv-repl   CLI 调试前端（不注册输入法即可测引擎）
 platforms/
-  windows/iuv-tsf     cdylib：COM/TSF 管线 + 候选窗窗口层 + 语言栏"中/英"图标/菜单
-  windows/iuv-win     Windows 共享层：ULW 呈现 + 弹窗骨架 + 管道 IPC/共享段 + 共享日志
+  windows/iuv-tsf     cdylib：COM/TSF 管线（M10 薄客户端）+ 语言栏"中/英"图标/菜单
+  windows/iuv-win     Windows 共享层：transport 长连接 + ULW 呈现 + 弹窗骨架 + 共享段 + 共享日志
   windows/iuv-server  引擎服务进程 exe：全系统一份（引擎 + 用户库 + 工具栏/桌宠/设置页/全局热键；M10 ② iuv-daemon 并入）
   macos/, linux/      占位（IMK / Fcitx5·IBus，README）
 ```
@@ -44,7 +44,7 @@ iuv-server 引擎 `Session::on_key` → 服务端自绘候选窗；断连自动�
 
 ## 快速开始
 
-前置：Rust 1.85+，Windows 10/11 x64。
+前置：Rust 1.89+（workspace rust-version，cosmic-text 0.19 要求），Windows 10/11 x64。
 
 ```powershell
 cargo check --workspace       # 检查

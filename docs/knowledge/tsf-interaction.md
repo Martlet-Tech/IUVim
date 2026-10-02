@@ -13,11 +13,13 @@
 │  ↕ 直接对话                  │   │  ↕ CUAS 系统桥（模拟对话）    │
 │ iuv_tsf.dll（本进程实例）    │   │ iuv_tsf.dll（另一份实例）     │
 └────────── itfmemgr ──────────┘   └───────────────────────────────┘
-        ↑ 共享段只读引用 + ctl 管道（pid:tid）↑      daemon 统一持有用户库
+        ↑ transport 长连接（iuv-proto 三平面）↑   iuv-server 全系统一份统一持有引擎/用户库
 ```
 
 - 输入法是 **cdylib，被注入每个用它的应用进程**——每个进程一份独立实例（各自的
-  会话/composition/管道端点），跨进程共享的用户库走共享段只读引用 + daemon 写【现状】。
+  会话/composition/控制端点）。M10 薄客户端（49 号）起，引擎与用户库由全系统唯一的
+  iuv-server 持有，TSF 侧经 transport 长连接（iuv-proto 契约）对话【现状】。
+  （M6-M9 时代的「共享段只读引用 + ctl 管道」多套 IPC 已收敛为这一条长连接。）
 - `ITfThreadMgr` 是 TSF 的进程内总管理器，`Activate` 时发给我们一个 **client_id**——
   之后一切编辑请求都要报这个 id 证明身份【现状，text_service Activate】。
 - **两类应用**：TSF-aware 应用自己实现 TextStore 接口与我们直接对话；非 aware 应用由
@@ -161,7 +163,8 @@ SetText("你好世界") 后锚点自动外扩:
   零宽空格填充 workaround）；Code.exe 返回 `0x80040206` 内部错误【日志实测】。我们的
   策略：失败/clipped/全零 → 沿用旧光标或隐藏候选窗，绝不崩。
 - **呈现通道两条**：
-  - 主路：自绘候选窗（iuv-ui 渲染 + ULW 上屏），不经过 TSF；
+  - 主路：候选窗由 **iuv-server 自绘**（iuv-ui 渲染 + ULW 上屏，M10 服务端渲染；客户端
+    只上报 caret 锚点矩形），不经过 TSF；
   - 辅路：`ITfUIElementMgr`（日志 `[uielem] QI 成功`）——向应用提供标准候选 UI 元素；
     自绘应用名单（candidate_owner_apps，如 WoW）命中时不自绘、由游戏桥拉取候选数据
     【现状，28/32 号任务书】。
@@ -172,17 +175,19 @@ SetText("你好世界") 后锚点自动外扩:
 
 | TSF 交互点 | 我们的位置 |
 |---|---|
-| OnTestKeyDown/OnKeyDown/KeyUp/PreservedKey 桩 | iuv-tsf `com/text_service.rs:520-550` |
+| OnTestKeyDown/OnKeyDown/KeyUp/PreservedKey 桩 | iuv-tsf `com/text_service.rs`（ITfKeyEventSink 实现） |
 | 路由判定（Test/Down 共用） | iuv-tsf `com/key_routing.rs::route_key` |
 | 键映射白名单（含 OEM 符号收编） | iuv-tsf `session_bridge.rs::map_key` |
 | EditSession 请求 + Range/Composition 操作 | iuv-tsf `composition.rs` |
 | 组合销毁 sink（外部终止防御） | iuv-tsf `composition.rs::CompositionSink` |
 | 会话外标点/原文直通上屏 | iuv-tsf `com/mode.rs::commit_punct` |
 | 中英切换 compartment | iuv-tsf OPENCLOSE 读写 + OnChange 响应 |
-| 候选窗定位（GetTextExt） | iuv-tsf `composition.rs` caret 采集 + `ui/candwin.rs` |
+| 候选窗定位（GetTextExt） | iuv-tsf `composition.rs` caret 采集 → 服务端 `src/candwin.rs` 自绘 |
 | UI 元素辅路 | iuv-tsf `ui_element.rs` |
 
 ## 变更记录
 
+- 2026-10-02 对账（50 号品质检查 §3.2）：进程模型/呈现通道/源码映射对齐 M10
+  薄客户端现状（transport 长连接 + 服务端自绘候选窗；旧「共享段 + ctl 管道」表述退役）。
 - 2026-08-22 初版：随 issue「d冒号表现不一致」修复过程中的机制问答沉淀成文
   （Range/光标/Esc/结束信号等口头讲解首次落档），与 38 号行为规格配对。

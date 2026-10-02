@@ -42,17 +42,19 @@
   transport 的 `server_initiated_request_roundtrip` 与此围栏无关，真因是
   测试内管道名少一个反斜杠（transport.rs:339）——**已修复，套件 8/8 全绿**。
 
-### 全仓库品质检查（50 号，`docs/plan/50-quality-audit.md`）——检查完成 2026-10-02，待修复
+### 全仓库品质检查（50 号，`docs/closed/50-quality-audit.md`）——修复完成 2026-10-02，真机回归通过
 
 M10 后首次全仓品质检查（自动化 + 6 路模块代理逐文件通读 + 高危人工核实）。
-**5 个高危**已核实：① JSONC 剥注释按字节重组破坏配置里的中文（core/config/io.rs:134）；
+**5 个高危**已核实并修复：① JSONC 剥注释按字节重组破坏配置里的中文（core/config/io.rs:134）；
 ② `page_size=1` 下溢 panic（core/userdict.rs:212）；③ M10 后 Test/Down 双跑破坏
 引号配对状态机（tsf key_routing.rs:82）；④ 工具栏 SetMode 兜底漏同步 `english_mode`
 （tsf text_service.rs:265）；⑤ 设置页清空用户库不清引擎内存态（server settings.rs:1197）。
-另有 transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）、死代码一批
+transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）、死代码一批
 （viterbi 整模块、tsf 本地候选窗 ~600 行、server daemon 时代死链）、文档漂移一批
-（00-overview 与 tsf-interaction 仍是 daemon 架构描述，误导源之首）。
-修复顺序见 50 号 §5：清环境 → 高危 → transport → 迁移收尾对账 → 更新架构文档。
+（00-overview 与 tsf-interaction 旧 daemon 架构描述，误导源之首）全部修复。
+**仍欠**（有意不修，见 50 号 §2.3/§3.2 标注）：langbar/wnd_proc panic guard 包装；
+部分代码内注释漂移（shm.rs 句柄注释、toolbar.rs toolbar_size 等）。
+各批次提交纪要与修复细节见 50 号文档与台账末条。
 
 ### 未开工 / 挂起
 
@@ -562,7 +564,7 @@ M10 后首次全仓品质检查（自动化 + 6 路模块代理逐文件通读 +
   install.ps1 词库链自动重编或手动拷贝）。
 
 - [x] **49 号 · M10 架构重构立项：薄客户端 + 引擎服务端，IPC 协议定稿**（2026-09-27，
-  任务书 `docs/plan/49-thin-client-arch.md`，分支 `feat/m10-thin-client`）：
+  任务书 `docs/closed/49-thin-client-arch.md`，分支 `feat/m10-thin-client`）：
   「每应用进程一份引擎」→「全系统一个 iuv-server.exe + 薄 TSF 客户端」。现存 4 套 IPC
   （用户库管道/SHM/ctl 反向通道/toolbar signal）收敛为一条长连接三平面
   （热路径 REQ/RESP · 控制面 · 状态面 latest-wins PUSH）。§6 五项拍板：
@@ -1217,3 +1219,37 @@ M10 后首次全仓品质检查（自动化 + 6 路模块代理逐文件通读 +
     旧行为断言）；真机三轮回归（15:08 部署后）：`http:localhost:8000` 一次上屏
     （日志 8/0/0/0 全「远端会话内」+ 单条 commit）、`d:\books`、`d:/project`、
     拼音态数字选词（`4`→路/`9`→路）不受影响。issue 文件已附收档结论。
+
+- [x] **50 号收尾：S2 剩余中危五连修 + S4 文档对账（2026-10-02，真机回归通过）**：
+  接续 `docs/closed/50-handoff-quality-sweep.md` 交接（D1-D3 已随 `71c2098` 提交）。
+  - **toolbar 四态翻转不再冻结 UI 线程**（server window.rs）：`dispatch_state_toggle`
+    改**短命线程**发 3s 同步 ctl 请求（server candwin 点击选词同款先例，50 号 §2.2
+    口径归一），结果写实例表 + `WM_APP_REFRESH` 跨线程唤醒 reconcile 重绘；
+    HWND 按 `ToolbarHost::wake` 惯例经 usize 过线程（裸指针 !Send）；线程创建
+    失败回退同步路径。
+  - **reviving 闸不再吞 Activate 兜底**（tsf remote_host.rs，50 号 §2.3 + 
+    2026-10-01 真机教训收尾）：新增 `REVIVE_REQUESTED` 挂号——闸被占时 Activate
+    的重生请求、离线期间的持续按键均挂号不丢弃；窗口失败由 `finish_revive`
+    代跑（带 spawn），焦点不变的进程超窗后不再永久透明。两份手写重连循环归一
+    `spawn_revive_loop`；重试差别化：`Proto`（版本/令牌拒绝）重试无意义提前
+    放弃，瞬时不可达（Io/Closed）才按窗重试。
+  - **Activate 中途失败回滚**（tsf text_service.rs）：`ITfSource QI`/
+    `AdviseSink(ThreadMgrEventSink)` 失败时回滚已完成的 AdviseKeyEventSink
+    （TSF 对 Activate 失败不保证回发 Deactivate，泄漏 advise 随宿主线程存活）。
+  - **deactivate 清服务端会话**（tsf text_service.rs）：活动会话走 `flush_session`
+    （原文上屏 + `C2S::EndSession` + 清 last_effect）——服务端会话不再残留、
+    重激活首键不再被当续接吞掉；无会话时跳过（省一次 PendingTextQuery 往返）。
+  - **S4 文档对账**：`00-overview.md` 架构图/数据流/Viterbi/M6 表述对齐 M10
+    （误导源之首拔除）；`tsf-interaction.md` 进程模型/呈现通道/源码映射改
+    transport 长连接 + 服务端自绘，补变更记录；README/AGENTS.md iuv-tsf/iuv-win
+    职责行对齐；README Rust 1.85+→1.89+；Cargo.toml iuv-daemon 死注释、
+    `.gitignore /target-daemon`、remote_host.rs「每请求 20ms」漂移注释清掉。
+  - **测试**：fmt 干净、clippy 全 workspace 0 警告、非 shm 测试全绿（shm 三
+    测试需管理员终端，环境固有）。真机回归（dev-deploy -SkipBuild 部署 +
+    日志核验）：两轮优雅停机各 6 客户端（含正打字的 notepad）~1.5s 内全部
+    `[backend] 停机后延迟重连成功`；5 例断连→`重生成功（令牌重绑）`即时恢复；
+    零「延迟重连未果/保持透明」、零 panic、零 Proto 拒绝（挂号/代跑未触发 =
+    窗口内即成功，预期）；工具栏绑定/显隐偏好/打字链路全正常，perf 慢键
+    12-53ms 正常分布。
+  - **仍欠**（有意不修）：langbar/wnd_proc panic guard 包装；部分代码注释漂移
+    （shm.rs 句柄注释、toolbar.rs toolbar_size 等）；详见 50 号 §2.3/§3.2 标注。

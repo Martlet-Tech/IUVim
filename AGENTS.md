@@ -28,7 +28,7 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 - ◐ **M7** 安装器/x86（server 登录自启 ✅；键位热载 ✅ 2026-08-28——快捷键双槽可配 + 全局热键 + 设置页游戏式录入，`41-keymap-settings.md`）
 - ◐ **M10** 薄客户端重构（49 号，分支 `feat/m10-thin-client`）：iuv-server 全系统唯一服务进程 + TSF 薄客户端，
   一条长连接三平面（transport + iuv-proto）。P0-P5/②迁移/③-1 删本地模式/③-2 镜像归一全部落地并真机回归；
-  ③-3 已收口并并入 main（2026-09-30）。任务书 `docs/plan/49-thin-client-arch.md`
+  ③-3 已收口并并入 main（2026-09-30）。任务书 `docs/closed/49-thin-client-arch.md`
 - ⏸ **M9** 贴图皮肤框架（调研定稿挂起；前置 M8 工具栏已多轮打磨，可重新评估）
 - ⬜ **M3** 整句增强(LMDG)/模糊音 · 符号/emoji 候选 · 学习候选
 
@@ -64,11 +64,11 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 | 路径 | 说明 |
 |---|---|
 | `crates/iuv-data` | 词库编译器 dictc + 二进制格式 + Dict 查询层 + 用户库（跨平台） |
-| `crates/iuv-core` | 引擎：切分/候选生成/unigram Viterbi/会话状态机/排序管线（跨平台纯 Rust） |
+| `crates/iuv-core` | 引擎：切分/候选生成/rime poet 组句/会话状态机/排序管线（跨平台纯 Rust） |
 | `crates/iuv-ui` | 候选窗/菜单绘图层：tiny-skia + cosmic-text + Theme（跨平台纯 Rust，M4 已实现） |
 | `crates/iuv-repl` | CLI 调试前端（跨平台） |
-| `platforms/windows/iuv-tsf` | cdylib：COM/TSF 管线 + 候选窗窗口层（ULW 呈现）+ 语言栏"中/英"切换图标/右键菜单（Windows） |
-| `platforms/windows/iuv-win` | Windows 共享层：ULW 呈现（`ulw.rs`）+ 自绘弹窗骨架（`popup.rs` LayeredWindow）+ M6 管道 IPC/共享段（`ipc/`+`shm.rs`，2026-08-21 自 iuv-data 移入） |
+| `platforms/windows/iuv-tsf` | cdylib：COM/TSF 管线（M10 薄客户端：按键路由/composition/控制端点）+ 语言栏"中/英"切换图标/右键菜单（Windows） |
+| `platforms/windows/iuv-win` | Windows 共享层：transport 长连接（`ipc/`，M10 四套旧 IPC 收敛）+ ULW 呈现（`ulw.rs`）+ 自绘弹窗骨架（`popup.rs` LayeredWindow）+ 共享段（`shm.rs`，服务端发布侧）+ 共享日志 |
 | `platforms/windows/iuv-server` | 引擎服务进程 exe（M10）：全系统一份——引擎/用户库 + transport 服务 + 服务端自绘候选窗 + 工具栏/桌宠/egui 设置页/全局热键（M10 ② iuv-daemon 并入退役） |
 | `platforms/{macos,linux}/` | 占位：IMK / Fcitx5·IBus 适配层 + 门面规划（README，见各目录） |
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |

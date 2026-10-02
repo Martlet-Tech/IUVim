@@ -5,7 +5,8 @@
 //! 热路径契约（49 §4.5）：
 //! - **Test/KeyDown 单槽去重**（§4.5.1）：`key_test` 发请求并缓存裁定；`key_down`
 //!   命中缓存零 IPC 复用、未命中（只发 OnKeyDown 的应用）现场处理；
-//! - **截止时间**（§4.5.2）：每请求 20ms；超时 → 放行按键（返回 `None`）+ degraded
+//! - **截止时间**（§4.5.2）：每请求 300ms（`KEY_DEADLINE_MS`，真机最慢键 5 倍余量）；
+//!   超时 → 放行按键（返回 `None`）+ degraded
 //!   标记 → 下一键 `full=true` 强制全量重同步；`Busy` 不触发；
 //! - **失效语义 C+A**（§4.5.4，P5）：连接断开 → offline 透明放行（A）+ **后台快速
 //!   重生**（C）——拉起 iuv-server.exe（继承宿主中完整性，P3 教训）→ 带
@@ -445,6 +446,10 @@ impl RemoteHandle {
     /// 单请求（截止 [`KEY_DEADLINE_MS`]）。None = 降级放行（Deadline/Closed/协议错误）。
     fn request(&self, req: C2S) -> Option<S2C> {
         if self.offline.load(Ordering::Relaxed) {
+            // 离线期间按键仍在发生 = 重生意愿持续存在：挂号（闸释放后由
+            // finish_revive 代跑），焦点不变的进程超窗失败后不再永久透明
+            //（50 号 §2.3）。
+            REVIVE_REQUESTED.store(true, Ordering::SeqCst);
             return None;
         }
         let client = self
@@ -475,6 +480,86 @@ impl RemoteHandle {
     }
 }
 
+/// 重生请求挂号：闸被占期间的 Activate 兜底、离线期间的持续按键都会留下
+/// 「要重生」的意愿；闸释放后由 `finish_revive` 代跑一次 `schedule_revive`
+/// （带 spawn 兜底）——焦点不变的进程不再永久透明（50 号 §2.3）。
+static REVIVE_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// 重生收尾（两路窗口共用）：释放闸。连接成功 → 清挂号（意愿已满足）；
+/// 失败 → 检查挂号，有则代跑 `schedule_revive`（消费一次；是否再试由后续
+/// 新请求决定——持续按键/Activate 会不断挂号，空闲则自然停）。
+fn finish_revive(handle: &Arc<RemoteHandle>, connected: bool) {
+    handle.reviving.store(false, Ordering::SeqCst);
+    if connected {
+        REVIVE_REQUESTED.store(false, Ordering::SeqCst);
+        return;
+    }
+    if REVIVE_REQUESTED.swap(false, Ordering::SeqCst) {
+        log_line("[backend] 窗口期间有新重生请求 → 代跑（带 spawn 兜底）");
+        schedule_revive();
+    }
+}
+
+/// 重生/延迟重连共用循环（原两份手写循环归一，50 号 §2.3）：`attempts` 次重连
+/// `interval` 步进；`spawn_on_fail` = 首次失败是否拉起 iuv-server（延迟重连
+/// 只连不拉——立即拉起会把磁盘旧 exe 拉起锁住文件替换）。**重试有差别**：
+/// `Proto` = 协议级拒绝（版本/令牌不匹配），窗口内重试无意义 → 提前放弃；
+/// 瞬时不可达（Io/Closed）才按窗重试。
+#[allow(clippy::too_many_arguments)] // 参数即窗口语义（尝试数/步进/首延/是否拉起 + 文案）
+fn spawn_revive_loop(
+    handle: Arc<RemoteHandle>,
+    tag: &'static str,
+    attempts: usize,
+    interval: Duration,
+    first_delay: Duration,
+    spawn_on_fail: bool,
+    on_success: &'static str,
+    on_exhausted: &'static str,
+) {
+    std::thread::Builder::new()
+        .name(format!("iuv-remote-{tag}"))
+        .spawn(move || {
+            if !first_delay.is_zero() {
+                std::thread::sleep(first_delay);
+            }
+            let dir =
+                iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
+            let auth = match iuv_win::transport::load_or_create_token(&dir) {
+                Ok(a) => a,
+                Err(e) => {
+                    log_line(&format!("[backend] 共享密钥装配失败 → {tag}放弃：{e}"));
+                    finish_revive(&handle, false);
+                    return;
+                }
+            };
+            for i in 0..attempts {
+                if i > 0 {
+                    std::thread::sleep(interval);
+                }
+                match handle.try_reconnect_once(spawn_on_fail && i == 0, auth.clone()) {
+                    Ok(pushes) => {
+                        spawn_push_pump(handle.clone(), pushes);
+                        log_line(on_success);
+                        handle.replay_focus_binding();
+                        finish_revive(&handle, true);
+                        return;
+                    }
+                    Err(TransportError::Proto(e)) => {
+                        // 协议级拒绝非瞬时故障：多试也不会好，提前放弃整窗。
+                        log_line(&format!(
+                            "[backend] {tag}：协议级拒绝（{e:?}）→ 重试无意义，提前放弃"
+                        ));
+                        break;
+                    }
+                    Err(_) => {} // 瞬时不可达：按窗重试
+                }
+            }
+            log_line(on_exhausted);
+            finish_revive(&handle, false);
+        })
+        .expect("重生线程创建");
+}
+
 /// 重生循环（49 §4.5.4 方案 C）：离线后按节奏重连（带 `Hello.resume` 令牌），
 /// 首次失败顺带拉起 iuv-server.exe（继承宿主中完整性——绝不提权，P3 教训）。
 /// 全部尝试失败 → 保持透明放行，下次 Activate 兜底重试。`reviving` 防线程风暴。
@@ -483,42 +568,21 @@ pub(crate) fn schedule_revive() {
         return;
     };
     if handle.reviving.swap(true, Ordering::SeqCst) {
+        // 闸被占（另一路重生/延迟重连窗在跑）：**挂号不丢弃**——旧实现直接
+        // return，延迟重连窗内 Activate 的兜底重生被吞（50 号 §2.3）。
+        REVIVE_REQUESTED.store(true, Ordering::SeqCst);
         return;
     }
-    std::thread::Builder::new()
-        .name("iuv-remote-revive".into())
-        .spawn(move || {
-            const ATTEMPTS: usize = 6;
-            let dir =
-                iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
-            let auth = match iuv_win::transport::load_or_create_token(&dir) {
-                Ok(a) => a,
-                Err(e) => {
-                    handle.reviving.store(false, Ordering::SeqCst);
-                    log_line(&format!("[backend] 共享密钥装配失败 → 无法重生：{e}"));
-                    return;
-                }
-            };
-            for i in 0..ATTEMPTS {
-                if i > 0 {
-                    std::thread::sleep(Duration::from_millis(250));
-                }
-                // 首次尝试就允许拉起：走到离线说明管道已消失（服务端进程死亡），
-                // 立即拉起最快；服务端其实在线（accept 间隙）时 connect 成功、不拉。
-                if let Ok(pushes) = handle.try_reconnect_once(i == 0, auth.clone()) {
-                    spawn_push_pump(handle.clone(), pushes);
-                    log_line("[backend] 重生成功（令牌重绑，下键全量重同步）");
-                    handle.replay_focus_binding();
-                    handle.reviving.store(false, Ordering::SeqCst);
-                    return;
-                }
-            }
-            handle.reviving.store(false, Ordering::SeqCst);
-            log_line(&format!(
-                "[backend] 重生失败（{ATTEMPTS} 次重连未果）→ 保持透明，下次 Activate 重试"
-            ));
-        })
-        .expect("重生线程创建");
+    spawn_revive_loop(
+        handle,
+        "revive",
+        6,
+        Duration::from_millis(250),
+        Duration::ZERO,
+        true,
+        "[backend] 重生成功（令牌重绑，下键全量重同步）",
+        "[backend] 重生失败（6 次重连未果）→ 保持透明，下次 Activate 重试",
+    );
 }
 
 /// 停机后的延迟重连窗（毫秒）：部署/重启流程实测 server 缺位 ~1-2s（哨兵轮询
@@ -529,46 +593,26 @@ const SHUTDOWN_RECONNECT_DELAY_MS: u64 = 1500;
 /// 优雅停机后的延迟重连（**只连不拉**）：`Push::Shutdown` = 刻意停机（部署换
 /// 文件/管理员重启/卸载），立即 `schedule_revive` 会把磁盘旧 exe 拉起锁住文件
 /// 替换；纯延迟重连则安全——连接失败只是重试，永不 spawn。超窗失败 → 保持
-/// 透明，Activate 兜底（带 spawn）仍在。与 `schedule_revive` 共用 `reviving`
-/// 闸（防两路并发；延迟窗内 Activate 来的重生会被跳过，窗口结束后再试）。
+/// 透明，窗口期间挂号的重生请求（Activate/持续按键）由 `finish_revive` 代跑
+/// 兜底。与 `schedule_revive` 共用 `reviving` 闸（防两路并发）。
 pub(crate) fn schedule_revive_deferred(delay_ms: u64) {
     let Some(handle) = remote().cloned() else {
         return;
     };
     if handle.reviving.swap(true, Ordering::SeqCst) {
+        // 常规重生窗在跑（自带 spawn 兜底），无需另排延迟窗。
         return;
     }
-    std::thread::Builder::new()
-        .name("iuv-remote-deferred".into())
-        .spawn(move || {
-            const ATTEMPTS: usize = 16;
-            std::thread::sleep(Duration::from_millis(delay_ms));
-            let dir =
-                iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
-            let auth = match iuv_win::transport::load_or_create_token(&dir) {
-                Ok(a) => a,
-                Err(e) => {
-                    handle.reviving.store(false, Ordering::SeqCst);
-                    log_line(&format!("[backend] 共享密钥装配失败 → 延迟重连放弃：{e}"));
-                    return;
-                }
-            };
-            for i in 0..ATTEMPTS {
-                if i > 0 {
-                    std::thread::sleep(Duration::from_millis(500));
-                }
-                if let Ok(pushes) = handle.try_reconnect_once(false, auth.clone()) {
-                    spawn_push_pump(handle.clone(), pushes);
-                    log_line("[backend] 停机后延迟重连成功（新 server 已上位，令牌重绑）");
-                    handle.replay_focus_binding();
-                    handle.reviving.store(false, Ordering::SeqCst);
-                    return;
-                }
-            }
-            handle.reviving.store(false, Ordering::SeqCst);
-            log_line("[backend] 停机后延迟重连未果（server 未回来？）→ 保持透明，Activate 兜底");
-        })
-        .expect("延迟重连线程创建");
+    spawn_revive_loop(
+        handle,
+        "deferred",
+        16,
+        Duration::from_millis(500),
+        Duration::from_millis(delay_ms),
+        false,
+        "[backend] 停机后延迟重连成功（新 server 已上位，令牌重绑）",
+        "[backend] 停机后延迟重连未果（server 未回来？）→ 保持透明，窗口期间挂号的重生请求代跑",
+    );
 }
 
 impl RemoteHandle {
