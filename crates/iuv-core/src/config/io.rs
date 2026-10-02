@@ -120,38 +120,41 @@ pub fn strip_bom(text: &str) -> &str {
     text.trim_start_matches('\u{FEFF}')
 }
 
-/// 剥 JSONC 行注释（`//` 到行尾）：字符串内不剥（含 `\"` 转义），行尾 CR 保留。
+/// 剥 JSONC 行注释（`//` 到行尾）：字符串内不剥（含 `\"` 转义），`\n` 保留（行号不漂移）。
 /// serde_json 不支持注释，安装器产出的带注释默认配置经此预处理后解析。
+///
+/// 按字符遍历而非按字节：结构字符（`"` `\` `/`）都是 ASCII，判定不受影响；
+/// 非 ASCII 字符原样透传——按字节 `push(c as char)` 会把多字节序列按 Latin-1
+/// 拆成错码（实测：配置值里的中文被静默改写，2026-10-02 品质审查 H1）。
 pub fn strip_jsonc_comments(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_str = false;
     let mut prev_escape = false;
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
         if in_str {
-            out.push(c as char);
+            out.push(c);
             if prev_escape {
                 prev_escape = false;
-            } else if c == b'\\' {
+            } else if c == '\\' {
                 prev_escape = true;
-            } else if c == b'"' {
+            } else if c == '"' {
                 in_str = false;
             }
-            i += 1;
-        } else if c == b'"' {
+        } else if c == '"' {
             in_str = true;
-            out.push(c as char);
-            i += 1;
-        } else if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            // 跳到行尾（保留换行符，行号不漂移）
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
+            out.push(c);
+        } else if c == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            // 跳到行尾（不消费 '\n'，行号不漂移；注释内容含行尾 CR 一并剥除）
+            while let Some(next) = chars.peek() {
+                if *next == '\n' {
+                    break;
+                }
+                chars.next();
             }
         } else {
-            out.push(c as char);
-            i += 1;
+            out.push(c);
         }
     }
     out

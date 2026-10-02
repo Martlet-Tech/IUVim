@@ -18,6 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use eframe::egui;
+use iuv_core::Engine;
 use iuv_data::UserDict;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::RECT;
@@ -116,6 +117,7 @@ fn center_window_on_screen() {
 pub fn run_settings(
     state: &Arc<DaemonState>,
     toolbar: &Arc<crate::daemon::toolbar::ToolbarHost>,
+    engine: &Arc<Engine>,
 ) -> Result<(), String> {
     const WIDTH: f32 = 640.0;
     const HEIGHT: f32 = 480.0;
@@ -154,7 +156,7 @@ pub fn run_settings(
                     style.visuals.selection.bg_fill = egui::Color32::from_rgb(0x00, 0x78, 0xD7);
                     style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
                 });
-                Ok(Box::new(SettingsApp::new(state, toolbar)))
+                Ok(Box::new(SettingsApp::new(state, toolbar, engine.clone())))
             }),
         )
     }));
@@ -319,6 +321,9 @@ struct SettingsApp {
     state: Arc<DaemonState>,
     /// 工具栏宿主（录入态开关通知：全局热键临时注销，41-keymap-settings.md §12）。
     toolbar: Arc<crate::daemon::toolbar::ToolbarHost>,
+    /// 引擎句柄（「清除全部」同步重置引擎内存态用户库，2026-10-02 品质审查 H5：
+    /// 只清 DaemonState.dict 则引擎叠加视图残留旧条目，下一条 UserMutation 写盘复活）。
+    engine: Arc<Engine>,
     /// 当前标签页。
     tab: Tab,
     /// 主题单选值（"light"/"dark"）。
@@ -375,7 +380,11 @@ fn card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> 
 }
 
 impl SettingsApp {
-    fn new(state: Arc<DaemonState>, toolbar: Arc<crate::daemon::toolbar::ToolbarHost>) -> Self {
+    fn new(
+        state: Arc<DaemonState>,
+        toolbar: Arc<crate::daemon::toolbar::ToolbarHost>,
+        engine: Arc<Engine>,
+    ) -> Self {
         let cfg = state
             .config
             .lock()
@@ -384,6 +393,7 @@ impl SettingsApp {
         SettingsApp {
             state,
             toolbar,
+            engine,
             tab: Tab::Common,
             theme: cfg.theme,
             orientation: cfg.candidate_orientation,
@@ -466,16 +476,8 @@ impl SettingsApp {
                     ui.add_space(2.0);
                     ui.horizontal(|ui| {
                         ui.label("模式");
-                        ui.radio_value(
-                            &mut self.initial.mode,
-                            iuv_core::ImeMode::Chinese,
-                            "中文",
-                        );
-                        ui.radio_value(
-                            &mut self.initial.mode,
-                            iuv_core::ImeMode::English,
-                            "英文",
-                        );
+                        ui.radio_value(&mut self.initial.mode, iuv_core::ImeMode::Chinese, "中文");
+                        ui.radio_value(&mut self.initial.mode, iuv_core::ImeMode::English, "英文");
                     });
                     let mut punct_en = self.initial.punct == iuv_core::ImePunct::English;
                     if ui.checkbox(&mut punct_en, "中文状态使用英文标点").changed() {
@@ -756,7 +758,11 @@ impl SettingsApp {
     }
 
     /// 应用捕获结果到槽位（含校验/冲突检测）。
-    fn apply_capture(&mut self, target: CaptureTarget, outcome: crate::daemon::capture::CaptureOutcome) {
+    fn apply_capture(
+        &mut self,
+        target: CaptureTarget,
+        outcome: crate::daemon::capture::CaptureOutcome,
+    ) {
         use crate::daemon::capture::CaptureOutcome;
         match outcome {
             CaptureOutcome::Cancel => {
@@ -1036,7 +1042,8 @@ impl SettingsApp {
                 ui.small("命中进程 iuv 不绘制候选窗（游戏自带候选栏场景），数据仍供其拉取。");
                 ui.add_space(2.0);
                 if ui.button("恢复默认名单").clicked() {
-                    self.candidate_owner = crate::daemon::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
+                    self.candidate_owner =
+                        crate::daemon::config::DEFAULT_CANDIDATE_OWNER_APPS.join("\n");
                 }
                 ui.small("默认 = 预置知名游戏");
             });
@@ -1200,9 +1207,13 @@ impl SettingsApp {
                 let mut dict = self.state.dict.lock().unwrap_or_else(|p| p.into_inner());
                 *dict = UserDict::empty();
             }
+            // 引擎内存态同步重置（H5）：否则叠加视图残留旧条目，下一条
+            // UserMutation 基于旧库写盘，被清条目复活（磁盘清了、内存没清）。
+            self.engine.clear_user_dict();
             self.state.publish();
             self.state.flush_now();
-            msgs.push("已清除全部用户库（已落盘）".into());
+            log::log_line("[settings] 清除全部用户库：引擎内存态 + 磁盘已重置（H5 数据一致性路径留痕）");
+            msgs.push("已清除全部用户库（内存态 + 磁盘）".into());
         }
 
         self.status = msgs.join("；");

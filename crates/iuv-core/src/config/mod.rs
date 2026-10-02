@@ -285,6 +285,19 @@ mod tests {
     }
 
     #[test]
+    fn strip_comments_preserves_multibyte() {
+        // H1 回归钉：中文/多字节值 + 字符串内 // 均原样透传（旧实现按字节重组 UTF-8 损坏）。
+        let src = "{ // 中文注释\n  \"phrase\": \"好：hao'的，http://x\",\n  \"cjk\": \"日本語テスト\"\n}";
+        assert_eq!(
+            strip_jsonc_comments(src),
+            "{ \n  \"phrase\": \"好：hao'的，http://x\",\n  \"cjk\": \"日本語テスト\"\n}"
+        );
+        // 中文注释里的引号不改变字符串态（注释内容整段剥除）
+        let src2 = "{\"a\": 1 // 引号\"在注释里\n}";
+        assert_eq!(strip_jsonc_comments(src2), "{\"a\": 1 \n}");
+    }
+
+    #[test]
     fn theme_defaults_light() {
         let c = Config::default();
         assert_eq!(c.theme, ThemeChoice::Light);

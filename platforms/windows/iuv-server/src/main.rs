@@ -69,7 +69,11 @@ fn main() {
     // P4 配置热载：后台监视 config.json → 引擎热载 + 纪元自增（会话捎带
     // Push::ConfigChanged 通知客户端）；改配置不再需要重启 server。
     // 同线程兼停机哨兵（server.stop）：优雅停机广播 Push::Shutdown 后退出。
-    iuv_server::config_watch::spawn(engine, service.config_epoch(), service.senders_handle());
+    iuv_server::config_watch::spawn(
+        engine.clone(),
+        service.config_epoch(),
+        service.senders_handle(),
+    );
 
     // ---- ② daemon UI 迁入：daemon 状态/工具栏（含桌宠、全局热键、设置页）----
     let daemon_config = iuv_server::daemon::config::load_config();
@@ -80,12 +84,7 @@ fn main() {
         iuv_data::UserDict::empty()
     });
     // SHM 写者归 EngineService（②迁移：daemon 副本写者退役 → shm=None）。
-    let state = iuv_server::daemon::state::DaemonState::new(
-        dict,
-        None,
-        daemon_config,
-        upath,
-    );
+    let state = iuv_server::daemon::state::DaemonState::new(dict, None, daemon_config, upath);
     let pet_art = std::sync::Arc::new(iuv_server::daemon::pet_assets::load_pet_art());
     let toolbar = iuv_server::daemon::toolbar::ToolbarHost::spawn(
         state.clone(),
@@ -112,7 +111,9 @@ fn main() {
             std::process::exit(3);
         }
     };
-    log_line(&format!("iuv-server 就绪：{pipe}（等待连接；工具栏/设置页已装配）"));
+    log_line(&format!(
+        "iuv-server 就绪：{pipe}（等待连接；工具栏/设置页已装配）"
+    ));
     // 存活到进程结束。**不能写 `let _ = server`**——`_` 模式的临时值在语句结束即析构，
     // TransportServer::drop 会关管道/停 accept（实测：进程活着但管道消失，客户端全放行）。
     let _server = server;
@@ -124,7 +125,7 @@ fn main() {
             state.close_settings.store(false, Ordering::Release);
             state.settings_open.store(true, Ordering::Release);
             log_line("[main] 收到 OpenSettings，运行设置窗口");
-            let _ = iuv_server::daemon::settings::run_settings(&state, &toolbar);
+            let _ = iuv_server::daemon::settings::run_settings(&state, &toolbar, &engine);
             state.settings_open.store(false, Ordering::Release);
             // 设置页可能保存了 keymap → 工具条线程全量重注册全局热键（幂等）。
             toolbar.hotkeys_changed();

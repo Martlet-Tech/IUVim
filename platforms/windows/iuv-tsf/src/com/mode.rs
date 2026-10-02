@@ -1,7 +1,7 @@
 //! 模式与实例状态（P2.2 从 text_service.rs 拆出）：中英切换、会话清理、
 //! 会话外标点/全角直接上屏判定、运行时四态收尾。均挂 `impl TextService`。
 
-use iuv_core::{chinese_punct, shifted_punct, ImeState, ImeMode, ImePunct};
+use iuv_core::{chinese_punct, shifted_punct, ImeMode, ImePunct, ImeState};
 use windows::Win32::UI::TextServices::ITfContext;
 
 use crate::composition::Composition;
@@ -49,7 +49,9 @@ impl TextService {
                 ImeMode::English
             };
         }
-        self.punct_quote_open.set(false); // 模式切换复位引号配对（下个引号从开形起）
+        self.punct_quote_open.set(true); // 模式切换复位引号配对：下个引号从开形起
+                                         // （chinese_punct 语义 quote_open=true → '‘'/“”，2026-10-02 品质审查 H3 纠正：
+                                         //   旧值 false 实为复位到关形，与注释承诺相反）
         log_line(&format!(
             "OPENCLOSE 变化：open={open} → {}模式",
             if next { "英文" } else { "中文" }
@@ -124,7 +126,11 @@ impl TextService {
     /// 命中 → Some(上屏文本)：中文模式 + 无会话 + `runtime.punct` 非英文标点 +
     /// 非 Ctrl/Alt 组合 + 按键字符（含 Shift 推导）命中中文标点映射。
     /// 标点开关读**实例运行时态**（32-toolbar §5.1，非引擎 config）。
-    /// 内部处理引号配对状态翻转（`'`/`"` 交替开/关）。
+    /// `commit_state`：是否提交引号配对翻转——**只允许 Down 阶段传 true**。M10 后
+    /// Test 阶段真正处理（§4.5.1），route_key 在 Test/Down 各跑一次，若两阶段都
+    /// 翻转则一次按键净翻两次回原值（引号恒闭形、开形不可达，2026-10-02 品质
+    /// 审查 H3）：Test 纯判定，Down 提交翻转。只发 Down 不发 Test 的应用同样
+    /// 只翻一次，两路径行为一致。
     pub(crate) fn chinese_punct_pending(
         &self,
         char_code: u32,
@@ -132,6 +138,7 @@ impl TextService {
         ctrl: bool,
         alt: bool,
         session_active: bool,
+        commit_state: bool,
     ) -> Option<String> {
         if self.english_mode.load(std::sync::atomic::Ordering::SeqCst)
             || session_active
@@ -148,7 +155,7 @@ impl TextService {
         let ascii = shifted_punct(base, shift);
         let quote_open = self.punct_quote_open.get();
         let punct = chinese_punct(ascii, quote_open)?;
-        if matches!(ascii, '\'' | '"') {
+        if commit_state && matches!(ascii, '\'' | '"') {
             self.punct_quote_open.set(!quote_open);
         }
         Some(punct.to_string())
@@ -193,5 +200,96 @@ impl TextService {
             },
             Err(e) => log_line(&format!("[punct] set_text 失败：{e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::super::text_service::TextService;
+    use super::*;
+
+    /// 标点测试专用实例：中文模式 + 中文标点（构造后覆盖，防宿主机 config
+    /// initial_state 干扰；TextService::new 无 COM 依赖，可安全构造）。
+    fn chinese_punct_service() -> TextService {
+        let ts = TextService::new();
+        ts.english_mode.store(false, Ordering::SeqCst);
+        ts.runtime.lock().unwrap_or_else(|p| p.into_inner()).punct = ImePunct::Chinese;
+        ts
+    }
+
+    const QUOTE: u32 = '\'' as u32;
+
+    #[test]
+    fn quote_pairing_test_down_symmetry() {
+        // H3 回归钉：一次按键 = Test（纯判定）+ Down（提交翻转）各跑一次
+        // route_key，引号必须 开→关→开 交替。旧实现两阶段都翻转 → 净翻两次
+        // 回原值，引号恒闭形、开形不可达（2026-10-02）。
+        let ts = chinese_punct_service();
+        let down = |ts: &TextService| {
+            let t = ts.chinese_punct_pending(QUOTE, false, false, false, false, false);
+            let d = ts.chinese_punct_pending(QUOTE, false, false, false, false, true);
+            (t.unwrap(), d.unwrap())
+        };
+        // Test 与 Down 同键同判定结果（对称保证：Test 吃 Down 必吃）
+        let (t1, d1) = down(&ts);
+        assert_eq!(t1, "‘", "Test 判定不吃状态：首个引号开形");
+        assert_eq!(d1, "‘", "Down 提交：首个引号开形（初值 true）");
+        let (t2, d2) = down(&ts);
+        assert_eq!(t2, "’", "Test 判定基于已提交状态");
+        assert_eq!(d2, "’", "第二个引号关形");
+        let (t3, d3) = down(&ts);
+        assert_eq!((t3.as_str(), d3.as_str()), ("‘", "‘"), "第三个引号回到开形");
+    }
+
+    #[test]
+    fn quote_pairing_down_only_alternates() {
+        // 部分宿主只发 OnKeyDown 不发 Test：同样必须交替（与 Test+Down 路径一致）。
+        let ts = chinese_punct_service();
+        let seq: Vec<String> = (0..4)
+            .map(|_| {
+                ts.chinese_punct_pending(QUOTE, false, false, false, false, true)
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(seq, ["‘", "’", "‘", "’"], "Down-only 路径同样开→关→开→关");
+    }
+
+    #[test]
+    fn quote_pairing_test_never_commits() {
+        // Test 被吃但应用未回 Down 的异常时序：状态必须不动（未上屏 = 不翻转）。
+        let ts = chinese_punct_service();
+        for _ in 0..3 {
+            assert_eq!(
+                ts.chinese_punct_pending(QUOTE, false, false, false, false, false)
+                    .unwrap(),
+                "‘"
+            );
+        }
+        assert_eq!(
+            ts.chinese_punct_pending(QUOTE, false, false, false, false, true)
+                .unwrap(),
+            "‘",
+            "三次 Test 后首个 Down 仍是开形（Test 未提交状态）"
+        );
+    }
+
+    #[test]
+    fn quote_pairing_non_quote_keys_no_flip() {
+        // 非引号标点（'，'）不触碰配对状态；夹在引号序列中间不干扰交替。
+        let ts = chinese_punct_service();
+        let comma = ',' as u32;
+        assert_eq!(
+            ts.chinese_punct_pending(comma, false, false, false, false, true)
+                .unwrap(),
+            "，"
+        );
+        assert_eq!(
+            ts.chinese_punct_pending(QUOTE, false, false, false, false, true)
+                .unwrap(),
+            "‘",
+            "逗号不影响引号配对"
+        );
     }
 }

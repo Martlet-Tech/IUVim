@@ -191,11 +191,22 @@ impl Engine {
         self.dict.user()
     }
 
+    /// 清空用户库内存态（server 设置页「清除全部」专用，2026-10-02 品质审查 H5）。
+    /// 只重置内存（set_user 空库），不写盘、不动 mtime 基线——落盘由调用方
+    /// （DaemonState::flush_now）负责。**必须与写盘同批**：只清内存则下一条
+    /// UserMutation 基于旧库写盘会复活被清条目；只清盘则引擎内存残留旧条目，
+    /// 叠加视图继续命中。服务端引擎是远端唯一形态，无 user_remote 转发路径。
+    pub fn clear_user_dict(&self) {
+        self.set_user_dict(Arc::new(UserDict::empty()));
+    }
+
     /// M2 自造词记录（逐字选择 commit 时调用，18-m2-user-dict.md）：场景 0/a/b 权重判定。
     /// - 0：词库（含用户库）已有整词 → 跳过（幂等：重复自造被拦截，权重不漂移）
     /// - a：无命中 → 常量 `PHRASE_DEFAULT_WEIGHT`
-    /// - b：n 条命中 → 目标位 = 首页最后一位：n ≥ page_size → avg(cand[ps-2], cand[ps-1])
+    /// - b：n 条命中 → 目标位 = 首页最后一位：n ≥ page_size ≥ 2 → avg(cand[ps-2], cand[ps-1])
     ///   （u64 计算防溢出）；n < page_size → cand[n-1] − 1（saturating 防 0 下溢）
+    ///   page_size = 1 时首页只有 cand[0]，直接取其权重（ps−2 会 usize 下溢，
+    ///   2026-10-02 品质审查 H2；page_size 引擎侧只钳 max(1)，1 是合法配置）。
     pub(crate) fn record_phrase(&self, code: &str, text: &str) {
         const PHRASE_DEFAULT_WEIGHT: u32 = 8000;
         let entries = self.dict.exact(code); // 叠加视图（含用户库独有条目）
@@ -208,8 +219,10 @@ impl Engine {
             PHRASE_DEFAULT_WEIGHT
         } else if n < ps {
             entries[n - 1].weight.saturating_sub(1)
-        } else {
+        } else if ps >= 2 {
             ((entries[ps - 2].weight as u64 + entries[ps - 1].weight as u64) / 2) as u32
+        } else {
+            entries[0].weight
         };
         let next = match self.dict.user() {
             Some(u) => u.set_entry(code, text, w),
@@ -357,6 +370,59 @@ mod tests {
             user_weight(&e2, "shou'xuan", "手选"),
             Some(299),
             "重复自造权重不漂移"
+        );
+    }
+
+    #[test]
+    fn clear_user_dict_resets_engine_memory() {
+        // H5 回归钉：设置页「清除全部」必须同步重置引擎内存态——只清盘不清内存
+        // 时叠加视图残留旧条目，下一条 UserMutation 基于旧库写盘复活被清条目。
+        let e = Engine::new(dict_of(vec![]), Config::default());
+        e.record_phrase("de", "的");
+        assert!(user_weight(&e, "de", "的").is_some(), "前置：用户库有条目");
+        e.clear_user_dict();
+        assert!(
+            user_weight(&e, "de", "的").is_none(),
+            "清除后叠加视图不再命中旧条目"
+        );
+        // 清除后的新 mutation 基于空库：新条目生效，旧条目不复活
+        e.apply_user_mutation(&UserMutation::Set {
+            code: "de".to_string(),
+            word: "得".to_string(),
+            adj: 100,
+        });
+        let u = e.user_dict().expect("mutation 后用户库存在");
+        assert!(
+            u.adjusted("de").iter().any(|(w, _)| w == "得"),
+            "新条目生效"
+        );
+        assert!(
+            !u.adjusted("de").iter().any(|(w, _)| w == "的"),
+            "被清条目不复活"
+        );
+    }
+
+    #[test]
+    fn record_phrase_page_size_one() {
+        // H2 回归钉：page_size=1（合法配置，引擎只钳 max(1)）时 b2 分支 ps−2 下溢 panic。
+        // n=3 ≥ ps=1 → 首页仅 cand[0]，直接取其权重。
+        let e = Engine::new(
+            dict_of(vec![
+                ("zhong'xin", "中心", 9000),
+                ("zhong'xin", "衷心", 7000),
+                ("zhong'xin", "钟鑫", 5000),
+            ]),
+            Config {
+                page_size: 1,
+                ..Config::default()
+            },
+        );
+        assert_eq!(e.page_size(), 1, "page_size=1 应原样生效");
+        e.record_phrase("zhong'xin", "中信");
+        assert_eq!(
+            user_weight(&e, "zhong'xin", "中信"),
+            Some(9000),
+            "ps=1 → 首页唯一候选权重"
         );
     }
 

@@ -38,7 +38,12 @@ impl TextService {
     /// test_key_down 与 handle_key_down **必须**共用同一判定（对称保证）：
     /// 应用在 OnTestKeyDown 返回 eaten 时即跳过自己的按键处理，若 Test 吃而
     /// OnKeyDown 放，字母会被静默吞掉（实测 2026-08-19：Caps 直通失效）。
-    fn route_key(&self, vk: u16) -> KeyAction {
+    ///
+    /// `commit_punct_state`：引号配对状态翻转只允许 Down 阶段提交——M10 后 Test
+    /// 阶段真正处理，本函数在 Test/Down 各跑一次，两阶段都翻转会让一次按键净翻
+    /// 两次回原值（引号恒闭形，2026-10-02 品质审查 H3）。Test 传 false 纯判定，
+    /// Down 传 true。
+    fn route_key(&self, vk: u16, commit_punct_state: bool) -> KeyAction {
         // 透明模式：全部放行（M10：远端客户端副本未就绪 = 服务端未连接，
         // 语义同原「引擎加载中」）。
         let Some(config) = crate::com::remote_host::backend_config() else {
@@ -78,9 +83,14 @@ impl TextService {
         }
 
         // 中文标点（会话外直接上屏全角）：判定与 test_key_down 对称。
-        if let Some(punct) =
-            self.chinese_punct_pending(char_code(vk), shift, ctrl, alt, session_active)
-        {
+        if let Some(punct) = self.chinese_punct_pending(
+            char_code(vk),
+            shift,
+            ctrl,
+            alt,
+            session_active,
+            commit_punct_state,
+        ) {
             return KeyAction::CommitText(punct);
         }
 
@@ -131,7 +141,7 @@ impl TextService {
     /// 请求失败（超时/断线）返回 false 放行，绝不"Test 吃了 Down 却放"。
     pub(crate) fn test_key_down(&self, wparam: WPARAM, _lparam: LPARAM) -> bool {
         let vk = wparam.0 as u16;
-        let action = self.route_key(vk);
+        let action = self.route_key(vk, false); // Test 纯判定：不提交引号配对翻转（H3）
         if matches!(action, KeyAction::Pass) {
             return false;
         }
@@ -139,11 +149,8 @@ impl TextService {
             let Some(remote) = crate::com::remote_host::remote() else {
                 return false;
             };
-            let mods = crate::com::remote_host::wire_mods(
-                shift_pressed(),
-                ctrl_pressed(),
-                alt_pressed(),
-            );
+            let mods =
+                crate::com::remote_host::wire_mods(shift_pressed(), ctrl_pressed(), alt_pressed());
             if remote.key_test(key, mods).is_none() {
                 return false; // 超时/断线：放行（宁可漏吃不可吞键）
             }
@@ -168,9 +175,9 @@ impl TextService {
     ) -> bool {
         let vk = wparam.0 as u16;
         let t_route = perf_tick();
-        let action = self.route_key(vk);
-        // 计时区间必须只包 route_key：dispatch 在下方 match 分支里，若被圈进来
-        // 这一列就成了「整键总耗时」（实测 30904us ≈ onkey+settext+render+dispatch 之和）。
+        let action = self.route_key(vk, true); // Down 阶段：提交引号配对翻转（H3）
+                                               // 计时区间必须只包 route_key：dispatch 在下方 match 分支里，若被圈进来
+                                               // 这一列就成了「整键总耗时」（实测 30904us ≈ onkey+settext+render+dispatch 之和）。
         perf_record_with("route", t_route, || format!("vk={vk:#x}"));
         let handled = match action {
             KeyAction::Pass => false,
@@ -185,9 +192,9 @@ impl TextService {
                 log_line(&format!("[key] 按键：{}（远端会话外）", key.name()));
                 remote.sync_state(&self.runtime_snapshot());
                 self.punct_quote_open.set(false); // 拼音输入开始：引号配对复位为开形
-                // P4 服务端渲染：会话首键先上报插入点锚点（composition 尚不存在，
-                // selection 量取）→ 服务端首帧候选即定位正确；打字期锚点恒定，
-                // 后续只在变化时上报（dispatch/follow_layout）。
+                                                  // P4 服务端渲染：会话首键先上报插入点锚点（composition 尚不存在，
+                                                  // selection 量取）→ 服务端首帧候选即定位正确；打字期锚点恒定，
+                                                  // 后续只在变化时上报（dispatch/follow_layout）。
                 if let Some(c) =
                     crate::composition::query_insertion_caret(pic, self.client_id.get())
                 {

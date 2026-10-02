@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use iuv_core::{Config, ImeState, ImeMode, Key, ImePunct, ImeScript, Session, ImeWidth};
+use iuv_core::{Config, ImeMode, ImePunct, ImeScript, ImeState, ImeWidth, Key, Session};
 use iuv_win::{CtlCmd, CtlResult};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{
@@ -205,7 +205,9 @@ impl TextService {
             english_mode: Arc::new(AtomicBool::new(false)),
             lang_bar: RefCell::new(None),
             remote_theme_epoch: Cell::new(0),
-            punct_quote_open: Cell::new(false),
+            // 引号配对状态初值 true = 下个引号从开形起（chinese_punct 语义
+            // quote_open=true → ‘/“，2026-10-02 品质审查 H3 纠正旧初值 false）。
+            punct_quote_open: Cell::new(true),
             // 实例运行时四态：创建时（首次 Activate 前）从 config 初始值取一次
             // （32-toolbar §2.5：设置页默认值 = 新建实例时的初始值；热载不改运行实例）。
             runtime: Arc::new(Mutex::new(Config::load().initial_state)),
@@ -262,6 +264,11 @@ impl TextService {
                     }
                 }
                 if !ok {
+                    // 兜底须与 apply_openclose 对称：english_mode 原子量（按键路由
+                    // key_routing 读）与 runtime.mode（语言栏/工具栏读）两者都改——
+                    // 只改 mode 会中英状态分裂（2026-10-02 品质审查 H4）。
+                    self.english_mode
+                        .store(english, std::sync::atomic::Ordering::SeqCst);
                     let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
                     runtime.mode = if english {
                         ImeMode::English
@@ -269,16 +276,15 @@ impl TextService {
                         ImeMode::Chinese
                     };
                     drop(runtime);
+                    // OPENCLOSE 写失败 = compartment 不可用，语言栏图标也无法刷新；
+                    // 引号配对随模式切换复位（与 apply_openclose 对齐）。
+                    self.punct_quote_open.set(true);
                     self.after_runtime_change();
                 }
             }
             CtlCmd::SetWidth(full) => {
                 let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
-                runtime.width = if full {
-                    ImeWidth::Full
-                } else {
-                    ImeWidth::Half
-                };
+                runtime.width = if full { ImeWidth::Full } else { ImeWidth::Half };
                 drop(runtime);
                 self.after_runtime_change();
             }
@@ -306,9 +312,9 @@ impl TextService {
                 // 服务端候选窗点击选词（③ 闭环）：= Digit(row+1) 键走远端会话，
                 // 与数字键选词同语义（候选窗标注数字）。会话不活跃时静默忽略
                 // （窗口显示即会话活跃，此为防御）。
-                if let Some(outcome) = crate::com::remote_host::remote().and_then(|r| {
-                    r.key_down(Key::Digit(row + 1), Default::default())
-                }) {
+                if let Some(outcome) = crate::com::remote_host::remote()
+                    .and_then(|r| r.key_down(Key::Digit(row + 1), Default::default()))
+                {
                     self.dispatch_outcome(outcome);
                 }
             }
@@ -597,7 +603,9 @@ impl TextService_Impl {
                     String::new()
                 };
                 *self.layout_sink.borrow_mut() = Some((pic.clone(), cookie));
-                log_line(&format!("[follow] 布局 sink 已挂载（来源={origin}）{noted}"));
+                log_line(&format!(
+                    "[follow] 布局 sink 已挂载（来源={origin}）{noted}"
+                ));
             }
             Err(e) => {
                 log_line(&format!(

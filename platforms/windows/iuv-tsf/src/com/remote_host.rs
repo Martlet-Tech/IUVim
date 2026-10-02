@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 
 use iuv_core::{Config, Key};
 use iuv_proto::{
-    Auth, ImeState as WireImeState, KeyOutcome, KeyPhase, KeyToken, KeyVerdict, Push,
-    ResumeToken, C2S, S2C,
+    Auth, ImeState as WireImeState, KeyOutcome, KeyPhase, KeyToken, KeyVerdict, Push, ResumeToken,
+    C2S, S2C,
 };
 use iuv_win::logger::log_line;
 use iuv_win::transport::{
@@ -66,13 +66,7 @@ pub(crate) fn wire_mods(shift: bool, ctrl: bool, alt: bool) -> iuv_proto::Mods {
 /// 线上候选 → 核心候选（客户端渲染用；code/weight/seg_len 不上线——
 /// 续接/调权语义在服务端会话内，客户端只需 text/kind 展示）。
 pub(crate) fn core_candidate(c: &iuv_proto::Candidate) -> iuv_core::Candidate {
-    iuv_core::Candidate::new(
-        c.text.clone(),
-        c.kind,
-        String::new(),
-        0,
-        0,
-    )
+    iuv_core::Candidate::new(c.text.clone(), c.kind, String::new(), 0, 0)
 }
 
 /// 取远端句柄（未启动/连接失败 → None = 调用方透明放行）。
@@ -255,11 +249,8 @@ impl RemoteHandle {
         if !FOCUSED.load(Ordering::Relaxed) {
             return;
         }
-        let state = self
-            .last_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        // Option<ImeState> 是 Copy：解引用而非 clone（clippy clone_on_copy）。
+        let state = *self.last_state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(st) = state {
             let _ = self.request(C2S::ImeState(st));
         }
@@ -495,7 +486,8 @@ pub(crate) fn schedule_revive() {
         .name("iuv-remote-revive".into())
         .spawn(move || {
             const ATTEMPTS: usize = 6;
-            let dir = iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
+            let dir =
+                iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
             let auth = match iuv_win::transport::load_or_create_token(&dir) {
                 Ok(a) => a,
                 Err(e) => {
@@ -548,7 +540,8 @@ pub(crate) fn schedule_revive_deferred(delay_ms: u64) {
         .spawn(move || {
             const ATTEMPTS: usize = 16;
             std::thread::sleep(Duration::from_millis(delay_ms));
-            let dir = iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
+            let dir =
+                iuv_core::paths::iuv_dir().unwrap_or_else(|| std::env::temp_dir().join("iuv"));
             let auth = match iuv_win::transport::load_or_create_token(&dir) {
                 Ok(a) => a,
                 Err(e) => {
@@ -578,7 +571,11 @@ pub(crate) fn schedule_revive_deferred(delay_ms: u64) {
 impl RemoteHandle {
     /// 原地重连一次（成功即替换 client 槽）。`Ok` = 新连接的推送流（调用方起泵）。
     /// `spawn_server` = 连接失败时是否拉起 iuv-server.exe（每个重生周期只拉一次）。
-    fn try_reconnect_once(&self, spawn_server: bool, auth: Auth) -> Result<PushStream, TransportError> {
+    fn try_reconnect_once(
+        &self,
+        spawn_server: bool,
+        auth: Auth,
+    ) -> Result<PushStream, TransportError> {
         let resume = *self.token.lock().unwrap_or_else(|e| e.into_inner());
         let cfg = ClientConfig {
             pipe_name: self.pipe_name.clone(),
@@ -662,7 +659,6 @@ fn spawn_server_process() -> bool {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,13 +698,13 @@ mod tests {
 
     impl ConnHandler for Factory {
         fn on_connect(
-        &self,
-        _client: &iuv_proto::ClientInfo,
-        _caps: Caps,
-        _resume: Option<iuv_proto::ResumeToken>,
-        _token: iuv_proto::ResumeToken,
-        _sender: iuv_win::transport::ConnSender,
-    ) -> Box<dyn Session> {
+            &self,
+            _client: &iuv_proto::ClientInfo,
+            _caps: Caps,
+            _resume: Option<iuv_proto::ResumeToken>,
+            _token: iuv_proto::ResumeToken,
+            _sender: iuv_win::transport::ConnSender,
+        ) -> Box<dyn Session> {
             Box::new(EchoSession)
         }
     }
@@ -743,13 +739,13 @@ mod tests {
 
     impl ConnHandler for SlowFactory {
         fn on_connect(
-        &self,
-        _client: &iuv_proto::ClientInfo,
-        _caps: Caps,
-        _resume: Option<iuv_proto::ResumeToken>,
-        _token: iuv_proto::ResumeToken,
-        _sender: iuv_win::transport::ConnSender,
-    ) -> Box<dyn Session> {
+            &self,
+            _client: &iuv_proto::ClientInfo,
+            _caps: Caps,
+            _resume: Option<iuv_proto::ResumeToken>,
+            _token: iuv_proto::ResumeToken,
+            _sender: iuv_win::transport::ConnSender,
+        ) -> Box<dyn Session> {
             Box::new(SlowFirstSession {
                 first: AtomicBool::new(true),
             })
@@ -825,12 +821,18 @@ mod tests {
             ..Config::default()
         };
         h.set_config(cfg.clone());
-        assert_eq!(h.config_epoch(), 1, "set_config 应自增纪元（实例切主题信号）");
+        assert_eq!(
+            h.config_epoch(),
+            1,
+            "set_config 应自增纪元（实例切主题信号）"
+        );
         assert_eq!(h.config().theme, cfg.theme, "配置副本应更新");
         h.set_config(cfg);
         assert_eq!(h.config_epoch(), 2);
         // 非配置推送不扰动纪元/状态（P4 无消费方，P5 接线）。
-        h.apply_push(&Push::SessionAttached { token: iuv_proto::ResumeToken(7) });
+        h.apply_push(&Push::SessionAttached {
+            token: iuv_proto::ResumeToken(7),
+        });
         assert_eq!(h.config_epoch(), 2);
     }
 
@@ -938,7 +940,9 @@ mod tests {
                 impl Session for EmptyPendingSession {
                     fn on_c2s(&mut self, req: C2S, reply: &mut Reply) {
                         if let C2S::PendingTextQuery = req {
-                            reply.respond(S2C::PendingText { text: String::new() });
+                            reply.respond(S2C::PendingText {
+                                text: String::new(),
+                            });
                         }
                     }
                 }
@@ -954,7 +958,9 @@ mod tests {
     fn session_attached_captures_resume_token() {
         let (pipe, _server) = start_with("token", Arc::new(Factory));
         let h = connect_handle(&pipe);
-        h.apply_push(&Push::SessionAttached { token: iuv_proto::ResumeToken(9) });
+        h.apply_push(&Push::SessionAttached {
+            token: iuv_proto::ResumeToken(9),
+        });
         assert_eq!(
             h.token.lock().unwrap().map(|t| t.0),
             Some(9),
@@ -969,7 +975,9 @@ mod tests {
     fn revive_reconnects_and_clears_offline() {
         let (pipe, _server) = start_with("revive", Arc::new(Factory));
         let h = connect_handle(&pipe);
-        h.apply_push(&Push::SessionAttached { token: iuv_proto::ResumeToken(3) });
+        h.apply_push(&Push::SessionAttached {
+            token: iuv_proto::ResumeToken(3),
+        });
         // 模拟断连：client 槽清空 + offline
         *h.client.lock().unwrap() = None;
         h.offline.store(true, Ordering::Relaxed);
@@ -990,7 +998,8 @@ mod tests {
         });
         // 重连后的键照常工作
         assert!(
-            h.key_test(Key::Char('n'), iuv_proto::Mods::default()).is_some(),
+            h.key_test(Key::Char('n'), iuv_proto::Mods::default())
+                .is_some(),
             "重连后按键应恢复"
         );
     }
