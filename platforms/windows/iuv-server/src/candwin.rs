@@ -123,6 +123,10 @@ fn run_ui_thread(
     sender: ConnSender,
 ) {
     let mut wnd = ServerCandwin::new(theme, sender);
+    // 建窗 + 字体渲染器预热在连接建立时完成（UI 线程启动即建，隐藏态零渲染
+    // 开销）：惰性首显会把渲染器装配（字体库）压进打字关键路径，首键候选帧
+    // 凭空多出几十~几百 ms。
+    wnd.ensure_window();
     loop {
         // 排空命令（按序应用，最后一条即最新）。
         let mut disconnected = false;

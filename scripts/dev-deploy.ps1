@@ -1,13 +1,13 @@
-﻿# 开发热部署（智能体/开发者用）：构建 → 热替换 DLL + 词库 → 重启 ctfmon。
-# 智能体使用场景：改完 Rust 代码后跑本脚本即可让新构建生效（新进程加载新 DLL），无需注销/重启。
-# 与 install.ps1 的区别：DLL 被占用时不杀进程、不登记"重启后替换"，而是改名 .old 原位
-# 替换即时生效（新进程加载新 DLL），老进程继续持旧映射直到自然退出。全程不注销不重启。
-# 需管理员权限（自动弹 UAC 提权）。
+﻿# 开发热部署：运行中替换新文件，**免注销生效**——新开的进程（新记事本/重启的
+# 应用）加载新 DLL/词库，运行中进程持旧映射不受干扰。这是它与 install.ps1 的
+# 分野：install 面向全新机器做完整安装，本脚本面向日常迭代（默认先构建）。
+# 需管理员权限（自动弹 UAC 提权；提权只做部署，构建留在当前窗口）。
 #
-# 用法：scripts\dev-deploy.ps1            # 先 cargo build -p iuv-tsf --release 再部署
+# 用法：scripts\dev-deploy.ps1            # 三车道并行构建（x64/x86 TSF ∥ server）后部署
 #       scripts\dev-deploy.ps1 -SkipBuild # 跳过构建，只部署现有产物
 #
-# 局限：运行中的其他应用（浏览器/编辑器等）仍持旧 DLL，需重启这些应用后才生效。
+# 输入法特殊性（务必如实告知，脚本不假装生效）：TSF DLL 被全系统运行中的
+# 应用映射，热替换后**运行中的应用仍持旧 DLL**——测试必须新开窗口/重启应用。
 #requires -Version 5.1
 
 param(
@@ -16,295 +16,75 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'iuv-common.ps1')
-$pass = @()
-if ($SkipBuild) { $pass = @('-SkipBuild') }
-Exit-IfNotAdmin -ScriptPath $PSCommandPath -PassArgs $pass
 
-Trace-Script "dev-deploy: 提升实例启动"
-Write-Host "正在热部署 IUV 输入法（管理员窗口）..."
-
-$repoRoot  = Split-Path -Parent $PSScriptRoot
-$dllSrc    = Join-Path $repoRoot "target\release\iuv_tsf.dll"
-$dllSrc32  = Join-Path $repoRoot "target\i686-pc-windows-msvc\release\iuv_tsf.dll"
-$imedicSrc = Join-Path $repoRoot "data\iuv.imedic"
-$openccSrc = Join-Path $repoRoot "data\iuv.opencc"
-$openccDir = Join-Path $repoRoot "data\opencc"
-$destDir   = Join-Path $env:ProgramFiles "iuv"
-$destDll   = Join-Path $destDir "iuv_tsf.dll"
-$destDll32 = Join-Path $destDir "iuv_tsf_x86.dll"
-$dictDir   = Join-Path $env:LOCALAPPDATA "iuv"
-$dictDest  = Join-Path $dictDir "iuv.imedic"
-$openccDest = Join-Path $dictDir "iuv.opencc"
-$clsidKey  = 'Registry::HKEY_CLASSES_ROOT\CLSID\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
-$tipKey    = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
-# x86 注册走 WoW64 视图（32 位 regsvr32 自动落此，64 位进程按架构解析 DLL）。
-$clsidKey32 = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\CLSID\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
-$tipKey32   = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\CTF\TIP\{C69735F1-BAB1-458B-89FC-099ABA877ECB}'
-$regsvr32Path = Join-Path $env:windir "SysWOW64\regsvr32.exe"
-
-# ---- 1. 构建（默认执行，两路并行；-SkipBuild 跳过）----
-# x64 / x86 各自 target 目录，并行执行取最长单链耗时。
-# （M10 ②：iuv-daemon 退役——工具栏/设置页并入 iuv-server，见 docs/status.md。）
+# ---- 1. 构建（当前普通窗口；提权进程可能丢 PATH，cargo 会闪退失败——实测教训）----
 if (-not $SkipBuild) {
-    Trace-Script "dev-deploy: 开始并行构建（x64-tsf ∥ x86-tsf）"
-    Write-Host "正在并行构建（x64 TSF / x86 TSF，两路同时进行）..."
-    Push-Location $repoRoot
     try {
-        $buildSpecs = @(
-            @{ Name = 'x64-tsf'; Env = @{}; CargoArgs = @('build', '-p', 'iuv-tsf', '--release') },
-            @{ Name = 'x86-tsf'; Env = @{};
-               CargoArgs = @('build', '-p', 'iuv-tsf', '--release', '--target', 'i686-pc-windows-msvc') }
-        )
-        $jobs = foreach ($spec in $buildSpecs) {
-            Start-Job -Name "iuv-build-$($spec.Name)" -ScriptBlock {
-                param($dir, $envMap, $cargoArgs)
-                Set-Location $dir
-                foreach ($k in $envMap.Keys) { Set-Item -Path "env:$k" -Value $envMap[$k] }
-                $out = & cargo @cargoArgs 2>&1
-                [pscustomobject]@{ Code = $LASTEXITCODE; Output = ($out | Out-String) }
-            } -ArgumentList $repoRoot, $spec.Env, $spec.CargoArgs
-        }
-        Wait-Job -Job $jobs | Out-Null
-        $failed = $false
-        foreach ($j in $jobs) {
-            $name = $j.Name -replace '^iuv-build-', ''
-            $r = Receive-Job -Job $j
-            if ($r.Code -ne 0) {
-                $failed = $true
-                Trace-Script "dev-deploy: cargo build 失败（$name，exit=$($r.Code)）"
-                Write-Host ""
-                Write-Host "===== cargo build 失败：$name ====="
-                $r.Output.TrimEnd()
-            } else {
-                Trace-Script "dev-deploy: cargo build 完成（$name）"
-            }
-        }
-        if ($failed) { throw "cargo build 失败（详见上方各车道输出）" }
-    } finally {
-        Get-Job -Name 'iuv-build-*' -ErrorAction SilentlyContinue | Remove-Job -Force -ErrorAction SilentlyContinue
-        Pop-Location
-    }
-    Trace-Script "dev-deploy: 构建完成"
-} else {
-    Trace-Script "dev-deploy: -SkipBuild，跳过构建"
-}
-
-# ---- 2. 产物检查 ----
-$missing = @()
-if (-not (Test-Path $dllSrc)) { $missing += "x64：$dllSrc（cargo build -p iuv-tsf --release）" }
-if (-not (Test-Path $dllSrc32)) { $missing += "x86：$dllSrc32（cargo build -p iuv-tsf --release --target i686-pc-windows-msvc）" }
-if ($missing.Count -gt 0) {
-    foreach ($m in $missing) { Trace-Script "dev-deploy: 错误，构建产物缺失 $m" }
-    Write-Host "错误：以下构建产物缺失："
-    $missing | ForEach-Object { Write-Host "  $_" }
-    Write-Host "请先构建（或去掉 -SkipBuild）"
-    exit 1
-}
-if (-not (Test-Path $imedicSrc)) {
-    Trace-Script "dev-deploy: 错误，词库缺失 $imedicSrc"
-    Write-Host "错误：未找到 $imedicSrc"
-    Write-Host "请先执行：scripts\install.ps1 或 scripts\download-dict.ps1 生成词库"
-    exit 1
-}
-
-New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-New-Item -ItemType Directory -Force -Path $dictDir | Out-Null
-
-# ---- 2.5 生成默认配置（缺失时；带 // 注释，引擎解析兼容 JSONC）----
-$configPath = Join-Path $dictDir "config.json"
-if (-not (Test-Path $configPath)) {
-    $template = @'
-{
-  // 每页候选数（默认 5；建议 ≤9 保证数字键可全选当前页）
-  "page_size": 5,
-  // 候选窗布局：vertical = 竖排（一列）/ horizontal = 横排（单行）
-  "candidate_orientation": "vertical",
-  // 快捷键映射（41-keymap-settings.md）：双备选键位（主/备两槽，任一可空）。
-  // 会话内（翻页/候选移动/调权/隐藏）：仅无修饰/Shift 组合；Alt 不进输入法会话、Ctrl 让给应用。
-  // 全局热键（中英/全角/简繁/标点/设置/工具栏）：daemon RegisterHotKey，Alt/Ctrl 随便绑，须含修饰键。
-  "keymap": {
-    // 翻上一页：主=PageUp 备=逗号
-    "page_prev": { "primary": "PageUp", "secondary": "," },
-    // 翻下一页：主=PageDown 备=句号
-    "page_next": { "primary": "PageDown", "secondary": "." },
-    // 候选前移（页内左移）：主=←
-    "candidate_prev": { "primary": "Left", "secondary": null },
-    // 候选后移（页内右移）：主=→
-    "candidate_next": { "primary": "Right", "secondary": null },
-    // 调权（与左侧候选交换权重）：Shift+←
-    "swap_left": { "primary": "Shift+Left", "secondary": null },
-    // 调权（与右侧候选交换权重）：Shift+→
-    "swap_right": { "primary": "Shift+Right", "secondary": null },
-    // 隐藏候选：Shift+Delete
-    "hide_candidate": { "primary": "Shift+Delete", "secondary": null },
-    // 全局热键默认全空（不预占全局键，用户自行在设置页绑定）
-    "toggle_mode": { "primary": null, "secondary": null },
-    "toggle_width": { "primary": null, "secondary": null },
-    "toggle_script": { "primary": null, "secondary": null },
-    "toggle_punct": { "primary": null, "secondary": null },
-    "open_settings": { "primary": null, "secondary": null },
-    "toggle_toolbar": { "primary": null, "secondary": null }
-  },
-  // 前缀联想（高级）：false = 候选仅精确匹配（默认）/ true = 追加前缀长词
-  "candidate_prefix": false,
-  // 按键直通进程（高级）：近五年 3A 单机大作——全程无中文输入需求，整进程隐身换零按键干扰。
-  // 与 daemon config.rs DEFAULT_PASSTHROUGH_APPS 保持同步。
-  "passthrough_apps": [
-    "Cyberpunk2077.exe",
-    "b1-Win64-Shipping.exe",
-    "b1.exe",
-    "eldenring.exe",
-    "bg3.exe",
-    "RDR2.exe",
-    "MonsterHunterWilds.exe",
-    "Starfield.exe"
-  ],
-  // 候选渲染自持进程（高级）：这些 app 自己绘制候选栏（如 WoW 游戏内候选框）→ iuv 不绘制
-  // 自绘候选窗，数据经候选 UI 元素供其拉取（要打中文的游戏用本名单而非按键直通）。
-  // 与 daemon config.rs DEFAULT_CANDIDATE_OWNER_APPS 保持同步；设置页「恢复默认名单」同源。
-  "candidate_owner_apps": [
-    "wow.exe",
-    "WowClassic.exe",
-    "Diablo IV.exe",
-    "Diablo III64.exe",
-    "League of Legends.exe",
-    "TslGame.exe",
-    "Gw2-64.exe",
-    "JX3ClientX64.exe",
-    "JX3Client.exe",
-    "crossfire.exe"
-  ],
-  // 新 TSF 实例初始状态（2026-08-19 起，替换旧顶层 english_punctuation）：
-  // mode = 中文/英文、width = 半角/全角（仅存默认值）、script = 简体/繁体（仅存默认值）、
-  // punct = 中文标点/英文标点（中文状态按标点键直通英文形）
-  "initial_state": {
-    "mode": "chinese",
-    "width": "half",
-    "script": "simplified",
-    "punct": "chinese"
-  }
-}
-'@
-    [IO.File]::WriteAllText($configPath, $template, [Text.UTF8Encoding]::new($false))
-    Trace-Script "dev-deploy: 生成默认配置 $configPath"
-    Write-Host "已生成默认配置（可编辑注释后改设置）：$configPath"
-}
-
-# ---- 2.5 简繁转换表链（31-script-traditional.md）：iuv.opencc 缺失时自动下载 + 编译 ----
-if (-not (Test-Path $openccSrc)) {
-    Trace-Script "dev-deploy: iuv.opencc 缺失，进入下载/编译流程"
-    if (-not (Test-Path $openccDir) -or ((Get-ChildItem $openccDir -Filter *.txt).Count -eq 0)) {
-        Write-Host "OpenCC 转换表源缺失，正在下载（scripts\download-opencc.ps1）..."
-        Push-Location $repoRoot
-        try { & (Join-Path $PSScriptRoot "download-opencc.ps1") }
-        finally { Pop-Location }
-    }
-    $phrases = Join-Path $openccDir "STPhrases.txt"
-    $chars   = Join-Path $openccDir "STCharacters.txt"
-    if (-not (Test-Path $phrases) -or -not (Test-Path $chars)) {
-        throw "OpenCC 转换表源缺失：$openccDir"
-    }
-    Write-Host "正在编译简繁转换表（dictc opencc）..."
-    Push-Location $repoRoot
-    try {
-        cargo run -p iuv-data --bin dictc -- opencc $openccSrc $phrases $chars
-        if ($LASTEXITCODE -ne 0) { throw "dictc opencc 编译失败（exit=$LASTEXITCODE）" }
-    } finally { Pop-Location }
-    if (-not (Test-Path $openccSrc)) { throw "编译完成但未找到 $openccSrc" }
-}
-Trace-Script "dev-deploy: iuv.opencc OK"
-
-# ---- 3. 复制（DLL 用热替换：未锁直接复制，锁了改名 .old 原位替换，零杀进程）----
-# 词库同样走 Replace-InUseFile：mmap 声明 FILE_SHARE_DELETE 可改名但不可截断写
-# （ERROR_USER_MAPPED_FILE）→ 直接覆盖失败时自动改名 .old + 原位拷新，老进程持旧映射、
-# 新进程取新词库；失败只警告不阻断 DLL 热替换（词库与 DLL 是两个独立产物）。
-$r = Replace-InUseFile -Src $imedicSrc -Dest $dictDest -WarnOnly
-if ($r.Ok) {
-    if ($r.Renamed) {
-        Write-Host "词库已替换（旧版被占用，已改名 $($r.OldPath)）：新进程加载新词库，老进程持旧映射。"
-        Write-Host "  若测试仍无新词库效果，请在新开窗口/重启应用后进行。"
-    } else {
-        Trace-Script "dev-deploy: 词库替换成功（直接覆盖）$dictDest"
-    }
-} else {
-    Trace-Script "dev-deploy: 词库替换失败（$dictDest），本次仅部署 DLL"
-    Write-Host "警告：词库替换失败（$dictDest），本次仅部署 DLL。"
-    Write-Host "  原因多为引擎进程/搜索索引器占用；注销重启后重跑本脚本即可更新词库。"
-}
-$r = Replace-InUseFile -Src $openccSrc -Dest $openccDest -WarnOnly
-if ($r.Ok) {
-    if ($r.Renamed) {
-        Write-Host "简繁转换表已替换（旧版被占用，已改名 $($r.OldPath)）：新进程加载新表，老进程持旧映射。"
-    } else {
-        Trace-Script "dev-deploy: 简繁转换表替换成功（直接覆盖）$openccDest"
-    }
-} else {
-    Trace-Script "dev-deploy: 简繁转换表替换失败（$openccDest），本次仅部署 DLL"
-    Write-Host "警告：简繁转换表替换失败（$openccDest），繁体模式将降级简体输出。"
-}
-$r = Replace-InUseFile -Src $dllSrc -Dest $destDll
-if (-not $r.Ok) { exit 1 }
-if ($r.Renamed) {
-    Write-Host "DLL 被占用，已用改名替换：老进程仍用旧 DLL，新进程将加载新 DLL（.old 将在注销/重启后自动清理）。"
-} else {
-    Trace-Script "dev-deploy: DLL 复制成功 $destDll"
-}
-$r32 = Replace-InUseFile -Src $dllSrc32 -Dest $destDll32
-if (-not $r32.Ok) { exit 1 }
-if ($r32.Renamed) {
-    Write-Host "x86 DLL 被占用，已用改名替换：32 位进程需重启后加载新 DLL（.old 将在注销/重启后自动清理）。"
-} else {
-    Trace-Script "dev-deploy: x86 DLL 复制成功 $destDll32"
-}
-
-# ---- 3.5 守护进程（已退役）----
-# M10 ②：iuv-daemon 并入 iuv-server（工具栏/设置页/热键随迁），本节删除。
-# 历史安装残留的 iuv-daemon.exe 停止并删除（TSF 客户端已按模式关闭惰性拉起：
-# 远端模式不再调 ensure_daemon，见 text_service Activate；此处删除是清旧安装残留，
-# 幂等——文件不存在即跳过）。
-$daemonProc = Get-Process -Name "iuv-daemon" -ErrorAction SilentlyContinue
-if ($daemonProc) {
-    Trace-Script "dev-deploy: 停止历史 iuv-daemon（已退役，PID=$($daemonProc.Id -join ',')）"
-    Stop-Process -Name "iuv-daemon" -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 300
-}
-$daemonExe = Join-Path $env:ProgramFiles "iuv\iuv-daemon.exe"
-if (Test-Path $daemonExe) {
-    Remove-Item $daemonExe -Force -ErrorAction Stop
-    Trace-Script "dev-deploy: 已删除残留 $daemonExe"
-}
-
-# ---- 4. 注册（x64 native + x86 WOW6432Node；各自未注册或 CLSID 指向路径不符时重注册）----
-# 曾因只查 key 存在与否而跳过 regsvr32，导致注册表仍指向旧路径的旧 DLL
-# （项目改名前的 C:\Program Files\InputIME），热部署永远不生效。现与 install.ps1
-# 同款校验：InprocServer32 默认值必须等于本安装的 destDll（每架构独立判定）。
-$archRegs = @(
-    @{ Dll = $destDll;  Regsvr = "$env:windir\System32\regsvr32.exe"; Clsid = $clsidKey;   Tip = $tipKey },
-    @{ Dll = $destDll32; Regsvr = $regsvr32Path;                       Clsid = $clsidKey32; Tip = $tipKey32 }
-)
-foreach ($ar in $archRegs) {
-    $registeredPath = $null
-    if (Test-Path "$($ar.Clsid)\InprocServer32") {
-        $registeredPath = (Get-ItemProperty -Path "$($ar.Clsid)\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
-    }
-    if (Test-ArchRegistered -ClsidKey $ar.Clsid -TipKey $ar.Tip -DllPath $ar.Dll) {
-        Trace-Script "dev-deploy: 已注册且路径匹配，跳过 regsvr32（$($ar.Dll)）"
-        continue
-    }
-    Trace-Script "dev-deploy: 开始 regsvr32 $($ar.Dll)（注册路径=$registeredPath）"
-    Write-Host "正在注册 COM/TSF 服务（$($ar.Dll)）..."
-    & $ar.Regsvr /s $ar.Dll
-    Start-Sleep -Seconds 1
-    $afterPath = (Get-ItemProperty -Path "$($ar.Clsid)\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
-    if (-not (Test-ArchRegistered -ClsidKey $ar.Clsid -TipKey $ar.Tip -DllPath $ar.Dll)) {
-        Trace-Script "dev-deploy: 注册失败（CLSID=$(Test-Path $ar.Clsid) TIP=$(Test-Path $ar.Tip) path=$afterPath）"
-        Write-Host "错误：注册失败（$($ar.Dll)）。日志见 %TEMP%\iuv-script.log"
+        Build-All
+    } catch {
+        Write-Host "错误：$_"
         exit 1
     }
-    Trace-Script "dev-deploy: regsvr32 完成，CLSID=True TIP=True path=$afterPath"
+} else {
+    Write-Host "-SkipBuild：跳过构建"
+    $p0 = Get-IuvPaths
+    $missing = @($p0.DllSrc, $p0.DllSrc32, $p0.ServerSrc | Where-Object { -not (Test-Path $_) })
+    if ($missing.Count -gt 0) {
+        Write-Host "错误：构建产物缺失：$($missing -join '; ')"
+        Write-Host "请先跑 scripts\build.ps1（或去掉 -SkipBuild）"
+        exit 1
+    }
 }
 
-# ---- 5. 重启 ctfmon（受限用户上下文，加载新 DLL）----
+# ---- 2. 提权执行部署（部署不需要 cargo）----
+Exit-IfNotAdmin -ScriptPath $PSCommandPath -PassArgs @('-SkipBuild')
+
+Trace-Script "dev-deploy: 提升实例启动（SkipBuild=$SkipBuild）"
+Write-Host "正在热部署 IUV 输入法（管理员窗口）..."
+$p = Get-IuvPaths
+
+# ---- 3. 词库/简繁表链（幂等：产物在即跳过下载编译）----
+try {
+    Ensure-Imedic
+    Ensure-Opencc
+} catch {
+    Trace-Script "dev-deploy: 词库链失败：$_"
+    Write-Host "错误：$_"
+    exit 1
+}
+
+# ---- 4. 热替换（未锁直接覆盖；被锁改名 .old 原位拷新，延迟清理收尾）----
+# 词库用 -WarnOnly：引擎 mmap 占用不阻断 DLL/服务部署（两个独立产物）。
+$r = Replace-InUseFile -Src $p.ImedicSrc -Dest $p.DictDest -WarnOnly
+if ($r.Ok -and $r.Renamed) {
+    Write-Host "词库已替换（旧版被占用，已改名 $($r.OldPath)）：新进程加载新词库。"
+} elseif (-not $r.Ok) {
+    Write-Host "警告：词库替换失败（$($p.DictDest)），本次仅部署 DLL/server。"
+}
+$r = Replace-InUseFile -Src $p.OpenccSrc -Dest $p.OpenccDest -WarnOnly
+if ($r.Ok -and $r.Renamed) {
+    Write-Host "简繁转换表已替换（旧版被占用，已改名 $($r.OldPath)）。"
+} elseif (-not $r.Ok) {
+    Write-Host "警告：简繁转换表替换失败（$($p.OpenccDest)），繁体模式将降级简体输出。"
+}
+foreach ($pair in @(@($p.DllSrc, $p.DestDll), @($p.DllSrc32, $p.DestDll32))) {
+    $r = Replace-InUseFile -Src $pair[0] -Dest $pair[1]
+    if (-not $r.Ok) { exit 1 }
+    if ($r.Renamed) {
+        Write-Host "DLL 被占用，已用改名替换：运行中进程仍用旧 DLL，新进程加载新 DLL。"
+    }
+}
+
+# ---- 5. 默认配置（缺失时）----
+New-DefaultConfig
+
+# ---- 6. iuv-server 部署（运行中 → 优雅停机广播 Push::Shutdown 再替换）----
+if (-not (Deploy-IuvServer)) { exit 1 }
+
+# ---- 7. 注册（未注册/路径不符/显示名不符才 regsvr32）----
+if (-not (Register-IuvTip)) { exit 1 }
+
+# ---- 8. 重启 ctfmon（受限用户上下文；新进程即加载新 DLL）----
 if (-not (Restart-Ctfmon)) {
     Trace-Script "dev-deploy: ctfmon 重启失败"
     Write-Host "警告：ctfmon 重启失败，注销/重启后自动生效。"
@@ -314,5 +94,4 @@ if (-not (Restart-Ctfmon)) {
 
 Trace-Script "dev-deploy: 部署完成"
 Write-Host ""
-Write-Host "热部署完成：DLL + 词库已更新为最新构建。"
-Write-Host "注意：正在运行的其他应用仍使用旧 DLL，测试请在新窗口/重启应用后进行。"
+Write-Host "热部署完成。注意：运行中的应用仍使用旧 DLL，测试请新开窗口（如新记事本）。"

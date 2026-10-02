@@ -44,6 +44,14 @@ const KEY_DEADLINE_MS: u64 = 300;
 static REMOTE: OnceLock<Option<Arc<RemoteHandle>>> = OnceLock::new();
 /// 连接线程在跑（防多实例同时 Activate 时线程风暴；成功后槽位自守卫）。
 static REMOTE_CONNECTING: AtomicBool = AtomicBool::new(false);
+/// 进程级最近焦点上报（真值源 = daemon_host 的两个信号入口；remote 未就绪时
+/// 也记录——连接完成后的回放靠它判定是否需要重发焦点绑定）。
+static FOCUSED: AtomicBool = AtomicBool::new(false);
+
+/// 记录焦点上报真值（daemon_host 信号入口调用；与是否已连接无关）。
+pub(crate) fn note_focus(focused: bool) {
+    FOCUSED.store(focused, Ordering::Relaxed);
+}
 
 /// 路由/渲染所需配置（远端客户端副本）。None = 未连接（透明放行）。
 pub(crate) fn backend_config() -> Option<Config> {
@@ -118,8 +126,11 @@ pub(crate) fn start_remote_load() {
                 "[backend] iuv-server 已连接（{:.0} ms）",
                 t0.elapsed().as_millis()
             ));
-            let _ = REMOTE.set(Some(handle));
+            let _ = REMOTE.set(Some(handle.clone()));
             REMOTE_CONNECTING.store(false, Ordering::SeqCst);
+            // 首连回放：Activate/OnSetThreadFocus 可能早于连接完成（信号当时被丢弃），
+            // 焦点真值在 FOCUSED —— 按需重发绑定，服务端工具栏不用等下次切焦点。
+            handle.replay_focus_binding();
         })
         .expect("远端连接线程创建");
 }
@@ -233,6 +244,27 @@ impl RemoteHandle {
     /// 当前配置纪元（实例侧主题应用收敛用）。
     pub(crate) fn config_epoch(&self) -> u32 {
         self.config_epoch.load(Ordering::Acquire)
+    }
+
+    /// 重连/首连回放焦点绑定：服务端工具栏绑定随连接丢失，而客户端线程焦点未变
+    /// → `OnSetThreadFocus` 不会再触发，绑定缺席直到下次切焦点（实测：重启 server
+    /// 后右键托盘切显隐无效果，切一次程序工具栏才出现）。FOCUSED 为真时主动重发
+    /// ——四态先于绑定（服务端 FocusGained 渲染读连接 runtime），且**必须绕过
+    /// `sync_state` 的相同跳过缓存**（last_state 跨连接存活，服务端却是新连接）。
+    fn replay_focus_binding(&self) {
+        if !FOCUSED.load(Ordering::Relaxed) {
+            return;
+        }
+        let state = self
+            .last_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(st) = state {
+            let _ = self.request(C2S::ImeState(st));
+        }
+        let _ = self.request(C2S::FocusChanged { focused: true });
+        log_line("[toolbar] 重连回放：四态 + 焦点绑定已重发（服务端绑定随连接丢失）");
     }
 
     /// 配置副本替换（P4：服务端 ConfigChanged 推送驱动，推送泵线程调用）。
@@ -474,6 +506,7 @@ pub(crate) fn schedule_revive() {
                 if let Ok(pushes) = handle.try_reconnect_once(i == 0, auth.clone()) {
                     spawn_push_pump(handle.clone(), pushes);
                     log_line("[backend] 重生成功（令牌重绑，下键全量重同步）");
+                    handle.replay_focus_binding();
                     handle.reviving.store(false, Ordering::SeqCst);
                     return;
                 }
@@ -524,6 +557,7 @@ pub(crate) fn schedule_revive_deferred(delay_ms: u64) {
                 if let Ok(pushes) = handle.try_reconnect_once(false, auth.clone()) {
                     spawn_push_pump(handle.clone(), pushes);
                     log_line("[backend] 停机后延迟重连成功（新 server 已上位，令牌重绑）");
+                    handle.replay_focus_binding();
                     handle.reviving.store(false, Ordering::SeqCst);
                     return;
                 }

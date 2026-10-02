@@ -42,7 +42,8 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 
 > 已结（2026-10-01，见台账）：`Push::Shutdown` 优雅停机（哨兵 `server.stop` +
 > 广播 + 客户端延迟重连——停机后开着的程序自动恢复）、flush 原文 pending_text
-> （PROTO 2→3）、ITfSource QI 失败降噪（每进程首条）、langbar 诊断日志。
+> （PROTO 2→3）、ITfSource QI 失败降噪（每进程首条）、langbar 诊断日志、
+> 字面尾巴三件——Space 上屏/候选窗常驻/数字映射缺口（issue「d冒号表现不一致」闭环）。
 
 ### 关键设计决策（防反复横杠）
 
@@ -72,18 +73,17 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 | `platforms/{macos,linux}/` | 占位：IMK / Fcitx5·IBus 适配层 + 门面规划（README，见各目录） |
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |
 | `docs/status.md` | 工作状态台账：每项落地的根因/方案/改动/测试记录（AGENTS.md 指向此处） |
-| `scripts/` | download-dict / download-opencc / install / uninstall / dev-deploy（热部署） / iuv-common（共享库：提权/日志/ctfmon/延迟清理/Replace-InUseDll/Test-ArchRegistered） / clear-data（清用户数据） / convert-main-icon（一次性 logo→ico，产物已入库，留作再生成） |
+| `scripts/` | build（三车道并行构建：x64/x86 TSF ∥ server） / install（全新安装：词库链+DLL+server+注册） / dev-deploy（热部署：运行中替换免注销，新进程加载新 DLL） / uninstall（赶尽杀绝：停服务+注册表+文件，注销收尾） / iuv-common（共享库：路径/提权/日志/ctfmon/延迟清理/热替换/词库链/配置模板/注册/server 部署） / download-dict / download-opencc / clear-data（清用户数据） / convert-main-icon（一次性 logo→ico，产物已入库，留作再生成） |
 
 ## 常用命令
 
 ```powershell
 cargo check --workspace
 cargo test --workspace
-cargo build -p iuv-tsf --release
-scripts\download-dict.ps1
-scripts\install.ps1        # 安装（管理员，自动弹 UAC）
-scripts\uninstall.ps1      # 卸载（管理员，自动弹 UAC）
-scripts\dev-deploy.ps1     # 热部署：改完代码后免注销生效（默认三路并行构建；-SkipBuild 跳过）
+scripts\build.ps1          # 三车道并行构建（x64/x86 TSF ∥ server）
+scripts\install.ps1        # 全新安装（管理员，自动弹 UAC）
+scripts\uninstall.ps1      # 卸载（管理员，自动弹 UAC；注销收尾）
+scripts\dev-deploy.ps1     # 热部署：改完代码后免注销生效（默认构建；-SkipBuild 跳过）
 ```
 
 ## 硬性约定

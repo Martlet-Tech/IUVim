@@ -18,7 +18,8 @@ pub struct Session {
     raw: String,
     /// 字面尾巴（issue「d冒号表现不一致」）：会话内符号键触发进入，其后一切按键按
     /// 文本输入语义追加至此——预编辑显示 拼音+尾巴、提交原样上屏（对齐搜狗）。
-    /// Backspace 逐字删除、删空自动回拼音态（on_key 顶部唯一锁定块处理）。
+    /// 空格/回车上屏整串原文；Backspace 逐字删除、删空自动回拼音态（on_key 顶部
+    /// 唯一锁定块处理）。
     tail: String,
     seg: Vec<String>,
     /// 已确认选词栈：(文本, 词条 code)——选中间级词入栈（悬空，未上屏），退格回退栈顶
@@ -61,15 +62,19 @@ impl Session {
                 ..Effect::default()
             };
         }
-        // 字面模式锁定（tail 非空）：唯一的新状态处理点——一切按键按"文本输入"
-        // 语义处理，Backspace 逐字删除、删空自动回拼音态（tail 复位后走下方
-        // 常规臂），无任何散落判断。翻页/箭头/调权/隐藏字面态无候选可作用，
+        // 字面模式锁定（tail 非空）：唯一的新状态处理点——除 Space/Enter/Esc 外一切
+        // 按键按"文本输入"语义处理，Backspace 逐字删除、删空自动回拼音态（tail 复位
+        // 后走下方常规臂），无任何散落判断。翻页/箭头/调权/隐藏字面态无候选可作用，
         // 消费但忽略。
+        //
+        // Space = 上屏（对齐搜狗：`d:` 后空格/回车都上屏）：字面态触发键是符号，
+        // 典型场景 URL/端口一口气敲完，空格即"敲完了"。代价是字面态内无法输入
+        // 字面空格（URL 无空格，可接受；需要空格先上屏再打）。
         if !self.tail.is_empty() {
             match key {
                 Key::Char(c) | Key::ShiftChar(c) => self.tail.push(c),
                 Key::Digit(n) => self.tail.push((b'0' + n) as char),
-                Key::Space => self.tail.push(' '),
+                Key::Space => self.end = Some(SessionEnd::Commit(self.all_text())),
                 Key::Backspace => {
                     self.tail.pop();
                 }
@@ -444,28 +449,39 @@ impl Session {
 
     /// 不交按键取当前快照（REPL/测试用）。
     pub fn effect(&self) -> Effect {
-        // 字面模式：预编辑 = 拼音 + 字面尾巴，无汉字候选（对齐搜狗"汉字候选消失"）——
-        // 快照空 → 桥端走现成的「快照为空 hide」分支收起候选窗，内联预编辑由应用
-        // 渲染（d:）；游戏桥同源生效。尾巴恒原样拼接（不参与简繁转换，路径
-        // d:\tools 等场景按字面输出）。
+        // 字面模式：预编辑 = 拼音 + 字面尾巴，无汉字候选（对齐搜狗"汉字候选消失"）。
+        // 候选窗**不收起**：呈现一条不编号原文条目（text == reading 去撇号 → 复用
+        // layout/render 现成"原文兜底不编号"规则，与 `window` 兜底同款视觉）——
+        // 空格/回车会上屏整串，会话必须可见（否则 `http:` 与已上屏文本无从区分，
+        // 空格突然上屏整串=惊吓；真机实测 2026-10-01）。尾巴恒原样拼接（不参与
+        // 简繁转换，路径 d:\tools 等场景按字面输出）。
         let literal_mode = !self.tail.is_empty();
         if literal_mode {
+            let literal = self.convert_script(&format!(
+                "{}{}{}",
+                self.picked_text(),
+                self.raw,
+                self.tail
+            ));
+            let cand = Candidate {
+                text: literal.clone(),
+                kind: crate::CandidateKind::Word,
+                code: String::new(),
+                weight: 0,
+                seg_len: 0,
+                score: 0.0,
+            };
             return Effect {
-                composition: self.convert_script(&format!(
-                    "{}{}{}",
-                    self.picked_text(),
-                    self.raw,
-                    self.tail
-                )),
-                reading: String::new(),
-                candidates: Vec::new(),
-                all_candidates: Vec::new(),
+                composition: literal.clone(),
+                reading: literal,
+                candidates: vec![cand.clone()],
+                all_candidates: vec![cand],
                 selected: 0,
                 page: PageInfo {
                     page: 0,
-                    page_count: 0,
+                    page_count: 1,
                     page_size: self.page_size() as u32,
-                    total: 0,
+                    total: 1,
                 },
                 end: self.end.clone(),
             };
