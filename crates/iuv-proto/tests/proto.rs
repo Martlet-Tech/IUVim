@@ -484,3 +484,17 @@ fn stream_id_skips_in_flight_on_wrap_and_exhausts_cleanly() {
     assert_eq!(c.alloc().unwrap(), freed, "唯一空闲号应被跨段复用");
     assert!(c.alloc().is_none());
 }
+
+#[test]
+fn stream_id_odd_segment_stays_odd() {
+    // T1 回归钉：odd=true 起点构造的分配必须恒落奇数段（旧实现 step=1 跨入偶数段）。
+    let mut s = StreamIdAlloc::with_start(true, 1);
+    for _ in 0..100 {
+        let id = s.alloc().unwrap();
+        assert_eq!(id % 2, 1, "奇数段分配越界：{id}");
+    }
+    // 贴顶回绕同样不出段：65535 → 1
+    let mut s2 = StreamIdAlloc::with_start(true, 65535);
+    assert_eq!(s2.alloc().unwrap(), 65535);
+    assert_eq!(s2.alloc().unwrap(), 1);
+}

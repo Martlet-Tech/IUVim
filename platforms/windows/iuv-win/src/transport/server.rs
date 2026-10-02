@@ -88,14 +88,17 @@ pub(crate) struct ConnShared {
 /// 向客户端发 `S2C::Ctl` 并等 `C2S::CtlResult`。连接关闭后 request 返回 Closed。
 pub struct ConnSender {
     shared: Arc<ConnShared>,
-    ids: Mutex<StreamIdAlloc>,
+    /// 共享分配器（`Arc`）：Clone 多副本**共用同一号段游标**——旧实现 clone 快照
+    /// 复制 ids，两副本各自演化会分到相同奇数号，inflight 路由表（共享）同号
+    /// insert 覆盖前一个 tx，先发方永远等不到应答（2026-10-02 品质审查 T4）。
+    ids: Arc<Mutex<StreamIdAlloc>>,
 }
 
 impl Clone for ConnSender {
     fn clone(&self) -> Self {
         ConnSender {
             shared: self.shared.clone(),
-            ids: Mutex::new(self.ids.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+            ids: self.ids.clone(),
         }
     }
 }
@@ -247,10 +250,14 @@ impl TransportServer {
             .unwrap_or_else(|e| e.into_inner())
             .take()
         {
-            // SAFETY: 取消挂起的 ConnectNamedPipe；句柄随后关闭。
+            // SAFETY: 取消挂起的 ConnectNamedPipe 以唤醒 accept 线程。**只取消
+            // 不关闭**——句柄由 accept 线程在其退出路径统一关闭（2026-10-02
+            // 品质审查 T5：此处 CloseHandle 后 accept 线程的取消完成仍会让
+            // WaitForSingleObject 返回 WAIT_OBJECT_0 被误判 connected，随后
+            // stop 分支对同一句柄二次 CloseHandle，句柄值复用窗口内可能关到
+            // 无关句柄）。
             unsafe {
                 let _ = CancelIoEx(sh.get(), None);
-                let _ = CloseHandle(sh.get());
             }
         }
         if let Some(t) = self.accept_thread.take() {
@@ -291,11 +298,20 @@ fn accept_loop(
             let r = unsafe { ConnectNamedPipe(h, Some(&mut host.ov)) };
             match r {
                 Ok(()) => true,
-                Err(e) if e.code() == ERROR_IO_PENDING.to_hresult() => {
-                    // INFINITE 等待；stop 经 CancelIoEx 使其以错误返回。
-                    let w = unsafe { WaitForSingleObject(host.ev, u32::MAX) };
-                    w == WAIT_OBJECT_0
-                }
+                Err(e) if e.code() == ERROR_IO_PENDING.to_hresult() => loop {
+                    // 分片等待（200ms tick）：stop 置位即放弃等待——CancelIoEx 完成会
+                    // 置信号导致 WAIT_OBJECT_0，不能据此判定连接成功；分片检查保证
+                    // 任何时序下 accept 线程都能自行退出并关闭句柄（T5 收尾对齐）。
+                    let w = unsafe { WaitForSingleObject(host.ev, 200) };
+                    if w == WAIT_OBJECT_0 {
+                        // 事件已信号：可能是连接完成也可能是取消完成——由调用方
+                        // 后续 stop 检查与 !connected 关闭路径统一兜底。
+                        break true;
+                    }
+                    if stop.load(Ordering::SeqCst) {
+                        break false;
+                    }
+                },
                 Err(e) => win32_code(&e) == ERROR_PIPE_CONNECTED.0, // 客户端抢先连入
             }
         };
@@ -434,7 +450,7 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
         token,
         ConnSender {
             shared: conn_shared.clone(),
-            ids: Mutex::new(StreamIdAlloc::server()),
+            ids: Arc::new(Mutex::new(StreamIdAlloc::server())),
         },
     );
     write_frame_ov(

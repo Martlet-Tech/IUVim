@@ -1,7 +1,8 @@
 # 50 · 全仓库品质检查（M10 后首次，新特性前置）
 
-> 状态：**§1 高危 H1-H5 已修复（2026-10-02，各带回归钉，525 过/3 败=shm 环境项）；
-> §2-§4 中危/死代码/文档漂移待修**。
+> 状态：**§1 高危 H1-H5 已修复；§2.1 transport 五项 + §2.2 四项快赢已修复
+> （2026-10-02，全带留痕注释，526 过/3 败=shm 环境项）；其余中危/死代码/文档
+> 漂移待修**。
 > 方式：cargo fmt/clippy/test 全仓自动化 + 6 路模块代理逐文件通读（core/data、server、
 > tsf、win+proto、ui+repl、横切脚本/文档）+ 高危项人工逐行核实。
 > 范围：main @ e9f2dc1，全仓库 ~31k 行 Rust（8 crate）+ scripts + docs，
@@ -32,7 +33,15 @@
 
 ## 2. 中危精选（代理发现，修复前先复核）
 
-### 2.1 transport/协议层（长连接稳定性根子）
+### 2.1 transport/协议层（长连接稳定性根子）——✅ 前五项已修（2026-10-02）
+
+> 修复纪要：T1 = `with_start` 步长恒 2 + 奇数段回归钉；T2 = request 超时清
+> inflight 表项（烧号保留，语义注释化：单连接 ≤32768 次超时后 alloc=None →
+> 调用方降级重连）；T3 = client Shared 加 `writers` 计数（request/ctl 应答写
+> 均持 WriteGuard），Drop 收尾等写归零再放读线程关句柄，对齐 server 收尾协议；
+> T4 = ConnSender.ids 改 `Arc<Mutex<StreamIdAlloc>>` 共享分配器（clone 不再
+> 分叉出相同奇数号）；T5 = shutdown 只 CancelIoEx 不 CloseHandle + accept 线程
+> ConnectNamedPipe 改 200ms 分片等待查 stop，句柄由 accept 线程统一单次关闭。
 
 - `iuv-win/src/transport/client.rs:97-123` — 客户端 Drop 只护读线程，**并发写无 writers 计数**（服务端 server.rs:491 有对称防护）→ 句柄值复用窗口期可能写进别人的连接。
 - `client.rs:268-279` — 请求超时**不释放 stream_id**、不清 inflight 表项 → 长连接永久烧号，32768 上限后客户端不可用。
@@ -44,12 +53,12 @@
 
 ### 2.2 server 迁移收尾
 
-- `src/lib.rs:129` — 重绑注册表（take_saved + RESUME_TTL）只在**带令牌**重连时清扫，无令牌重连的断连现场按连接累积不释放。
+- ~~`src/lib.rs:129` — 重绑注册表只在带令牌重连时清扫~~（✅ 已修：sweep_resumes 每次 on_connect 调用）。
 - `src/daemon/toolbar/window.rs:755` — 工具栏四态翻转在 UI 线程**同步 dispatch 3s**，客户端挂起时工具栏冻结；candwin.rs:551 同场景已改短命线程，两处口径不一。
-- `src/daemon/log.rs:54` — `install_panic_hook` 定义后**全仓无调用**；`windows_subsystem="windows"` 下 panic 无控制台也无留痕，两欠账成对。
-- `src/main.rs:24` vs `src/daemon/log.rs:10` — 两套日志装配 OnceLock 先到先得；设置页「清除日志」（log.rs:27-32）清的是已废弃的 `input-iuv-daemon.log`，实际日志在 `iuv-server.log`。
+- ~~`src/daemon/log.rs:54` — `install_panic_hook` 定义后全仓无调用~~（✅ 已修：main.rs 安装）。
+- ~~`src/main.rs:24` vs `src/daemon/log.rs:10` — 两套日志装配、设置页清错文件~~（✅ 已修：clear_logs 目标改 iuv-server.log，模块头注释归一）。
 - `src/daemon/settings.rs:271-284` — dev 页 LOG_MODULES 的 tag 是 daemon 时代清单，与 server 实际 tag（`[toolbar]`/`[config]`…）大面积错位。
-- `src/lib.rs:441` — C2S catch-all `_ => {}` 不回应答，违反「每请求必有应答」纪律（314-317）；新增变体落进 catch-all 即复现「等不来的应答」整类 bug。建议 catch-all 至少回 `S2C::Err`。
+- ~~`src/lib.rs:441` — C2S catch-all 不回应答~~（✅ 已修：回 `S2C::Err(ProtoError::Unsupported)`，新变体追加枚举末尾）。
 
 ### 2.3 tsf COM
 

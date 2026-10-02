@@ -1,6 +1,8 @@
-//! 守护进程文件日志门面：`%TEMP%\input-iuv-daemon.log`（契约 02-conventions.md §3）。
-//! 实现 = [`iuv_win::logger`] 共享文件日志（2026-08-29 与 iuv-tsf 的复制实现收敛）；
-//! 本文件只保留 daemon 特有的清日志与 panic 钩子。
+//! 服务进程日志门面：实际日志文件 = `%TEMP%\iuv-server.log`（main.rs 装配，
+//! 2026-10-02 品质审查 S1 归一——旧 `input-iuv-daemon.log` 是 daemon 时代遗留，
+//! daemon→server 迁移后 main 经 `iuv_win::logger::init_logger` 先行装配，本模块
+//! 的惰性 init 因 OnceLock 先到先得而静默失效）。
+//! 本文件只保留服务端特有的清日志与 panic 钩子。
 
 use std::fs::OpenOptions;
 use std::sync::OnceLock;
@@ -25,10 +27,11 @@ pub fn log_line(msg: &str) {
 #[cfg(any(debug_assertions, feature = "dev"))]
 pub fn clear_logs() -> (usize, usize) {
     const FILES: &[&str] = &[
-        "input-iuv-daemon.log", // 本守护进程
-        "iuv-tsf.log",          // TSF 会话进程
-        "iuv-script.log",       // install/dev-deploy 脚本
-        "iuv-cleanup.log",      // 延迟清理计划任务
+        "iuv-server.log", // 本服务进程（main.rs 装配的真相源；旧
+        // input-iuv-daemon.log 已无人写，daemon 时代遗留）
+        "iuv-tsf.log",     // TSF 会话进程
+        "iuv-script.log",  // install/dev-deploy 脚本
+        "iuv-cleanup.log", // 延迟清理计划任务
     ];
     let Some(dir) = temp_dir() else {
         return (0, FILES.len());

@@ -22,6 +22,10 @@ const OPENCC_FILENAME: &str = "iuv.opencc";
 
 fn main() {
     iuv_win::logger::init_logger("iuv-server.log", true);
+    // panic 留痕（2026-10-02 品质审查 S1）：windows_subsystem="windows" 下 panic
+    // 输出无控制台可见，钩子落 iuv-server.log（daemon::log::install_panic_hook
+    // 此前定义后从未调用）。
+    iuv_server::daemon::log::install_panic_hook();
     // 单实例守卫：部署（计划任务 Start-ScheduledTask）与客户端首连拉起
     //（remote_host::spawn_server_process）在部署/重启瞬间并发，命名管道支持多
     // 实例创建——无守卫会抢出多个 server 瓜分连接（工具栏/引擎分家）。后来者

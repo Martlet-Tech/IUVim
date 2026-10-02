@@ -25,7 +25,8 @@ use iuv_win::logger::log_line;
 
 use iuv_core::{Effect, Engine, ImeState, Key};
 use iuv_proto::{
-    Candidate, Caps, ClientConfig, ClientInfo, KeyOutcome, KeyVerdict, Push, ResumeToken, C2S, S2C,
+    Candidate, Caps, ClientConfig, ClientInfo, KeyOutcome, KeyVerdict, ProtoError, Push,
+    ResumeToken, C2S, S2C,
 };
 use iuv_win::transport::{ConnHandler, ConnSender, Reply, Session};
 use iuv_win::ToolbarSignal;
@@ -106,11 +107,19 @@ impl EngineService {
         self.config_epoch.clone()
     }
 
-    /// 取走重绑现场（超期条目顺带清扫——服务端零定时器）。
-    fn take_saved(&self, token: u64) -> Option<SavedSession> {
+    /// 超期清扫（服务端零定时器）：每次连接时调用——旧实现只在**带令牌**重连
+    /// 时顺带清扫，无令牌重连（服务端重启后客户端裸连是常态）永不过期，
+    /// 断连现场按连接累积（2026-10-02 品质审查 S1）。
+    fn sweep_resumes(&self) {
         let mut resumes = self.resumes.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         resumes.retain(|_, (_, at)| now.duration_since(*at) < RESUME_TTL);
+    }
+
+    /// 取走重绑现场（超期条目顺带清扫——服务端零定时器）。
+    fn take_saved(&self, token: u64) -> Option<SavedSession> {
+        self.sweep_resumes();
+        let mut resumes = self.resumes.lock().unwrap_or_else(|e| e.into_inner());
         resumes.remove(&token).map(|(s, _)| s)
     }
 }
@@ -124,6 +133,8 @@ impl ConnHandler for EngineService {
         token: ResumeToken,
         sender: ConnSender,
     ) -> Box<dyn Session> {
+        // 无令牌重连也清扫超期现场（S1：否则 SavedSession 按连接累积不释放）。
+        self.sweep_resumes();
         // 控制面路由注册（pid/tid = 客户端握手报备；同进程重连覆盖）。
         self.senders
             .lock()
@@ -448,8 +459,11 @@ impl Session for EngineSession {
                     .unwrap_or_default();
                 reply.respond(S2C::PendingText { text });
             }
-            // 握手/通用应答/服务端心跳回执不经会话处理；新增变体在语义接入前落这里。
-            _ => {}
+            // 握手/通用应答/服务端心跳回执不经会话处理。catch-all 必须回应答：
+            // 客户端每个请求都等应答（300ms 截止），静默丢弃 = 「等不来的应答」
+            // 整类 bug（2026-10-02 品质审查 S1）；新增变体在语义接入前按不支持
+            // 报错，调用方按降级处理。
+            _ => reply.respond(S2C::Err(ProtoError::Unsupported)),
         }
     }
 }

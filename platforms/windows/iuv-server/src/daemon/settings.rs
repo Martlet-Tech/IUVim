@@ -1212,7 +1212,9 @@ impl SettingsApp {
             self.engine.clear_user_dict();
             self.state.publish();
             self.state.flush_now();
-            log::log_line("[settings] 清除全部用户库：引擎内存态 + 磁盘已重置（H5 数据一致性路径留痕）");
+            log::log_line(
+                "[settings] 清除全部用户库：引擎内存态 + 磁盘已重置（H5 数据一致性路径留痕）",
+            );
             msgs.push("已清除全部用户库（内存态 + 磁盘）".into());
         }
 

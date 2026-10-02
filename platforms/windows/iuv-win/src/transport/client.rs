@@ -75,6 +75,10 @@ struct Shared {
     clients: AtomicUsize,
     /// 写互斥：overlapped 同句柄并发读写安全，但两次写不得交错（防帧字节交错）。
     write_lock: Mutex<()>,
+    /// 进行中的写计数：Drop 收尾等归零再放读线程关句柄（防句柄值复用后写错
+    /// 连接——与 server 端 ConnShared.writers 同款收尾协议，2026-10-02 品质审查
+    /// T3：旧实现只护读侧，request/ctl 应答的并发写无保护）。
+    writers: AtomicUsize,
     /// 服务端请求处理器（None = 丢弃服务端请求）。
     server_req_handler: Option<ServerReqHandler>,
 }
@@ -103,6 +107,15 @@ impl Drop for TransportClient {
             // Drop 只置关闭标志 + 尽力唤醒挂起读 + 有界 join（读线程以
             // READER_TICK_MS 周期醒来检查 closed，最坏一个 tick 内退出并关句柄）。
             self.shared.closed.store(true, Ordering::SeqCst);
+            // 收尾顺序对齐 server 端：停新写（closed 已置）→ 等在途写归零 →
+            // 唤醒并 join 读线程（由读线程关句柄）。不等待则 request 写到一半
+            // 的帧尾随句柄关闭/复用，可能写进新连接（T3）。
+            for _ in 0..100 {
+                if self.shared.writers.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             let h = self.shared.h.get();
             // SAFETY: 尽力取消挂起读以加速收尾；若读线程恰在两次读之间，
             // 下一轮读会在关闭标志检查/管道断开处退出，句柄由读线程关闭。
@@ -198,6 +211,7 @@ pub fn connect(
         reader: Mutex::new(None),
         clients: AtomicUsize::new(1),
         write_lock: Mutex::new(()),
+        writers: AtomicUsize::new(0),
         server_req_handler: cfg.on_server_req.clone(),
     });
     let reader = std::thread::Builder::new()
@@ -216,8 +230,12 @@ pub fn connect(
 impl TransportClient {
     /// 发请求等应答（同步，有截止时间）。热路径传 `urgent=true`。
     ///
-    /// 超时的请求**烧掉**其 stream_id（不复用）——迟到应答绝不串到后续请求
-    /// （49 §4.5.2：超时后服务端可能已推进，基线失效由会话层处理）。
+    /// 超时的请求**烧掉**其 stream_id（`ids.in_flight` 不回收、不复用）——迟到
+    /// 应答绝不串到后续请求（49 §4.5.2：超时后服务端可能已推进，基线失效由
+    /// 会话层处理）；inflight 表项及时移除（旧实现滞留到连接关闭才清，迟到
+    /// 应答之外白占内存，2026-10-02 品质审查 T2）。烧号有界：单连接寿命内
+    /// ≤32768 次超时后 `alloc` 返回 None → 调用方按断连降级重连（新连接新
+    /// 分配器），不会跨连接累积。
     pub fn request(
         &self,
         req: C2S,
@@ -240,6 +258,8 @@ impl TransportClient {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, tx);
+        // WriteGuard：写期间计数在册，Drop 收尾等归零再关句柄（T3）。
+        let _guard = super::WriteGuard::new(&self.shared.writers);
         let wr = {
             let _w = self
                 .shared
@@ -254,6 +274,7 @@ impl TransportClient {
                 WRITE_TIMEOUT_MS,
             )
         };
+        drop(_guard);
         if let Err(e) = wr {
             self.shared
                 .inflight
@@ -271,7 +292,14 @@ impl TransportClient {
                     .release(id);
                 Ok(s2c)
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Deadline),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.shared
+                    .inflight
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&id);
+                Err(TransportError::Deadline)
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
         }
     }
@@ -332,6 +360,7 @@ fn reader_loop(shared: Arc<Shared>) {
                             .name("iuv-transport-ctl".into())
                             .spawn(move || {
                                 let resp = handler(s2c);
+                                let _guard = super::WriteGuard::new(&shared2.writers);
                                 let _w =
                                     shared2.write_lock.lock().unwrap_or_else(|e| e.into_inner());
                                 let _ = write_frame_ov(

@@ -33,11 +33,12 @@ impl StreamIdAlloc {
         }
     }
 
-    /// 指定起点构造（确定性测试 / repl 复现用）。`odd=true` 奇数段，`next` 须与段匹配。
-    pub fn with_start(odd: bool, next: u16) -> StreamIdAlloc {
+    /// 指定起点构造（确定性测试 / repl 复现用）。`odd` 仅作语义标注（T1 起步长
+    /// 恒为 2，段归属由 `next` 自身奇偶决定，保留参数以免调用方改签名）。
+    pub fn with_start(_odd: bool, next: u16) -> StreamIdAlloc {
         StreamIdAlloc {
             next,
-            step: if odd { 1 } else { 2 },
+            step: 2,
             in_flight: HashSet::new(),
         }
     }
