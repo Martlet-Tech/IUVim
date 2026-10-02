@@ -18,10 +18,6 @@ tiny-skia = { workspace = true }
 # eframe 0.36（设置页；自 iuv-daemon 迁入，②daemon→server 演进）。
 eframe = "0.36"
 
-[features]
-# dev 构建标记（25-settings-tabs.md §4）：设置页显示「开发者」标签（自 daemon 迁入）。
-dev = []
-
 [[bin]]
 name = "iuv-server"
 path = "src/main.rs"

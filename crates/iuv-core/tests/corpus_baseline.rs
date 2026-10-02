@@ -15,7 +15,7 @@
 use iuv_core::api::{EngineCtx, ImeEngine, PendingInput};
 use iuv_core::{Config, Engine, Key, RimeEngine};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// 语料 = 39 号 §15A 十二条 + 46 号长串哨兵 + 切分决策敏感边界用例。
@@ -64,43 +64,6 @@ fn dict_path() -> PathBuf {
     ))
 }
 
-/// 引擎内部埋点收集槽（`iuv_core::perf` 的 sink 只能是 `fn` 指针，故走静态槽）。
-/// 仅在验收工具里开启，用于把 `onkey` 拆成 seg/graph/buckets/assemble 四段。
-static PHASES: Mutex<Vec<(&'static str, u64)>> = Mutex::new(Vec::new());
-
-fn perf_sink(phase: &'static str, micros: u64) {
-    if let Ok(mut v) = PHASES.lock() {
-        v.push((phase, micros));
-    }
-}
-
-fn drain_phases() -> Vec<(&'static str, u64)> {
-    PHASES
-        .lock()
-        .map(|mut v| std::mem::take(&mut *v))
-        .unwrap_or_default()
-}
-
-/// 打印某语料阶段分解（每阶段一行，避免宿主机 127 字符长行截断）。
-fn dump_phases(idx: usize, phases: &[(&'static str, u64)]) {
-    let mut names: Vec<&'static str> = phases.iter().map(|(n, _)| *n).collect();
-    names.sort_unstable();
-    names.dedup();
-    for name in names {
-        let sel: Vec<u64> = phases
-            .iter()
-            .filter(|(n, _)| *n == name)
-            .map(|(_, us)| *us)
-            .collect();
-        eprintln!(
-            "[time] PH i={idx} {name} n={} sum_us={} max_us={}",
-            sel.len(),
-            sel.iter().sum::<u64>(),
-            sel.iter().copied().max().unwrap_or(0)
-        );
-    }
-}
-
 #[test]
 #[ignore = "需真词库 data/iuv.imedic（索引 iuvim 仓库根运行）"]
 fn corpus_baseline_dump() {
@@ -111,12 +74,8 @@ fn corpus_baseline_dump() {
     let cfg = Config::default();
     // 引擎与词库共享同一 mmap（Dict::clone 共享 Arc<MappedFile>）。
     let engine = RimeEngine::new(dict.clone(), &cfg);
-    // 阶段埋点（`perf_probe` 机制原样复用，不改其实现；仅本验收工具开启）。
-    iuv_core::perf::set_sink(perf_sink);
-    iuv_core::perf::set_enabled(true);
 
-    for (idx, &raw) in CORPUS.iter().enumerate() {
-        drain_phases();
+    for &raw in CORPUS.iter() {
         // ---- ① 引擎层：分段视图 + 候选（translate 输出）----
         let t0 = Instant::now();
         let tr = engine.translate(&EngineCtx { preceding_text: "" }, &PendingInput { raw });
@@ -176,9 +135,6 @@ fn corpus_baseline_dump() {
                 raw.len()
             );
         }
-
-        // ---- ④ 阶段分解（seg/graph/buckets/assemble；引擎内部埋点转发）----
-        dump_phases(idx, &drain_phases());
     }
 }
 

@@ -6,12 +6,13 @@
 //! （阻塞至关窗，关窗后继续后台常驻轮询）。管道/共享段在独立线程，不受影响。
 //!
 //! 界面（25-settings-tabs.md）：固定 640×480 不可缩放、标题栏无最大化；
-//! 多标签页（常用/按键/外观/词库/高级/开发者）+ 底部「确定/取消/应用」。
+//! 多标签页（常用/按键/外观/词库/游戏/高级）+ 底部「确定/取消/应用」。
 //! 设置项（确定/应用 → 写 config.json → bump config_epoch 广播给会话进程）：
 //! 常用=新 TSF 实例初始状态（模式/标点/宽度/字形）+ 每页候选数下拉、外观=主题（浅色/深色）+ 候选窗布局（竖排/横排）、
-//! 高级=按键直通名单（passthrough_apps）+ 候选自绘应用（candidate_owner_apps）、词库=用户库管理（列表 + 清除全部，暂挂到确定/应用）、
-//! 按键=键位自定义（灰置占位，M7）、开发者（仅 dev 构建）=清除日志。绝不 panic：
-//! run_settings 包 `catch_unwind`。
+//! 游戏=按键直通名单（passthrough_apps）+ 候选自绘应用（candidate_owner_apps）+ 全屏行为、
+//! 词库=用户库管理（列表 + 清除全部，暂挂到确定/应用）、按键=键位自定义、
+//! 高级=日志模块开关 + 清除日志（2026-10-02 自 dev 专属「开发者」并回，不再区分构建）。
+//! 绝不 panic：run_settings 包 `catch_unwind`。
 
 use std::mem::size_of;
 use std::sync::Arc;
@@ -225,9 +226,11 @@ enum Tab {
     Keymap,
     Appearance,
     Dict,
+    /// 按键直通/候选自绘/全屏行为——游戏场景（2026-10-02 自原「高级」改名）。
+    Game,
+    /// 日志模块开关 + 清除日志（2026-10-02 自 dev 专属「开发者」标签并回，
+    /// 不再区分 dev/release 构建）。
     Advanced,
-    #[cfg(any(debug_assertions, feature = "dev"))]
-    Dev,
 }
 
 impl Tab {
@@ -237,51 +240,53 @@ impl Tab {
             Tab::Keymap => "按键",
             Tab::Appearance => "外观",
             Tab::Dict => "词库",
+            Tab::Game => "游戏",
             Tab::Advanced => "高级",
-            #[cfg(any(debug_assertions, feature = "dev"))]
-            Tab::Dev => "开发者",
         }
     }
 }
 
-/// 全部标签（开发者仅 dev 构建，见 25-settings-tabs.md §4）。
+/// 全部标签。
 fn tabs() -> Vec<Tab> {
-    const BASE: [Tab; 5] = [
+    vec![
         Tab::Common,
         Tab::Keymap,
         Tab::Appearance,
         Tab::Dict,
+        Tab::Game,
         Tab::Advanced,
-    ];
-    #[cfg(any(debug_assertions, feature = "dev"))]
-    {
-        let mut v: Vec<Tab> = BASE.into_iter().collect();
-        v.push(Tab::Dev);
-        v
-    }
-    #[cfg(not(any(debug_assertions, feature = "dev")))]
-    {
-        BASE.into_iter().collect()
-    }
+    ]
 }
 
-/// 日志模块目录（tag, 说明）——开发者标签开关（26-log-modules.md）。
-/// TSF 侧：uielem/key/commit/caret/candwin/menuwin/daemon；
-/// daemon 侧：main/pipe/settings/state。tag 须与 log_line 消息前缀 `[tag]` 一致。
-#[cfg(any(debug_assertions, feature = "dev"))]
+/// 日志模块目录（tag, 说明）——高级标签开关（26-log-modules.md）。
+/// 2026-10-02 按 M10 后实际 tag 盘点更新（`[perf]` 随埋点机制退役删除，
+/// daemon 时代的 daemon/pipe 改为 backend/config/hotkey 等）。
+/// tag 须与 log_line 消息前缀 `[tag]` 一致；无 tag 的日志恒记录。
 const LOG_MODULES: &[(&str, &str)] = &[
+    // ---- TSF 侧（%TEMP%\iuv-tsf.log）----
     ("uielem", "TSF 候选 UIElement 桥（最高频）"),
     ("key", "TSF 按键记录（每键一行）"),
     ("commit", "上屏记录"),
     ("caret", "光标量取"),
-    ("candwin", "候选窗窗口层"),
-    ("menuwin", "语言栏右键菜单"),
     ("punct", "中文标点直接上屏"),
-    ("daemon", "TSF 侧 daemon_client"),
-    ("main", "守护进程主循环"),
-    ("pipe", "守护进程管道"),
-    ("settings", "守护进程设置页"),
-    ("state", "守护进程状态"),
+    ("backend", "TSF↔server 连接/重连（薄客户端）"),
+    ("langbar", "语言栏图标"),
+    ("menuwin", "语言栏右键菜单"),
+    ("ctl", "TSF 控制端点（服务端回调）"),
+    ("edit", "TSF 编辑会话"),
+    ("focus", "线程焦点（激活/失焦上报）"),
+    // ---- server 侧（%TEMP%\iuv-server.log）----
+    ("main", "服务进程主循环"),
+    ("config", "配置热载监视"),
+    ("shutdown", "优雅停机"),
+    ("resume", "断连重绑"),
+    ("shm", "用户库共享段"),
+    ("settings", "设置页"),
+    ("state", "服务状态（用户库发布/写盘）"),
+    ("toolbar", "工具栏"),
+    ("hotkey", "全局热键"),
+    ("candwin", "服务端候选窗窗口层"),
+    ("perf", "服务端慢键观测（on_key ≥10ms，49 号定档）"),
 ];
 
 /// 录入目标：某个功能（会话或全局）× 主/备槽。
@@ -356,8 +361,7 @@ struct SettingsApp {
     confirm_clear: bool,
     /// 清除暂挂：确定/应用才真正清空用户库（取消放弃）。
     pending_clear: bool,
-    /// 清除日志结果（(成功, 失败)，开发者页展示）。
-    #[cfg(any(debug_assertions, feature = "dev"))]
+    /// 清除日志结果（(成功, 失败)，高级页展示）。
     log_clear: Option<(usize, usize)>,
     /// 操作反馈（保存成功/失败）。
     status: String,
@@ -408,7 +412,6 @@ impl SettingsApp {
             disabled_log: cfg.disabled_log_modules.clone(),
             confirm_clear: false,
             pending_clear: false,
-            #[cfg(any(debug_assertions, feature = "dev"))]
             log_clear: None,
             status: String::new(),
         }
@@ -524,9 +527,8 @@ impl SettingsApp {
             Tab::Keymap => self.keymap_tab(ui),
             Tab::Appearance => self.appearance_tab(ui),
             Tab::Dict => self.dict_tab(ui),
+            Tab::Game => self.game_tab(ui),
             Tab::Advanced => self.advanced_tab(ui),
-            #[cfg(any(debug_assertions, feature = "dev"))]
-            Tab::Dev => self.dev_tab(ui),
         }
     }
 
@@ -988,20 +990,21 @@ impl SettingsApp {
     }
 
     /// 高级：按键直通名单 + 候选自绘应用（左右双卡片，各带「恢复默认」回填按钮）。
-    fn advanced_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("高级");
+    /// 游戏（2026-10-02 自原「高级」改名）：按键直通/候选自绘/全屏行为。
+    fn game_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("游戏");
         ui.add_space(4.0);
         // 2026-09-30：外层 ScrollArea——第三次卡片（全屏行为）曾被挤出 640×480 固定
         // 窗口可视区且无滚动（第二次踩坑记录，修法同 keymap_tab 2026-08-28 注释）。
         egui::ScrollArea::vertical()
-            .id_salt("advanced_scroll")
+            .id_salt("game_scroll")
             .max_height(ui.available_height() - 12.0)
             .show(ui, |ui| {
-                self.advanced_tab_content(ui);
+                self.game_tab_content(ui);
             });
     }
 
-    fn advanced_tab_content(&mut self, ui: &mut egui::Ui) {
+    fn game_tab_content(&mut self, ui: &mut egui::Ui) {
         ui.columns(2, |cols| {
             // 左：按键直通（纯单机游戏整进程隐身——该进程内无法输中文）
             card(&mut cols[0], |ui| {
@@ -1059,10 +1062,10 @@ impl SettingsApp {
         });
     }
 
-    /// 开发者：清除日志 + 日志模块开关（仅 dev 构建）。
-    #[cfg(any(debug_assertions, feature = "dev"))]
-    fn dev_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("开发者");
+    /// 高级（2026-10-02 自 dev 专属「开发者」标签并回，不再区分构建）：
+    /// 清除日志 + 日志模块开关。
+    fn advanced_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("高级");
         ui.add_space(4.0);
         card(ui, |ui| {
             ui.label("清除 %TEMP% 下的 iuv 日志（daemon / tsf / script / cleanup）：");

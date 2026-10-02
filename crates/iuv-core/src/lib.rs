@@ -7,7 +7,6 @@ pub mod engine;
 pub mod key;
 pub mod lm;
 pub mod paths;
-pub mod perf;
 pub mod pet_model;
 pub mod pet_physics;
 pub mod pet_skin;

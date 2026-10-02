@@ -17,7 +17,14 @@
 
 ## 3. 日志
 
-- 仅 iuv-tsf 有运行期日志：`%TEMP%\input-iuv-tsf.log`（`log.rs` 提供 `log_line`，std 实现，不加日志框架）
+- 共享实现 = `iuv-win::logger`（唯一实现，TSF/server 门面薄封装；std 直写，不加日志框架）
+- 两个日志文件：`%TEMP%\iuv-tsf.log`（TSF 薄客户端，各宿主进程共用，`pid=` + 宿主 exe 名区分）
+  与 `%TEMP%\iuv-server.log`（服务进程）
+- 行格式：`[YYYY-MM-DD HH:MM:SS.mmm] pid=N [宿主模块名 ]消息`（2026-10-02 起，Unix 时间戳改人读时间；
+  日期时间部分按秒缓存，写入用持久句柄不逐行 open）
+- 消息前缀 `[tag]` 即日志模块；设置页「高级」标签可按模块开关（denylist `disabled_log_modules`，
+  config.json 共享，TSF 建连/ConfigChanged 推送装配、server 启动/热载装配）
+- 日志写失败静默忽略（日志不允许影响输入法行为——硬性约定）；性能埋点机制已于 2026-10-02 整体退役
 - 其他 crate 不打日志；测试用 `assert` 说话
 
 ## 4. 测试纪律

@@ -6,7 +6,7 @@ use iuv_core::{
 };
 
 use crate::composition::Composition;
-use crate::log::{log_line, perf_record_with, perf_tick};
+use crate::log::log_line;
 use crate::ui::CaretRect;
 
 /// 虚拟键 → 归一化 Key。未识别键返回 None（放行给应用）。
@@ -213,7 +213,6 @@ pub fn apply_effect(composition: &Composition, caret: &mut CaretRect, effect: &E
         None => {
             // 悬空状态（选中中间级词后）：无 commit 信号——已选词仅在预编辑混合文本中
             // 显示（汉字+尾巴拼音），composition 全程覆盖整个混合文本，set_text 全量更新。
-            let t_settext = perf_tick();
             match composition.set_text(&effect.composition) {
                 Ok(Some(rect)) => {
                     *caret = rect;
@@ -229,9 +228,6 @@ pub fn apply_effect(composition: &Composition, caret: &mut CaretRect, effect: &E
                     caret.x, caret.y, caret.w, caret.h
                 )),
             }
-            perf_record_with("settext", t_settext, || {
-                format!("len={}", effect.composition.chars().count())
-            });
             false
         }
     }

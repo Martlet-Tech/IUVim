@@ -1,34 +1,23 @@
-//! 服务进程日志门面：实际日志文件 = `%TEMP%\iuv-server.log`（main.rs 装配，
-//! 2026-10-02 品质审查 S1 归一——旧 `input-iuv-daemon.log` 是 daemon 时代遗留，
-//! daemon→server 迁移后 main 经 `iuv_win::logger::init_logger` 先行装配，本模块
-//! 的惰性 init 因 OnceLock 先到先得而静默失效）。
-//! 本文件只保留服务端特有的清日志与 panic 钩子。
+//! 服务进程日志门面：实际日志文件 = `%TEMP%\iuv-server.log`（main.rs 装配）。
+//! 2026-10-02 清理：删除 daemon 时代遗留的惰性 `init()`（旧 `input-iuv-daemon.log`
+//! 文件名）——main.rs 第一行即经 `iuv_win::logger::init_logger` 装配真相源，
+//! 本模块的日志转发直通共享实现。只保留服务端特有的清日志与 panic 钩子。
 
 use std::fs::OpenOptions;
-use std::sync::OnceLock;
-
-/// 共享日志装配（file name 一次定死，无宿主模块名前缀；`log_line` 内惰性调用）。
-pub fn init() {
-    iuv_win::logger::init_logger("input-iuv-daemon.log", false);
-}
 
 pub use iuv_win::logger::{set_log_modules_disabled, temp_dir};
 
-/// 共享日志转发（首次调用惰性装配）。
+/// 共享日志转发（直通 iuv-win 共享实现）。
 pub fn log_line(msg: &str) {
-    static INIT: OnceLock<()> = OnceLock::new();
-    INIT.get_or_init(init);
     iuv_win::logger::log_line(msg);
 }
 
 /// 清空 `%TEMP%` 下 4 个 iuv 相关日志文件（truncate 而非删除：文件保留，持有方继续追加）。
 /// 返回 (成功数, 失败数)。失败多为日志文件此刻被活跃进程占用（TSF/脚本瞬时持有），
-/// 只计数不报错——设置页开发者标签据此显示"被占用"反馈。
-#[cfg(any(debug_assertions, feature = "dev"))]
+/// 只计数不报错——设置页高级标签据此显示"被占用"反馈。
 pub fn clear_logs() -> (usize, usize) {
     const FILES: &[&str] = &[
-        "iuv-server.log", // 本服务进程（main.rs 装配的真相源；旧
-        // input-iuv-daemon.log 已无人写，daemon 时代遗留）
+        "iuv-server.log",  // 本服务进程（main.rs 装配的真相源）
         "iuv-tsf.log",     // TSF 会话进程
         "iuv-script.log",  // install/dev-deploy 脚本
         "iuv-cleanup.log", // 延迟清理计划任务
@@ -52,7 +41,7 @@ pub fn clear_logs() -> (usize, usize) {
     (ok, fail)
 }
 
-/// 安装 panic 钩子：panic 信息落日志（守护进程"绝不 panic"纪律——即使发生也留痕）。
+/// 安装 panic 钩子：panic 信息落日志（服务进程"绝不 panic"纪律——即使发生也留痕）。
 /// 另设默认钩子兜底（std 行为不变）。
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {

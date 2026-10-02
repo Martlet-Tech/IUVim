@@ -169,10 +169,15 @@ fn connect_server() -> Result<Arc<RemoteHandle>, String> {
             Err(e) => return Err(e.to_string()),
         }
     };
+    let cfg = Config::load();
+    // denylist 装配（26-log-modules.md 回归修复：M10 迁移后 TSF 侧装配丢失，
+    // 设置页日志模块开关对本进程失效）。进程级静态，建连时应用一次；
+    // 后续热载走 ConfigChanged 推送（apply_push）。
+    crate::log::set_log_modules_disabled(&cfg.disabled_log_modules);
     let handle = Arc::new(RemoteHandle {
         pipe_name: SERVICE_PIPE_NAME.to_string(),
         client: Mutex::new(Some(client)),
-        config: Mutex::new(Config::load()),
+        config: Mutex::new(cfg),
         config_epoch: AtomicU32::new(0),
         token: Mutex::new(None),
         pending: Mutex::new(None),
@@ -278,7 +283,10 @@ impl RemoteHandle {
                 log_line(&format!(
                     "[backend] 配置推送 epoch={epoch} → 刷新客户端配置副本"
                 ));
-                self.set_config(Config::load());
+                let cfg = Config::load();
+                // denylist 热载：与 server 侧 config_watch 同语义（设置页改动即时生效）。
+                crate::log::set_log_modules_disabled(&cfg.disabled_log_modules);
+                self.set_config(cfg);
             }
             Push::SessionAttached { token } => {
                 *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(*token);

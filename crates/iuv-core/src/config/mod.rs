@@ -17,10 +17,6 @@ pub use enums::{ImeMode, ImePunct, ImeScript, ImeWidth, Orientation, ThemeChoice
 pub use io::{default_config_path, migrate_keymap, strip_bom, strip_jsonc_comments};
 pub use iuv_data::ImeState;
 
-/// 性能埋点日志模块名（日志形如 `[perf] render 1748us update`）。
-/// 定义在此处（而非平台层）以保证配置默认值与平台层标签是同一个字符串。
-pub const PERF_LOG_TAG: &str = "perf";
-
 /// 引擎配置。
 ///
 /// 默认值：page_size=5, max_candidates=1024, max_word_syllables=7,
@@ -61,14 +57,6 @@ pub struct Config {
     /// Windows 平台 TSF/daemon 消费：log_line 按消息前缀 `[tag]` 匹配，命中即静音。
     /// 引擎本身不记日志；字段仅为共享 config.json 语义（设置页写、两侧读）。
     pub disabled_log_modules: Vec<String>,
-    /// 性能埋点开关：开启后按键热路径每键输出 5 条 `[perf]` 计时日志
-    /// （route / onkey / settext / render / dispatch）。
-    ///
-    /// **默认关闭**，且刻意不挂在 `disabled_log_modules` 下——后者是 denylist 语义
-    /// （未列出即记录），会让埋点在新配置下默认打开，等于每键多 5 次文件写入，
-    /// 恰好抵消关闭日志换来的手感（2026-08-29 实测）。排查时才显式置 true，
-    /// 经既有 config_epoch 热载即时生效，无需重载输入法。
-    pub perf_probe: bool,
     /// rime 引擎组句长度惩罚 λ（log 域每词罚分，39 号 W2 校准项）。
     /// 默认 = librime 原生 kPenalty ln(1e-6)：每多一个词多扣一次，长词路径占优。
     /// 调参需重载输入法生效。
@@ -92,8 +80,6 @@ impl Default for Config {
             candidate_owner_apps: Vec::new(),
             theme: ThemeChoice::Light,
             disabled_log_modules: Vec::new(),
-            // 性能埋点是排查工具：默认关闭，需要时显式开启（见字段注释）。
-            perf_probe: false,
             rime_lambda: crate::rime::poet::DEFAULT_LAMBDA,
             rime_spelling_penalty: crate::rime::syllabifier::COMPLETION_PENALTY,
         }
@@ -134,8 +120,6 @@ mod tests {
         assert_eq!(c.theme, ThemeChoice::Light);
         // 日志禁用模块默认空（全记录）
         assert!(c.disabled_log_modules.is_empty());
-        // 性能埋点默认关闭（每键 5 条日志，属排查工具而非常态日志）
-        assert!(!c.perf_probe);
     }
 
     #[test]
@@ -233,7 +217,6 @@ mod tests {
         // 缺省字段 → 空（全记录）
         let c: Config = serde_json::from_str(r#"{ "page_size": 5 }"#).unwrap();
         assert!(c.disabled_log_modules.is_empty());
-        assert!(!c.perf_probe, "性能埋点缺省关闭");
         // 显式列表解析
         let c2: Config =
             serde_json::from_str(r#"{ "disabled_log_modules": ["uielem", "key"] }"#).unwrap();

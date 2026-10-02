@@ -12,7 +12,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::TextServices::ITfContext;
 
 use crate::composition::Composition;
-use crate::log::{self, log_line, perf_record_with, perf_tick};
+use crate::log::{self, log_line};
 use crate::session_bridge::{caps_passthrough, is_passthrough_app, map_key};
 
 use super::text_service::TextService;
@@ -170,11 +170,7 @@ impl TextService {
         _lparam: LPARAM,
     ) -> bool {
         let vk = wparam.0 as u16;
-        let t_route = perf_tick();
         let action = self.route_key(vk, true); // Down 阶段：提交引号配对翻转（H3）
-                                               // 计时区间必须只包 route_key：dispatch 在下方 match 分支里，若被圈进来
-                                               // 这一列就成了「整键总耗时」（实测 30904us ≈ onkey+settext+render+dispatch 之和）。
-        perf_record_with("route", t_route, || format!("vk={vk:#x}"));
         let handled = match action {
             KeyAction::Pass => false,
             KeyAction::CommitText(text) => {

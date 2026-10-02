@@ -10,7 +10,7 @@ use iuv_proto::KeyOutcome;
 
 use crate::com::remote_host::{core_candidate, remote};
 use crate::composition::Composition;
-use crate::log::{log_line, perf_record_with, perf_tick};
+use crate::log::log_line;
 use crate::session_bridge::apply_effect;
 use crate::ui::CaretRect;
 use crate::ui_element::CandidateElementHost;
@@ -20,7 +20,6 @@ use super::text_service::TextService;
 /// 应用 Effect（契约 §7）：composition → 候选窗；end 则上屏/取消并清理会话。
 impl TextService {
     pub(crate) fn dispatch(&self, effect: &iuv_core::Effect) {
-        let t = perf_tick();
         // P4 服务端渲染：候选窗由 iuv-server 画，这里仅更新 composition/caret
         // 并在锚点变化时上报 CaretMoved。
         dispatch_effect(
@@ -46,13 +45,6 @@ impl TextService {
             self.was_typing.set(composing_now);
             self.notify_typing(composing_now);
         }
-        perf_record_with("dispatch", t, || {
-            format!(
-                "cand={} all={}",
-                effect.candidates.len(),
-                effect.all_candidates.len()
-            )
-        });
     }
 
     /// M10：应用 KeyOutcome（以 `last_effect` 为基线组装 Effect，

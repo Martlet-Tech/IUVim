@@ -1253,3 +1253,47 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     12-53ms 正常分布。
   - **仍欠**（有意不修）：langbar/wnd_proc panic guard 包装；部分代码注释漂移
     （shm.rs 句柄注释、toolbar.rs toolbar_size 等）；详见 50 号 §2.3/§3.2 标注。
+
+- [ ] **日志系统整改：denylist 回归修复 + perf 埋点退役 + 设置页重组 + 人读时间戳
+  （2026-10-02，分支 `log-system-rework`，未提交，待真机手测）**：
+  - **denylist 回归修复（M10 迁移丢失）**：26 号的 TSF 侧 `set_log_modules_disabled`
+    装配在引擎搬入 server 后无人调用 → 设置页日志开关对本进程失效（`[uielem]`/
+    `[key]` 等最高频模块静音不了，全仓搜调用点证实）。修复：`remote_host.rs`
+    建连（`connect_server`）装配一次 + `apply_push(ConfigChanged)` 热载；
+    server 侧本就完好（main.rs 启动 + config_watch 热载），未动。
+  - **perf 埋点机制整体退役**（管理员拍板"彻底全删"）：删 `iuv_core::perf` 模块、
+    `Config::perf_probe`/`PERF_LOG_TAG`、rime 内全部 `tick/record` 调用、TSF 侧
+    `log.rs` 全套管线与 key_routing/dispatch/session_bridge 三处埋点；
+    `corpus_baseline.rs` 去 perf 依赖（阶段分解 PH 行随之取消，WHOLE/PERKEY
+    计时保留）。机制沿革见 2026-08-29 台账（延迟排查引入、46/49 号立功）。
+  - **设置页重组（去 dev/release 区分）**：原「高级」改名「游戏」（直通名单/
+    候选自绘/全屏行为）；新「高级」= 日志模块开关 + 清除日志（原 dev 专属
+    「开发者」标签并回）；删 `Tab::Dev`、全部 `cfg(any(debug_assertions,
+    feature="dev"))` 门控、`Cargo.toml` dev feature（脚本本就未用）。
+  - **日志模块目录盘点更新**：按 M10 后实际 tag 重列（TSF 11 个：uielem/key/
+    commit/caret/punct/backend/langbar/menuwin/ctl/edit/focus；server 10 个：
+    main/config/shutdown/resume/shm/settings/state/toolbar/hotkey/candwin；
+    daemon 时代的 daemon/pipe 与退役的 perf 删除）。
+  - **人读时间戳 + 持久句柄**（iuv-win logger.rs）：行头 `[YYYY-MM-DD
+    HH:MM:SS.mmm]`（GetLocalTime，日期时间部分按秒缓存）替代 Unix 秒；
+    写入改进程内持久句柄（Mutex 串行），不再每行 open；句柄失效惰性重开，
+    append + std 默认共享模式保证设置页 truncate 清日志照常可用。
+  - **清遗迹**：`daemon/log.rs` 删死的惰性 `init()`（旧 `input-iuv-daemon.log`
+    文件名，OnceLock 先到先得使其"碰巧"失效）；`clear_logs` 去 dev 门控。
+  - **文档**：`02-conventions.md` §3 日志约定重写（两文件/行格式/tag denylist/
+    装配点）。
+  - **测试**：fmt 干净、clippy 全 workspace 0 警告；
+    `TMP/TEMP=仓库内` 下 `cargo test --workspace --no-fail-fast` 468 过 /
+    3 败（shm 三测试需管理员终端，环境固有，与既有红基线一致）。
+  - **待真机手测（管理员部署后）**：①设置页「高级」勾掉 `[uielem]` → 打字 →
+    `iuv-tsf.log` 无 `[uielem]` 行、热载即时生效；②「清除日志」四文件清空、
+    被占用反馈正确；③日志行人读时间戳正确；④「游戏」标签内容与原「高级」一致。
+  - **真机手测通过（2026-10-02 22:00-22:10，注销重登部署后）**：③人读时间戳
+    全线生效（tsf/server 两文件新行均 `YYYY-MM-DD HH:MM:SS.mmm`）；①denylist
+    受控实验坐实——`["key","uielem"]` 热载（epoch=8）后记事本打字 30+ 键
+    `[key]`/`[uielem]` 零输出、`[caret]`43/`[commit]`8 照常（精确按模块静音，
+    其他模块无伤）；外部改 config.json 也被 config_watch 热载（epoch=6/8 佐证）；
+    ②清除日志按钮「成功 4、失败 0」；④设置页（含游戏标签）正常打开，
+    记事本全拼打字/简繁翻转/标点直上屏全程正常。遗留发现：server 慢键观测
+    `[perf]` tag 漏列目录，已补（LOG_MODULES 现含 tsf 11 + server 11 项）。
+    实验后 denylist 已还原为用户自选 `["uielem"]`。
