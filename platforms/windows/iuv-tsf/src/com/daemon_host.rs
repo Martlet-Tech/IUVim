@@ -48,12 +48,15 @@ impl TextService {
             log_line("[toolbar] passthrough 进程：不上报工具栏信号（iuv 完全透明）");
             return;
         }
+        // 焦点真值记录（remote 未就绪也记——重连/首连回放靠它，见 remote_host）。
+        crate::com::remote_host::note_focus(true);
         if let Some(r) = crate::com::remote_host::remote() {
             r.focus_changed(true);
         }
     }
 
     pub(crate) fn notify_focus_lost(&self) {
+        crate::com::remote_host::note_focus(false);
         if let Some(r) = crate::com::remote_host::remote() {
             r.focus_changed(false);
         }
