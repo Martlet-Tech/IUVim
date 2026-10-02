@@ -2,7 +2,7 @@
 //! 【Agent D】W1 实现。
 
 use iuv_core::{
-    chinese_punct, fullwidth, shifted_punct, Effect, Key, ImePunct, SessionEnd, ImeWidth,
+    chinese_punct, fullwidth, shifted_punct, Effect, ImePunct, ImeWidth, Key, SessionEnd,
 };
 
 use crate::composition::Composition;
@@ -615,14 +615,7 @@ mod tests {
     fn fullwidth_half_mode_release() {
         // 半角：中文/英文模式全放行
         assert_eq!(
-            fullwidth_pending(
-                false,
-                ImeWidth::Half,
-                ImePunct::Chinese,
-                '1',
-                false,
-                false
-            ),
+            fullwidth_pending(false, ImeWidth::Half, ImePunct::Chinese, '1', false, false),
             None
         );
         assert_eq!(
@@ -631,25 +624,11 @@ mod tests {
         );
         // 非 ASCII / 控制字符不转
         assert_eq!(
-            fullwidth_pending(
-                true,
-                ImeWidth::Full,
-                ImePunct::Chinese,
-                '中',
-                false,
-                false
-            ),
+            fullwidth_pending(true, ImeWidth::Full, ImePunct::Chinese, '中', false, false),
             None
         );
         assert_eq!(
-            fullwidth_pending(
-                true,
-                ImeWidth::Full,
-                ImePunct::Chinese,
-                '\t',
-                false,
-                false
-            ),
+            fullwidth_pending(true, ImeWidth::Full, ImePunct::Chinese, '\t', false, false),
             None
         );
     }
@@ -686,25 +665,11 @@ mod tests {
     fn fullwidth_chinese_mode_punct_owned_or_release() {
         // 中文标点表内符号：punct=Chinese 时归标点开关，全角不接管
         assert_eq!(
-            fullwidth_pending(
-                false,
-                ImeWidth::Full,
-                ImePunct::Chinese,
-                ',',
-                false,
-                false
-            ),
+            fullwidth_pending(false, ImeWidth::Full, ImePunct::Chinese, ',', false, false),
             None
         );
         assert_eq!(
-            fullwidth_pending(
-                false,
-                ImeWidth::Full,
-                ImePunct::Chinese,
-                '.',
-                false,
-                false
-            ),
+            fullwidth_pending(false, ImeWidth::Full, ImePunct::Chinese, '.', false, false),
             None
         );
         assert_eq!(
@@ -714,26 +679,12 @@ mod tests {
         );
         // punct=English：标点表不接管 → 全角接管（，→ U+FF0C）
         assert_eq!(
-            fullwidth_pending(
-                false,
-                ImeWidth::Full,
-                ImePunct::English,
-                ',',
-                false,
-                false
-            ),
+            fullwidth_pending(false, ImeWidth::Full, ImePunct::English, ',', false, false),
             Some("，".into())
         );
         // 字母不转（照常进拼音会话）
         assert_eq!(
-            fullwidth_pending(
-                false,
-                ImeWidth::Full,
-                ImePunct::Chinese,
-                'a',
-                false,
-                false
-            ),
+            fullwidth_pending(false, ImeWidth::Full, ImePunct::Chinese, 'a', false, false),
             None
         );
         assert_eq!(

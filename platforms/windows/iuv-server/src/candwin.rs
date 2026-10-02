@@ -27,23 +27,24 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Threading::CreateEventW;
-use windows::Win32::UI::WindowsAndMessaging::MsgWaitForMultipleObjectsEx;
 use windows::Win32::System::Threading::SetEvent;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::WindowsAndMessaging::MsgWaitForMultipleObjectsEx;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetWindowRect, PeekMessageW, SetWindowPos, ShowWindow, TranslateMessage,
     HTCLIENT, HTTRANSPARENT, MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, SWP_NOSIZE, WM_ERASEBKGND, WM_MBUTTONDOWN,
+    SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND, WM_MBUTTONDOWN,
     WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN,
 };
 // WM_MOUSELEAVE 在 windows-rs 0.62 中位于 Controls 模块（值 0x02A3），本地定义。
 const WM_MOUSELEAVE: u32 = 675;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
-use windows::core::{w, PCWSTR};
 
 use iuv_ui::{
-    hit_test, render_candidate, update_position, CaretRect, Surface, TextRenderer, Theme, UiSnapshot,
+    hit_test, render_candidate, update_position, CaretRect, Surface, TextRenderer, Theme,
+    UiSnapshot,
 };
 
 const CLASS_NAME: PCWSTR = w!("IuvServerCandidateWindow");
@@ -155,12 +156,7 @@ fn run_ui_thread(
         // 分发，WM_SETCURSOR 悬停漏斗根除）。事件被关闭（销毁竞态）→ 回环退出。
         // SAFETY: 事件句柄 Arc 存活；单事件等待。
         let w = unsafe {
-            MsgWaitForMultipleObjectsEx(
-                Some(&[wake.0]),
-                u32::MAX,
-                QS_ALLINPUT,
-                MWMO_INPUTAVAILABLE,
-            )
+            MsgWaitForMultipleObjectsEx(Some(&[wake.0]), u32::MAX, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
         };
         if w == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
             // 窗口消息：泵到排空（hover / NCHITTEST / 光标）。
@@ -302,7 +298,15 @@ impl ServerCandwin {
         let (x, y) = position_for(caret, w, h);
         // SAFETY: 仅移动（SWP_NOSIZE），不激活
         let _ = unsafe {
-            SetWindowPos(self.layered.hwnd, None, x, y, 0, 0, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE)
+            SetWindowPos(
+                self.layered.hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE,
+            )
         };
     }
 
@@ -375,7 +379,10 @@ fn dpi_for_caret(caret: CaretRect) -> u32 {
     // SAFETY: MonitorFromPoint/GetDpiForMonitor 纯查询，无资源。
     let monitor = unsafe {
         MonitorFromPoint(
-            POINT { x: caret.x, y: caret.y },
+            POINT {
+                x: caret.x,
+                y: caret.y,
+            },
             MONITOR_DEFAULTTONEAREST,
         )
     };
@@ -394,12 +401,8 @@ fn dpi_for_caret(caret: CaretRect) -> u32 {
 /// caret 所在显示器工作区（与客户端版同源；失败兜底近乎全屏）。
 fn work_area_for(hwnd: HWND) -> iuv_ui::layout::Area {
     // SAFETY: MonitorFromWindow 纯查询；GetMonitorInfoW 输出缓冲已初始化。
-    let monitor = unsafe {
-        windows::Win32::Graphics::Gdi::MonitorFromWindow(
-            hwnd,
-            MONITOR_DEFAULTTONEAREST,
-        )
-    };
+    let monitor =
+        unsafe { windows::Win32::Graphics::Gdi::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
@@ -425,7 +428,13 @@ fn position_for(caret: CaretRect, w: i32, h: i32) -> (i32, i32) {
     // SAFETY: MonitorFromPoint/GetMonitorInfoW 纯查询；输出缓冲已初始化。
     let area = {
         let monitor = unsafe {
-            MonitorFromPoint(POINT { x: caret.x, y: caret.y }, MONITOR_DEFAULTTONEAREST)
+            MonitorFromPoint(
+                POINT {
+                    x: caret.x,
+                    y: caret.y,
+                },
+                MONITOR_DEFAULTTONEAREST,
+            )
         };
         if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
             rect_to_area(info.rcWork)
@@ -552,12 +561,10 @@ unsafe extern "system" fn wnd_proc(
         // （CandidateClick），客户端 TSF 线程以 Digit(row+1) 走远端会话。短命线程
         // 承担阻塞等待，UI 线程保持响应（悬停/重绘不被 3s 截止拖住）。
         WM_LBUTTONDOWN => {
-            if let Some(wnd) =
-                unsafe { iuv_win::LayeredWindow::get_self::<ServerCandwin>(hwnd) }
-            {
+            if let Some(wnd) = unsafe { iuv_win::LayeredWindow::get_self::<ServerCandwin>(hwnd) } {
                 let (x, y) = iuv_win::LayeredWindow::client_pos(lparam);
-                if let Some(row) = hit_test(&wnd.rows, x, y)
-                    .filter(|r| *r < wnd.snap.candidates.len())
+                if let Some(row) =
+                    hit_test(&wnd.rows, x, y).filter(|r| *r < wnd.snap.candidates.len())
                 {
                     let sender = wnd.sender.clone();
                     let _ = std::thread::Builder::new()

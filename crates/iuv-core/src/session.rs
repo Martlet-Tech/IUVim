@@ -1,7 +1,7 @@
 //! 会话状态机。契约 01-contract.md §4 session.rs / §4.1 按键行为。
 
 use crate::{
-    fullwidth_text, Candidate, Effect, Engine, ImeState, Key, PageInfo, ImeScript, SessionEnd,
+    fullwidth_text, Candidate, Effect, Engine, ImeScript, ImeState, Key, PageInfo, SessionEnd,
 };
 use std::sync::{Arc, Mutex};
 
@@ -457,12 +457,8 @@ impl Session {
         // 简繁转换，路径 d:\tools 等场景按字面输出）。
         let literal_mode = !self.tail.is_empty();
         if literal_mode {
-            let literal = self.convert_script(&format!(
-                "{}{}{}",
-                self.picked_text(),
-                self.raw,
-                self.tail
-            ));
+            let literal =
+                self.convert_script(&format!("{}{}{}", self.picked_text(), self.raw, self.tail));
             let cand = Candidate {
                 text: literal.clone(),
                 kind: crate::CandidateKind::Word,

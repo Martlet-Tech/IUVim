@@ -11,9 +11,9 @@
 //! ShmWriter 是唯一写者），`DaemonState` 以 `shm: None` 构造。
 
 pub mod capture;
-pub mod log;
 pub mod config;
 pub mod hotkey;
+pub mod log;
 pub mod pet_assets;
 pub mod settings;
 pub mod state;

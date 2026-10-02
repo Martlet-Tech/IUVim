@@ -241,7 +241,12 @@ fn pending_text_query_returns_session_original() {
     let r = client
         .request(C2S::PendingTextQuery, true, Duration::from_secs(2))
         .expect("PendingTextQuery 应答");
-    assert_eq!(r, S2C::PendingText { text: String::new() });
+    assert_eq!(
+        r,
+        S2C::PendingText {
+            text: String::new()
+        }
+    );
 }
 
 #[test]
@@ -306,13 +311,19 @@ fn config_epoch_change_pushes_config_changed_once() {
     epoch.store(1, Ordering::SeqCst);
     let _ = key(&client, Key::Char('i'));
     match pushes.recv_timeout(Duration::from_secs(2)) {
-        Ok(Push::ConfigChanged { epoch: e, client_view }) => {
+        Ok(Push::ConfigChanged {
+            epoch: e,
+            client_view,
+        }) => {
             assert_eq!(e, 1);
             let expected = match iuv_core::Config::default().initial_state.mode {
                 iuv_core::ImeMode::Chinese => iuv_proto::ImeMode::Chinese,
                 iuv_core::ImeMode::English => iuv_proto::ImeMode::English,
             };
-            assert_eq!(client_view.initial_mode, expected, "client_view = 引擎当前配置视图");
+            assert_eq!(
+                client_view.initial_mode, expected,
+                "client_view = 引擎当前配置视图"
+            );
         }
         other => panic!("应收到 ConfigChanged，实际 {other:?}"),
     }
@@ -403,7 +414,10 @@ fn resume_token_rebinds_and_replays_composition() {
             C2S::Key {
                 key: Key::Char('x'),
                 mods: Default::default(),
-                token: KeyToken { seq: 0, phase: KeyPhase::Down },
+                token: KeyToken {
+                    seq: 0,
+                    phase: KeyPhase::Down,
+                },
                 full: true,
             },
             true,
@@ -413,7 +427,10 @@ fn resume_token_rebinds_and_replays_composition() {
     match o {
         S2C::KeyResult(KeyVerdict::Consumed(out)) => {
             let comp = out.composition.expect("full=true 必须全量");
-            assert!(comp.starts_with("ni"), "重绑应回放断连前 composition：{comp}");
+            assert!(
+                comp.starts_with("ni"),
+                "重绑应回放断连前 composition：{comp}"
+            );
         }
         other => panic!("应答类型错误: {other:?}"),
     }
@@ -431,7 +448,13 @@ fn end_session_voids_resume_state() {
             other => panic!("应收到 SessionAttached: {other:?}"),
         };
         type_str(&client, "ni");
-        let _ = client.request(C2S::EndSession { end: SessionEnd::Cancel }, true, Duration::from_secs(2));
+        let _ = client.request(
+            C2S::EndSession {
+                end: SessionEnd::Cancel,
+            },
+            true,
+            Duration::from_secs(2),
+        );
         token
     };
     std::thread::sleep(Duration::from_millis(300));
@@ -447,7 +470,10 @@ fn end_session_voids_resume_state() {
             C2S::Key {
                 key: Key::Char('x'),
                 mods: Default::default(),
-                token: KeyToken { seq: 0, phase: KeyPhase::Down },
+                token: KeyToken {
+                    seq: 0,
+                    phase: KeyPhase::Down,
+                },
                 full: true,
             },
             true,

@@ -241,7 +241,9 @@ pub enum C2S {
     /// Ctl 应用结果（控制面应答，镜像 iuv-win CtlResult）。
     CtlResult(CtlResult),
     /// 打字活动（桌宠动画驱动；原 toolbar signal Typing 迁入）。
-    TypingActivity { active: bool },
+    TypingActivity {
+        active: bool,
+    },
     /// 语言栏菜单：打开设置页（原数据面管道 OpenSettings 迁入，fire-and-forget）。
     OpenSettings,
     /// 语言栏菜单：切换工具栏显隐（fire-and-forget）。
@@ -298,9 +300,13 @@ pub enum S2C {
         nonce: u32,
     },
     /// 工具栏显隐查询应答（`C2S::ToolbarVisibleQuery`；daemon 查询迁移）。
-    ToolbarVisible { visible: bool },
+    ToolbarVisible {
+        visible: bool,
+    },
     /// 待上屏原文应答（`C2S::PendingTextQuery`；空串 = 无待上屏内容，客户端走 cancel）。
-    PendingText { text: String },
+    PendingText {
+        text: String,
+    },
 }
 
 // —— PUSH：服务端 → 客户端 单向推送（latest-wins，49 §4.6）——

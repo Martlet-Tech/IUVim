@@ -17,7 +17,9 @@ use std::time::Duration;
 
 use iuv_win::{CtlCmd, CtlResult};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{
+    GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -153,10 +155,7 @@ pub(crate) fn clear_submit_hook() {
 /// 进程内提交一条命令（最近激活实例；无端点 → None，调用方回失败）。
 pub(crate) fn submit_cmd(cmd: CtlCmd) -> Option<CtlResult> {
     let cell = SUBMIT_HOOK.get()?;
-    let (hwnd_val, pending) = cell
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()?;
+    let (hwnd_val, pending) = cell.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
     let hwnd = HWND(hwnd_val as *mut core::ffi::c_void);
     Some(dispatch_ctl_cmd(hwnd, &pending, cmd))
 }

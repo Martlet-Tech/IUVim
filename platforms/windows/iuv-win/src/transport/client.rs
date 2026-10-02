@@ -207,10 +207,7 @@ pub fn connect(
             move || reader_loop(shared)
         })
         .map_err(|e| TransportError::Io(io::Error::other(e.to_string())))?;
-    *shared
-        .reader
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(reader);
+    *shared.reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader);
 
     std::mem::forget(guard);
     Ok((TransportClient { shared }, ack, PushStream { rx: push_rx }))
@@ -335,10 +332,8 @@ fn reader_loop(shared: Arc<Shared>) {
                             .name("iuv-transport-ctl".into())
                             .spawn(move || {
                                 let resp = handler(s2c);
-                                let _w = shared2
-                                    .write_lock
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner());
+                                let _w =
+                                    shared2.write_lock.lock().unwrap_or_else(|e| e.into_inner());
                                 let _ = write_frame_ov(
                                     shared2.h.get(),
                                     stream_id,

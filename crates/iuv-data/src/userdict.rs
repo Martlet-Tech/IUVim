@@ -288,14 +288,8 @@ impl UserDict {
                 ref word,
                 adj,
             } => self.set_entry(code, word, adj),
-            UserMutation::Remove {
-                ref code,
-                ref word,
-            } => self.remove_entry(code, word),
-            UserMutation::Block {
-                ref code,
-                ref word,
-            } => self.block(code, word),
+            UserMutation::Remove { ref code, ref word } => self.remove_entry(code, word),
+            UserMutation::Block { ref code, ref word } => self.block(code, word),
         }
     }
 

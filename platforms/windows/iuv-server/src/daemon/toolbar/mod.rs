@@ -170,9 +170,11 @@ impl ToolbarHost {
         let t_pending = host.pending.clone();
         let t_ctl = ctl.clone();
         let (tx, rx) = std::sync::mpsc::channel();
-        let spawned = std::thread::Builder::new().name("iuv-toolbar".to_string()).spawn(
-            move || toolbar_thread_main(t_shared, t_state, t_icons, t_pet, t_pending, t_ctl, tx),
-        );
+        let spawned = std::thread::Builder::new()
+            .name("iuv-toolbar".to_string())
+            .spawn(move || {
+                toolbar_thread_main(t_shared, t_state, t_icons, t_pet, t_pending, t_ctl, tx)
+            });
         match spawned {
             Ok(_h) => {
                 log::log_line("[toolbar] 工具条线程已启动");

@@ -2,7 +2,7 @@
 //! 用 Dict::from_entries 造小词典，不依赖真实词库文件。
 
 use iuv_core::{
-    Candidate, CandidateKind, Config, Engine, ImeState, Key, Session, SessionEnd, ImeWidth,
+    Candidate, CandidateKind, Config, Engine, ImeState, ImeWidth, Key, Session, SessionEnd,
 };
 use iuv_data::Dict;
 use std::sync::Arc;

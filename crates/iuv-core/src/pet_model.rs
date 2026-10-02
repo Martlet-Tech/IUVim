@@ -17,7 +17,7 @@
 //!
 //! 可单测（无 I/O、无 panic 路径），`cargo test -p iuv-core` 全绿。
 
-use crate::config::{ImeState, ImeMode};
+use crate::config::{ImeMode, ImeState};
 use crate::pet_skin::FaceExpr;
 
 /// 动作片段标识（M1 内置集；M2 起由 mod 素材描述扩展）。

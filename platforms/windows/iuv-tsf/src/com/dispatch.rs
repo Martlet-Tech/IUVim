@@ -7,9 +7,7 @@ use std::rc::Rc;
 use iuv_core::Session;
 use iuv_proto::KeyOutcome;
 
-use crate::com::remote_host::{
-    backend_config, core_candidate, remote,
-};
+use crate::com::remote_host::{backend_config, core_candidate, remote};
 use crate::composition::Composition;
 use crate::log::{self, log_line, perf_record_with, perf_tick};
 use crate::session_bridge::{apply_effect, is_passthrough_app};
@@ -165,17 +163,17 @@ pub(crate) fn dispatch_effect(
                 if !render_locally {
                     false // P4 服务端渲染：本地窗不画（match 臂值，非 return）
                 } else {
-                let mut snap = crate::ui::effect_to_snapshot(effect);
-                snap.orientation = orientation;
-                let mut ui_guard = ui.borrow_mut();
-                if snap.candidates.is_empty() && snap.reading.is_empty() {
-                    ui_guard.hide();
-                } else if ui_guard.is_visible() {
-                    ui_guard.update(&snap);
-                } else {
-                    ui_guard.show(&snap, caret_pos);
-                }
-                effect.end.is_some()
+                    let mut snap = crate::ui::effect_to_snapshot(effect);
+                    snap.orientation = orientation;
+                    let mut ui_guard = ui.borrow_mut();
+                    if snap.candidates.is_empty() && snap.reading.is_empty() {
+                        ui_guard.hide();
+                    } else if ui_guard.is_visible() {
+                        ui_guard.update(&snap);
+                    } else {
+                        ui_guard.show(&snap, caret_pos);
+                    }
+                    effect.end.is_some()
                 }
             }
         }

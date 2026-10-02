@@ -336,7 +336,7 @@ fn server_initiated_request_roundtrip() {
         }
     }
 
-    let pipe = format!(r"\.\pipe\iuv-ctl-test-{}", std::process::id());
+    let pipe = test_pipe("ctl");
     let factory = Arc::new(CaptureFactory(StdMutex::new(None)));
     let _server = TransportServer::start(
         ServerConfig {

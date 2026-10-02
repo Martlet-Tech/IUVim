@@ -122,7 +122,11 @@ impl ConnSender {
             .insert(id, tx);
         let _guard = crate::transport::WriteGuard::new(&self.shared.writers);
         let wr = {
-            let _w = self.shared.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let _w = self
+                .shared
+                .write_lock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if self.shared.closed.load(Ordering::Acquire) {
                 Err(TransportError::Closed)
             } else {
@@ -164,11 +168,21 @@ impl ConnSender {
             return Err(TransportError::Closed);
         }
         let _guard = crate::transport::WriteGuard::new(&self.shared.writers);
-        let _w = self.shared.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _w = self
+            .shared
+            .write_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(TransportError::Closed);
         }
-        write_frame_ov(self.shared.h.get(), 0, false, &Payload::Push(p), WRITE_TIMEOUT_MS)
+        write_frame_ov(
+            self.shared.h.get(),
+            0,
+            false,
+            &Payload::Push(p),
+            WRITE_TIMEOUT_MS,
+        )
     }
 }
 
@@ -457,7 +471,10 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
                 session.on_c2s(c2s, &mut reply);
                 // 应答与推送统一走共享写锁（ConnSender 可能并发写服务端主动请求帧）。
                 let _guard = crate::transport::WriteGuard::new(&conn_shared.writers);
-                let w = conn_shared.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+                let w = conn_shared
+                    .write_lock
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if let Some(s2c) = reply.resp.take() {
                     write_frame_ov(
                         h,
@@ -485,7 +502,11 @@ fn conn_thread(h: HANDLE, ctx: ConnCtx) -> io::Result<()> {
                     let _ = tx.send(c2s);
                 }
             }
-            _ => return Err(io::Error::other("协议违规: 客户端只能发 ClientReq/ClientResp")),
+            _ => {
+                return Err(io::Error::other(
+                    "协议违规: 客户端只能发 ClientReq/ClientResp",
+                ))
+            }
         }
     }
     // —— 收尾协议（与客户端读线程同类）：停新写 → 等在途写归零 → 清在途 → 关句柄。

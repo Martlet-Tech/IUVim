@@ -9,9 +9,7 @@
 use iuv_core::PetClip;
 use tiny_skia::{Color, FilterQuality, Pixmap, PixmapPaint, Transform};
 
-use iuv_core::{
-    FaceExpr, ImeState, ImeMode, PetAnim, PetSkin, ImePunct, ImeScript, ImeWidth,
-};
+use iuv_core::{FaceExpr, ImeMode, ImePunct, ImeScript, ImeState, ImeWidth, PetAnim, PetSkin};
 
 use crate::layout::Rect as LayoutRect;
 use crate::paint::{fill_rounded, HL_RADIUS};

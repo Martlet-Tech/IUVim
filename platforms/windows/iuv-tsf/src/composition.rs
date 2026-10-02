@@ -50,11 +50,7 @@ pub struct Composition {
 }
 
 impl Composition {
-    pub fn new(
-        context: ITfContext,
-        client_id: u32,
-        on_terminated: Option<Rc<dyn Fn()>>,
-    ) -> Self {
+    pub fn new(context: ITfContext, client_id: u32, on_terminated: Option<Rc<dyn Fn()>>) -> Self {
         Composition {
             context,
             client_id,
@@ -455,9 +451,7 @@ pub(crate) fn query_insertion_caret(
     let com = ComObject::new(session);
     let sess: ITfEditSession = com.to_interface();
     // SAFETY: RequestEditSession 是标准 TSF 调用；sess 在本调用期间存活。
-    let ok = unsafe {
-        context.RequestEditSession(client_id, &sess, TF_ES_SYNC | TF_ES_READ)
-    };
+    let ok = unsafe { context.RequestEditSession(client_id, &sess, TF_ES_SYNC | TF_ES_READ) };
     if ok.is_err() {
         return None;
     }

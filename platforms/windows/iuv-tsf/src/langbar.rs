@@ -41,7 +41,6 @@ use windows_core::{
 use crate::log::log_line;
 use iuv_ui::{MenuEntry, Theme};
 
-
 /// 「关于」对话框（自绘菜单与 InitMenu 菜单共用）。
 fn show_about() {
     let text = "iuv 输入法（代号 iuvim，谐音\"哎哟喂\"）\nRust + TSF 的 Windows 中文输入法。";
@@ -343,7 +342,11 @@ impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
         // 层问题，如管理员权限程序的跨完整性 COM 限制），与自绘菜单代码无关。
         log_line(&format!(
             "[langbar] OnClick({})",
-            if click == TF_LBI_CLK_RIGHT { "RIGHT" } else { "LEFT" }
+            if click == TF_LBI_CLK_RIGHT {
+                "RIGHT"
+            } else {
+                "LEFT"
+            }
         ));
         if click == TF_LBI_CLK_LEFT {
             self.toggle_mode();

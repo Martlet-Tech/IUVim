@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use iuv_core::pet_physics::FAST_INTERVAL_MS;
-use iuv_core::{ImeMode, PetAnim, PetModel, ImePunct, ImeScript, ImeWidth};
+use iuv_core::{ImeMode, ImePunct, ImeScript, ImeWidth, PetAnim, PetModel};
 use iuv_ui::layout::Rect;
 use iuv_ui::{
     hit_test, pet_alpha_at, pet_mask_hit, render_composite, CompositeSpec, LayeredPetSpec,
@@ -33,9 +33,9 @@ use super::fullscreen;
 use super::prefs::{save_pref, ToolbarPref};
 use super::tooltip::TooltipWindow;
 use super::{
-    button_tooltip, clamp_to_work, client_pos, create_window, current_theme, cursor_screen, CtlDispatch,
-    default_pos, in_rounded_rect, BarEvent, Shared, ToolbarInstance, CLASS_BAR, WM_APP_REFRESH,
-    WM_MOUSELEAVE,
+    button_tooltip, clamp_to_work, client_pos, create_window, current_theme, cursor_screen,
+    default_pos, in_rounded_rect, BarEvent, CtlDispatch, Shared, ToolbarInstance, CLASS_BAR,
+    WM_APP_REFRESH, WM_MOUSELEAVE,
 };
 use crate::daemon::log;
 use crate::daemon::pet_assets::PetArt;

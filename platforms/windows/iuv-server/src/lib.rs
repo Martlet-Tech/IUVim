@@ -24,7 +24,9 @@ use std::time::{Duration, Instant};
 use iuv_win::logger::log_line;
 
 use iuv_core::{Effect, Engine, ImeState, Key};
-use iuv_proto::{Candidate, Caps, ClientConfig, ClientInfo, KeyOutcome, KeyVerdict, Push, ResumeToken, C2S, S2C};
+use iuv_proto::{
+    Candidate, Caps, ClientConfig, ClientInfo, KeyOutcome, KeyVerdict, Push, ResumeToken, C2S, S2C,
+};
 use iuv_win::transport::{ConnHandler, ConnSender, Reply, Session};
 use iuv_win::ToolbarSignal;
 
@@ -61,7 +63,12 @@ pub struct EngineService {
     /// 同进程重连覆盖旧条目；陈旧条目 request 返回 Closed，调用方降级。
     senders: Arc<Mutex<HashMap<(u32, u32), ConnSender>>>,
     /// 迁入的 daemon UI（工具栏宿主 + daemon 状态）；main 在启动 transport 前装配。
-    ui: Mutex<Option<(Arc<daemon::state::DaemonState>, Arc<daemon::toolbar::ToolbarHost>)>>,
+    ui: Mutex<
+        Option<(
+            Arc<daemon::state::DaemonState>,
+            Arc<daemon::toolbar::ToolbarHost>,
+        )>,
+    >,
 }
 
 impl EngineService {
@@ -93,7 +100,6 @@ impl EngineService {
     ) {
         *self.ui.lock().unwrap_or_else(|e| e.into_inner()) = Some((state, toolbar));
     }
-
 
     /// 配置纪元句柄（main 装配 `config_watch` 时共享）。
     pub fn config_epoch(&self) -> Arc<AtomicU32> {
@@ -206,7 +212,10 @@ pub struct EngineSession {
     client_pid: u32,
     client_tid: u32,
     /// 迁入的 daemon UI（None = main 未装配）。
-    ui: Option<(Arc<daemon::state::DaemonState>, Arc<daemon::toolbar::ToolbarHost>)>,
+    ui: Option<(
+        Arc<daemon::state::DaemonState>,
+        Arc<daemon::toolbar::ToolbarHost>,
+    )>,
     /// 用户库共享段写者（与 EngineService 共享；UserMutation 后发布）。
     shm: Arc<Mutex<Option<iuv_win::ShmWriter>>>,
     /// 会话候选窗（服务端自渲染，49 §4.5.3；抑制命中时静默）。
@@ -320,7 +329,12 @@ impl Session for EngineSession {
             C2S::Ping { nonce } => reply.respond(S2C::Pong { nonce }),
             C2S::CaretMoved { rect, .. } => {
                 // 服务端渲染的光标锚点（客户端只在变化时上报；打字期锚点恒定）。
-                let c = iuv_ui::CaretRect { x: rect.left, y: rect.top, w: rect.right - rect.left, h: rect.bottom - rect.top };
+                let c = iuv_ui::CaretRect {
+                    x: rect.left,
+                    y: rect.top,
+                    w: rect.right - rect.left,
+                    h: rect.bottom - rect.top,
+                };
                 let moved = self.caret != Some(c);
                 self.caret = Some(c);
                 if moved {
@@ -354,10 +368,7 @@ impl Session for EngineSession {
                 // ②toolbar 信号迁入：焦点变化 → ToolbarSignal（pid/tid = 握手报备）。
                 if let Some((_, tb)) = &self.ui {
                     let sig = if focused {
-                        let st = *self
-                            .runtime
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
+                        let st = *self.runtime.lock().unwrap_or_else(|e| e.into_inner());
                         ToolbarSignal::FocusGained {
                             pid: self.client_pid,
                             tid: self.client_tid,
@@ -508,7 +519,10 @@ impl EngineSession {
             candidates,
             all_candidates,
             page: self.caps.has(Caps::UIELEMENT).then_some(effect.page),
-            selected: self.caps.has(Caps::UIELEMENT).then_some(effect.selected as u32),
+            selected: self
+                .caps
+                .has(Caps::UIELEMENT)
+                .then_some(effect.selected as u32),
         }
     }
 
@@ -591,4 +605,3 @@ impl daemon::toolbar::CtlDispatch for TransportCtlDispatcher {
         }
     }
 }
-

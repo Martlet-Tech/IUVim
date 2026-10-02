@@ -53,7 +53,8 @@ impl<'a> WriteGuard<'a> {
 }
 impl Drop for WriteGuard<'_> {
     fn drop(&mut self) {
-        self.counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.counter
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

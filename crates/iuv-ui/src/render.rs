@@ -383,9 +383,7 @@ mod tests {
         render_toolbar, ToolbarIcons, ToolbarSpec, TB_COUNT, TB_GEAR, TB_LOGO, TOOLBAR_GAP,
         TOOLBAR_PAD,
     };
-    use iuv_core::{
-        ImeState, ImeMode, Orientation, PageInfo, ImePunct, ImeScript, ImeWidth,
-    };
+    use iuv_core::{ImeMode, ImePunct, ImeScript, ImeState, ImeWidth, Orientation, PageInfo};
 
     fn renderer() -> TextRenderer {
         TextRenderer::new()

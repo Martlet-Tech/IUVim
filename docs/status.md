@@ -33,9 +33,26 @@
 - **测试**：`scripts\build.ps1`（三车道构建）→ `dev-deploy.ps1`（热部署，-SkipBuild 可跳构建）→
   `install.ps1`（全新安装）→ `uninstall.ps1`（卸载，注销收尾）。
   日志 `%TEMP%\iuv-tsf.log` / `iuv-server.log` / `iuv-script.log`。
-- **环境注意**：本机测试进程做文件 IO 报 os error 5（存量环境问题，疑杀软，干净树
-  复现，与本仓库代码无关）——相关存量测试在本机红属正常（transport 的
-  `server_initiated_request_roundtrip` 同源，HEAD 基线即红）。
+- **环境注意**：本机存在**按镜像路径的进程围栏**（2026-10-02 破案，替代旧「疑杀软」
+  推断）：`D:\Projects\input` 下镜像的进程被创建为 Low 完整性级别（实测
+  whoami 双镜像对照），树外写与内核命名对象创建全拒、管理员免疫、树内可写。
+  **解法**：`set TMP=D:\Projects\input\iuvim\target\tmp && set TEMP=同值 &&
+  cargo test --workspace --no-fail-fast` → 518 过 / 3 败（shm 三测试走
+  `Local\` 命名对象不可重定向，需管理员跑）。详见 50 号 §6。
+  transport 的 `server_initiated_request_roundtrip` 与此围栏无关，真因是
+  测试内管道名少一个反斜杠（transport.rs:339）——**已修复，套件 8/8 全绿**。
+
+### 全仓库品质检查（50 号，`docs/plan/50-quality-audit.md`）——检查完成 2026-10-02，待修复
+
+M10 后首次全仓品质检查（自动化 + 6 路模块代理逐文件通读 + 高危人工核实）。
+**5 个高危**已核实：① JSONC 剥注释按字节重组破坏配置里的中文（core/config/io.rs:134）；
+② `page_size=1` 下溢 panic（core/userdict.rs:212）；③ M10 后 Test/Down 双跑破坏
+引号配对状态机（tsf key_routing.rs:82）；④ 工具栏 SetMode 兜底漏同步 `english_mode`
+（tsf text_service.rs:265）；⑤ 设置页清空用户库不清引擎内存态（server settings.rs:1197）。
+另有 transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）、死代码一批
+（viterbi 整模块、tsf 本地候选窗 ~600 行、server daemon 时代死链）、文档漂移一批
+（00-overview 与 tsf-interaction 仍是 daemon 架构描述，误导源之首）。
+修复顺序见 50 号 §5：清环境 → 高危 → transport → 迁移收尾对账 → 更新架构文档。
 
 ### 未开工 / 挂起
 
