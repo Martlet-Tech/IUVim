@@ -40,7 +40,6 @@ use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 
 use iuv_core::ImeState;
 use iuv_ui::{theme_dark, theme_light, Theme, ToolbarIcons};
@@ -169,11 +168,11 @@ impl ToolbarHost {
         let t_pet = pet_art.clone();
         let t_pending = host.pending.clone();
         let t_ctl = ctl.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
+        let t_host = host.clone();
         let spawned = std::thread::Builder::new()
             .name("iuv-toolbar".to_string())
             .spawn(move || {
-                toolbar_thread_main(t_shared, t_state, t_icons, t_pet, t_pending, t_ctl, tx)
+                toolbar_thread_main(t_shared, t_state, t_icons, t_pet, t_pending, t_ctl, t_host)
             });
         match spawned {
             Ok(_h) => {
@@ -183,12 +182,13 @@ impl ToolbarHost {
                 log::log_line(&format!("[toolbar] 工具条线程启动失败：{e}"));
             }
         };
-        // 等待工具条线程回传 (hwnd, os_thread_id)（5s 超时；失败 = 窗口未建，wake 空操作）。
-        // HWND 为裸指针（!Send），经 usize 回传。
-        if let Ok((hwnd, os_tid)) = rx.recv_timeout(Duration::from_secs(5)) {
-            host.hwnd.store(hwnd, Ordering::SeqCst);
-            host.thread_id.store(os_tid, Ordering::SeqCst);
-        }
+        // hwnd/tid 不在 spawn 侧等待：由工具条线程建窗后**自注册**回宿主原子量
+        // （2026-10-04 修复）。旧实现经 channel 回传 + recv_timeout(5s) 等待——
+        // 开机冷启动建窗可超 5s（2026-10-03 实测 8.2s），超时后 hwnd 恒 0，
+        // wake() 永久空操作 → 全部 BarEvent 入队后无人 drain：工具栏不显示、
+        // 显隐偏好切换不生效（菜单文案恒「隐藏工具栏」）。自注册无时限，
+        // 建窗再慢也只延迟、不丢失；就绪前的信号由线程入循环前补发的一次
+        // WM_APP_REFRESH 排空。
         host
     }
 
@@ -283,7 +283,7 @@ fn toolbar_thread_main(
     pet: Arc<PetArt>,
     pending: Arc<Mutex<VecDeque<BarEvent>>>,
     ctl: Arc<dyn CtlDispatch>,
-    tx: std::sync::mpsc::Sender<(usize, u32)>,
+    host: Arc<ToolbarHost>,
 ) {
     register_bar_class();
     register_tip_class();
@@ -311,7 +311,13 @@ fn toolbar_thread_main(
     }
     // SAFETY: GetCurrentThreadId 纯查询（PostThreadMessage 退出用）。
     let os_tid = unsafe { GetCurrentThreadId() };
-    let _ = tx.send((hwnd.0 as usize, os_tid));
+    // 自注册回宿主（见 spawn 注释）：无时限，慢建窗只延迟不丢失唤醒通道。
+    // HWND 为裸指针（!Send），经 usize 存原子量。
+    host.hwnd.store(hwnd.0 as usize, Ordering::SeqCst);
+    host.thread_id.store(os_tid, Ordering::SeqCst);
+    // 补一发刷新：窗口就绪前入队的信号（含开机早期的 FocusGained 回放）由此
+    // 排空，绑定恢复后工具栏立即显示，不必等下一次焦点切换。
+    let _ = unsafe { PostMessageW(Some(hwnd), WM_APP_REFRESH, WPARAM(0), LPARAM(0)) };
     log::log_line("[toolbar] 工具条窗口就绪，进入消息循环");
     loop {
         let mut msg = MSG::default();
