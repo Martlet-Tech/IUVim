@@ -1,5 +1,8 @@
 ﻿# 一次性资源转换：`assets/main.png`（输入法主 logo）→ `res/icon.ico`（语言栏主图标 / DLL 文件图标）。
 #
+# 2026-10-07 起由 `scripts/gen-tsf-icons.py` 取代：后者同时生成 icon/zh/en 三个 ico
+# （统一"品牌蓝圆角方块 + 白色字形"家族），本脚本保留仅作格式参考。
+#
 # 语义：TSF 语言栏「中英按钮右侧主图标」= TIP 注册的 `ulIconIndex=0` → DLL 图标组 ID "1"
 # = `res/icon.ico`（build.rs `set_icon` 编译期内嵌）。本脚本把 main.png 转成多尺寸 32bpp
 # .ico 覆盖该文件；转换是一次性的，之后构建在编译期完成、运行时零开销（LoadImageW + LR_SHARED）。
