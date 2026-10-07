@@ -19,8 +19,13 @@ use crate::theme::Theme;
 
 /// 工具栏按钮几何（物理像素 @96dpi 基准；render 乘 scale）。
 pub(crate) const TOOLBAR_BTN: f32 = 30.0;
+/// 按钮高度比宽度矮（2026-10-07：图标 24px 不动，垂直 inset 3→1、按钮 30→26、
+/// pad_y 2——字形到工具栏边缘仅 3px，工具栏整体压扁到 30px 高）。
+pub(crate) const TOOLBAR_BTN_H: f32 = 26.0;
 pub(crate) const TOOLBAR_GAP: f32 = 4.0;
-pub(crate) const TOOLBAR_PAD: f32 = 6.0;
+/// 内边距横竖分开（2026-10-07：竖向压扁，见 TOOLBAR_BTN_H 注释）。
+pub(crate) const TOOLBAR_PAD_X: f32 = 6.0;
+pub(crate) const TOOLBAR_PAD_Y: f32 = 2.0;
 
 /// 工具栏按钮索引（布局顺序：logo | 中英 | 全半角 | 标点 | 简繁 | 齿轮）。
 pub const TB_LOGO: usize = 0;
@@ -74,18 +79,20 @@ pub fn render_toolbar(spec: &ToolbarSpec, theme: &Theme, scale: f32) -> (Surface
         1.0
     };
     let btn = (TOOLBAR_BTN * scale).ceil();
+    let btn_h = (TOOLBAR_BTN_H * scale).ceil();
     let gap = (TOOLBAR_GAP * scale).ceil();
-    let pad = (TOOLBAR_PAD * scale).ceil();
-    let content_w = (btn * TB_COUNT as f32) + (gap * (TB_COUNT as f32 - 1.0)) + pad * 2.0;
-    let content_h = btn + pad * 2.0;
+    let pad_x = (TOOLBAR_PAD_X * scale).ceil();
+    let pad_y = (TOOLBAR_PAD_Y * scale).ceil();
+    let content_w = (btn * TB_COUNT as f32) + (gap * (TB_COUNT as f32 - 1.0)) + pad_x * 2.0;
+    let content_h = btn_h + pad_y * 2.0;
     // 按钮矩形（内容坐标；无阴影时代内容坐标即表面坐标，命中区与绘制严格重合）
     let mut rects = Vec::with_capacity(TB_COUNT);
     for i in 0..TB_COUNT {
         rects.push(LayoutRect {
-            x: (pad + i as f32 * (btn + gap)).round() as i32,
-            y: pad.round() as i32,
+            x: (pad_x + i as f32 * (btn + gap)).round() as i32,
+            y: pad_y.round() as i32,
             w: btn.round() as i32,
-            h: btn.round() as i32,
+            h: btn_h.round() as i32,
         });
     }
     let surface = render_to_surface(theme, scale, content_w as u32, content_h as u32, |pixmap| {
@@ -121,9 +128,11 @@ pub(crate) fn draw_toolbar_content(
             );
         }
         if let Some(icon) = toolbar_icon(spec, i) {
-            // 图标按目标尺寸缩放居中（inset 内边距；源图 ~28-32px 近方形）
-            let inset = (3.0 * scale).ceil();
-            draw_icon_scaled(pixmap, icon, r, inset);
+            // 图标按目标尺寸缩放居中（inset 内边距横竖分开：源图 ~28-32px 近方形，
+            // 横 3 竖 1 → 30×26 按钮内可用区 24×24，图标大小与旧版一致）
+            let inset_x = (3.0 * scale).ceil();
+            let inset_y = (1.0 * scale).ceil();
+            draw_icon_scaled(pixmap, icon, r, inset_x, inset_y);
         }
     }
 }
@@ -157,8 +166,8 @@ fn toolbar_icon<'a>(spec: &'a ToolbarSpec, i: usize) -> Option<&'a Pixmap> {
 /// 2026-08-21 修：缩放变换用 `from_scale` 而非 `from_bbox`——`from_bbox` 把源坐标
 /// (0..iw) 映射到 (0..iw*scale)，目标画布只有 dw 大小 → 只采样源图左上角 ~1 像素
 /// （图标居中、四角透明 → 整片空白，实测 32-toolbar 图标全空）。
-fn draw_icon_scaled(canvas: &mut Pixmap, icon: &Pixmap, r: &LayoutRect, inset: f32) {
-    let avail = (r.w as f32 - inset * 2.0).min(r.h as f32 - inset * 2.0);
+fn draw_icon_scaled(canvas: &mut Pixmap, icon: &Pixmap, r: &LayoutRect, inset_x: f32, inset_y: f32) {
+    let avail = (r.w as f32 - inset_x * 2.0).min(r.h as f32 - inset_y * 2.0);
     if avail <= 0.0 {
         return;
     }
@@ -245,10 +254,12 @@ pub struct CompositeSpec<'a> {
 /// 工具栏尺寸（@96dpi 基准 × scale）——与 `render_toolbar` 同源公式，抽出避免两三处重复。
 fn toolbar_size(scale: f32) -> (i32, i32) {
     let btn = (TOOLBAR_BTN * scale).ceil() as i32;
+    let btn_h = (TOOLBAR_BTN_H * scale).ceil() as i32;
     let gap = (TOOLBAR_GAP * scale).ceil() as i32;
-    let pad = (TOOLBAR_PAD * scale).ceil() as i32;
-    let w = btn * TB_COUNT as i32 + gap * (TB_COUNT as i32 - 1) + pad * 2;
-    let h = btn + pad * 2;
+    let pad_x = (TOOLBAR_PAD_X * scale).ceil() as i32;
+    let pad_y = (TOOLBAR_PAD_Y * scale).ceil() as i32;
+    let w = btn * TB_COUNT as i32 + gap * (TB_COUNT as i32 - 1) + pad_x * 2;
+    let h = btn_h + pad_y * 2;
     (w, h)
 }
 
@@ -412,14 +423,14 @@ mod tests {
         let overhang = (PET_OVERHANG * 1.0).ceil() as i32;
         let toolbar_w = (TOOLBAR_BTN * 1.0).ceil() as i32 * TB_COUNT as i32
             + (TOOLBAR_GAP * 1.0).ceil() as i32 * (TB_COUNT as i32 - 1)
-            + (TOOLBAR_PAD * 1.0).ceil() as i32 * 2;
-        let toolbar_h = (TOOLBAR_BTN * 1.0).ceil() as i32 + (TOOLBAR_PAD * 1.0).ceil() as i32 * 2;
+            + (TOOLBAR_PAD_X * 1.0).ceil() as i32 * 2;
+        let toolbar_h = (TOOLBAR_BTN_H * 1.0).ceil() as i32 + (TOOLBAR_PAD_Y * 1.0).ceil() as i32 * 2;
         assert_eq!(
             surf.w as i32, toolbar_w,
             "复合窗宽 = 工具栏宽（可贴屏幕右缘）"
         );
         assert_eq!(surf.h as i32, toolbar_h + overhang);
-        // 按钮矩形：y 全部一致 = pad + overhang（pad=6, overhang=136 @ scale=1 → 142）
+        // 按钮矩形：y 全部一致 = pad_y + overhang（pad_y=2, overhang=136 @ scale=1 → 138）
         // 关键不变量：复合坐标下所有按钮 y 相同（横排布局）。
         let first_y = rects[0].y;
         for r in &rects {
@@ -507,7 +518,7 @@ mod tests {
     }
 
     /// 复合渲染几何（少女形象 · 竖长半身像）：scale=1 时
-    ///   复合窗 = (toolbar_w, toolbar_h + 136) = 212×178（宠物居中挂正上方，宽度不追加）
+    ///   复合窗 = (toolbar_w, toolbar_h + 136) = 212×166（宠物居中挂正上方，宽度不追加）
     ///   按钮矩形 y 偏移 = 136 = PET_OVERHANG
     ///   宠物显示矩形 = (50, 8, 112, 128)（x = (212-112)/2；底边 y+h=136 贴工具栏上沿）
     ///
@@ -541,12 +552,12 @@ mod tests {
         };
         let (surf, rects, pet_rect, _) =
             render_composite(&composite, &crate::theme::theme_dark(), 1.0);
-        // 复合窗 212×178
+        // 复合窗 212×166
         assert_eq!(
             surf.w, 212,
             "scale=1 复合窗宽 = 工具栏宽（宠物居中挂上方，不追加宽度）"
         );
-        assert_eq!(surf.h, 178, "scale=1 复合窗高 = 42+136");
+        assert_eq!(surf.h, 166, "scale=1 复合窗高 = 30+136");
         // 宠物矩形（竖长半身像 @96dpi 基准）
         let pr = pet_rect.expect("pet_rect 必须返回（命中用）");
         assert_eq!(pr.x, 50, "宠物水平居中于工具栏：x = (212 - 112)/2");

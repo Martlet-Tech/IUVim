@@ -323,24 +323,28 @@ pub(crate) fn render_toolbar_into_pixmap(
     scale: f32,
 ) -> Option<(Pixmap, Vec<crate::layout::Rect>)> {
     use crate::layout::Rect as LayoutRect;
-    use crate::toolbar::{TB_COUNT, TOOLBAR_BTN, TOOLBAR_GAP, TOOLBAR_PAD};
+    use crate::toolbar::{
+        TB_COUNT, TOOLBAR_BTN, TOOLBAR_BTN_H, TOOLBAR_GAP, TOOLBAR_PAD_X, TOOLBAR_PAD_Y,
+    };
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
         1.0
     };
     let btn = (TOOLBAR_BTN * scale).ceil();
+    let btn_h = (TOOLBAR_BTN_H * scale).ceil();
     let gap = (TOOLBAR_GAP * scale).ceil();
-    let pad = (TOOLBAR_PAD * scale).ceil();
-    let content_w = (btn * TB_COUNT as f32) + (gap * (TB_COUNT as f32 - 1.0)) + pad * 2.0;
-    let content_h = btn + pad * 2.0;
+    let pad_x = (TOOLBAR_PAD_X * scale).ceil();
+    let pad_y = (TOOLBAR_PAD_Y * scale).ceil();
+    let content_w = (btn * TB_COUNT as f32) + (gap * (TB_COUNT as f32 - 1.0)) + pad_x * 2.0;
+    let content_h = btn_h + pad_y * 2.0;
     let mut rects = Vec::with_capacity(TB_COUNT);
     for i in 0..TB_COUNT {
         rects.push(LayoutRect {
-            x: (pad + i as f32 * (btn + gap)).round() as i32,
-            y: pad.round() as i32,
+            x: (pad_x + i as f32 * (btn + gap)).round() as i32,
+            y: pad_y.round() as i32,
             w: btn.round() as i32,
-            h: btn.round() as i32,
+            h: btn_h.round() as i32,
         });
     }
     let cw = content_w as u32;
@@ -381,7 +385,7 @@ mod tests {
     use crate::theme::{theme_dark, theme_light};
     use crate::toolbar::{
         render_toolbar, ToolbarIcons, ToolbarSpec, TB_COUNT, TB_GEAR, TB_LOGO, TOOLBAR_GAP,
-        TOOLBAR_PAD,
+        TOOLBAR_PAD_X, TOOLBAR_PAD_Y,
     };
     use iuv_core::{ImeMode, ImePunct, ImeScript, ImeState, ImeWidth, Orientation, PageInfo};
 
@@ -747,14 +751,14 @@ mod tests {
             surf.w,
             (rects[0].w * TB_COUNT as i32
                 + TOOLBAR_GAP as i32 * (TB_COUNT as i32 - 1)
-                + TOOLBAR_PAD as i32 * 2) as u32
+                + TOOLBAR_PAD_X as i32 * 2) as u32
         );
         assert!(surf.h > 0);
         // 命中区与绘制重合回归锚：矩形即表面坐标（无偏移）——首按钮矩形左上角
         // 必须落在 surface 内且不越出（2026-08-22 曾因阴影 margin 未计入矩形，
         // 命中区相对图标整体左上偏移 8×scale px）。
         let r0 = &rects[TB_LOGO];
-        assert!(r0.x >= TOOLBAR_PAD as i32 && r0.y >= TOOLBAR_PAD as i32);
+        assert!(r0.x >= TOOLBAR_PAD_X as i32 && r0.y >= TOOLBAR_PAD_Y as i32);
         assert!(
             (r0.x + r0.w) as u32 <= surf.w && (r0.y + r0.h) as u32 <= surf.h,
             "按钮矩形必须完整落在 surface 内"
