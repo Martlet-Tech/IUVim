@@ -303,7 +303,11 @@ impl ServerCandwin {
         if self.layered.hwnd.is_invalid() || !self.visible {
             return;
         }
-        self.apply_layout_and_pos(self.last_caret);
+        // 打字期只换内容、窗口不动（47 号语义）：传 None 走 `update_position` 原位
+        // 保留，仅当新尺寸越出工作区底/右缘才用 last_caret 重定位。传 `Some(caret)`
+        // 会每键用 `position_in_area` 从锚点重算上/下侧——光标贴近屏底时，窗口高度
+        // 前后键跨过「下方放得下」阈值（候选数 / 页码行变化）→ 上/下来回翻 = 上下弹跳。
+        self.apply_layout_and_pos(None);
     }
 
     fn move_to(&mut self, caret: CaretRect) {
