@@ -179,9 +179,13 @@ impl TextService {
     }
 
     /// 停反向控制端点（Deactivate：Drop 兜底清理，此处显式调以尽快释放窗口）。
+    /// 只从提交注册表移除**自己**——同进程多实例（TSF 每次激活一份）下，幽灵
+    /// 实例的停止不得断掉存活实例的控制通道（ctl.rs 模块注释，Trae 双实例案例）。
     fn stop_ctl_endpoint(&self) {
-        crate::ctl::clear_submit_hook();
         let ep = self.ctl.borrow_mut().take();
+        if let Some(ep) = ep.as_ref() {
+            ep.remove_submit_hook();
+        }
         drop(ep); // CtlEndpoint::drop 清 GWLP_USERDATA + 销毁窗口
     }
 

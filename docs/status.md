@@ -1297,3 +1297,41 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     记事本全拼打字/简繁翻转/标点直上屏全程正常。遗留发现：server 慢键观测
     `[perf]` tag 漏列目录，已补（LOG_MODULES 现含 tsf 11 + server 11 项）。
     实验后 denylist 已还原为用户自选 `["uielem"]`。
+
+- [x] **工具栏控制通道多实例断链修复：TSF 提交钩子单槽 → 端点注册表（2026-10-07，
+  单测 + 真机回归通过）**：
+  - **根因（日志实锤）**：TSF 每次激活 CoCreate 一份 TextService（同线程可并存多
+    实例，合法行为）。Trae CN（Chromium 系）真机日志：同 tid 两次完整 Activate
+    （05:15:23/05:16:34，中间无 Deactivate）→ 旧单槽 `SUBMIT_HOOK` 被实例 #2 覆盖
+    → #2 两秒后 Deactivate 无条件清全场 → 存活实例 #1 的控制通道断链（打字/语言
+    栏正常，工具栏点击全部「实例应用失败：无控制端点（未激活？）」，05:23:12-24
+    14 连败；05:34:48 新 Activate 重新登记后自愈——只有 Activate 会重挂钩子）。
+  - **方案辨析**：按 tid 建表不够——本案例两实例同 tid（TSF client id=13），同键
+    覆盖后幽灵照样清掉；server 按实例寻址需 `S2C::Ctl` 带 tid（现不带，msg.rs:295）
+    + PROTO 3→4，不成比例。故最小充分修 = 端点注册表，保持「最近激活实例赢」
+    语义（ctl.rs 原 136 行注释即此设计意图）。
+  - **改动**（tsf ctl.rs + text_service.rs，协议/server 零改动）：
+    `SUBMIT_HOOK` 单槽 → `SUBMIT_HOOKS: Mutex<Vec<SubmitHook>>` 注册表——attach
+    追加（同 hwnd_val 重挂去重）；`clear_submit_hook()` → `remove_submit_hook
+    (hwnd_val)` 只移除自己（stop_ctl_endpoint 经 `CtlEndpoint::remove_submit_hook`
+    传自身）；`submit_cmd` 快照后放锁（dispatch 最长阻塞 3s 不持注册表锁）、尾优先
+    遍历，`dispatch_ctl_cmd` PostMessage 失败（窗口已销毁，注册表滞后窗口生命周
+    期）→ 收回 job 回 None → 调用方移除死条目回退更早端点；表空才回「无控制端
+    点」。Trae 序列验证：attach#1→attach#2→remove#2 → 提交仍路由到存活 #1。
+  - **测试**：`cargo check --workspace` 干净；iuv-tsf 44/44（新增 5 测：幽灵
+    Deactivate 保存活实例（回归）、正常 Deactivate→Activate 循环、移除他人条目
+    no-op 不陪葬、同端点重挂去重、无注册表 submit 返 None）。iuv-core 12 个
+    `from_file_*`/userdict 失败与本改动无关（TMP 权限环境固有，本机进程围栏
+    ——`TMP/TEMP=仓库内` 重跑即可，见 50 号 §6）。
+  - **待真机回归**：dev-deploy 部署 → Trae 切输入法触发重激活（造双实例）→ 点
+    工具栏按钮。验收：server 日志无「无控制端点」；tsf 日志幽灵 Deactivate 后
+    `[ctl] 端点提交失败（窗口失效 …），回退更早端点`（若撞上死条目）或直接应用
+    成功；`[ctl] 控制端点就绪（提交注册表 N 个端点）` 行 N 随多实例递增。
+  - **真机回归（2026-10-07 12:17-12:20，dev-deploy + 重启 Trae）**：新 DLL 日志
+    格式确认生效（`提交注册表 1 个端点`）。可触达路径全部通过：Trae 两轮点击
+    共 24 次（中英/全半角/标点/简繁）全部「实例应用成功」，全日志零「无控制端
+    点」；输入法切走切回 = 干净 Deactivate→Activate 循环（注册表 1→1，先移除
+    旧端点再登记新端点），点击照常。病态双 Activate 序列（05:16 案例）本轮未
+    自然复现（间歇性），该路径由单测 `ghost_deactivate_keeps_survivor` + 死条
+    目回退覆盖，且 `提交注册表 N 个端点`/`回退更早端点` 两个日志观测点可在其
+    自然复现时直接判定。
