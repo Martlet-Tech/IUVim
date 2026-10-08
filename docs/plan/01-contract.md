@@ -708,7 +708,7 @@ pub struct Translation { pub segmentation: Vec<Span>, pub candidates: Vec<Candid
 - 会话层只消费 `candidates` 与 `segmentation[0].syllables`（= 原 seg 口径）；
   打字期 rime 按「单活动段」覆盖重译，segmentation 恒单段。
 - `Candidate.score: f64`：rime 全量填 log 概率（词=log 权+cred、句=路径权重）；
-  仅诊断展示，不参与排序（整句保底置顶 + 类别序结构不变）。
+  仅诊断展示，不参与排序（整句保底置顶 + 消费终点序结构不变）。
 
 ### 8.2 装配与开关
 
@@ -716,15 +716,21 @@ pub struct Translation { pub segmentation: Vec<Span>, pub candidates: Vec<Candid
   ~~`Config.engine`/`EngineChoice` 过渡开关~~已删（39 号收尾，git 留底）；旧配置
   `"engine"` 键经 `migrate_engine` shim 清理。
 - rime 打分参数（39 号 W2 λ 校准，默认 = librime 原值）：`Config.rime_lambda: f64`
-  （组句每词长度惩罚，默认 ln(1e-6)）、`Config.rime_spelling_penalty: f64`
-  （简拼/补全边可信度罚分，默认 ln(0.05)）。重载生效。
+  （组句每词长度惩罚，默认 ln(1e-6)）、`Config.rime_abbrev_penalty: f64`
+  （简拼边可信度罚分，默认 ln(0.5)，对齐 librime `calculus.cc:14`）、
+  `Config.rime_completion_penalty: f64`（补全边可信度罚分，默认 ln(0.05)，
+  对齐 librime `syllabifier.cc:28`）。重载生效。旧 `rime_spelling_penalty`
+  经 `migrate_spelling_penalty` shim 迁入 `rime_completion_penalty`。
 
 ### 8.3 行为变更（rime 核心）
 
 - Backspace 逐字退已选词（多字词退末字、末字音节还原回未确认区；音节数≠字数整词退）。
 - 预编辑显示规则收编为 `api::preview_rules` 五规则共用实现（行为不变）。
-- rime 核心候选流：补全(全跨)置顶 → 纯全拼桶 → 含简拼桶（详见任务书 §13 裁决表）；
-  词优先（可靠精确词在场不组句）、简拼边展开含单音节词条、大写保形字符不参与匹配。
+- rime 核心候选流：**按消费终点 end 降序**（第一排序键 = 消费长度，对齐 librime
+  `ScriptTranslation::PrepareCandidate` 的 `phrase_->rbegin()`；2026-10-08 废弃旧
+  class 分级「类2置顶/类0/类1沉底」——它会让含简拼的候选整类沉底，`shurfa` 的
+  「输入法」被 261 个纯全拼单字淹没）；词优先（可靠精确词在场不组句）、
+  简拼边展开含单音节词条、大写保形字符不参与匹配。
 
 ## 9. 段内切分规则补充（2026-09-10 增补）
 

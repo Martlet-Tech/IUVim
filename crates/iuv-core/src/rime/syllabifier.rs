@@ -5,7 +5,7 @@
 //! - **Normal** 完整音节，cred 0；
 //! - **Abbreviation** 单字母简拼——一条边携带该字母开头的**全部合法音节**
 //!   （librime 由拼写代数 achieve 同效：`nhao` 的 `n` 展开为所有 n* 音节，
-//!   故 `n+hao` 可命中 `ni'hao`「你好」，混拼由此统一承载），cred = ln(0.05)；
+//!   故 `n+hao` 可命中 `ni'hao`「你好」，混拼由此统一承载），cred = ln(0.5)；
 //! - **Completion** 尾前缀补全——仅当图解释不到输入末尾时补一条 [farthest, len)
 //!   边，内容 = 剩余串（非音节），查询侧走前缀查询展开（librime syllabifier.cc:207-248，
 //!   cred += ln(0.05)，:26-29 权重阶梯）。
@@ -14,8 +14,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// 简拼/补全可信度罚分默认值（librime syllabifier.cc:28 硬编码 ln(0.05)）。
-/// 简拼与补全同值，config `rime_spelling_penalty` 可调，此处仅是缺省。
+/// 简拼（Abbreviation）可信度罚分默认值：librime `algo/calculus.cc:14`
+/// `kAbbreviationPenalty = log(0.5)`——用户**主动**输入的缩写，扣分轻。
+/// 旧实现误与补全同取 ln(0.05)（引用了 syllabifier.cc:28 那个补全常量），
+/// 比 librime 重约 4.3 倍，2026-10-08 对齐修正。
+pub(crate) const ABBREVIATION_PENALTY: f64 = -0.693_147_180_559_945_3;
+
+/// 补全（Completion）可信度罚分默认值：librime `algo/syllabifier.cc:28`
+/// `kCompletionPenalty = log(0.05)`——算法瞎猜的尾巴，扣分重。
 pub(crate) const COMPLETION_PENALTY: f64 = -2.995_732_273_553_991;
 
 /// 拼写类型（librime SpellingType 子集）。序 = 质量序（值小者优）。
@@ -48,7 +54,8 @@ pub(crate) struct SyllableGraph {
 
 /// 在 `input`（小写化字母串，可含 `'` 分隔符）上构建音节图。
 /// `abbrev_penalty` / `completion_penalty`：简拼边与补全边的可信度罚分
-/// （log 域负值；config `rime_spelling_penalty`，默认 ln(0.05)）。
+/// （log 域负值；config `rime_abbrev_penalty` / `rime_completion_penalty`，
+/// 默认分别 ln(0.5) / ln(0.05)，对齐 librime）。
 ///
 /// 规则（自 librime 化简，依据见模块注释）：
 /// 1. 位置升序扩展；每个到达位置先吞前导 `'`；

@@ -22,7 +22,9 @@ impl Config {
         let text = strip_bom(&text);
         let text = strip_jsonc_comments(text); // 兼容带 // 注释的配置（安装器产出的默认文件）
         let v = match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(v) => migrate_engine(migrate_initial_state(migrate_keymap(v))),
+            Ok(v) => migrate_engine(migrate_initial_state(migrate_keymap(
+                migrate_spelling_penalty(v),
+            ))),
             Err(_) => return Config::default(),
         };
         serde_json::from_value::<Config>(v).unwrap_or_default()
@@ -36,6 +38,20 @@ impl Config {
 fn migrate_engine(mut v: serde_json::Value) -> serde_json::Value {
     if let Some(obj) = v.as_object_mut() {
         obj.remove("engine");
+    }
+    v
+}
+
+/// 旧 `rime_spelling_penalty` 迁移 shim（2026-10-08）：该键旧语义 = 简拼与补全
+/// **共用一个值**（默认 ln(0.05)）。罚分已按 librime 拆成两键，旧值迁移到
+/// `rime_completion_penalty`（旧默认即补全默认，对旧自定义值也最贴近）；
+/// 简拼改走新默认 ln(0.5)。旧键移除保持配置纯净。
+fn migrate_spelling_penalty(mut v: serde_json::Value) -> serde_json::Value {
+    let Some(obj) = v.as_object_mut() else {
+        return v;
+    };
+    if let Some(old) = obj.remove("rime_spelling_penalty") {
+        obj.entry("rime_completion_penalty").or_insert(old);
     }
     v
 }

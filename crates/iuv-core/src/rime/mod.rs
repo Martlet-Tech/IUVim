@@ -36,8 +36,10 @@ pub struct RimeEngine {
     max_candidates: usize,
     /// 组句长度惩罚 λ（config `rime_lambda`，39 号 W2 校准项）
     lambda: f64,
-    /// 简拼/补全边拼写罚分（config `rime_spelling_penalty`）
-    spelling_penalty: f64,
+    /// 简拼边可信度罚分（config `rime_abbrev_penalty`，默认 ln(0.5)）
+    abbrev_penalty: f64,
+    /// 补全边可信度罚分（config `rime_completion_penalty`，默认 ln(0.05)）
+    completion_penalty: f64,
     /// 前缀联想开关（config `candidate_prefix`，默认关；开启时词条流后追加联想长词）。
     candidate_prefix: bool,
 }
@@ -54,7 +56,8 @@ impl RimeEngine {
             syllables,
             max_candidates: config.max_candidates,
             lambda: config.rime_lambda,
-            spelling_penalty: config.rime_spelling_penalty,
+            abbrev_penalty: config.rime_abbrev_penalty,
+            completion_penalty: config.rime_completion_penalty,
             candidate_prefix: config.candidate_prefix,
         })
     }
@@ -138,8 +141,8 @@ impl ImeEngine for RimeEngine {
             &lower,
             &self.syllables,
             MAX_SYLLABLE_LEN,
-            self.spelling_penalty,
-            self.spelling_penalty,
+            self.abbrev_penalty,
+            self.completion_penalty,
         );
         // —— 微软对齐政策（prefix 档位降级为核心内部政策）：
         // 整串为音节真前缀且非完整音节 → 纯单字，不走图流。——
@@ -171,7 +174,7 @@ impl ImeEngine for RimeEngine {
                             lower.len(),
                             tail_start,
                             last,
-                            self.spelling_penalty,
+                            self.completion_penalty,
                         );
                     }
                 }
@@ -203,10 +206,17 @@ impl ImeEngine for RimeEngine {
             self.blocked(),
         );
 
-        // —— 词候选流（st.cc 码长优先 + 2026-08-26 裁决分级）：
-        //    类 2（尾前缀补全，恒覆盖全跨度——对齐 classic 2b 整句置顶与
-        //    rime end-desc 铁律）→ 类 0（纯全拼桶）→ 类 1（含简拼，保守沉底），
-        //    类内消耗终点降序，桶内已按精确优先 + 权重降序。——
+        // —— 词候选流（对齐 librime ScriptTranslation::PrepareCandidate）：
+        //    **按消费终点 end 降序**输出——librime 收集器以 end_pos 为键
+        //    （dictionary.h:54 `DictEntryCollector = map<size_t, ...>`），
+        //    `phrase_->rbegin()`（script_translator.cc:472）即「消费最长的先出」，
+        //    这是第一排序键，无任何「类别」参与。桶内沿用 collect_buckets 的排序
+        //    （精确优先 → 权重降序 → 字序），与 librime 组内
+        //    compare_chunk_by_head_element（dictionary.cc:73-84）同构。
+        //    简拼/补全的代价只体现在 cred（进 score 与 poet 词格），**不再**作为
+        //    候选分档——旧 class 分级（类2置顶 / 类0 / 类1沉底）是为对齐已删的
+        //    classic 引擎而设，会把含简拼的候选整类沉底（shurfa 的「输入法」被
+        //    261 个纯全拼单字淹没），2026-10-08 废弃。——
         // seg_len 按字节跨度映射到贪心分段数（librime end_pos 语义：候选消费 =
         // 其图终点覆盖的段数；简拼边值长≠字节跨度的错位由此归位）。
         // seg_len 映射的边界表：**扫描 raw 实际字节**（每段后跳过一个 `'`），
@@ -245,54 +255,39 @@ impl ImeEngine for RimeEngine {
                 .min(n_seg_cum.max(1))
         };
 
+        let mut ends: Vec<usize> = buckets
+            .keys()
+            .filter(|&&(o, e)| o == 0 && e > 0 && e <= graph.farthest)
+            .map(|&(_, e)| e)
+            .collect();
+        ends.sort_unstable_by(|a, b| b.cmp(a));
+        ends.dedup();
         let mut cands: Vec<crate::Candidate> = Vec::new();
-        for class in [2u8, 0, 1] {
-            let mut ends: Vec<usize> = buckets
-                .iter()
-                .filter(|(&(_, e), slot)| {
-                    e <= graph.farthest && e > 0 && slot.iter().any(|b| b.class == class)
-                })
-                .map(|(&(_, e), _)| e)
-                .collect();
-            ends.sort_unstable_by(|a, b| b.cmp(a));
-            ends.dedup();
-            for end in ends {
-                if let Some(slot) = buckets.get(&(0, end)) {
-                    for be in slot.iter().filter(|b| b.class == class) {
-                        // 预测匹配（尾前缀补全）覆盖全输入 → 恒全消费
-                        let seg_len = if be.exact { consumed_parts(end) } else { 999 };
-                        let kind = crate::CandidateKind::for_word(&be.entry.word);
-                        let mut cand = crate::Candidate::for_entry(&be.entry, kind, seg_len);
-                        // 统一标量分：log 词权 + 拼写可信度累计（诊断展示，不参与排序）
-                        cand.score = self.lm.log_prob(None, "", be.entry.weight) + be.cred;
-                        cands.push(cand);
-                    }
-                }
+        for end in ends {
+            let Some(slot) = buckets.get(&(0, end)) else {
+                continue;
+            };
+            for be in slot.iter() {
+                // 预测匹配（尾前缀补全）覆盖全输入 → 恒全消费
+                let seg_len = if be.exact { consumed_parts(end) } else { 999 };
+                let kind = crate::CandidateKind::for_word(&be.entry.word);
+                let mut cand = crate::Candidate::for_entry(&be.entry, kind, seg_len);
+                // 统一标量分：log 词权 + 拼写可信度累计（诊断展示，不参与排序）
+                cand.score = self.lm.log_prob(None, "", be.entry.weight) + be.cred;
+                cands.push(cand);
             }
         }
 
         // —— 整句通道：闸门 + Poet DP；句候选置最前（st.cc:598-601）。
-        // classic 2b 守卫对齐：除末段外全为完整音节才组句（全简拼输入无句通道）——
-        // 同时要求 Poet 词格只用纯全拼桶（class≤... 过滤含简拼的桶，垃圾组合不入围）——
+        // 守卫：除末段外全为完整音节才组句（全简拼输入无句通道）。
+        // 词格不再按拼法过滤——librime PrepareForMakingSentence（st.cc:698-716）
+        // 对词格零拼法过滤，旧 `class != 1` 过滤随 class 分级一并移除。——
         let rest_all_syllables = {
             let ne: Vec<&String> = seg.iter().filter(|s| !s.is_empty()).collect();
             ne.len() >= 2 && ne[..ne.len() - 1].iter().all(|s| self.is_syllable(s))
         };
         if rest_all_syllables {
-            let wg_filtered: translator::Buckets = buckets
-                .iter()
-                .map(|(k, slot)| {
-                    (
-                        *k,
-                        slot.iter()
-                            .filter(|b| b.class != 1)
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .filter(|(_, slot)| !slot.is_empty())
-                .collect();
-            if let Some(wg) = translator::build_poet_graph(&wg_filtered, graph.farthest, |w| {
+            if let Some(wg) = translator::build_poet_graph(&buckets, graph.farthest, |w| {
                 self.lm.log_prob(None, "", w)
             }) {
                 if let Some(sentence) =
@@ -561,8 +556,8 @@ mod tests {
             &lower,
             &e.syllables,
             MAX_SYLLABLE_LEN,
-            e.spelling_penalty,
-            e.spelling_penalty,
+            e.abbrev_penalty,
+            e.completion_penalty,
         );
         // 复刻 translate 的 2b 补全边注入
         {
@@ -583,7 +578,7 @@ mod tests {
                             lower.len(),
                             tail_start,
                             last,
-                            e.spelling_penalty,
+                            e.completion_penalty,
                         );
                     }
                 }
@@ -617,25 +612,12 @@ mod tests {
         for ((s, en), slot) in &buckets {
             for be in slot.iter().take(5) {
                 println!(
-                    "  bucket [{s:>2},{en:>2}) {:?} w={:>7} exact={:?} class={} cred={:.4}",
-                    be.entry.word, be.entry.weight, be.exact, be.class, be.cred
+                    "  bucket [{s:>2},{en:>2}) {:?} w={:>7} exact={:?} cred={:.4}",
+                    be.entry.word, be.entry.weight, be.exact, be.cred
                 );
             }
         }
-        let wg_filtered: translator::Buckets = buckets
-            .iter()
-            .map(|(k, slot)| {
-                (
-                    *k,
-                    slot.iter()
-                        .filter(|b| b.class != 1)
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .filter(|(_, slot)| !slot.is_empty())
-            .collect();
-        if let Some(wg) = translator::build_poet_graph(&wg_filtered, graph.farthest, |w| {
+        if let Some(wg) = translator::build_poet_graph(&buckets, graph.farthest, |w| {
             e.lm.log_prob(None, "", w)
         }) {
             println!("== poet graph ==");

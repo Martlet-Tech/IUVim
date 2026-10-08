@@ -61,9 +61,12 @@ pub struct Config {
     /// 默认 = librime 原生 kPenalty ln(1e-6)：每多一个词多扣一次，长词路径占优。
     /// 调参需重载输入法生效。
     pub rime_lambda: f64,
-    /// rime 引擎拼写可信度罚分（log 域，简拼边与补全边各扣一次）。
-    /// 默认 = librime syllabifier.cc:28 ln(0.05)。
-    pub rime_spelling_penalty: f64,
+    /// rime 引擎**简拼边**可信度罚分（log 域，每遇一条简拼边扣一次）。
+    /// 默认 = librime algo/calculus.cc:14 log(0.5)。
+    pub rime_abbrev_penalty: f64,
+    /// rime 引擎**补全边**可信度罚分（log 域，每遇一条补全边扣一次）。
+    /// 默认 = librime algo/syllabifier.cc:28 log(0.05)。
+    pub rime_completion_penalty: f64,
 }
 
 impl Default for Config {
@@ -81,7 +84,8 @@ impl Default for Config {
             theme: ThemeChoice::Light,
             disabled_log_modules: Vec::new(),
             rime_lambda: crate::rime::poet::DEFAULT_LAMBDA,
-            rime_spelling_penalty: crate::rime::syllabifier::COMPLETION_PENALTY,
+            rime_abbrev_penalty: crate::rime::syllabifier::ABBREVIATION_PENALTY,
+            rime_completion_penalty: crate::rime::syllabifier::COMPLETION_PENALTY,
         }
     }
 }
