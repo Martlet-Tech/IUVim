@@ -3,9 +3,12 @@
 //! 派生自 librime（BSD-3-Clause）。保留其「顶点=位置、边=(起,终)带拼写类型与可信度罚分」
 //! 图模型；音节 ID trie 替换为 iuv-data 字符串键。MVP 三类拼写：
 //! - **Normal** 完整音节，cred 0；
-//! - **Abbreviation** 单字母简拼——一条边携带该字母开头的**全部合法音节**
-//!   （librime 由拼写代数 achieve 同效：`nhao` 的 `n` 展开为所有 n* 音节，
-//!   故 `n+hao` 可命中 `ni'hao`「你好」，混拼由此统一承载），cred = ln(0.5)；
+//! - **Abbreviation** 简拼——两族（librime `data/minimal/luna_pinyin.schema.yaml:75-76`
+//!   的两条 `abbrev` 代数规则）：① **单字母首字母**（`nhao` 的 `n` 展开为所有 n*
+//!   音节，故 `n+hao` 可命中 `ni'hao`「你好」）；② **双字母声母 zh/ch/sh**
+//!   （`abbrev/^([zcs]h).+$/$1/`：`sh` 展开为所有 sh* 音节，故 `tushguan` 可命中
+//!   `tu'shu'guan`「图书馆」）。一条边携带该展开的**全部合法音节**，混拼由此
+//!   统一承载，cred = ln(0.5)；
 //! - **Completion** 尾前缀补全——仅当图解释不到输入末尾时补一条 [farthest, len)
 //!   边，内容 = 剩余串（非音节），查询侧走前缀查询展开（librime syllabifier.cc:207-248，
 //!   cred += ln(0.05)，:26-29 权重阶梯）。
@@ -15,10 +18,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 简拼（Abbreviation）可信度罚分默认值：librime `algo/calculus.cc:14`
-/// `kAbbreviationPenalty = log(0.5)`——用户**主动**输入的缩写，扣分轻。
+/// `kAbbreviationPenalty = log(0.5)`（= −ln2）——用户**主动**输入的缩写，扣分轻。
 /// 旧实现误与补全同取 ln(0.05)（引用了 syllabifier.cc:28 那个补全常量），
 /// 比 librime 重约 4.3 倍，2026-10-08 对齐修正。
-pub(crate) const ABBREVIATION_PENALTY: f64 = -0.693_147_180_559_945_3;
+pub(crate) const ABBREVIATION_PENALTY: f64 = -std::f64::consts::LN_2;
 
 /// 补全（Completion）可信度罚分默认值：librime `algo/syllabifier.cc:28`
 /// `kCompletionPenalty = log(0.05)`——算法瞎猜的尾巴，扣分重。
@@ -61,9 +64,10 @@ pub(crate) struct SyllableGraph {
 /// 1. 位置升序扩展；每个到达位置先吞前导 `'`；
 /// 2. 最长优先完整音节匹配（Normal）；
 /// 3. 单字母 → Abbreviation 边（展开为该字母开头的全部音节）；
-/// 4. 吞尾随 `'` 后落点为终点（边长含分隔符）；
-/// 5. 最远点 < len 且剩余串是某音节前缀 → 补一条 Completion 直达边；
-/// 6. 剪枝：仅保留能连通到 farthest 的边。
+/// 4. 双字母声母 zh/ch/sh → Abbreviation 边（展开为该声母开头的全部音节，51 号）；
+/// 5. 吞尾随 `'` 后落点为终点（边长含分隔符）；
+/// 6. 最远点 < len 且剩余串是某音节前缀 → 补一条 Completion 直达边；
+/// 7. 剪枝：仅保留能连通到 farthest 的边。
 pub(crate) fn build_graph(
     input: &str,
     syllables: &BTreeSet<String>,
@@ -144,6 +148,29 @@ pub(crate) fn build_graph(
                 SpellingType::Abbreviation,
                 abbrev_penalty,
             );
+        }
+        // 双字母声母简拼边（zh/ch/sh）：librime `luna_pinyin.schema.yaml:76`
+        // `abbrev/^([zcs]h).+$/$1/`——输入 "sh" 展开为该声母开头的全部音节
+        // （shu/shi/shang/…），与单字母边同型同罚分（calculus.cc:14 log(0.5)）。
+        // 无此边时 `huochzhan`/`tushguan`/`shrf` 这类声母简拼整串不可达（51 号根因）。
+        // 字节判定先行（z/c/s + h 均为 ASCII），其后切片必落在字符边界上。
+        if s + 2 <= n && matches!(bytes[s], b'z' | b'c' | b's') && bytes[s + 1] == b'h' {
+            let two = &input[s..s + 2];
+            let mut e2 = s + 2;
+            while e2 < n && bytes[e2] == b'\'' {
+                e2 += 1;
+            }
+            for syl in syllables.iter().filter(|syl| syl.starts_with(two)) {
+                add_spelling(
+                    &mut edges,
+                    &mut reached,
+                    v,
+                    e2,
+                    syl.clone(),
+                    SpellingType::Abbreviation,
+                    abbrev_penalty,
+                );
+            }
         }
     }
 

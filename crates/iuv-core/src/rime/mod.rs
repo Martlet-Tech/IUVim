@@ -417,6 +417,30 @@ mod tests {
         assert_eq!(t.first().map(String::as_str), Some("你好"), "{t:?}");
     }
 
+    /// 双字母声母简拼（51 号）：`sh` 边展开 sh* 音节 → tu + shu(简) + guan 命中图书馆。
+    #[test]
+    fn two_letter_initial_sh_abbrev_hits_word() {
+        let e = engine(vec![("tu'shu'guan", "图书馆", 8000)]);
+        let t = texts(&e, "tushguan");
+        assert_eq!(t.first().map(String::as_str), Some("图书馆"), "{t:?}");
+    }
+
+    /// 双字母声母简拼（51 号）：段首 `zh` → zhong(简) + guo 命中中国。
+    #[test]
+    fn two_letter_initial_zh_abbrev_hits_word() {
+        let e = engine(vec![("zhong'guo", "中国", 8000)]);
+        let t = texts(&e, "zhguo");
+        assert_eq!(t.first().map(String::as_str), Some("中国"), "{t:?}");
+    }
+
+    /// 双字母声母简拼不破坏全拼：`shu` 仍走 Normal（has_normal 守卫跳过简拼边）。
+    #[test]
+    fn two_letter_abbrev_keeps_full_pinyin() {
+        let e = engine(vec![("shu", "书", 50000), ("shuo", "说", 40000)]);
+        let t = texts(&e, "shu");
+        assert_eq!(t.first().map(String::as_str), Some("书"), "{t:?}");
+    }
+
     /// 尾前缀补全：shigechengy → shi'ge'cheng'y 前缀命中 是一个成语。
     #[test]
     fn tail_completion_predictive_top() {

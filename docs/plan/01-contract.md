@@ -731,6 +731,10 @@ pub struct Translation { pub segmentation: Vec<Span>, pub candidates: Vec<Candid
   class 分级「类2置顶/类0/类1沉底」——它会让含简拼的候选整类沉底，`shurfa` 的
   「输入法」被 261 个纯全拼单字淹没）；词优先（可靠精确词在场不组句）、
   简拼边展开含单音节词条、大写保形字符不参与匹配。
+- 简拼语义 = librime `luna_pinyin.schema.yaml:75-76` 两条 `abbrev` 规则的**两族**：
+  ① 单字母首字母（`nhao` 的 `n`→n* 音节）；② 双字母声母 zh/ch/sh（`tushguan`
+  的 `sh`→sh* 音节，2026-10-08 补，51 号）。两族同型同罚分（ln(0.5)），
+  边的音节值恒为完整音节 → 键族不变、词库无需重编译。
 
 ## 9. 段内切分规则补充（2026-09-10 增补）
 

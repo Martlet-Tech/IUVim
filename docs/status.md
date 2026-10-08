@@ -1335,3 +1335,41 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     自然复现（间歇性），该路径由单测 `ghost_deactivate_keeps_survivor` + 死条
     目回退覆盖，且 `提交注册表 N 个端点`/`回退更早端点` 两个日志观测点可在其
     自然复现时直接判定。
+
+- [x] **rime 候选流排序对齐 librime + 双字母声母简拼（2026-10-08，iuv-core 262 项单测全绿 +
+  repl 真词库 29 条 A/B 对拍通过）**：分支 `feat/rime-librime-order-align`——提交 `6056abe`
+  （排序对齐）+ 本轮（双字母声母简拼，任务书 `docs/plan/51-two-letter-initial-abbrev.md`）。
+  - **背景**：`shurfa`（全音节 + 简拼 + 完整尾音节）下「输入法」被埋在**第 262 位**，前 261 条
+    全是「书数树属输…」单字（QQ / 小狼毫均无此问题）；另，声母简拼习惯用户打
+    `huochzhan` / `tushguan` / `shrf` 时目标词**整条候选列表不可达**（不是排后面）。
+  - **根因 1（排序键被换）**：iuv 移植 librime 时自造 `class` 分级（0=纯全拼 / 1=含简拼 /
+    2=含补全）并提为**第一排序键**（`for class in [2,0,1]`），是为同时满足已删的 classic
+    引擎语义。后果：含简拼的「输入法」整类沉底，只吃 1 段的「书」整类置顶。librime 相反——
+    收集器键 = `end_pos`（`dictionary.h:54`），`phrase_->rbegin()`（`script_translator.cc:472`）
+    即**消费长度第一**；简拼只是 `kAbbreviationPenalty=log(0.5)`（`calculus.cc:14`）的有限扣分。
+  - **根因 2（简拼少一族）**：librime 标准 schema 有两条 `abbrev` 代数规则
+    （`luna_pinyin.schema.yaml:75-76`）——①单字母首字母、②双字母声母 zh/ch/sh；iuv 只实现①。
+    故 `sh` 只能被拆成「s + h」两个音节，`图书馆 = tu'shu'guan` 的路径**结构上不存在**。
+  - **改动**（`crates/iuv-core/src/rime/`）：
+    ① 候选流删 `class` 分级，改单遍**按消费终点 end 降序**（`mod.rs`），删
+    `BucketEntry.class` / `st_cls` / `merge_into` 类别合并（`translator.rs`），删句通道词格的
+    `class!=1` 过滤（librime `PrepareForMakingSentence` 零拼法过滤）；
+    ② 简拼罚分拆两键：`rime_abbrev_penalty`=ln(0.5)、`rime_completion_penalty`=ln(0.05)
+    （旧 `rime_spelling_penalty` 经 `migrate_spelling_penalty` shim 迁入补全键）；
+    ③ `build_graph` 补 2 字节声母简拼边（zh/ch/sh）——边的音节值仍为完整音节，
+    **键族不变、词库无需重编译**，`translator.rs` / `mod.rs` 零改动。
+  - **测试**：`cargo test -p iuv-core` 262 项全绿（原 259 + 新增 3）；`cargo clippy -p iuv-core`
+    零告警（顺带把 `ABBREVIATION_PENALTY` 字面量改 `-std::f64::consts::LN_2`，消
+    `approx_constant` deny）；repl 真词库 29 条 A/B 对拍（stash 还原 HEAD 编译对比）：
+    **diff 仅覆盖 6 条目标用例**，其余 23 条回归项逐字节不变。
+  - **效果**：`shurfa` 输入法 262 → **1**；`huochzhan`→火车站、`tushguan`→图书馆、`zhguo`→中国
+    均 **#1**；`shdian` / `shrf` / `tshg` 目标词**从不可达变可达**（#2——同桶内词频更高的
+    `书店 6404 > 商店 3723`、`杀人犯 1108 > 输入法 1011`、`提升 54360 > 图书馆 11098`，
+    属既定词频序，非缺陷）。
+  - **真机记事本实测（2026-10-08 16:09-16:11，dev-deploy 后）**：`jisben→记事本`、
+    `chakan→查看`、`bangzhu→帮助`、`ges→歌手`、`bianji→编辑`、`gshi→故事`、`fankui→反馈`、
+    `fenxi→分析`、`xingqsi→星期四`（#1，压过权重更高的 `兴趣 17344`，正是 end 降序生效）
+    均 #1 命中；`jisb→记事本`(#3)、`jianbao→减保`(#1)/`简报`(#2) 需翻页——均为**词库权重**
+    问题（`减保 625 > 简报 227`），非排序逻辑，留作词库侧观察。
+  - **范围外**：`shd` / `chx` 这类「声母 + 残段」会多出 `sha'd…` 组合（规则② 的正确语义，
+    librime 同样如此）；纠错 / 模糊音（`derive/.../correction`）属 M3 未开工。
