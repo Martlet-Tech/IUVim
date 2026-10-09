@@ -31,6 +31,11 @@ impl TextService {
         );
         let caret = self.caret.get();
         if caret != self.caret_reported.get() {
+            // 这是真正发给 iuv-server、决定候选窗位置的那一跳。
+            log_line(&format!(
+                "[caret] 上报 iuv-server：x={} y={} w={} h={}",
+                caret.x, caret.y, caret.w, caret.h
+            ));
             self.caret_reported.set(caret);
             if let Some(r) = crate::com::remote_host::remote() {
                 r.sync_caret(caret);

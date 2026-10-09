@@ -42,6 +42,17 @@ pub struct Composition {
     /// 不支持并停止尝试。量取成功即复位（宿主可能只是文档未就绪时短暂失败）。
     /// 本对象每会话新建，标记随会话结束自然失效，无需清理。
     caret_probe_fails: Rc<Cell<u8>>,
+    /// 会话首拍标记（候选窗瞬移治本 D）：`StartComposition` 后的第一次 `set_text`，
+    /// 宿主（Chromium/Electron 类）尚未为新 composition 刷新布局，此时
+    /// `comp.GetRange()` + `GetTextExt` 量到的是**内部缓存的陈旧位置**。
+    ///
+    /// 实测（2026-10-09 16:10 WorkBuddy）：量值是上一个会话的输入点或旧窗口几何
+    /// 坐标，距真值达 263~633px。首拍跳过量取、沿用首键 selection 现量（那条路径
+    /// 量的当场值正确，且与稍后布局跟随的量取一致）；第二键起宿主布局已刷新，
+    /// 恢复正常量取（日志实证第二键起量值稳定正确）。
+    ///
+    /// 本对象每会话新建，标记随会话结束自然复位，无需清理。
+    first_stroke: Cell<bool>,
     /// 外部终止回调（M10 ③）：远端会话的收尾必须**立即**跟随终止——否则客户端
     /// 预编辑槽已清而 server 会话仍在（脑裂），下一键走会话内路径被降级吞掉
     /// （2026-09-30 真机：notepad 切焦点回来首键丢失 + 预编辑失踪）。
@@ -57,6 +68,7 @@ impl Composition {
             comp: Rc::new(RefCell::new(None)),
             terminated: Rc::new(Cell::new(false)),
             caret_probe_fails: Rc::new(Cell::new(0)),
+            first_stroke: Cell::new(true),
             on_terminated,
         }
     }
@@ -103,6 +115,16 @@ impl Composition {
             }
             // com/sess 随手释放：锚点量取要发起**新的**只读 edit session，
             // 不带着上一个会话的对象继续（同一个 context 上不并存两个未结束的会话）。
+        }
+        // 会话首拍（治本 D）：跳过量取。StartComposition 后宿主布局尚未刷新，
+        // 此刻 comp.GetRange()+GetTextExt 量到的是缓存陈旧位置（2026-10-09 实测
+        // 距真值 263~633px，正是"候选窗瞬移"的直接来源）。返回 None → 调用方
+        // （apply_effect）沿用旧锚点 = 首键 selection 现量已上报的正确值。
+        if self.first_stroke.replace(false) {
+            log_line(
+                "[caret] 首拍跳过量取（宿主布局未刷新，量到的是缓存陈旧位置），沿用 selection 现量",
+            );
+            return Ok(None);
         }
         let caret = self.query_caret();
         if let Some(r) = caret {
@@ -333,6 +355,29 @@ fn trace_step<T>(name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
     }
 }
 
+/// GetTextExt 返回的矩形是否**不可用**（应当丢弃、调用方沿用旧锚点）。
+///
+/// 除 MSDN 明示的 clipped / 全零（文本不可见，如最小化）外，再拒两类实测残留：
+/// - **退化高度**（`h <= CARET_MIN_HEIGHT`）：Electron/Chromium 宿主在文档未就绪或
+///   跨窗口几何切换时偶发返回 `h=1` 的垃圾行（2026-10-08 15:25:23 实测
+///   `x=1227 y=219 w=0 h=1`，距真值 (+425,-220)）——旧代码只挡全零，垃圾值照当锚点。
+/// - **负宽**（`w < 0`）：range 起止倒挂的异常返回值，直接左边界定位会把窗口甩出去。
+///
+/// 阈值取 2 而非"正数"：宿主正常行盒高 20~23px（真机实测 notepad 23 / Electron 20），
+/// 任何 ≤2 的值都不可能是有效文本框；宁可这一拍不定（沿用旧值/走兜底）也不画到错位置。
+fn caret_rect_unusable(rc: RECT, clipped: bool) -> bool {
+    // MSDN：clipped = 文本被裁剪不可见；全零 = 无有效区域（如窗口最小化）。
+    if clipped || (rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0) {
+        return true;
+    }
+    let w = rc.right - rc.left;
+    let h = rc.bottom - rc.top;
+    w < 0 || h <= CARET_MIN_HEIGHT
+}
+
+/// 有效光标矩形的最小高度（px）：≤ 此值判为退化值（见 [`caret_rect_unusable`]）。
+const CARET_MIN_HEIGHT: i32 = 2;
+
 /// 同步只读 edit session：量取 composition **起点**（候选窗锚点）矩形（屏幕坐标）。
 /// 只读不写：`query_caret` 专用（打字首键 show 与布局跟随**共用**这一条路径），
 /// 绝不扰动应用文档。
@@ -375,8 +420,8 @@ impl ITfEditSession_Impl for RepositionSession_Impl {
             return Err(e);
         }
         self.caret_probe_fails.set(0);
-        if clipped.as_bool() || (rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0) {
-            // MSDN：clipped 或全零 = 文本不可见（如最小化）：保持原位。
+        if caret_rect_unusable(rc, clipped.as_bool()) {
+            // 文本不可见 / 退化矩形：返回 None（调用方保持原位/沿用旧锚点，不画到错位置）。
             return Ok(());
         }
         *self.caret.borrow_mut() = Some(CaretRect {
@@ -490,8 +535,9 @@ impl ITfEditSession_Impl for InsertionCaretSession_Impl {
         let mut clipped = BOOL(0);
         // SAFETY: GetTextExt 由 TSF 保证在 edit session 内可调用。
         unsafe { view.GetTextExt(ec, &range, &mut rc, &mut clipped) }?;
-        if clipped.as_bool() || (rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0) {
-            return Ok(()); // 文本不可见：None，调用方沿用旧值
+        // 与 RepositionSession 同口径：clipped/全零/退化矩形一律 None（见 caret_rect_unusable）。
+        if caret_rect_unusable(rc, clipped.as_bool()) {
+            return Ok(()); // 不可用：None，调用方锚点作废（走兜底定位）
         }
         *self.caret.borrow_mut() = Some(crate::ui::CaretRect {
             x: rc.left,
@@ -500,5 +546,45 @@ impl ITfEditSession_Impl for InsertionCaretSession_Impl {
             h: rc.bottom - rc.top,
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(l: i32, t: i32, r: i32, b: i32) -> RECT {
+        RECT {
+            left: l,
+            top: t,
+            right: r,
+            bottom: b,
+        }
+    }
+
+    #[test]
+    fn caret_rect_accepts_normal_line_box() {
+        // 真机实测的正常值：notepad 行盒 h=23、Electron 行盒 h=21，w 可正可零。
+        assert!(!caret_rect_unusable(rect(1727, 275, 1750, 298), false));
+        assert!(!caret_rect_unusable(rect(800, 681, 800, 702), false));
+    }
+
+    #[test]
+    fn caret_rect_rejects_clipped_and_all_zero() {
+        // MSDN 明示的两类：clipped（文本不可见）与全零（如最小化）。
+        assert!(caret_rect_unusable(rect(100, 100, 123, 121), true));
+        assert!(caret_rect_unusable(rect(0, 0, 0, 0), false));
+    }
+
+    #[test]
+    fn caret_rect_rejects_degenerate_values() {
+        // 2026-10-08 15:25:23 实测垃圾值：h=1 的退化行（距真值 (+425,-220)）。
+        // 旧代码只挡全零，这类值被当成锚点 → 候选窗画到错位置。
+        assert!(caret_rect_unusable(rect(1227, 219, 1227, 220), false));
+        // 高度为 0 或负值同样是退化（除全零外还有"有坐标零高度"的形态）。
+        assert!(caret_rect_unusable(rect(500, 300, 500, 300), false));
+        assert!(caret_rect_unusable(rect(500, 300, 500, 299), false));
+        // 负宽（range 起止倒挂）不可用。
+        assert!(caret_rect_unusable(rect(500, 300, 480, 321), false));
     }
 }

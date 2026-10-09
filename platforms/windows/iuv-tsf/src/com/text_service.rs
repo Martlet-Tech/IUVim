@@ -501,6 +501,14 @@ impl TextService_Impl {
         self.cand_elem.borrow_mut().clear();
         *self.session.borrow_mut() = None;
         *self.composition.borrow_mut() = None;
+        // 锚点槽作废（失焦清零的对称点，52 号卫生措施）：实例停用后本槽内容一定
+        // 过期——重激活时文档/窗口几何都可能已变。清零 + 通知服务端弃用（全零
+        // 哨兵），与 OnKillThreadFocus 同款；不依赖失焦信号一定能先到。
+        self.caret.set(CaretRect::default());
+        self.caret_reported.set(CaretRect::default());
+        if let Some(r) = crate::com::remote_host::remote() {
+            r.sync_caret(CaretRect::default());
+        }
         // M1 桌宠：Deactivate 强制结束打字 → 发 Typing(false)（守护进程解绑后无消费者，
         // 信号通道在 daemon 不在线时静默丢弃——天然兜底；同时复位 was_typing 保证
         // 再次 Activate 后首段会话能重新触发 Typing(true) transition）。
@@ -626,6 +634,7 @@ impl TextService_Impl {
     /// （composition 起点）→ 变化才上报 iuv-server（P4 服务端渲染：本地窗不跟随，
     /// 服务端窗口随报移动；打字期锚点恒定 → 绝大多数事件零上报）。
     fn follow_layout(&self, pic: &ITfContext) {
+        let old = self.caret.get();
         let rect = {
             let slot = self.composition.borrow();
             let Some(comp) = slot.as_ref() else {
@@ -638,8 +647,34 @@ impl TextService_Impl {
             }
             comp.query_caret()
         };
+        // 只在**锚点真的平移**时记：打字期锚点恒定（宿主仍每键发 layout 事件），
+        // 若逐次记会淹没日志。
+        //
+        // 注意：Electron/Chromium 宿主（WorkBuddy/VS Code 等）**不支持
+        // ITfTextLayoutSink**（`ITfSource::QueryInterface` 返回 0x80004002），
+        // 本回调在那类宿主上永不触发——窗口几何变化时没有任何机制校正锚点，
+        // 只能等下一键重新量取。因此这条日志在 Electron 宿主里"一条都不出"是
+        // 预期现象，不是故障；跳变兜底交给服务端 candwin 的跳变检测（治本 C）。
+        match rect {
+            Some(r) if r != old => log_line(&format!(
+                "[follow] 锚点平移：x={} y={} w={} h={}（旧 x={} y={}，Δ=({:+},{:+})）",
+                r.x,
+                r.y,
+                r.w,
+                r.h,
+                old.x,
+                old.y,
+                r.x - old.x,
+                r.y - old.y
+            )),
+            Some(_) => {}
+            None => log_line(&format!(
+                "[follow] 锚点量取失败（或退化矩形），保持原位 x={} y={}",
+                old.x, old.y
+            )),
+        }
         let Some(rect) = rect else {
-            return; // 文档锁定/clipped/全零矩形：保持原位
+            return; // 文档锁定/clipped/退化矩形：保持原位
         };
         self.caret.set(rect);
         // P4 服务端渲染：本地窗不跟随——锚点变化上报 iuv-server（其窗口随报移动）。
@@ -685,6 +720,13 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
         // 回焦后首段会话不发 `Typing(true)` → 宠物一直 Idle（边沿状态机不自洽）。
         self.force_typing_stop();
         self.notify_focus_lost();
+        // 锚点槽失焦作废（52 号卫生措施，与首键哨兵配套）：失焦后本槽坐标对新文档
+        // 已无意义。虽然 52 号真凶是会话首拍的陈旧量取（见 Composition::first_stroke，
+        // 槽残留并非那次的主因），但若首键 selection 量取失败（key_routing 走哨兵
+        // 分支），这里提前清零能保证槽内绝不残留上一文档的坐标被 dispatch 透传。
+        // caret_reported 一并作废：否则"清零后的真值 == 旧上报值"时差异上报会漏发。
+        self.caret.set(CaretRect::default());
+        self.caret_reported.set(CaretRect::default());
         // M10 ③：服务端候选窗同步隐藏（跨应用切走；会话保留语义同 OnSetFocus）。
         if self.composition.borrow().is_some() {
             if let Some(r) = crate::com::remote_host::remote() {

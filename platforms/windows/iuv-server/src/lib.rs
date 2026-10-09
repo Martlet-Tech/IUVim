@@ -346,6 +346,16 @@ impl Session for EngineSession {
                     w: rect.right - rect.left,
                     h: rect.bottom - rect.top,
                 };
+                // 全零 = 客户端**锚点作废**哨兵（跨失焦回来后首键现量失败时显式清零，
+                // 见 iuv-tsf key_routing "首键插入点现量失败 → 锚点作废"）：清掉本端
+                // 缓存的锚点，让后续 Show 走 awaiting_caret 挂起 + 下键重报，
+                // 而不是拿一个陈旧坐标先画一帧再滑走。
+                if c.x == 0 && c.y == 0 && c.w == 0 && c.h == 0 {
+                    iuv_win::logger::log_line("[candwin] 收到锚点作废哨兵 → 清空本端缓存锚点");
+                    self.caret = None;
+                    reply.respond(S2C::Ok);
+                    return;
+                }
                 let moved = self.caret != Some(c);
                 self.caret = Some(c);
                 if moved {

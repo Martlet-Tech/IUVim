@@ -215,11 +215,33 @@ pub fn apply_effect(composition: &Composition, caret: &mut CaretRect, effect: &E
             // 显示（汉字+尾巴拼音），composition 全程覆盖整个混合文本，set_text 全量更新。
             match composition.set_text(&effect.composition) {
                 Ok(Some(rect)) => {
+                    // 锚点变化记一行：这是判断"候选窗为何移动"的第一手证据——
+                    // 打字期锚点恒定（预编辑向右生长），只有窗口几何变化/换行/滚动
+                    // 才会让这里出现非零 Δ。定位漂移问题时先看这一行。
+                    if rect != *caret {
+                        log_line(&format!(
+                            "[caret] 锚点变化：x={} y={} w={} h={}（旧 x={} y={} w={} h={}，Δ=({:+},{:+})）",
+                            rect.x,
+                            rect.y,
+                            rect.w,
+                            rect.h,
+                            caret.x,
+                            caret.y,
+                            caret.w,
+                            caret.h,
+                            rect.x - caret.x,
+                            rect.y - caret.y
+                        ));
+                    }
                     *caret = rect;
                 }
                 Ok(None) => {
+                    // 两种来源：① 会话首拍主动跳过量取（composition 刚建立，宿主布局
+                    // 未刷新，量到的是缓存陈旧位置——见 Composition::first_stroke）；
+                    // ② 量取失败/clipped/退化矩形。两者处置相同：沿用旧锚点（首拍
+                    // 即首键 selection 现量，已证明当场正确；打字中位置通常没变）。
                     log_line(&format!(
-                        "[caret] set_text 无光标（GetTextExt 失败/clipped），沿用旧光标：x={} y={} w={} h={}",
+                        "[caret] set_text 未产出锚点（首拍跳过/量取失败），沿用旧光标：x={} y={} w={} h={}",
                         caret.x, caret.y, caret.w, caret.h
                     ));
                 }

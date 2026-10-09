@@ -14,6 +14,7 @@ use windows::Win32::UI::TextServices::ITfContext;
 use crate::composition::Composition;
 use crate::log::{self, log_line};
 use crate::session_bridge::{caps_passthrough, is_passthrough_app, map_key};
+use crate::ui::CaretRect;
 
 use super::text_service::TextService;
 
@@ -184,15 +185,37 @@ impl TextService {
                 log_line(&format!("[key] 按键：{}（远端会话外）", key.name()));
                 remote.sync_state(&self.runtime_snapshot());
                 self.punct_quote_open.set(false); // 拼音输入开始：引号配对复位为开形
-                                                  // P4 服务端渲染：会话首键先上报插入点锚点（composition 尚不存在，
-                                                  // selection 量取）→ 服务端首帧候选即定位正确；打字期锚点恒定，
-                                                  // 后续只在变化时上报（dispatch/follow_layout）。
-                if let Some(c) =
-                    crate::composition::query_insertion_caret(pic, self.client_id.get())
-                {
-                    self.caret.set(c);
-                    self.caret_reported.set(c);
-                    remote.sync_caret(c);
+
+                // P4 服务端渲染：会话首键先上报插入点锚点（composition 尚不存在，
+                // selection 量取）→ 服务端首帧候选即定位正确；打字期锚点恒定，
+                // 后续只在变化时上报（dispatch/follow_layout）。
+                //
+                // 候选窗漂移防御（52 号）：首键锚点**只认本次现量**。量取失败就发
+                // 作废哨兵清零服务端缓存——绝不让上一会话的坐标或服务端残留值定位
+                // 首帧候选（真凶"首拍陈旧量取"由 Composition::first_stroke 另行根治；
+                // 本分支是量取失败时的兜底，2026-10-09 全天日志 0 次触发，语义保留）。
+                match crate::composition::query_insertion_caret(pic, self.client_id.get()) {
+                    Some(c) => {
+                        log_line(&format!(
+                            "[caret] 首键插入点（selection 现量）：x={} y={} w={} h={}",
+                            c.x, c.y, c.w, c.h
+                        ));
+                        self.caret.set(c);
+                        self.caret_reported.set(c);
+                        remote.sync_caret(c);
+                    }
+                    None => {
+                        // 现量失败：发**作废哨兵**（全零 CaretMoved）让服务端清掉缓存。
+                        // 注意不能靠"把 caret_reported 也置零"来省这次发送——那样一旦
+                        // 服务端还留着别的旧值，两端会各自以为"没变"而双双跳过，陈旧
+                        // 坐标就此固化。所以：
+                        //   - caret_reported 置零（本端下一拍真值才会触发差异上报）；
+                        //   - **但仍然发**一次全零 CaretMoved（显式送达服务端）。
+                        log_line("[caret] 首键插入点现量失败 → 锚点作废（发哨兵，服务端弃用缓存）");
+                        self.caret.set(CaretRect::default());
+                        self.caret_reported.set(CaretRect::default());
+                        remote.sync_caret(CaretRect::default());
+                    }
                 }
                 let mods = crate::com::remote_host::wire_mods(
                     shift_pressed(),

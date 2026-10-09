@@ -49,6 +49,32 @@ use iuv_ui::{
 
 const CLASS_NAME: PCWSTR = w!("IuvServerCandidateWindow");
 
+/// 跳变阈值（px，欧氏距离）：候选窗可见时，新锚点距**上一次定位用的锚点**位移
+/// 超过该值即判为"远跳"而不做平滑移动。
+///
+/// 为什么需要它：客户端锚点异常时可能一次性位移数百像素（2026-10-09 实测最大
+/// 633px；455px = 最大化前后宽度差）。`SetWindowPos` 会把窗口从旧位置**平滑滑**
+/// 到新位置——用户看到的就是"候选栏高速漂移"。旧版客户端自绘候选窗有同款
+/// `JUMP_THRESHOLD = 150.0` 检测（点击远处/拖拽跨屏就整窗隐藏待下一键重现），
+/// 随 2026-10-02 D3 清扫本地候选窗一并退役；服务端版从零实现时漏掉了，本常量
+/// 把它补回来。
+///
+/// 定位：这是**兜底**而非根因——首键错锚点的真凶在客户端会话首拍的陈旧量取
+/// （iuv-tsf `Composition::first_stroke`，52 号）。根因修复后本检测只应响应
+/// 真实的窗口几何跳变/点击远处；若打字路径频繁出现"远跳"日志即为回归信号。
+///
+/// 阈值 150 沿用客户端版取值：正常打字锚点恒定（Δ=0），换行/滚动是小步平移
+/// （每行 ~20px 行高，远小于 150），远跳只可能来自窗口几何突变或光标真的被
+/// 搬到了远处——两种都该"瞬移"而不是"滑过去"。
+const JUMP_THRESHOLD: f64 = 150.0;
+
+/// 两点欧氏距离（px；用于跳变判定）。
+fn jump_distance(a: CaretRect, b: CaretRect) -> f64 {
+    let dx = (a.x - b.x) as f64;
+    let dy = (a.y - b.y) as f64;
+    (dx * dx + dy * dy).sqrt()
+}
+
 /// 候选窗命令（会话线程 → UI 线程；latest-wins 由命令自身语义保证——每条命令
 /// 携带完整快照/位置，UI 线程按序应用最后一条即最新状态）。
 pub(crate) enum CandwinCmd {
@@ -262,16 +288,14 @@ impl ServerCandwin {
         }
         self.snap = snap;
         self.last_caret = Some(caret);
-        if self.layered.hwnd.is_invalid() {
-            self.ensure_window();
-            if self.layered.hwnd.is_invalid() {
-                return; // 建窗失败：静默降级
-            }
-        }
-        self.apply_layout_and_pos(Some(caret));
-        // SAFETY: SW_SHOWNA 显示但不激活——绝不抢焦点
-        let _ = unsafe { ShowWindow(self.layered.hwnd, SW_SHOWNA) };
-        self.visible = true;
+        iuv_win::logger::log_line(&format!(
+            "[candwin] show：锚点 ({},{})，候选 {} 项，reading={:?}",
+            caret.x,
+            caret.y,
+            self.snap.candidates.len(),
+            self.snap.reading
+        ));
+        self.show_with_current_snapshot(caret);
     }
 
     fn update(&mut self, snap: UiSnapshot) {
@@ -286,7 +310,33 @@ impl ServerCandwin {
         if self.layered.hwnd.is_invalid() || !self.visible {
             return;
         }
+        // 跳变判定（治本 C）：与**上一次定位用的锚点**比，位移过大就不平滑移动，
+        // 改为"整窗隐藏 → 按新锚点重定位 → 原样重现"。用户看到的是一次瞬移/重弹，
+        // 而不是一行从旧位置高速滑到新位置（那正是被投诉的"候选栏漂移"）。
+        let jumped = self
+            .last_caret
+            .map(|prev| jump_distance(prev, caret) > JUMP_THRESHOLD)
+            .unwrap_or(false);
         self.dpi = dpi_for_caret(caret);
+        if jumped {
+            let prev = self.last_caret.unwrap_or(caret);
+            iuv_win::logger::log_line(&format!(
+                "[candwin] 锚点远跳：({},{}) → ({},{})，距 {:.0}px > {:.0}px，隐藏后按新锚点重现",
+                prev.x,
+                prev.y,
+                caret.x,
+                caret.y,
+                jump_distance(prev, caret),
+                JUMP_THRESHOLD
+            ));
+            // 先藏（避免旧位置残留一帧），再按新锚点重新上传并显示。
+            // 注意顺序：hide() 会把 last_caret 清 None，所以**先 hide 再回填**，
+            // 否则这一拍的定位基准丢失，下一次跳变判定会以 None 起算（漏判一次）。
+            self.hide();
+            self.last_caret = Some(caret);
+            self.show_with_current_snapshot(caret);
+            return;
+        }
         self.last_caret = Some(caret);
         // SAFETY: GetWindowRect 读当前窗口矩形
         let mut rc = RECT::default();
@@ -296,6 +346,13 @@ impl ServerCandwin {
         let w = rc.right - rc.left;
         let h = rc.bottom - rc.top;
         let (x, y) = position_for(caret, w, h);
+        let prev = (rc.left, rc.top);
+        if prev != (x, y) {
+            iuv_win::logger::log_line(&format!(
+                "[candwin] 平移：({},{}) → ({},{})（锚点 {},{})",
+                prev.0, prev.1, x, y, caret.x, caret.y
+            ));
+        }
         // SAFETY: 仅移动（SWP_NOSIZE），不激活
         let _ = unsafe {
             SetWindowPos(
@@ -310,9 +367,30 @@ impl ServerCandwin {
         };
     }
 
+    /// 用当前快照 + 给定锚点重新走一次"定位 → 上传 → 显示"（远跳重现用）。
+    /// 与 [`Self::show`] 同路径，但不重置快照（快照本就未变，变的只是位置）。
+    fn show_with_current_snapshot(&mut self, caret: CaretRect) {
+        if self.layered.hwnd.is_invalid() {
+            self.ensure_window();
+            if self.layered.hwnd.is_invalid() {
+                return; // 建窗失败：静默降级
+            }
+        }
+        self.apply_layout_and_pos(Some(caret));
+        // SAFETY: SW_SHOWNA 显示但不激活——绝不抢焦点
+        let _ = unsafe { ShowWindow(self.layered.hwnd, SW_SHOWNA) };
+        self.visible = true;
+    }
+
     fn hide(&mut self) {
+        if self.visible {
+            iuv_win::logger::log_line("[candwin] hide");
+        }
         self.visible = false;
         self.hover_row = None;
+        // 作废定位锚点：下次 show 应是"重新弹出"，不该拿隐藏前的旧锚点做跳变比较
+        // （否则重现路径里 last_caret 会在 show() 里被立刻覆盖 —— 这里先清保证语义单纯）。
+        self.last_caret = None;
         if !self.layered.hwnd.is_invalid() {
             // SAFETY: 隐藏候选窗
             let _ = unsafe { ShowWindow(self.layered.hwnd, SW_HIDE) };
@@ -595,5 +673,27 @@ mod tests {
         assert!(in_rounded_rect(50, 50, 200, 100, 8.0), "中心必然命中");
         assert!(!in_rounded_rect(1, 1, 200, 100, 8.0), "左上角圆弧外穿透");
         assert!(in_rounded_rect(8, 8, 200, 100, 8.0), "圆弧边界命中");
+    }
+
+    fn caret(x: i32, y: i32) -> CaretRect {
+        CaretRect { x, y, w: 0, h: 21 }
+    }
+
+    #[test]
+    fn jump_distance_is_euclidean() {
+        assert_eq!(jump_distance(caret(0, 0), caret(3, 4)), 5.0);
+        assert_eq!(jump_distance(caret(100, 200), caret(100, 200)), 0.0);
+    }
+
+    #[test]
+    fn jump_threshold_separates_typing_from_geometry_change() {
+        // 正常打字：锚点恒定（Δ=0）→ 远小于阈值，走平滑移动（其实不动）。
+        assert!(jump_distance(caret(800, 681), caret(800, 681)) <= JUMP_THRESHOLD);
+        // 换行/滚动：一个小步（行高 ~20px）→ 仍是平滑移动。
+        assert!(jump_distance(caret(800, 681), caret(800, 701)) <= JUMP_THRESHOLD);
+        // 窗口几何切换：实测最大 455px（= 最大化前后宽度差 1920-1465）→ 判为远跳。
+        assert!(jump_distance(caret(1013, 481), caret(558, 481)) > JUMP_THRESHOLD);
+        // 斜跳：实测 (−213, +200) ≈ 292px → 判为远跳。
+        assert!(jump_distance(caret(1013, 481), caret(800, 681)) > JUMP_THRESHOLD);
     }
 }
