@@ -1478,8 +1478,8 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
   `PetArt` 注入与 `BarEvent::TypingState`、`main.rs`/`daemon/mod.rs` 去 pet 装配；`iuv-tsf`
   摘除打字活动信号链（`dispatch`/`daemon_host`/`remote_host`/`text_service`/`mode`）。
   **协议变体** `Caps::PET`、`C2S/Push::TypingActivity` **保留定义并标 deprecated**
-  （postcard 按序号编码，删中间变体会让运行中旧 DLL 解码掉线）；`assets/pet`、`docs/pet`、
-  42/43/54 文档保留。**真机**：新 server 日志 0 条 `[pet]`、工具栏（激活/显隐/四态翻转/拖拽）
+  （postcard 按序号编码，删中间变体会让运行中旧 DLL 解码掉线）；`docs/pet`/`assets/pet` 及 42/43
+  文档已随后归档至 `docs/closed/pet/`、`docs/closed/`（54 号文档保留，第二步待做）。**真机**：新 server 日志 0 条 `[pet]`、工具栏（激活/显隐/四态翻转/拖拽）
   与候选链路正常、无 panic。
   - **顺带回补 55 号 ④ 抖动**：真机发现同一次开机内 server 重启时 `now - GetTickCount64`
     有 ±1s 抖动，会把一次开机的日志裂成 `iuv-*-1791584099.log` / `…100.log` 两份。
