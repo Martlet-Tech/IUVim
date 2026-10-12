@@ -1373,3 +1373,25 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     问题（`减保 625 > 简报 227`），非排序逻辑，留作词库侧观察。
   - **范围外**：`shd` / `chx` 这类「声母 + 残段」会多出 `sha'd…` 组合（规则② 的正确语义，
     librime 同样如此）；纠错 / 模糊音（`derive/.../correction`）属 M3 未开工。
+
+- [x] **单键延迟 20–80ms 两轮治本（2026-10-12，53 号，已归档 `docs/closed/53-onkey-latency-cursor-longer.md`）**：
+  提交 `e40b1e5`（定位脚手架：server `[perf]` 四段拆分 + TSF 按键往返观测 + onkey_bench 基准）+
+  `9d60c43`（一阶：cursor_longer/prefix 零物化 top-k + 补全边 tail_start 字节坐标）+
+  `63b5ca4`（二阶：poet-only 桶最优单条物化 + range_best 快慢路径）。
+  - **现象**：线上慢键（≥5ms）单键 20–80ms、尖峰 100–280ms；慢键集中在短前缀码
+    （z 均值 92.9ms > s 74.7 > y 69.2）。
+  - **定位**：纯引擎基准复现（引擎内）→ 四段拆分洗清 IPC/候选窗（engine 占 99.8%）→
+    分相探针锁定 buckets 95–99% → 物化分支细分锁定 longer/大簇扫描。
+  - **根因 1（一阶）**：`Dict::cursor_longer`/`prefix` 把 10–20 万条前缀区间全量物化
+    （2 String/条）再截 64；放大器 = origin walk 以 root 游标走补全边，扫的是全表级
+    单字母簇——每个新词首键必命中。附带修 chars/bytes 错位（撇号输入补全边静默失效）。
+  - **根因 2（二阶）**：origin≠0 的 poet-only 桶（Poet 每桶只取首条）仍全簇物化，
+    每段起点 ~25 标记 × 数百 Entry；`merged` 逐条 `is_blocked` 每条目 2 次 String 分配。
+  - **改动**：`top_entries` 借用视图零物化 top-k（用户语义行内生效，顺序红线保持）；
+    `cursor_exact_best`/`cursor_longer_best` 桶首单条（与全量路径逐字段一致，Poet 零变化）；
+    `range_best` 快路径（纯权重扫描取 max+并列集，病态回退）；`block_pairs`/`max_adjustment`。
+  - **数据**：基准长句均值 16.45→2.78ms（max 97.3→5.8ms）；线上慢键 317→103→**8/场**，
+    客户端往返 p50 33.1→9.4ms，长尾 227.6→18.9ms 消失。
+  - **测试**：新增 2 个回归钉（top-k 四契约 / 桶首五契约），26 套件全绿；多应用真机回归。
+  - **遗留**：剩余 <5ms 底噪 = 每键全量重翻译结构成本（增量翻译未立项）；rtt_bench
+    存量计时抖动与本项无关。
