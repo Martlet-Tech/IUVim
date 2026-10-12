@@ -298,6 +298,11 @@ impl UserDict {
         self.block.contains(&(code.to_string(), word.to_string()))
     }
 
+    /// 屏蔽表借用视图（dict 顶层区间扫描零分配过滤用；表极小，线性比对即可）。
+    pub fn block_pairs(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.block.iter().map(|(c, w)| (c.as_str(), w.as_str()))
+    }
+
     /// 覆盖表条目总数（M6 设置页显示用）。
     pub fn cover_count(&self) -> usize {
         self.map.values().map(|v| v.len()).sum()

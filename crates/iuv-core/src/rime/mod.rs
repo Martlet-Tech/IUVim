@@ -152,16 +152,29 @@ impl ImeEngine for RimeEngine {
         }
         let mut graph = graph;
         // —— 2b 补全边注入（守卫 n_seg≥2，与 classic 句通道守卫同规）——
+        // tail_start 必须是**字节坐标**（图顶点坐标系）：逐段在 `lower` 上步进
+        // （段后跳一个 `'`）定位末段起点。旧实现按 chars 累加——输入带 `'` 时
+        // 错位到撇号顶点，边落在无 walk 可达的顶点上静默失效（`woshi'y` 的 y
+        // 补全丢失，2026-10-12 探针实测）。
         {
-            let lens: Vec<usize> = seg
-                .iter()
-                .filter(|s| !s.is_empty())
-                .map(|s| s.chars().count())
-                .collect();
-            let n_ne = lens.len();
-            if n_ne >= 2 {
-                let total: usize = lens.iter().sum();
-                let tail_start = total - lens[n_ne - 1];
+            let bytes = lower.as_bytes();
+            let (mut pos, mut n_ne, mut tail_start) = (0usize, 0usize, 0usize);
+            let mut aligned = true;
+            for s in seg.iter().filter(|s| !s.is_empty()) {
+                if lower[pos..].starts_with(s.as_str()) {
+                    tail_start = pos;
+                    pos += s.len();
+                    if pos < bytes.len() && bytes[pos] == b'\'' {
+                        pos += 1;
+                    }
+                    n_ne += 1;
+                } else {
+                    // 段与 raw 失配（大写保形等）→ 坐标不可信，放弃注入（保守）
+                    aligned = false;
+                    break;
+                }
+            }
+            if aligned && n_ne >= 2 && pos == bytes.len() {
                 if let Some(last) = seg.iter().rfind(|s| !s.is_empty()) {
                     if !self.is_syllable(last)
                         && self

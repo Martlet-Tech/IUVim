@@ -388,38 +388,40 @@ impl Dict {
     }
 
     /// 前缀补全：返回 squashed 以 prefix 开头（且不等于 prefix）的词条，
-    /// 跨编码按 weight 降序，最多 limit 条。实现为范围物化 + top-k 选择 + 权重
-    /// 降序排序 + 截断——排序必须在截断**之前**（码序前 64/20 条 ≠ 高频前 64/20 条，
-    /// cheng'y 的 64 截断曾把高频「成员」排挤到窗外，2026-08-29 λ 校准实测）。
-    /// 无用户库时同样保证权重序（此前排序只在 merged 有用户库分支里发生，
-    /// REPL/对拍与生产行为隐性分叉）。top-k 选择已于 46 号 §3.4 落地（原 TODO）。
+    /// 跨编码按 weight 降序，最多 limit 条。53 号治本：旧实现把前缀区间**全量
+    /// 物化**（单字母前缀可达 10–20 万条 × 2 String）再 top-k——改为零物化权重
+    /// 扫描（`top_entries`），只物化命中条目。「排序必须在截断之前」的语义
+    /// （码序前 N 条 ≠ 高频前 N 条，cheng'y 的 64 截断曾把高频「成员」排挤到窗外，
+    /// 2026-08-29 λ 校准实测）由扫描比较器 worse_first 保持；用户库屏蔽/覆盖在
+    /// 扫描期即生效（回归钉 `prefix_weight_desc_without_user_dict`）。
     pub fn prefix(&self, squashed_prefix: &str, limit: usize) -> Vec<Entry> {
         if limit == 0 || squashed_prefix.is_empty() {
             return Vec::new();
         }
         let target = squashed_prefix.as_bytes();
         let n = self.index.len() / 4;
-        let mut out = Vec::new();
-        for i in self.lower_bound(target)..n {
-            let code = self.code_at(self.index_off(i));
-            if !code.starts_with(target) {
-                break;
+        // 前缀区间 [lo, hi)：全部以 target 开头的码（码序连续块）
+        let (mut a, mut b) = (self.lower_bound(target), n);
+        while a < b {
+            let mid = (a + b) / 2;
+            if self.code_at(self.index_off(mid)).starts_with(target) {
+                a = mid + 1;
+            } else {
+                b = mid;
             }
-            if code == target {
-                continue;
+        }
+        let hi = a;
+        // == target 的条目（len == target.len()，区间内 lex 最小）连续居首，跳过
+        let (mut a, mut b) = (self.lower_bound(target), hi);
+        while a < b {
+            let mid = (a + b) / 2;
+            if self.code_at(self.index_off(mid)).len() == target.len() {
+                a = mid + 1;
+            } else {
+                b = mid;
             }
-            out.push(self.entry_at(self.index_off(i)));
         }
-        // 46 号 §3.4：top-k 选择替代全量排序（兑现本函数留档 TODO；语义不变）。
-        // 顺序红线（8/29 校准教训）：**先 merged（屏蔽/调权/追加）后选优截断**，
-        // 否则用户覆盖权重救不回已被截掉的词条。
-        out = self.merged("", out);
-        if out.len() > limit {
-            out.select_nth_unstable_by(limit - 1, worse_first());
-            out.truncate(limit);
-        }
-        out.sort_by(worse_first());
-        out
+        self.top_entries(a, hi, limit)
     }
 
     /// 首字母桶查询：返回 code 以 `initial` 开头的**单字**词条，按词频降序，
@@ -710,27 +712,25 @@ impl Dict {
         self.merged(&code, out)
     }
 
-    /// 物化严格更长前缀条目（≡ `prefix`(累计前缀, limit)）。
-    /// 46 号 §3.4：top-k 选择替代「全范围收集 + 全量排序」（语义不变；
-    /// 顺序红线同 prefix：先 merged 后选优截断）。
+    /// 物化严格更长前缀条目（≡ `prefix`(累计前缀, limit)）。53 号治本同 `prefix`：
+    /// 等长码簇二分跳过 + 零物化权重扫描（`top_entries`），只物化命中条目。
+    /// 顺序红线同 prefix：用户屏蔽/覆盖在扫描期生效（先于截断）。
     pub fn cursor_longer(&self, c: DictCursor, limit: usize) -> Vec<Entry> {
         if limit == 0 {
             return Vec::new();
         }
-        let mut out = Vec::new();
-        for i in c.lo..c.hi {
-            let e = self.entry_at(self.index_off(i));
-            if e.code.len() != c.plen {
-                out.push(e);
+        // 等长码块（code == 累计前缀）在区间内 lex 最小、连续居首（cursor_exact
+        // 同款不变量），必被「严格更长」语义过滤——二分定位边界，不物化。
+        let (mut a, mut b) = (c.lo, c.hi);
+        while a < b {
+            let mid = (a + b) / 2;
+            if self.code_at(self.index_off(mid)).len() == c.plen {
+                a = mid + 1;
+            } else {
+                b = mid;
             }
         }
-        out = self.merged("", out);
-        if out.len() > limit {
-            out.select_nth_unstable_by(limit - 1, worse_first());
-            out.truncate(limit);
-        }
-        out.sort_by(worse_first());
-        out
+        self.top_entries(a, c.hi, limit)
     }
 
     /// 区间内码的 rest 切片（`code[plen..]`；区间不变量保证码长 ≥ plen）。
@@ -784,6 +784,77 @@ impl Dict {
 
     fn entry_at(&self, rel: usize) -> Entry {
         self.entry_at_with_step(self.records.start + rel).0
+    }
+
+    /// 记录借用视图（零分配）：(code, word, weight)，生命周期同 mmap。
+    /// 布局与 `entry_at_with_step` 同：u8 code_len | code | u16 word_len | word | u32 weight。
+    fn entry_ref_at(&self, rel: usize) -> (&str, &str, u32) {
+        let b = &self.file.as_bytes()[self.records.start + rel..];
+        let code_len = b[0] as usize;
+        let code = std::str::from_utf8(&b[1..1 + code_len]).expect("词库已校验 code 边界");
+        let wl_off = 1 + code_len;
+        let word_len = u16::from_le_bytes([b[wl_off], b[wl_off + 1]]) as usize;
+        let word = std::str::from_utf8(&b[wl_off + 2..wl_off + 2 + word_len])
+            .expect("词库已校验 word 边界");
+        let w_off = wl_off + 2 + word_len;
+        let weight = u32::from_le_bytes([b[w_off], b[w_off + 1], b[w_off + 2], b[w_off + 3]]);
+        (code, word, weight)
+    }
+
+    /// [lo, hi) 记录区间 top-`limit`（53 号治本核心）：零物化权重扫描——逐条读
+    /// 借用视图，行内应用用户库语义（屏蔽剔除、覆盖权重 ≡ `merged("")` 的 ①② 支；
+    /// ③ 独有追加是 exact 语义，跨码查询本就不做），按 worse_first（权重降序、
+    /// word 升序）选 top-`limit` 后**只物化命中条目**。短前缀区间可达 10–20 万条，
+    /// 旧实现全量物化（2 String/条 ≈ 40 万次分配）再截 64，单键 20–40ms 的根因。
+    /// 截断边界的同权重平序按下标序（码序）取舍——与旧「全量排序后截断」仅在
+    /// 「同权重并列挤在 limit 边缘」处入选成员可能不同，桶首（poet 消费点）不变。
+    fn top_entries(&self, lo: usize, hi: usize, limit: usize) -> Vec<Entry> {
+        if limit == 0 || lo >= hi {
+            return Vec::new();
+        }
+        let user = self.user();
+        // 屏蔽表一次性收集借用视图（逐条 is_blocked 每条目 2 次 String 分配）
+        let block: Vec<(&str, &str)> = user
+            .as_ref()
+            .map(|u| u.block_pairs().collect())
+            .unwrap_or_default();
+        let mut sel: Vec<(u32, &str, usize)> = Vec::with_capacity((hi - lo).min(1 << 17));
+        let mut adj: &[(String, u32)] = &[];
+        let mut prev_code: &str = "";
+        for i in lo..hi {
+            let (code, word, weight) = self.entry_ref_at(self.index_off(i));
+            // 同码簇在码序下相邻：仅换码时查一次用户覆盖表
+            if code != prev_code {
+                prev_code = code;
+                adj = match &user {
+                    Some(u) => u.adjusted(code),
+                    None => &[],
+                };
+            }
+            if !block.is_empty() && block.iter().any(|(c, w)| *c == code && *w == word) {
+                continue;
+            }
+            let weight = adj
+                .iter()
+                .find(|(w, _)| w.as_str() == word)
+                .map_or(weight, |(_, a)| *a);
+            sel.push((weight, word, i));
+        }
+        if sel.len() > limit {
+            sel.select_nth_unstable_by(limit - 1, |a, b| {
+                b.0.cmp(&a.0).then(a.1.cmp(b.1)).then(a.2.cmp(&b.2))
+            });
+            sel.truncate(limit);
+        }
+        let mut out: Vec<Entry> = sel
+            .into_iter()
+            .map(|(_, _, i)| self.entry_at(self.index_off(i)))
+            .collect();
+        // 过滤/覆盖已在扫描期生效；保留 merged 调用点（若未来为跨码场景增行为，
+        // 此处自动跟随），当前仅其排序支有实际作用。
+        out = self.merged("", out);
+        out.sort_by(worse_first());
+        out
     }
 
     /// 物化记录（绝对文件偏移）+ 下一条记录偏移（桶顺序遍历用）。
@@ -1169,5 +1240,44 @@ mod tests {
             .map(|e| e.word.clone())
             .collect();
         assert_eq!(hits, vec!["承压"], "用户覆盖后仍权重序");
+    }
+
+    #[test]
+    fn cursor_longer_top_k_with_user_semantics() {
+        // 53 号回归钉：cursor_longer 零物化 top-k 三契约——
+        // ① 权重降序跨码截断（非码序）② 等长码（code == 前缀）不出现
+        // ③ 用户覆盖在截断前生效、屏蔽条目被剔除（顺序红线）。
+        let d = Dict::from_entries(vec![
+            ("y".into(), "单字".into(), 88888), // 等长码（plen=1）必被过滤
+            ("ya".into(), "压".into(), 3000),
+            ("yb".into(), "低频".into(), 10),
+            ("yc".into(), "次频".into(), 20),
+        ]);
+        let c = d.cursor_step(d.cursor(), b"y").unwrap();
+        let hits: Vec<String> = d
+            .cursor_longer(c, 2)
+            .iter()
+            .map(|e| e.word.clone())
+            .collect();
+        assert_eq!(hits, vec!["压", "次频"], "①② 权重降序 + 等长码过滤");
+        // 用户覆盖：基础权重垫底的「低频」覆盖为最高后必须入选（红线：
+        // 覆盖权重救不回已被截掉的词条 = 回归）
+        let user = crate::userdict::UserDict::empty().set_entry("yb", "低频", 99999);
+        d.set_user(Arc::new(user));
+        let hits: Vec<String> = d
+            .cursor_longer(c, 1)
+            .iter()
+            .map(|e| e.word.clone())
+            .collect();
+        assert_eq!(hits, vec!["低频"], "③ 覆盖权重先于截断");
+        // 屏蔽：最高权重条目被屏蔽后由次高补位
+        let user = crate::userdict::UserDict::empty().block("ya", "压");
+        d.set_user(Arc::new(user));
+        let hits: Vec<String> = d
+            .cursor_longer(c, 1)
+            .iter()
+            .map(|e| e.word.clone())
+            .collect();
+        assert_eq!(hits, vec!["次频"], "③ 屏蔽剔除 + 次高补位");
     }
 }
