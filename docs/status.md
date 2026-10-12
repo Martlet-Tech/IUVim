@@ -1395,3 +1395,31 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
   - **测试**：新增 2 个回归钉（top-k 四契约 / 桶首五契约），26 套件全绿；多应用真机回归。
   - **遗留**：剩余 <5ms 底噪 = 每键全量重翻译结构成本（增量翻译未立项）；rtt_bench
     存量计时抖动与本项无关。
+
+- [x] **桶内排序补 cred 键：简拼键恰等词库编码时简拼词压过精确字（2026-10-12，
+  workspace 单测全绿 + 真机回归通过）**：分支 `fix/abbrev-cred-ranking`（基于 main `757d4f1`）。
+  - **现象**：输入 `yang` 首推「严格」「眼光」（需切成 yan+g 跨音节简拼才命中的词），
+    精确匹配的「杨/养/羊」沉后——QQ/微软/小狼毫均把精确候选排最前（对照截图四路对比）。
+  - **根因**：跨音节简拼路径拼出的键串**恰等词库完整编码**（yang → yan+g → `yan'ge` =
+    「严格」的库内码），物化后 `exact=true` 与纯全拼同级；而桶内排序（exact → weight →
+    word）不含 cred——2026-10-08 废弃 class 分级时，简拼代价只留给 score/poet 消费，
+    排序职责被一并清空。同 exact 桶内退化为纯词频比拼，高频简拼词压过低频精确字。
+  - **改动**（iuv-core 两文件，最小修复）：`collect_buckets` 尾部桶内排序插入 cred 降序
+    为第二键（exact → cred → weight → word，`translator.rs`）；`mod.rs` 词候选流注释同步
+    修订。排序语义：纯全拼路径（cred=0）恒先于含简拼路径（≈-0.693）、更先于含补全路径
+    （≈-2.996），cred 分层天然兼容——10-08 场景（`shurfa` 全音节+漏韵母）不受影响。
+    poet 词格多路径桶的桶首代表词可能更换：`log_weight = lm(weight)+cred` 本就按路径
+    质量加权，属预期行为（组句场景真机回归无异常）。
+  - **测试**：`cargo test --workspace` 全绿（含 `shurfa`/`nh`/`deguo`/简拼翻页等 10-08
+    与 53 号回归钉）；repl 真词库对拍：`yang`→杨/养/羊/样/氧（严格/眼光沉到低频字后）、
+    `fang`→放/方/防/房（反感 fan+g 沉后）、`zhang`→张/章/涨/长（站岗沉后）、
+    `yangg`→阳光/杨过/养狗（简拼兜底保留）、`shurfa`→输入法#1、`nh`→你会、`yg`→一个、
+    `xian`→先/线前、西安后——全部符合预期。
+  - **真机回归（2026-10-12 14:11 dev-deploy 后，五组清单）**：A 碰撞类（yang/fang/zhang/
+    yangg/shur）、B 历史回归（shurfa/nh/yg/xian/xi'an/deguo）、C 整句四句
+    （jintiantianqihenhao / woaibeijingtiananmen / shurufazhendebucuo / nihuishurufa）、
+    D 尾前缀补全（shur/shuruf/degu/deg）、E M2 调权——用户判定基本全过；
+    server `[perf]` 无回退（当轮慢键峰值 29.7ms，历史 100ms+ 慢键均在此前旧版本进程）。
+  - **观察项（未处理，用户判定可接受）**：`degu`（尾前缀补全路径）不可达「德国」——
+    Completion 惩罚（-3.0）与补全候选排序的既有语义，与本次改动无关；`deg` 直出德国
+    正常（de+g 单字母简拼）。留作 Completion 语义侧观察。

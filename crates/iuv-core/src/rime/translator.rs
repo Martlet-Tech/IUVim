@@ -253,11 +253,23 @@ pub(crate) fn collect_buckets(
         }
     }
 
-    // 桶内排序：精确优先，其次权重降序、字序稳定（librime 组内三规则的化简）
+    // 桶内排序：精确优先 → cred（拼写可信度）降序 → 权重降序 → 字序稳定
+    // （librime 组内三规则的化简 + cred 插队）。
+    // cred 为什么必须排在 weight 前：同桶内「跨音节简拼路径」拼出的键串可能
+    // **恰好等于词库完整编码**（如输入 yang 切成 yan+g，键串 yan'ge 命中
+    // 「严格」），merge_into 后 exact=true 与纯全拼同级；若只比 weight，高频
+    // 简拼词会压过低频精确字（2026-10-12 实测 yang 首推「严格」）。cred 在
+    // exact 之后、weight 之前插队：纯全拼路径（cred=0）恒先于含简拼路径
+    // （cred≈-0.693），简拼兜底能力保留（yg/shurfa 照常出词），只是与精确
+    // 匹配同台时靠边。
+    // 对 poet 的影响：build_poet_graph 每 (起,终) 取桶首，多路径桶的桶首可能
+    // 由「高 cred 低权重」换成「低 cred 高权重」或反之——log_weight = lm(weight)
+    // + cred 本就按路径质量加权，属预期行为。
     for slot in buckets.values_mut() {
         slot.sort_by(|a, b| {
             b.exact
                 .cmp(&a.exact)
+                .then(b.cred.total_cmp(&a.cred))
                 .then(b.entry.weight.cmp(&a.entry.weight))
                 .then(a.entry.word.cmp(&b.entry.word))
         });

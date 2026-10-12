@@ -224,9 +224,11 @@ impl ImeEngine for RimeEngine {
         //    （dictionary.h:54 `DictEntryCollector = map<size_t, ...>`），
         //    `phrase_->rbegin()`（script_translator.cc:472）即「消费最长的先出」，
         //    这是第一排序键，无任何「类别」参与。桶内沿用 collect_buckets 的排序
-        //    （精确优先 → 权重降序 → 字序），与 librime 组内
-        //    compare_chunk_by_head_element（dictionary.cc:73-84）同构。
-        //    简拼/补全的代价只体现在 cred（进 score 与 poet 词格），**不再**作为
+        //    （精确优先 → cred 降序 → 权重降序 → 字序），与 librime 组内
+        //    compare_chunk_by_head_element（dictionary.cc:73-84）同构；cred 插队
+        //    是 2026-10-12 修正——同桶内简拼路径键串恰等词库编码时（yang→yan+g
+        //    命中「严格」），cred 不参与排序会退化成纯词频比拼，简拼词压过精确字。
+        //    简拼/补全的代价只体现在 cred（进排序、score 与 poet 词格），**不再**作为
         //    候选分档——旧 class 分级（类2置顶 / 类0 / 类1沉底）是为对齐已删的
         //    classic 引擎而设，会把含简拼的候选整类沉底（shurfa 的「输入法」被
         //    261 个纯全拼单字淹没），2026-10-08 废弃。——
