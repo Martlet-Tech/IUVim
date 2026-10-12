@@ -211,6 +211,12 @@ pub(crate) fn collect_buckets(
     // → 键串回退 `exact`/`prefix`（唯一能看到用户独有条目的路径）。
     for m in &markers {
         let mut got: Vec<iuv_data::Entry> = match (m.base, m.cursor, m.completion) {
+            // —— 53 号二阶：poet-only 桶（origin≠0 只喂组句，build_poet_graph 每
+            // (起,终) 取桶首）只物化有效权重最优单条——每段起点 ~25 个音节标记的
+            // 全簇物化（数百 Entry × 2 String）归零为借用扫描；桶首与全量路径
+            // 逐字段一致（屏蔽/覆盖/独有条目行内生效，平序 word 升序）。
+            (true, Some(c), false) if m.origin != 0 => dict.cursor_exact_best(c),
+            (true, Some(c), true) if m.origin != 0 => dict.cursor_longer_best(c),
             (true, Some(c), false) => dict.cursor_exact(c),
             (true, Some(c), true) => dict.cursor_longer(c, 64),
             (_, _, true) => dict.prefix(&m.key, 64),

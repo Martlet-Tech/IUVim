@@ -308,6 +308,15 @@ impl UserDict {
         self.map.values().map(|v| v.len()).sum()
     }
 
+    /// 覆盖权重最大值（dict 区间最优快路径的夺魁可能性判定用；表极小）。
+    pub fn max_adjustment(&self) -> u32 {
+        self.map
+            .values()
+            .flat_map(|v| v.iter().map(|(_, a)| *a))
+            .max()
+            .unwrap_or(0)
+    }
+
     /// 屏蔽表条目总数（M6 设置页显示用）。
     pub fn block_count(&self) -> usize {
         self.block.len()

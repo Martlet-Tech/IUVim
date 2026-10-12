@@ -528,8 +528,13 @@ impl Dict {
         let Some(user) = self.user() else {
             return entries;
         };
-        // ① 屏蔽过滤（仅作用于基本库条目——隐藏语义：先删用户库、再屏蔽基础库）
-        entries.retain(|e| !user.is_blocked(&e.code, &e.word));
+        // ① 屏蔽过滤（仅作用于基本库条目——隐藏语义：先删用户库、再屏蔽基础库）。
+        // 借用视图比对：逐条 is_blocked 每条目 2 次 String 分配，cursor_exact
+        // 全簇路径 × 每键数十次标记不可承受（53 号二阶）。
+        let block: Vec<(&str, &str)> = user.block_pairs().collect();
+        if !block.is_empty() {
+            entries.retain(|e| !block.iter().any(|(c, w)| *c == e.code && *w == e.word));
+        }
         // ③ 独有条目：查询 code 组中用户库有而基本库组没有的词条（被屏蔽的跳过）
         if !code.is_empty() {
             for (word, adj) in user.adjusted(code) {
@@ -731,6 +736,188 @@ impl Dict {
             }
         }
         self.top_entries(a, c.hi, limit)
+    }
+
+    /// 等长码簇的有效权重最优单条（origin≠0 的 poet 桶专用，53 号二阶优化）：
+    /// poet 每 (起,终) 桶只取首条（build_poet_graph max_homophones=1），全簇物化
+    /// + 截 tied 的观察成本归零——每段起点 ~25 个音节标记 × 数百条 Entry 物化
+    /// 是每键 10–15ms 的主项。返回与「cursor_exact + merged + 截 tied」的桶首
+    /// 逐字段一致（借用扫描行内应用屏蔽/覆盖，平序 word 升序同 worse_first）。
+    pub fn cursor_exact_best(&self, c: DictCursor) -> Vec<Entry> {
+        // 等长码块（code == 累计前缀）在区间内 lex 最小、连续居首
+        let (mut a, mut b) = (c.lo, c.hi);
+        while a < b {
+            let mid = (a + b) / 2;
+            if self.code_at(self.index_off(mid)).len() == c.plen {
+                a = mid + 1;
+            } else {
+                b = mid;
+            }
+        }
+        if a == c.lo {
+            return Vec::new(); // 无等长码（cursor_exact 同款空结果）
+        }
+        let code =
+            std::str::from_utf8(self.code_at(self.index_off(c.lo))).expect("词库已校验 code 边界");
+        self.range_best(c.lo, a, Some(code))
+    }
+
+    /// 严格更长前缀区的有效权重最优单条（origin≠0 补全桶专用，同 `cursor_exact_best`）。
+    pub fn cursor_longer_best(&self, c: DictCursor) -> Vec<Entry> {
+        let (mut a, mut b) = (c.lo, c.hi);
+        while a < b {
+            let mid = (a + b) / 2;
+            if self.code_at(self.index_off(mid)).len() == c.plen {
+                a = mid + 1;
+            } else {
+                b = mid;
+            }
+        }
+        self.range_best(a, c.hi, None)
+    }
+
+    /// [lo, hi) 基础权重最大值 + 并列下标（零解析：只读记录头部的
+    /// code_len/word_len 定位权重，不碰 UTF-8 校验）。并列超过 64 条
+    /// （全零权重簇等病态）→ None，调用方走慢路径。
+    fn scan_max_weight(&self, lo: usize, hi: usize) -> Option<(u32, Vec<usize>)> {
+        let mut max_w = 0u32;
+        let mut ties: Vec<usize> = Vec::new();
+        for i in lo..hi {
+            let rel = self.index_off(i);
+            let b = &self.file.as_bytes()[self.records.start + rel..];
+            let cl = b[0] as usize;
+            let wl = u16::from_le_bytes([b[1 + cl], b[2 + cl]]) as usize;
+            let w_off = 3 + cl + wl;
+            let w = u32::from_le_bytes([b[w_off], b[w_off + 1], b[w_off + 2], b[w_off + 3]]);
+            if w > max_w {
+                max_w = w;
+                ties.clear();
+                ties.push(i);
+            } else if w == max_w {
+                ties.push(i);
+                if ties.len() > 64 {
+                    return None;
+                }
+            }
+        }
+        Some((max_w, ties))
+    }
+
+    /// [lo, hi) 记录区间的有效权重最优单条（零物化 + 只物化命中）。
+    /// 用户语义与 `merged` 一致：屏蔽剔除、覆盖权重生效；`code` 非空时该码的
+    /// 用户库条目（覆盖替换/独有追加，②③ 支）同样参与争优——独有条目直接
+    /// 构造（不调 merged：会追回全部用户条目，违背「单条」契约）。
+    ///
+    /// 快路径（53 号二阶）：短前缀补全区可达 10–20 万条，借用全解析
+    /// （from_utf8 × 2 + 覆盖表逐码查询）仍要 2–4ms——先纯权重扫描（只读记录
+    /// 头部算术）取 max + 并列集（通常 1–3 条），并列集内精裁；覆盖最大值 <
+    /// 基础最大时覆盖/独有条目不可能夺魁。病态（全零权重簇、并列爆表、
+    /// 并列全被屏蔽/覆盖）回退借用全解析慢路径。
+    fn range_best(&self, lo: usize, hi: usize, code: Option<&str>) -> Vec<Entry> {
+        if lo >= hi {
+            return Vec::new();
+        }
+        let user = self.user();
+        if let Some((max_w, ties)) = self.scan_max_weight(lo, hi) {
+            let max_adj = user.as_ref().map(|u| u.max_adjustment()).unwrap_or(0);
+            if max_w > 0 && max_adj < max_w {
+                let block: Vec<(&str, &str)> = user
+                    .as_ref()
+                    .map(|u| u.block_pairs().collect())
+                    .unwrap_or_default();
+                let mut best: Option<(u32, &str, usize)> = None;
+                for &i in &ties {
+                    let (c, w, _) = self.entry_ref_at(self.index_off(i));
+                    if !block.is_empty() && block.iter().any(|(bc, bw)| *bc == c && *bw == w) {
+                        continue;
+                    }
+                    // 被覆盖的并列条目：有效权重脱离 max 层（max_adj < max_w
+                    // 排除抬回可能），不可能夺魁，跳过
+                    if user
+                        .as_ref()
+                        .is_some_and(|u| u.adjusted(c).iter().any(|(aw, _)| aw.as_str() == w))
+                    {
+                        continue;
+                    }
+                    let better = match &best {
+                        None => true,
+                        Some((_, bword, _)) => w < *bword,
+                    };
+                    if better {
+                        best = Some((max_w, w, i));
+                    }
+                }
+                if let Some((_, _, i)) = best {
+                    // 未被覆盖的并列条目：基础权重 == max_w == 有效权重，直接物化
+                    return vec![self.entry_at(self.index_off(i))];
+                }
+                // 并列全被屏蔽/覆盖 → 真最优在更低权重层，走慢路径
+            }
+        }
+        // —— 慢路径：借用全解析扫描（同码相邻，覆盖表仅换码时查一次）——
+        let block: Vec<(&str, &str)> = user
+            .as_ref()
+            .map(|u| u.block_pairs().collect())
+            .unwrap_or_default();
+        let mut best: Option<(u32, &str, usize)> = None;
+        let mut adj: &[(String, u32)] = &[];
+        let mut prev_code: &str = "";
+        for i in lo..hi {
+            let (c, w, weight) = self.entry_ref_at(self.index_off(i));
+            if c != prev_code {
+                prev_code = c;
+                adj = match &user {
+                    Some(u) => u.adjusted(c),
+                    None => &[],
+                };
+            }
+            if !block.is_empty() && block.iter().any(|(bc, bw)| *bc == c && *bw == w) {
+                continue;
+            }
+            let weight = adj
+                .iter()
+                .find(|(aw, _)| aw.as_str() == w)
+                .map_or(weight, |(_, a)| *a);
+            let better = match &best {
+                None => true,
+                Some((bw, bword, _)) => weight > *bw || (weight == *bw && w < *bword),
+            };
+            if better {
+                best = Some((weight, w, i));
+            }
+        }
+        // 三方择优收尾：基础块最优 vs 用户库条目（覆盖词与块内词重复无害，同键同权）
+        let mut winner: Option<(u32, String, Option<usize>)> =
+            best.map(|(wt, w, i)| (wt, w.to_string(), Some(i)));
+        if let (Some(code), Some(u)) = (code, user.as_ref()) {
+            for (w, a) in u.adjusted(code) {
+                if block.iter().any(|(bc, bw)| *bc == code && *bw == w.as_str()) {
+                    continue; // 屏蔽优先于覆盖（merged 同规）
+                }
+                let replace = match &winner {
+                    None => true,
+                    Some((wt, bword, _)) => *a > *wt || (*a == *wt && w.as_str() < bword.as_str()),
+                };
+                if replace {
+                    winner = Some((*a, w.clone(), None));
+                }
+            }
+        }
+        match winner {
+            None => Vec::new(),
+            Some((weight, _, Some(i))) => {
+                let mut e = self.entry_at(self.index_off(i));
+                e.weight = weight;
+                vec![e]
+            }
+            Some((weight, word, None)) => {
+                vec![Entry {
+                    word,
+                    code: code.unwrap_or_default().to_string(),
+                    weight,
+                }]
+            }
+        }
     }
 
     /// 区间内码的 rest 切片（`code[plen..]`；区间不变量保证码长 ≥ plen）。
@@ -1279,5 +1466,46 @@ mod tests {
             .map(|e| e.word.clone())
             .collect();
         assert_eq!(hits, vec!["次频"], "③ 屏蔽剔除 + 次高补位");
+    }
+
+    #[test]
+    fn cursor_best_single_entry_head_semantics() {
+        // 53 号二阶回归钉：poet-only 桶最优单条与「全量物化 + merged + 截 tied」
+        // 的桶首逐字段一致——① 权重最优（平序 word 升序）② 等长码块限定
+        // ③ 覆盖权重救回 ④ 屏蔽剔除次优补位 ⑤ 用户库独有条目夺魁。
+        let d = Dict::from_entries(vec![
+            ("ya".into(), "压".into(), 3000),
+            ("ya".into(), "牙".into(), 3000), // 同权重平序：word 升序 → 压
+            ("ya".into(), "哑".into(), 10),
+            ("yab".into(), "压边".into(), 99999), // 更长码，等长块外
+        ]);
+        let step = |d: &Dict| d.cursor_step(d.cursor(), b"ya").unwrap();
+        // ①② 等长块内最优单条（word 升序破平局），更长码不混入
+        let got = d.cursor_exact_best(step(&d));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].word, "压");
+        assert_eq!(got[0].weight, 3000);
+        // cursor_longer_best：更长码区最优（等长块被跳过）
+        let got = d.cursor_longer_best(step(&d));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].word, "压边");
+        // ③ 覆盖权重救回：基础垫底的「哑」覆盖为最高
+        d.set_user(Arc::new(crate::userdict::UserDict::empty().set_entry("ya", "哑", 99999)));
+        let got = d.cursor_exact_best(step(&d));
+        assert_eq!(got[0].word, "哑");
+        assert_eq!(got[0].weight, 99999, "覆盖权重随条目返回");
+        // ④ 屏蔽最优 → 次优补位
+        d.set_user(Arc::new(crate::userdict::UserDict::empty().block("ya", "压")));
+        let got = d.cursor_exact_best(step(&d));
+        assert_eq!(got[0].word, "牙");
+        // ⑤ 用户库独有条目夺魁（不在基础库 → 直接构造）
+        d.set_user(Arc::new(
+            crate::userdict::UserDict::empty().set_entry("ya", "葎", 88888),
+        ));
+        let got = d.cursor_exact_best(step(&d));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].word, "葎");
+        assert_eq!(got[0].weight, 88888);
+        assert_eq!(got[0].code, "ya");
     }
 }
