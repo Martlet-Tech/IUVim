@@ -261,6 +261,9 @@ fn tabs() -> Vec<Tab> {
 /// 日志模块目录（tag, 说明）——高级标签开关（26-log-modules.md）。
 /// 2026-10-02 按 M10 后实际 tag 盘点更新（`[perf]` 随埋点机制退役删除，
 /// daemon 时代的 daemon/pipe 改为 backend/config/hotkey 等）。
+/// 2026-10-10 补齐漏登的 `[follow]`/`[capture]`/`[pet]`/`[log]`/`[panic]`
+/// （此前不在目录 → 设置页 apply 重写 config.json 时会把它们的禁用项静默丢弃，
+/// 表现为「关掉的日志又回来了」；`[anchor]` 系旧版 tag，已更名 caret/follow，不列）。
 /// tag 须与 log_line 消息前缀 `[tag]` 一致；无 tag 的日志恒记录。
 const LOG_MODULES: &[(&str, &str)] = &[
     // ---- TSF 侧（%TEMP%\iuv-tsf.log）----
@@ -275,6 +278,7 @@ const LOG_MODULES: &[(&str, &str)] = &[
     ("ctl", "TSF 控制端点（服务端回调）"),
     ("edit", "TSF 编辑会话"),
     ("focus", "线程焦点（激活/失焦上报）"),
+    ("follow", "TSF 候选窗跟随布局（ITfLayoutSink 锚点平移）"),
     // ---- server 侧（%TEMP%\iuv-server.log）----
     ("main", "服务进程主循环"),
     ("config", "配置热载监视"),
@@ -282,11 +286,15 @@ const LOG_MODULES: &[(&str, &str)] = &[
     ("resume", "断连重绑"),
     ("shm", "用户库共享段"),
     ("settings", "设置页"),
+    ("capture", "按键录入（设置页捕获组合键）"),
     ("state", "服务状态（用户库发布/写盘）"),
     ("toolbar", "工具栏"),
     ("hotkey", "全局热键"),
     ("candwin", "服务端候选窗窗口层"),
-    ("perf", "服务端慢键观测（on_key ≥10ms，49 号定档）"),
+    ("pet", "宠物素材加载（分层图/帧表）"),
+    ("perf", "慢键观测（服务端 on_key 分段 + 客户端往返，53 号）"),
+    ("log", "日志清除（设置页）"),
+    ("panic", "panic 落日志"),
 ];
 
 /// 录入目标：某个功能（会话或全局）× 主/备槽。

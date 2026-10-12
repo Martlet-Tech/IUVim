@@ -288,16 +288,25 @@ impl Session for EngineSession {
             C2S::Key { key, full, .. } => {
                 let t0 = std::time::Instant::now();
                 let effect = self.on_key(key);
+                let t_engine = t0.elapsed();
                 let outcome = self.outcome(&effect, full);
+                let t_outcome = t0.elapsed();
                 reply.respond(S2C::KeyResult(KeyVerdict::Consumed(outcome)));
+                let t_respond = t0.elapsed();
                 // P4 服务端自渲染：Effect → 快照 → 候选窗命令（抑制命中的连接静默）。
                 self.sync_candwin(&effect);
+                let t_candwin = t0.elapsed();
                 // 慢键观测（P0 预算定档数据，49 §4.5.2）：真实词库单键处理分布。
-                let elapsed = t0.elapsed();
-                if elapsed.as_millis() >= 10 {
+                // 53 号延迟定位：测量窗口拆成 engine / outcome / respond(IPC) / candwin
+                // 四段——线上 on_key 20–80ms 中引擎仅 3–8ms，其余去向待查（阈值 5ms）。
+                if t_candwin.as_millis() >= 5 {
                     log_line(&format!(
-                        "[perf] on_key 慢键 {elapsed:?} key={key:?} cand={}",
-                        effect.candidates.len()
+                        "[perf] on_key 慢键 {t_candwin:?} key={key:?} cand={} | engine={:?} outcome={:?} respond={:?} candwin={:?}",
+                        effect.candidates.len(),
+                        t_engine,
+                        t_outcome - t_engine,
+                        t_respond - t_outcome,
+                        t_candwin - t_respond,
                     ));
                 }
                 if effect.end.is_some() {

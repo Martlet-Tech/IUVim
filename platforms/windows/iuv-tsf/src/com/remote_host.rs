@@ -465,8 +465,17 @@ impl RemoteHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()?;
+        let t0 = Instant::now();
         match client.request(req, true, Duration::from_millis(KEY_DEADLINE_MS)) {
-            Ok(resp) => Some(resp),
+            Ok(resp) => {
+                // 53 号延迟定位：客户端视角的按键往返（server 处理 + IPC 双程）。
+                // 与 iuv-server.log 的 [perf] on_key 分段对账 → 分离 IPC 开销。
+                let rt = t0.elapsed();
+                if rt.as_millis() >= 5 {
+                    log_line(&format!("[perf] 按键往返 {rt:?}"));
+                }
+                Some(resp)
+            }
             Err(TransportError::Deadline) => {
                 // §4.5.2：超时放行 + degraded → 下一 Key 带 full=true 全量重同步。
                 // 连接仍活着（服务端只是慢），**不**置 offline。
