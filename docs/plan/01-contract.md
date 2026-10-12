@@ -3,20 +3,26 @@
 > 本文档定义 M1 全部**跨模块**类型、trait、行为契约与文件属主。
 > W0 由主智能体按本文档建骨架并冻结；W1 各子智能体只实现、不修改本文档定义的签名。
 > 任何签名变更必须回到本文档修改，并由主智能体同步所有受影响模块。
+>
+> ⚠️ **2026-10-12 对账注记（55 号体检）**：本文档成文于 M1（W0 骨架期），此后经
+> M1.5/M2/M4/M6/M10 多次演进。§1 骨架图、§3 之后的文件清单、§6 属主矩阵中凡涉及
+> **iuv-daemon、rerank.rs、store.rs、viterbi.rs、ui/gdi.rs、tsf/ui/candwin.rs、
+> register/unregister.ps1** 等条目**均已过时或删除**（正文已就地标注删除线）。
+> 接口现状以 **§8（rime 管线）** + **§2（依赖，2026-10-12 已对账）** + `AGENTS.md` 结构表为准。
 
-## 1. 工作区结构（W0 产出）
+## 1. 工作区结构（W0 产出·历史快照）
 
 ```
-D:\Projects\vaim\
+d:\Projects\input\iuvim\
 ├── Cargo.toml                     # workspace 根（见 §2.1）
-├── .gitignore                     # /target, /data
-├── AGENTS.md
-├── docs\plan\                     # 本方案书
+├── .gitignore                     # /target, /target-server, /data
+├── AGENTS.md / README.md / NOTICE
+├── docs\                          # plan\ · closed\ · issue\ · knowledge\ · pet\
 ├── data\                          # 下载的词库源文件 + 编译产物（gitignore）
 ├── scripts\
-│   ├── download-dict.ps1          # 【Agent A】下载白霜词库
-│   ├── register.ps1               # 【Agent D】注册输入法（管理员）
-│   └── unregister.ps1             # 【Agent D】注销
+│   ├── download-dict.ps1          # 下载白霜词库（另有 download-opencc.ps1）
+│   ├── build.ps1 / dev-deploy.ps1 # 三车道构建 / 热部署
+│   └── install.ps1 / uninstall.ps1# 全新安装 / 卸载（管理员）
 └── crates\                        # 跨平台层（引擎线，纯 Rust）
     ├── iuv-data\
     │   ├── Cargo.toml             # 【W0】
@@ -45,7 +51,7 @@ D:\Projects\vaim\
     │   └── src\main.rs            # 【Agent C】
     └── platforms\                 # 平台层（每平台一套：系统适配 + 门面）
         └── windows\
-            ├── iuv-tsf\           # TSF 管线 + GDI 候选窗（见下）
+            ├── iuv-tsf\           # TSF 薄客户端（M10；候选窗已移到 iuv-server，见下）
             │   ├── Cargo.toml             # 【W0】
             │   ├── build.rs               # 【Agent D】winres 资源
             │   ├── src\lib.rs             # 【Agent D】COM 导出（DllGetClassObject 等）
@@ -115,13 +121,17 @@ codegen-units = 1
 
 | crate | 依赖 |
 |---|---|
-| **iuv-proto（M10，49 号）** | `serde`、`postcard`（workspace；拍板 §6.5：全量 serde） |
-| iuv-data | `serde`（workspace） |
-| iuv-core | `serde`（workspace）、`serde_json`（workspace）、`iuv-data`（workspace） |
-| iuv-ui | `tiny-skia`、`cosmic-text`（workspace）；`iuv-core`（workspace，Theme 消费） |
-| iuv-repl | `iuv-core`、`iuv-data`（workspace） |
-| iuv-tsf | `iuv-core`、`iuv-data`、`iuv-ui`、`windows`、`windows-core`、`windows-registry`（workspace）；build-dep：`winres = "0.1"` |
-| iuv-daemon（M6 已实现） | `iuv-data`、`iuv-ui`（workspace）、`windows`、`windows-core`、`serde`、`serde_json`（workspace）、`eframe = "0.36"`（egui 经其重导出；rust-version 单独 1.95） |
+| **iuv-proto（M10，49 号）** | `serde`、`postcard`、`iuv-data`（均 workspace） |
+| iuv-data | `serde`（workspace）；`windows-core`（workspace，target=windows 条件下另有 `windows`） |
+| iuv-core | `serde`、`serde_json`、`iuv-data`（workspace） |
+| iuv-ui | `iuv-core`、`tiny-skia`、`cosmic-text`（workspace） |
+| iuv-repl | `iuv-data`、`iuv-core`（workspace） |
+| iuv-tsf | `iuv-proto`、`iuv-data`、`iuv-core`、`iuv-ui`、`iuv-win`、`windows`、`windows-core`、`windows-registry`（workspace）；build-dep：`winres`（workspace） |
+| iuv-win（M10，49 号） | `iuv-proto`、`iuv-core`、`iuv-data`、`iuv-ui`、`windows`、`windows-core`（workspace） |
+| **iuv-server（M10，49 号）** | `iuv-core`、`iuv-data`、`iuv-proto`、`iuv-ui`、`iuv-win`、`windows`、`serde`、`serde_json`、`tiny-skia`、`eframe`（workspace；egui 经其重导出，**rust-version 单独 1.95**） |
+
+> **2026-10-12 对账**：上表与各 crate 的实际 `Cargo.toml` 一致（iuv-daemon 行删除、
+> 补 iuv-win/iuv-server 行）；所有第三方依赖均经根 `[workspace.dependencies]` 锁定。
 
 ### 2.3 iuv-tsf Cargo.toml 要点
 
@@ -397,33 +407,12 @@ pub struct UnigramLm { /* total, entry_count */ }
 impl UnigramLm { pub fn new(total_weight: u64, entry_count: usize) -> Self }
 // 公式：ln(weight+1) - ln(total_weight)。OOV（词典查不到）由 viterbi 加 OOV_PENALTY = -10.0。
 
-// ===== rerank.rs（Agent B）=====
-pub struct RerankCtx<'a> {
-    pub raw: &'a str,
-    pub seg: &'a [String],
-    pub store: &'a dyn UserDataStore,
-    pub config: &'a Config,
-    pub now: std::time::SystemTime,
-}
-pub trait RerankStage: Send + Sync {
-    fn rerank(&self, ctx: &RerankCtx, cands: &mut Vec<Candidate>);
-}
-/// 静态序：候选生成顺序即展示顺序（no-op）。M2 排序决定权交还用户（主动调权/自造词/隐藏，
-/// 见 18-m2-user-dict.md；滞回/钉选方案已废弃）。
-pub struct StaticOrder;
-impl RerankStage for StaticOrder { /* 什么都不做 */ }
-
-// ===== store.rs（Agent B）=====
-pub trait UserDataStore: Send {
-    fn record_selection(&mut self, code: &str, text: &str, now: std::time::SystemTime);
-    /// M2 用户数据 hook；MVP NullStore 恒返回 0.0（主动调权由 UserDict 覆盖表承载，见 §3.2）。
-    fn power(&self, code: &str, text: &str, now: std::time::SystemTime) -> f32;
-    fn flush(&mut self) {}  // 持久化钩子，MVP 空实现
-}
-pub struct NullStore;  // 全空实现
+// ===== rerank.rs / store.rs（Agent B）——【已删除】=====
+// RerankStage / RerankCtx / StaticOrder 与 UserDataStore / NullStore 已于 39 号
+// rime 管线收尾时删除（排序/打分由 RimeEngine 内部承担，见 §8）。此处不再保留签名。
 
 // ===== engine.rs（Agent B）=====
-pub struct Engine { /* dict, schema, lm, stages, store: Mutex<Box<dyn UserDataStore>>, config */ }
+pub struct Engine { /* dict, config；内部装配 RimeEngine（§8）——排序/组句不再走 stages/store */ }
 impl Engine {
     /// 默认装配：Quanpin + UnigramLm + [StaticOrder] + NullStore。
     pub fn new(dict: iuv_data::Dict, config: Config) -> std::sync::Arc<Engine>;
@@ -549,7 +538,7 @@ kind 按现有惯例多字符 `Word` / 单字符 `Char`，`seg_len = seg.len()` 
 4. 前缀补全（联想，默认关）：`dict.prefix(seg.join("'"), 20)`（词库键已分隔化）。
 5. 按 text 去重（保序，先见先留；跨级同文本只留首个）。
 6. 截断到 `config.max_candidates`。
-7. 依次过 `stages` 管线（MVP 仅 StaticOrder = no-op）。
+7. ~~依次过 `stages` 管线（MVP 仅 StaticOrder = no-op）~~ —— stages 管线已随 39 号删除，排序由 RimeEngine 内部完成（§8）。
 
 **简拼路径**（多段全不完整）：k=n..1 查简拼键（构建期生成，§3），候选 seg_len=k；
 选中部分消费 → session 悬空续接把尾巴段重建为组合（与全拼路径选中间级词同一机制）。
@@ -586,10 +575,9 @@ pub struct UiSnapshot {
 /// Effect → UiSnapshot（W0 实现完整：取 effect.reading / 页内候选 text / selected / page）。
 pub fn effect_to_snapshot(e: &Effect) -> UiSnapshot { /* ... */ }
 
-/// 候选窗抽象。MVP 实现 = GdiCandidateWindow（ui/gdi.rs，Agent E；M4 已下线）；
-/// **M4 起**：实现 = CandwinCandidateWindow（ui/candwin.rs）：渲染层 iuv-ui
-/// （tiny-skia + cosmic-text）+ ULW 呈现（见 `19-m4-cross-render.md`），
-/// trait 签名不变，COM 层零改动。
+/// 候选窗抽象。历史：MVP = GdiCandidateWindow（ui/gdi.rs，已删）；M4 起本地
+/// CandwinCandidateWindow（tsf/ui/candwin.rs）亦已随 M10 删除——**当前**候选窗
+/// 完全在服务端（`platforms/windows/iuv-server/src/candwin.rs`），TSF 为薄客户端。
 pub trait CandidateUi {
     fn show(&mut self, snap: &UiSnapshot, caret: CaretRect);
     fn update(&mut self, snap: &UiSnapshot);
@@ -641,13 +629,13 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
 | `iuv-core/src/{schema,lm,viterbi,rerank,store,engine,session}.rs`、`tests/**` | **Agent B** | W1 |
 | `crates/iuv-repl/**` | **Agent C** | W1 |
 | `iuv-tsf/src/ui/mod.rs` | 主智能体 | W0 **完整实现**，冻结 |
-| `iuv-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs` | **Agent E** | W1（M4 起 gdi.rs → `candwin.rs`，渲染层归 iuv-ui） |
+| ~~`iuv-tsf/src/ui/gdi.rs`、`examples/candwin_demo.rs`~~ | — | 已删除（M4/M10） |
 | `crates/iuv-ui/**` | 主智能体 | M4 已实现（2026-08-16） |
-| `iuv-tsf/src/ui/candwin.rs` | 主智能体 | M4 已实现（ULW 呈现） |
+| ~~`iuv-tsf/src/ui/candwin.rs`~~ | — | 已删除（M10 候选窗移到 iuv-server） |
 | `iuv-tsf/src/langbar.rs`（右键菜单部分） | 主智能体 | M5 已实现（语言栏右键菜单，2026-08-17 重定义） |
-| `iuv-data/src/{shm,ipc}.rs`、`iuv-daemon/**` | 主智能体 | M6 已实现 |
-| `iuv-tsf/src/daemon_client.rs` | 主智能体 | M6 已实现 |
-| `iuv-tsf/src/{lib,registration,log,session_bridge,composition,langbar}.rs`、`com/**`、`build.rs`、`scripts/{register,unregister}.ps1`、`Cargo.toml` 内 winres 配置 | **Agent D** | W1 |
+| ~~`iuv-data/src/{shm,ipc}.rs`、`iuv-daemon/**`~~ | — | 已删除（shm→`iuv-win/src/shm.rs`；ipc→`iuv-win/src/ipc/`；daemon 并入 iuv-server，M10） |
+| ~~`iuv-tsf/src/daemon_client.rs`~~ | — | 已删除（→ `com/daemon_host.rs`、`com/remote_host.rs`，M10） |
+| `iuv-tsf/src/{lib,registration,log,session_bridge,composition,langbar}.rs`、`com/**`、`build.rs`、`scripts/{install,uninstall}.ps1`、`Cargo.toml` 内 winres 配置 | **Agent D** | W1 |
 | `iuv-tsf/src/ui_element.rs` | 主智能体 | wow-ime（2026-08-16） |
 
 规则：只允许改自己属主的文件；发现契约缺陷 → 报告主智能体，禁止私改他人文件。
@@ -667,7 +655,7 @@ pub const DICT_FILENAME: &str = "iuv.imedic"; // 位于 %LOCALAPPDATA%\iuv\
   关闭时清理活动会话。语言栏图标点击归一为写该 compartment（`ITfCompartment::SetValue`，需带本实例
   client id；SetValue 同步重入 OnChange，靠防抖幂等）。不再提供 Shift 切换（2026-08 移除）。
   Activate 时"激活即打开"（初始 VT_EMPTY/关闭 → 写 open=1，保持切入即中文）；compartment 缺失/写失败时本地翻转兜底。
-- 引擎在 DLL 内进程级单例（`OnceLock<Arc<Engine>>`），词典路径 `%LOCALAPPDATA%\iuv\iuv.imedic`（用户级数据；DLL 本体在 `%ProgramFiles%\iuv\`）；
+- ~~引擎在 DLL 内进程级单例（`OnceLock<Arc<Engine>>`）~~ —— **M10 后引擎在 iuv-server 服务进程**（全系统一份），TSF 为薄客户端经 transport 请求；词典路径 `%LOCALAPPDATA%\iuv\iuv.imedic`（用户级数据）由 server 加载。
   加载失败：日志记录，所有字母键原样放行（输入法"透明"，绝不卡用户）。
 - **候选 UI 元素（`ui_element.rs`，wow-ime 2026-08-16）**：候选变化时经 `ITfUIElementMgr`
   （`ITfThreadMgr::QueryInterface` 获取）Begin/Update/End 同步 `ITfCandidateListUIElement`——

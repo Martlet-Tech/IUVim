@@ -1,0 +1,21 @@
+iuv 输入法（iuvim）
+==================
+
+本仓库的源代码：MIT License（见根及各 crate 的 Cargo.toml `license` 字段）。
+
+本项目的发布包可能包含由第三方数据源**编译而成**的产物，其许可与义务如下：
+
+1. 词库（iuv.imedic）
+   - 数据源：白霜拼音 rime-frost — https://github.com/gaboolic/rime-frost
+   - 许可：GPL-3.0
+   - 说明：词库源文件不进入本仓库（由 scripts/download-dict.ps1 下载到 data/，已 gitignore）。
+     发布包若包含编译产物 iuv.imedic，需遵守 GPL-3.0 的相关义务。
+
+2. 简繁转换表（iuv.opencc）
+   - 数据源：OpenCC — https://github.com/BYVoid/OpenCC
+   - 许可：Apache-2.0
+   - 说明：转换表源文件不进入本仓库（由 scripts/download-opencc.ps1 下载，已 gitignore）。
+     发布包若包含编译产物 iuv.opencc，需随附 Apache-2.0 许可声明与归属。
+
+3. 桌宠素材
+   - 见 assets/pet/LICENSE.md（CC0 1.0）。

@@ -25,8 +25,8 @@ n-gram 语言模型、双拼/模糊音、设置界面、安装器、x86 架构�
 │   iuv-ui     候选窗/菜单绘图：tiny-skia + cosmic-text       │  依赖 iuv-core（UiSnapshot/Theme 消费）
 │   iuv-repl   CLI 调试前端（不注册输入法即可测引擎）         │  依赖 iuv-core, iuv-data
 │ platforms/（平台层，每平台一套：系统适配 + 门面）                 │
-│   windows/iuv-tsf    cdylib：COM/TSF 管线（M10 薄客户端）   │  依赖 iuv-core, iuv-data, iuv-win
-│   windows/iuv-win    共享层：transport 长连接 + ULW + 日志  │  依赖 iuv-proto
+│   windows/iuv-tsf    cdylib：COM/TSF 管线（M10 薄客户端）   │  依赖 iuv-core, iuv-data, iuv-proto, iuv-ui, iuv-win
+│   windows/iuv-win    共享层：transport 长连接 + ULW + 日志  │  依赖 iuv-proto, iuv-core, iuv-data, iuv-ui
 │   windows/iuv-server 引擎服务进程 exe：引擎 + 用户库 + 设置页│（M10 ② iuv-daemon 并入退役）
 │   macos/          占位（IMK 适配 + 门面规划，README）            │
 │   linux/          占位（Fcitx5/IBus 适配 + 门面规划，README）     │

@@ -166,7 +166,13 @@ fn toolbar_icon<'a>(spec: &'a ToolbarSpec, i: usize) -> Option<&'a Pixmap> {
 /// 2026-08-21 修：缩放变换用 `from_scale` 而非 `from_bbox`——`from_bbox` 把源坐标
 /// (0..iw) 映射到 (0..iw*scale)，目标画布只有 dw 大小 → 只采样源图左上角 ~1 像素
 /// （图标居中、四角透明 → 整片空白，实测 32-toolbar 图标全空）。
-fn draw_icon_scaled(canvas: &mut Pixmap, icon: &Pixmap, r: &LayoutRect, inset_x: f32, inset_y: f32) {
+fn draw_icon_scaled(
+    canvas: &mut Pixmap,
+    icon: &Pixmap,
+    r: &LayoutRect,
+    inset_x: f32,
+    inset_y: f32,
+) {
     let avail = (r.w as f32 - inset_x * 2.0).min(r.h as f32 - inset_y * 2.0);
     if avail <= 0.0 {
         return;
@@ -424,7 +430,8 @@ mod tests {
         let toolbar_w = (TOOLBAR_BTN * 1.0).ceil() as i32 * TB_COUNT as i32
             + (TOOLBAR_GAP * 1.0).ceil() as i32 * (TB_COUNT as i32 - 1)
             + (TOOLBAR_PAD_X * 1.0).ceil() as i32 * 2;
-        let toolbar_h = (TOOLBAR_BTN_H * 1.0).ceil() as i32 + (TOOLBAR_PAD_Y * 1.0).ceil() as i32 * 2;
+        let toolbar_h =
+            (TOOLBAR_BTN_H * 1.0).ceil() as i32 + (TOOLBAR_PAD_Y * 1.0).ceil() as i32 * 2;
         assert_eq!(
             surf.w as i32, toolbar_w,
             "复合窗宽 = 工具栏宽（可贴屏幕右缘）"

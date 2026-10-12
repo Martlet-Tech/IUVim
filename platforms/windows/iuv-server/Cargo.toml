@@ -2,7 +2,8 @@
 name = "iuv-server"
 version = "0.1.0"
 edition.workspace = true
-rust-version.workspace = true
+# eframe 0.36 要求 rustc ≥ 1.95（workspace 基线 1.89，本 crate 单独抬到 1.95）
+rust-version = "1.95"
 license.workspace = true
 
 [dependencies]
@@ -16,7 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tiny-skia = { workspace = true }
 # eframe 0.36（设置页；自 iuv-daemon 迁入，②daemon→server 演进）。
-eframe = "0.36"
+eframe = { workspace = true }
 
 [[bin]]
 name = "iuv-server"

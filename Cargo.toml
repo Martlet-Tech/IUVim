@@ -27,6 +27,10 @@ windows = { version = "0.62", features = [
 ] }
 windows-core = "0.62"
 windows-registry = "0.6"
+# 构建期资源（iuv-tsf build.rs）
+winres = "0.1"
+# 设置页 GUI（iuv-server；egui 经其重导出，rust-version 单独要求 1.95）
+eframe = "0.36"
 iuv-proto = { path = "crates/iuv-proto" }
 iuv-data = { path = "crates/iuv-data" }
 iuv-core = { path = "crates/iuv-core" }

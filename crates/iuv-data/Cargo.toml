@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
-windows-core = "0.62"
+windows-core = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }

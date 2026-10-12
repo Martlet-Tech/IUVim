@@ -739,10 +739,10 @@ impl Dict {
     }
 
     /// 等长码簇的有效权重最优单条（origin≠0 的 poet 桶专用，53 号二阶优化）：
-    /// poet 每 (起,终) 桶只取首条（build_poet_graph max_homophones=1），全簇物化
-    /// + 截 tied 的观察成本归零——每段起点 ~25 个音节标记 × 数百条 Entry 物化
-    /// 是每键 10–15ms 的主项。返回与「cursor_exact + merged + 截 tied」的桶首
-    /// 逐字段一致（借用扫描行内应用屏蔽/覆盖，平序 word 升序同 worse_first）。
+    /// poet 每 (起,终) 桶只取首条（build_poet_graph max_homophones=1），全簇物化与
+    /// 截 tied 的观察成本归零——每段起点 ~25 个音节标记 × 数百条 Entry 物化是每键
+    /// 10–15ms 的主项。返回与「cursor_exact + merged + 截 tied」的桶首逐字段一致
+    /// （借用扫描行内应用屏蔽/覆盖，平序 word 升序同 worse_first）。
     pub fn cursor_exact_best(&self, c: DictCursor) -> Vec<Entry> {
         // 等长码块（code == 累计前缀）在区间内 lex 最小、连续居首
         let (mut a, mut b) = (c.lo, c.hi);
@@ -891,7 +891,10 @@ impl Dict {
             best.map(|(wt, w, i)| (wt, w.to_string(), Some(i)));
         if let (Some(code), Some(u)) = (code, user.as_ref()) {
             for (w, a) in u.adjusted(code) {
-                if block.iter().any(|(bc, bw)| *bc == code && *bw == w.as_str()) {
+                if block
+                    .iter()
+                    .any(|(bc, bw)| *bc == code && *bw == w.as_str())
+                {
                     continue; // 屏蔽优先于覆盖（merged 同规）
                 }
                 let replace = match &winner {
@@ -1490,12 +1493,16 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].word, "压边");
         // ③ 覆盖权重救回：基础垫底的「哑」覆盖为最高
-        d.set_user(Arc::new(crate::userdict::UserDict::empty().set_entry("ya", "哑", 99999)));
+        d.set_user(Arc::new(
+            crate::userdict::UserDict::empty().set_entry("ya", "哑", 99999),
+        ));
         let got = d.cursor_exact_best(step(&d));
         assert_eq!(got[0].word, "哑");
         assert_eq!(got[0].weight, 99999, "覆盖权重随条目返回");
         // ④ 屏蔽最优 → 次优补位
-        d.set_user(Arc::new(crate::userdict::UserDict::empty().block("ya", "压")));
+        d.set_user(Arc::new(
+            crate::userdict::UserDict::empty().block("ya", "压"),
+        ));
         let got = d.cursor_exact_best(step(&d));
         assert_eq!(got[0].word, "牙");
         // ⑤ 用户库独有条目夺魁（不在基础库 → 直接构造）

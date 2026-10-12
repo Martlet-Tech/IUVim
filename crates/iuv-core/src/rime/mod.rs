@@ -656,9 +656,9 @@ mod tests {
                 );
             }
         }
-        if let Some(wg) = translator::build_poet_graph(&buckets, graph.farthest, |w| {
-            e.lm.log_prob(None, "", w)
-        }) {
+        if let Some(wg) =
+            translator::build_poet_graph(&buckets, graph.farthest, |w| e.lm.log_prob(None, "", w))
+        {
             println!("== poet graph ==");
             for (s, ends) in &wg {
                 for (en, entries) in ends {

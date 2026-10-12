@@ -120,6 +120,15 @@ fn c2s_samples() -> Vec<C2S> {
             op: "Key".into(),
             elapsed_ms: 25,
         }),
+        // 50 号 §4.1 盲区补强：新变体此前零覆盖——postcard 按变体序号编码，
+        // 这些「追加在末尾」的变体必须锁往返，否则序号漂移无回归保护。
+        C2S::TypingActivity { active: true },
+        C2S::OpenSettings,
+        C2S::ToggleToolbar,
+        C2S::ToolbarVisibleQuery,
+        C2S::CandwinHide,
+        C2S::PendingTextQuery,
+        C2S::InstanceDeactivated,
     ]
 }
 
@@ -151,6 +160,10 @@ fn s2c_samples() -> Vec<S2C> {
         },
         S2C::Ping { nonce: 1 },
         S2C::Pong { nonce: 2 },
+        S2C::ToolbarVisible { visible: true },
+        S2C::PendingText {
+            text: "待上屏原文".into(),
+        },
     ]
 }
 

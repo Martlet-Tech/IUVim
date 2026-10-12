@@ -35,7 +35,10 @@ struct Stat {
     max_at: usize,
 }
 
-fn feed(engine: &std::sync::Arc<Engine>, case: &str) -> (Stat, Vec<(usize, char, Duration, usize)>) {
+fn feed(
+    engine: &std::sync::Arc<Engine>,
+    case: &str,
+) -> (Stat, Vec<(usize, char, Duration, usize)>) {
     let mut session = engine.start_session();
     let mut per_key = Vec::new();
     let mut stat = Stat {
@@ -92,21 +95,24 @@ fn main() {
     }
 
     let cases: &[&str] = &[
-        "ni",                            // 单音节
-        "nihao",                         // 双音节
-        "jintiantianqizhenbucuo",        // 长句（4+ 音节）
-        "zhonghuarenmingongheguo",       // 长词
-        "woshiyigechengxuyuan",          // 常用句
-        "xianzaiyoumeiyoukaqi",          // 更长
-        "wangshangliulanqi",             // 词组
-        "chifanhema",                    // 短句
+        "ni",                      // 单音节
+        "nihao",                   // 双音节
+        "jintiantianqizhenbucuo",  // 长句（4+ 音节）
+        "zhonghuarenmingongheguo", // 长词
+        "woshiyigechengxuyuan",    // 常用句
+        "xianzaiyoumeiyoukaqi",    // 更长
+        "wangshangliulanqi",       // 词组
+        "chifanhema",              // 短句
     ];
 
     // 预热（首键含会话初始化、词典热路径预取）
     let _ = feed(&engine, "nihaoshijie");
     let _ = feed(&engine, "jintiantianqi");
 
-    println!("\n{:<26} {:>8} {:>10} {:>10} {:>10}", "输入串", "键数", "总耗时", "均值", "最大");
+    println!(
+        "\n{:<26} {:>8} {:>10} {:>10} {:>10}",
+        "输入串", "键数", "总耗时", "均值", "最大"
+    );
     println!("{}", "-".repeat(70));
     for case in cases {
         let mut agg = Stat {
@@ -128,7 +134,7 @@ fn main() {
                 worst.push(row);
             }
         }
-        worst.sort_by(|a, b| b.2.cmp(&a.2));
+        worst.sort_by_key(|b| std::cmp::Reverse(b.2));
         let avg = agg.total / agg.n.max(1) as u32;
         println!(
             "{:<26} {:>8} {:>10.1?} {:>10.2?} {:>10.2?}",

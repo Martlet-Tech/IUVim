@@ -13,7 +13,7 @@ Shift+←/→ 主动调权（绝对值覆盖，反复调整收敛），支持自
 - [x] M1 全拼 MVP（预编辑 + 候选窗 + 翻页/鼠标交互）· M1.5 候选策略对齐微软 · M1.6 IMEDIC02 平面词库 + mmap 零加工加载
 - [x] M2 用户掌控排序：主动调权 + 用户词库/自造词/隐藏
 - [x] M4 跨平台渲染候选窗（tiny-skia + cosmic-text 自绘，iuv-ui）· M5 语言栏右键菜单 · M6 守护进程 + 设置页 · M8 工具栏
-- [x] rime 管线（pure-Rust 移植 syllabifier/translator/poet）：候选核心已收敛为 rime 唯一引擎（classic 已删，见 `docs/plan/39-rime-pipeline.md`）
+- [x] rime 管线（pure-Rust 移植 syllabifier/translator/poet）：候选核心已收敛为 rime 唯一引擎（classic 已删，见 `docs/closed/39-rime-pipeline.md`）
 - ◐ M7 安装器/x86（server 登录自启、键位热载已落地）
 - ◐ M10 薄客户端重构（49 号，`feat/m10-thin-client`）：全系统一个 `iuv-server.exe` + 薄 TSF 客户端，
   四套旧 IPC 收敛为一条长连接三平面（transport + iuv-proto），本地模式已删、远端唯一形态；

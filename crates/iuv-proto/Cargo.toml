@@ -8,4 +8,4 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true }
 iuv-data = { workspace = true }
-postcard = { version = "1", default-features = false, features = ["use-std"] }
+postcard = { workspace = true }

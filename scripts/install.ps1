@@ -1,9 +1,10 @@
-﻿# 安装 iuv 输入法（全新机器 / 重装）：构建产物检查 → 词库链 → 安装 → 注册 →
-# 重启 ctfmon → 引导切换输入法。需管理员权限（自动弹 UAC 提权）。
+﻿# 安装 iuv 输入法（全新机器 / 重装）：词库链（普通窗口）→ 提权 → 构建产物检查 →
+# 安装 → 注册 → 重启 ctfmon → 引导切换输入法。需管理员权限（自动弹 UAC 提权）。
 #
 # 与 dev-deploy.ps1 的分野：本脚本面向全新机器"做该做的"——词库/简繁表缺失时
-# 自动下载编译、server 部署 + 登录自启、注册、ctfmon 重启、最后引导用户在系统
-# 设置里切换到本输入法。日常迭代请用 dev-deploy.ps1（热替换，免注销）。
+# 自动下载编译（**在提权前、普通窗口执行**，避免提权进程丢 PATH 致 cargo 闪退）、
+# server 部署 + 登录自启、注册、ctfmon 重启、最后引导用户在系统设置里切换到本输入法。
+# 日常迭代请用 dev-deploy.ps1（热替换，免注销）。
 #
 # 设计要点（输入法硬约束）：
 # - 不杀进程、不要求关闭应用：DLL 被占用走改名替换（老进程持旧映射，新进程
@@ -11,9 +12,31 @@
 # - ctfmon / iuv-server 经受限计划任务在用户会话拉起（提权 token 会破坏 TSF）。
 #requires -Version 5.1
 
+param(
+    [switch]$DataReady   # 提权子实例传入：词库/简繁表已由父（普通）窗口备好
+)
+
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'iuv-common.ps1')
-Exit-IfNotAdmin -ScriptPath $PSCommandPath
+
+# ---- 0. 词库/简繁表链：必须在**普通（非提权）窗口**执行——提权进程可能换账户/丢
+# PATH，cargo 会瞬间失败且提权窗口闪退看不到错误（iuv-common.ps1 红线；同
+# dev-deploy 的 Build-All 处理）。提权子实例（UAC 重拉）带 -DataReady 跳过、不复跑。
+if (-not $DataReady) {
+    try {
+        Ensure-Imedic
+        Ensure-Opencc
+    } catch {
+        Trace-Script "install: 词库链失败：$_"
+        Write-Host "错误：$_"
+        exit 1
+    }
+    $pp = Get-IuvPaths
+    Write-Host "词库 OK：$($pp.ImedicSrc)"
+    Write-Host "简繁转换表 OK：$($pp.OpenccSrc)"
+}
+
+Exit-IfNotAdmin -ScriptPath $PSCommandPath -PassArgs @('-DataReady')
 
 Trace-Script "install: 提升实例启动"
 Write-Host "正在安装 IUV 输入法（管理员窗口）..."
@@ -33,17 +56,7 @@ if ($missing.Count -gt 0) {
 Trace-Script "install: 构建产物 OK（x64+x86+server）"
 Write-Host "构建产物 OK：$($p.DllSrc)"
 
-# ---- 2. 词库链：imedic / opencc 缺失时自动下载 + 编译 ----
-try {
-    Ensure-Imedic
-    Ensure-Opencc
-} catch {
-    Trace-Script "install: 词库链失败：$_"
-    Write-Host "错误：$_"
-    exit 1
-}
-Write-Host "词库 OK：$($p.ImedicSrc)"
-Write-Host "简繁转换表 OK：$($p.OpenccSrc)"
+# ---- 2. 词库链已上移到提权之前（见文件顶部 §0）——此处不再跑 cargo ----
 
 # ---- 3. 安装（先清指向安装目录的陈旧 pending op——旧版"重启删目录"条目会误删新装）----
 $cleared = Clear-PendingOp -Source $p.DestDir
