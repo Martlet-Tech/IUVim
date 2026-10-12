@@ -14,7 +14,6 @@ pub mod capture;
 pub mod config;
 pub mod hotkey;
 pub mod log;
-pub mod pet_assets;
 pub mod settings;
 pub mod state;
 pub mod toolbar;

@@ -181,11 +181,33 @@ pub fn boot_id_path() -> Option<PathBuf> {
     temp_dir().map(|d| d.join("iuv-boot.id"))
 }
 
-/// server 发布本次开机标识（best-effort；失败静默——日志机制不得影响主流程）。
-pub fn publish_boot_id(boot: &str) {
-    if let Some(p) = boot_id_path() {
-        let _ = std::fs::write(p, boot);
+/// 开机标识容差（秒）：同一次开机内 server 重启时 `now - GetTickCount64` 会有 ±1s
+/// 抖动；与指针现值差在此容差内即视为同一次开机、**沿用旧值**（不换日志文件名），
+/// 差得远（真重启）才发布新值。
+const BOOT_ID_TOLERANCE_SECS: u64 = 120;
+
+/// 选择生效的开机标识（纯函数，便于单测）：`existing` 与 `fresh` 差在容差内 → 沿用
+/// `existing`；否则用 `fresh`（解析失败/缺失一律用 `fresh`）。
+fn choose_boot_id(fresh: &str, existing: Option<&str>) -> String {
+    if let (Ok(f), Some(e)) = (fresh.parse::<u64>(), existing) {
+        if let Ok(x) = e.parse::<u64>() {
+            if f.abs_diff(x) <= BOOT_ID_TOLERANCE_SECS {
+                return e.to_owned();
+            }
+        }
     }
+    fresh.to_owned()
+}
+
+/// server 发布本次开机标识并返回**生效值**（best-effort；失败静默——日志机制不得影响
+/// 主流程）。同一次开机内重启沿用旧值，避免 ±1s 抖动把一次开机裂成多个日志文件；
+/// 返回的生效值须由调用方用于自身日志名与清理基准，保证与指针一致。
+pub fn publish_boot_id(fresh: &str) -> String {
+    let effective = choose_boot_id(fresh, read_boot_id().as_deref());
+    if let Some(p) = boot_id_path() {
+        let _ = std::fs::write(p, &effective);
+    }
+    effective
 }
 
 /// 读取 server 发布的开机标识（裁剪空白；缺失/空 → None）。
@@ -364,6 +386,19 @@ mod tests {
         assert_eq!(parse_boot_from_name("iuv-tsf-.log"), None);
         assert_eq!(parse_boot_from_name("iuv-tsf-abc.log"), None);
         assert_eq!(parse_boot_from_name("iuv-script.log"), None);
+    }
+
+    #[test]
+    fn choose_boot_id_reuses_within_tolerance() {
+        // 同一次开机内重启：±1s 抖动 → 沿用旧值
+        assert_eq!(choose_boot_id("1000", Some("999")), "999");
+        assert_eq!(choose_boot_id("999", Some("1000")), "1000");
+        assert_eq!(choose_boot_id("1000", Some("1000")), "1000");
+        // 超过容差（真重启）→ 用新值
+        assert_eq!(choose_boot_id("100000", Some("1000")), "100000");
+        // 无旧值 / 旧值非法 → 用新值
+        assert_eq!(choose_boot_id("1000", None), "1000");
+        assert_eq!(choose_boot_id("1000", Some("abc")), "1000");
     }
 
     #[test]

@@ -312,71 +312,8 @@ pub(crate) fn pixmap_to_surface(pixmap: Pixmap) -> Surface {
     Surface { w, h, pixels: data }
 }
 
-/// 渲染工具栏到 raw Pixmap（premultiplied RGBA）——供 `render_composite` 把工具栏作为
-/// 子层 blit 到宠物复合画布上。返回 (Pixmap, 按钮矩形列表，矩形=工具栏内容坐标)。
-///
-/// 与 `render_toolbar`（→ Surface）同源：圆角底 + 细边框 + 内容绘制；唯一区别是
-/// 出口 = Pixmap 而非 Surface（R/B 不交换，留给 composite 一次性处理）。
-pub(crate) fn render_toolbar_into_pixmap(
-    spec: &crate::toolbar::ToolbarSpec,
-    theme: &Theme,
-    scale: f32,
-) -> Option<(Pixmap, Vec<crate::layout::Rect>)> {
-    use crate::layout::Rect as LayoutRect;
-    use crate::toolbar::{
-        TB_COUNT, TOOLBAR_BTN, TOOLBAR_BTN_H, TOOLBAR_GAP, TOOLBAR_PAD_X, TOOLBAR_PAD_Y,
-    };
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
-    let btn = (TOOLBAR_BTN * scale).ceil();
-    let btn_h = (TOOLBAR_BTN_H * scale).ceil();
-    let gap = (TOOLBAR_GAP * scale).ceil();
-    let pad_x = (TOOLBAR_PAD_X * scale).ceil();
-    let pad_y = (TOOLBAR_PAD_Y * scale).ceil();
-    let content_w = (btn * TB_COUNT as f32) + (gap * (TB_COUNT as f32 - 1.0)) + pad_x * 2.0;
-    let content_h = btn_h + pad_y * 2.0;
-    let mut rects = Vec::with_capacity(TB_COUNT);
-    for i in 0..TB_COUNT {
-        rects.push(LayoutRect {
-            x: (pad_x + i as f32 * (btn + gap)).round() as i32,
-            y: pad_y.round() as i32,
-            w: btn.round() as i32,
-            h: btn_h.round() as i32,
-        });
-    }
-    let cw = content_w as u32;
-    let ch = content_h as u32;
-    if cw == 0 || ch == 0 {
-        return None;
-    }
-    let mut pixmap = Pixmap::new(cw, ch)?;
-    let bw = scale.round().max(1.0);
-    let inset = bw / 2.0;
-    let radius = (theme.corner_radius * scale - inset).max(0.0);
-    let bg_path =
-        crate::paint::rounded_rect_path(inset, inset, cw as f32 - bw, ch as f32 - bw, radius);
-    if let Some(path) = &bg_path {
-        crate::paint::fill_path(&mut pixmap, path, theme.bg);
-        let mut paint = Paint::default();
-        paint.set_color_rgba8(
-            theme.border[0],
-            theme.border[1],
-            theme.border[2],
-            theme.border[3],
-        );
-        let stroke = Stroke {
-            width: bw,
-            ..Stroke::default()
-        };
-        pixmap.stroke_path(path, &paint, &stroke, Transform::identity(), None);
-    }
-    // 内容：复用 toolbar.rs 的私有绘制逻辑——通过 export 一个内联绘制函数避免重复
-    crate::toolbar::draw_toolbar_content(&mut pixmap, spec, theme, &rects, scale);
-    Some((pixmap, rects))
-}
+// （54 号第一步：原 `render_toolbar_into_pixmap` 随宠物复合渲染一并移除——工具栏
+//  现由 `toolbar::render_toolbar` 直接出 Surface。）
 
 #[cfg(test)]
 mod tests {

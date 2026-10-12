@@ -399,11 +399,6 @@ impl RemoteHandle {
         let _ = self.request(C2S::InstanceDeactivated);
     }
 
-    /// 打字活动（原 toolbar signal Typing；桌宠动画驱动）。
-    pub(crate) fn send_typing(&self, active: bool) {
-        let _ = self.request(C2S::TypingActivity { active });
-    }
-
     /// 工具栏显隐查询（原数据面管道 GetToolbarVisible；语言栏菜单文案）。
     pub(crate) fn toolbar_visible(&self) -> Option<bool> {
         match self.request(C2S::ToolbarVisibleQuery) {

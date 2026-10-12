@@ -1468,3 +1468,20 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     `iuv-tsf-1791584099.log` 生成并在增长；旧 `iuv-tsf.log` 仅剩未重启的 edge/explorer 等
     旧 DLL 进程在写，随其重启停止）。
   - **待做**：⑦ 54 号第一步（清除自有 pet + 工具栏解耦，施工图见 55 号 §9）。
+
+- [x] **54 号第一步：清除自有桌宠（2026-10-12，分支 `feat/pet-removal`，真机通过）**：
+  战略转向「挂载别人的桌宠」后，移除自研桌宠（43 号降级）。删除约 3081 行：
+  `iuv-core` 的 `pet_model/pet_physics/pet_skin`、`iuv-ui/pet.rs`、`iuv-server/pet_assets.rs`；
+  `iuv-ui/toolbar.rs` 重写为**纯工具栏**（去 `render_composite`/`PetSpec`/`PET_OVERHANG` 与
+  5 条宠物测试），`render.rs` 删死代码 `render_toolbar_into_pixmap`；`iuv-server`
+  `toolbar/window.rs` 去宠物区命中/动画定时器/拖拽甩发/渲染分支、`toolbar/mod.rs` 去
+  `PetArt` 注入与 `BarEvent::TypingState`、`main.rs`/`daemon/mod.rs` 去 pet 装配；`iuv-tsf`
+  摘除打字活动信号链（`dispatch`/`daemon_host`/`remote_host`/`text_service`/`mode`）。
+  **协议变体** `Caps::PET`、`C2S/Push::TypingActivity` **保留定义并标 deprecated**
+  （postcard 按序号编码，删中间变体会让运行中旧 DLL 解码掉线）；`assets/pet`、`docs/pet`、
+  42/43/54 文档保留。**真机**：新 server 日志 0 条 `[pet]`、工具栏（激活/显隐/四态翻转/拖拽）
+  与候选链路正常、无 panic。
+  - **顺带回补 55 号 ④ 抖动**：真机发现同一次开机内 server 重启时 `now - GetTickCount64`
+    有 ±1s 抖动，会把一次开机的日志裂成 `iuv-*-1791584099.log` / `…100.log` 两份。
+    `publish_boot_id` 改为**容差 120s 内沿用指针现值并返回生效值**（真重启才换名），
+    补 `choose_boot_id` 单测；server 自身日志名/清理基准改用该生效值。

@@ -13,7 +13,6 @@
 pub mod layout;
 pub mod menu;
 pub mod paint;
-pub mod pet;
 pub mod render;
 pub mod snapshot;
 pub mod text;
@@ -24,16 +23,11 @@ pub use layout::{
     candidate_label, hit_test, layout, position_in_area, update_position, Area, Rect,
 };
 pub use menu::{menu_hit_test, MenuEntry};
-pub use pet::{
-    blit_layer, pet_alpha_at, pet_mask_hit, render_pet_frame, render_pet_layered, LayerImages,
-    PetSheetLayout, PetSprites,
-};
 pub use render::{render_candidate, render_menu, render_tooltip, Surface};
 pub use snapshot::{effect_to_snapshot, CaretRect, UiSnapshot};
 pub use text::TextRenderer;
 pub use theme::{theme_dark, theme_light, Theme};
 pub use toolbar::{
-    render_composite, render_toolbar, CompositeSpec, LayeredPetSpec, PetRenderSpec, PetSpec,
-    ToolbarIcons, ToolbarSpec, PET_DISPLAY_H, PET_DISPLAY_W, PET_OVERHANG, TB_GEAR, TB_LOGO,
-    TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
+    render_toolbar, ToolbarIcons, ToolbarSpec, TB_GEAR, TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT,
+    TB_WIDTH,
 };

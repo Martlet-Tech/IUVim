@@ -63,7 +63,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const WM_MOUSELEAVE: u32 = 675;
 
 use crate::daemon::log;
-use crate::daemon::pet_assets::PetArt;
 use crate::daemon::state::DaemonState;
 
 /// 私有消息：FIFO 有新请求 → 唤醒工具条线程 drain（管道线程 PostMessage）。
@@ -100,8 +99,8 @@ struct Shared {
 /// ② 迁移前为信号管道）；ToggleVisible 来自语言栏右键菜单（Request::ToggleToolbar）；
 /// HotkeysChanged 来自 daemon 主循环（设置页保存 keymap 后入队，见 main.rs）。单队列保证全局顺序。
 ///
-/// M1 桌宠骨架：新增 TypingState（来自 `ToolbarSignal::Typing`）——daemon 据此驱动
-/// PetModel.on_typing(active)，触发"敲键盘律动"动画 / 停打回静。
+/// Typing 信号（原驱动桌宠动画）已随自有桌宠移除（54 号第一步）：`handle_signal`
+/// 收到后直接忽略、不入队；协议 `C2S::TypingActivity` 保留（postcard 序号纪律）。
 pub(super) enum BarEvent {
     /// 激活：绑定该实例并显示（渲染其四态）。
     FocusGained { pid: u32, tid: u32, state: ImeState },
@@ -119,8 +118,6 @@ pub(super) enum BarEvent {
     /// 录入态开关（41-keymap-settings.md §12）：true = 设置窗录入模式，临时注销全部
     /// 全局热键（吸收所有按键——RegisterHotKey 系统级抢键会拦截录入）；false = 恢复注册。
     CaptureMode(bool),
-    /// M1 桌宠：打字中事件（组合开始/结束/提交/取消）→ 驱动 PetModel.on_typing。
-    TypingState { pid: u32, tid: u32, active: bool },
 }
 
 /// 工具栏宿主（daemon 主线程持有；信号线程/管道线程经它入队，工具条线程 drain 消费）。
@@ -142,15 +139,10 @@ pub struct ToolbarHost {
 }
 
 impl ToolbarHost {
-    /// 启动工具条线程。`state` = daemon 全局状态（读主题）；`pet_art` = 桌宠形象
-    /// （皮肤 + 已解码分层素材 + L0 帧表兜底，daemon 主循环装配一次传入，工具条线程独占）。
+    /// 启动工具条线程。`state` = daemon 全局状态（读主题）。
     /// 返回宿主（线程就绪后注册窗口句柄，可直接 wake）。启动失败 → 记录日志，
     /// 宿主仍可用（wake 空操作）。
-    pub fn spawn(
-        state: Arc<DaemonState>,
-        pet_art: Arc<PetArt>,
-        ctl: Arc<dyn CtlDispatch>,
-    ) -> Arc<ToolbarHost> {
+    pub fn spawn(state: Arc<DaemonState>, ctl: Arc<dyn CtlDispatch>) -> Arc<ToolbarHost> {
         let shared = Arc::new(Mutex::new(Shared {
             visible: load_pref().visible,
             ..Default::default()
@@ -165,14 +157,13 @@ impl ToolbarHost {
         let t_shared = shared.clone();
         let t_state = state.clone();
         let t_icons = icons.clone();
-        let t_pet = pet_art.clone();
         let t_pending = host.pending.clone();
         let t_ctl = ctl.clone();
         let t_host = host.clone();
         let spawned = std::thread::Builder::new()
             .name("iuv-toolbar".to_string())
             .spawn(move || {
-                toolbar_thread_main(t_shared, t_state, t_icons, t_pet, t_pending, t_ctl, t_host)
+                toolbar_thread_main(t_shared, t_state, t_icons, t_pending, t_ctl, t_host)
             });
         match spawned {
             Ok(_h) => {
@@ -229,14 +220,9 @@ impl ToolbarHost {
                 tid: *tid,
                 state: *state,
             },
-            // M1 桌宠：Typing 信号 → BarEvent::TypingState（PID/TID 校验由 daemon 唯一
-            // 绑定实例表承担；非绑定实例的 Typing 信号被消费但不影响状态机——保留
-            // 入队是简化、未来 M2 改 per-实例独立宠物时零迁移成本）。
-            ToolbarSignal::Typing { pid, tid, active } => BarEvent::TypingState {
-                pid: *pid,
-                tid: *tid,
-                active: *active,
-            },
+            // Typing 信号（原驱动桌宠动画）已随自有桌宠移除（54 号第一步）→ 忽略、
+            // 不入队（协议 `C2S::TypingActivity` 仍受理，见 lib.rs，但不产生窗口动作）。
+            ToolbarSignal::Typing { .. } => return,
         };
         self.enqueue(ev);
     }
@@ -280,7 +266,6 @@ fn toolbar_thread_main(
     shared: Arc<Mutex<Shared>>,
     state: Arc<DaemonState>,
     icons: Arc<ToolbarIcons>,
-    pet: Arc<PetArt>,
     pending: Arc<Mutex<VecDeque<BarEvent>>>,
     ctl: Arc<dyn CtlDispatch>,
     host: Arc<ToolbarHost>,
@@ -295,7 +280,7 @@ fn toolbar_thread_main(
         .unwrap_or_else(|p| p.into_inner())
         .keymap
         .clone();
-    let mut win = Box::new(ToolbarWindow::new(shared, state, icons, pet, pending, ctl));
+    let mut win = Box::new(ToolbarWindow::new(shared, state, icons, pending, ctl));
     if win.hwnd.is_invalid() {
         log::log_line("[toolbar] 建窗失败，工具条线程退出");
         return;

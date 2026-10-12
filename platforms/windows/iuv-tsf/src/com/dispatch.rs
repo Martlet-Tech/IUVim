@@ -41,15 +41,6 @@ impl TextService {
                 r.sync_caret(caret);
             }
         }
-        // M1 桌宠（docs/pet/M1-IMPLEMENTATION.md §2.1 + §4.4）：组合状态 transition
-        // → Typing 信号。"正在打字" = composition 存在 + 未 end（持续会话中）。
-        // （P4 前还有"候选非空"条件——服务端渲染后普通应用候选为空属常态，撤销。）
-        // 边沿检测避免每键重复发。
-        let composing_now = self.composition.borrow().is_some() && effect.end.is_none();
-        if composing_now != self.was_typing.get() {
-            self.was_typing.set(composing_now);
-            self.notify_typing(composing_now);
-        }
     }
 
     /// M10：应用 KeyOutcome（以 `last_effect` 为基线组装 Effect，

@@ -117,9 +117,6 @@ pub(crate) struct TextService {
     /// 反向控制端点（32-toolbar §4.2/§4.3）：accept 线程 + 隐藏消息窗。Activate 起、
     /// Deactivate/Drop 停（懒建，每个实例一个）。
     ctl: RefCell<Option<CtlEndpoint>>,
-    /// M1 桌宠：上次 dispatch 后的"是否在打字中"状态（composition 存在 + 未 end）。
-    /// transition 时（true → false / false → true）发 `Typing` 信号驱动 daemon 宠物动画。
-    pub(crate) was_typing: Cell<bool>,
     /// P4 服务端渲染：已上报给 iuv-server 的光标锚点（变化才发 CaretMoved；
     /// 打字期锚点恒定 → 绝大多数键零上报）。
     pub(crate) caret_reported: Cell<CaretRect>,
@@ -154,7 +151,6 @@ impl TextService {
             // （32-toolbar §2.5：设置页默认值 = 新建实例时的初始值；热载不改运行实例）。
             runtime: Arc::new(Mutex::new(Config::load().initial_state)),
             ctl: RefCell::new(None),
-            was_typing: Cell::new(false),
             caret_reported: Cell::new(CaretRect::default()),
         }
     }
@@ -509,11 +505,6 @@ impl TextService_Impl {
         if let Some(r) = crate::com::remote_host::remote() {
             r.sync_caret(CaretRect::default());
         }
-        // M1 桌宠：Deactivate 强制结束打字 → 发 Typing(false)（守护进程解绑后无消费者，
-        // 信号通道在 daemon 不在线时静默丢弃——天然兜底；同时复位 was_typing 保证
-        // 再次 Activate 后首段会话能重新触发 Typing(true) transition）。
-        self.force_typing_stop();
-
         // 32-toolbar：停反向控制端点（accept 线程 + 隐藏窗）+ 实例停用上报
         // （强于失焦：服务端解绑不受设置窗粘性抑制 → 工具条隐藏）。同一实例再
         // Activate 会重发激活。
@@ -716,9 +707,6 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
     fn OnKillThreadFocus(&self) -> Result<()> {
         // 维度②：应用切出 → 失焦上报，daemon 立即隐藏（对齐搜狗"焦点离开瞬间消失"）。
         log_line("[focus] OnKillThreadFocus（应用切出 → 失焦上报）");
-        // M1 桌宠（QA P2-B）：切走必须复位打字态——否则 `was_typing` 卡 true，
-        // 回焦后首段会话不发 `Typing(true)` → 宠物一直 Idle（边沿状态机不自洽）。
-        self.force_typing_stop();
         self.notify_focus_lost();
         // 锚点槽失焦作废（52 号卫生措施，与首键哨兵配套）：失焦后本槽坐标对新文档
         // 已无意义。虽然 52 号真凶是会话首拍的陈旧量取（见 Composition::first_stroke，

@@ -43,10 +43,4 @@ impl TextService {
             r.instance_deactivated();
         }
     }
-
-    pub(crate) fn notify_typing(&self, active: bool) {
-        if let Some(r) = crate::com::remote_host::remote() {
-            r.send_typing(active);
-        }
-    }
 }

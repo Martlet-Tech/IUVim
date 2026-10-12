@@ -42,7 +42,8 @@ pub struct Caps(pub u32);
 impl Caps {
     /// 需要候选数据回传 + `Push::UiElement`（游戏内候选栏）。
     pub const UIELEMENT: u32 = 1 << 0;
-    /// 需要 `Push::TypingActivity`（桌宠动画）。
+    /// 需要 `Push::TypingActivity`（桌宠动画）。**54 号第一步起自有桌宠已移除，本能力位不再使用**
+    /// ——变体保留仅为 postcard 序号纪律（删除中间变体会让后续序号错位、旧客户端解码失败）。
     pub const PET: u32 = 1 << 1;
 
     pub fn has(self, bit: u32) -> bool {
@@ -243,7 +244,8 @@ pub enum C2S {
     UserMutation(UserMutation),
     /// Ctl 应用结果（控制面应答，镜像 iuv-win CtlResult）。
     CtlResult(CtlResult),
-    /// 打字活动（桌宠动画驱动；原 toolbar signal Typing 迁入）。
+    /// 打字活动（桌宠动画驱动；原 toolbar signal Typing 迁入）。**54 号第一步起自有桌宠已移除、
+    /// 无生产者**——保留变体仅为 postcard 序号纪律。
     TypingActivity {
         active: bool,
     },
@@ -331,7 +333,8 @@ pub enum Push {
     UserDictChanged { version: u32 },
     /// 游戏内候选（仅 `Caps::UIELEMENT`）。
     UiElement(Effect),
-    /// 打字活动（桌宠动画，仅 `Caps::PET`）。
+    /// 打字活动（桌宠动画，仅 `Caps::PET`）。**54 号第一步起自有桌宠已移除**——保留变体仅为
+    /// postcard 序号纪律。
     TypingActivity { active: bool },
     /// 服务端即将退出（优雅停机）。**唯一不可合并、必达**的推送。
     Shutdown { grace_ms: u32 },

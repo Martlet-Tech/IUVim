@@ -25,9 +25,9 @@ const LOG_KEEP_DAYS: u64 = 7;
 fn main() {
     // 日志按「开机会话」分名（55 号 ④）：server 是**唯一命名者**——算本次开机标识、
     // 发布指针（供 TSF 取名）、用开机名装配自身日志，随后起后台线程清理旧日志。
-    // 同一次开机内 server 重启（如 dev-deploy）算出的 boot 标识不变 → 复用同名文件。
-    let boot = iuv_win::logger::compute_boot_id();
-    iuv_win::logger::publish_boot_id(&boot);
+    // 同一次开机内 server 重启（如 dev-deploy）算出的 boot 标识有 ±1s 抖动，发布时
+    // 在容差内**沿用指针现值** → 复用同名文件（`publish_boot_id` 返回生效值）。
+    let boot = iuv_win::logger::publish_boot_id(&iuv_win::logger::compute_boot_id());
     iuv_win::logger::init_logger(
         &iuv_win::logger::boot_scoped_name("iuv-server", &boot),
         true,
@@ -100,10 +100,8 @@ fn main() {
     });
     // SHM 写者归 EngineService（②迁移：daemon 副本写者退役 → shm=None）。
     let state = iuv_server::daemon::state::DaemonState::new(dict, None, daemon_config, upath);
-    let pet_art = std::sync::Arc::new(iuv_server::daemon::pet_assets::load_pet_art());
     let toolbar = iuv_server::daemon::toolbar::ToolbarHost::spawn(
         state.clone(),
-        pet_art,
         std::sync::Arc::new(iuv_server::TransportCtlDispatcher {
             senders: service.senders_handle(),
         }),
