@@ -23,8 +23,9 @@ pub mod ulw;
 pub use ipc::{CtlCmd, CtlResult, Request, ToolbarSignal};
 pub use keys::{base_key_to_vk, combo_from_vk, combo_mods, vk_to_base_key};
 pub use logger::{
-    init_logger, log_line, log_path, module_name, process_id, set_log_modules_disabled, temp_dir,
-    thread_id,
+    boot_scoped_name, compute_boot_id, current_log_name, init_logger, log_line, log_path,
+    module_name, process_id, publish_boot_id, resolve_boot_scoped_name, set_log_modules_disabled,
+    spawn_log_cleanup, temp_dir, thread_id,
 };
 pub use popup::LayeredWindow;
 pub use shm::{ShmReader, ShmWriter};

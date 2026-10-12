@@ -1,4 +1,5 @@
-//! 服务进程日志门面：实际日志文件 = `%TEMP%\iuv-server.log`（main.rs 装配）。
+//! 服务进程日志门面：实际日志文件 = `%TEMP%\iuv-server-<开机>.log`（main.rs 装配；
+//! 按开机会话分名，55 号 ④）。
 //! 2026-10-02 清理：删除 daemon 时代遗留的惰性 `init()`（旧 `input-iuv-daemon.log`
 //! 文件名）——main.rs 第一行即经 `iuv_win::logger::init_logger` 装配真相源，
 //! 本模块的日志转发直通共享实现。只保留服务端特有的清日志与 panic 钩子。
@@ -12,22 +13,39 @@ pub fn log_line(msg: &str) {
     iuv_win::logger::log_line(msg);
 }
 
-/// 清空 `%TEMP%` 下 4 个 iuv 相关日志文件（truncate 而非删除：文件保留，持有方继续追加）。
-/// 返回 (成功数, 失败数)。失败多为日志文件此刻被活跃进程占用（TSF/脚本瞬时持有），
-/// 只计数不报错——设置页高级标签据此显示"被占用"反馈。
+/// 清空 `%TEMP%` 下 iuv 相关日志文件（truncate 而非删除：文件保留，持有方继续追加）。
+/// 返回 (成功数, 失败数)。含**按开机分名的当前两端日志**（server 本进程 + TSF 当前）
+/// 与旧固定名（历史遗留一并清）。失败多为日志文件此刻被活跃进程占用（TSF/脚本瞬时
+/// 持有），只计数不报错——设置页高级标签据此显示"被占用"反馈。
 pub fn clear_logs() -> (usize, usize) {
-    const FILES: &[&str] = &[
-        "iuv-server.log",  // 本服务进程（main.rs 装配的真相源）
-        "iuv-tsf.log",     // TSF 会话进程
-        "iuv-script.log",  // install/dev-deploy 脚本
-        "iuv-cleanup.log", // 延迟清理计划任务
-    ];
+    let mut names: Vec<String> = Vec::new();
+    // 本服务进程当前日志（按开机分名）
+    if let Some(n) = iuv_win::logger::current_log_name() {
+        names.push(n);
+    }
+    // TSF 当前日志（读 server 发布的开机指针取名；缺失则回退旧名）
+    names.push(iuv_win::logger::resolve_boot_scoped_name(
+        "iuv-tsf",
+        "iuv-tsf.log",
+    ));
+    // 旧固定名（历史遗留）与脚本/清理日志
+    for n in [
+        "iuv-tsf.log",
+        "iuv-server.log",
+        "iuv-script.log",
+        "iuv-cleanup.log",
+    ] {
+        names.push(n.to_owned());
+    }
+    names.sort();
+    names.dedup();
+
     let Some(dir) = temp_dir() else {
-        return (0, FILES.len());
+        return (0, names.len());
     };
     let mut ok = 0usize;
     let mut fail = 0usize;
-    for name in FILES {
+    for name in &names {
         let path = dir.join(name);
         match OpenOptions::new().write(true).truncate(true).open(&path) {
             Ok(_) => ok += 1,

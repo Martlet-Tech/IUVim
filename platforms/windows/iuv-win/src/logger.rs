@@ -23,7 +23,7 @@ use std::sync::{Mutex, OnceLock};
 
 use windows::Win32::Foundation::SYSTEMTIME;
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
-use windows::Win32::System::SystemInformation::GetLocalTime;
+use windows::Win32::System::SystemInformation::{GetLocalTime, GetTickCount64};
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 
 /// 禁用日志模块集（denylist，见 26-log-modules.md）。空 = 全记录（默认）。
@@ -144,6 +144,129 @@ pub fn log_path() -> Option<PathBuf> {
     temp_dir().map(|dir| dir.join(name))
 }
 
+// ============================================================
+// 日志按「开机会话」分文件（2026-10-12，55 号体检 ④「日志轮转」）
+// ------------------------------------------------------------
+// 诉求：iuv-tsf.log 只增不减（实测 55MB）。方案 = **每次开机一个文件**，旧文件由
+// server 后台按保留天数清理。设计要点：
+// - **写入侧不改**：同一开机内所有 TSF 宿主进程仍写同一个共享文件（保留单文件
+//   全局时间线 + 零滚动竞态）。
+// - **只有 iuv-server 决定本次开机的日志名**：启动时算开机标识并发布指针文件，
+//   TSF **直接信指针**取名（不做本地比对——`GetTickCount64` 与墙钟是两个时钟源、
+//   有毫秒级抖动，各自截断到秒后可能差 1 秒，比对会误判回退）。
+// - TSF 指针缺失（server 本开机尚未发布）→ 回退旧固定名 `iuv-tsf.log`。指针可能
+//   来自上一开机（server 本次未运行）：此时 TSF 写入上一开机文件——在保留期内该
+//   文件仍在，属可接受的降级（server 正常登录自启时不会发生）。
+// - server 启动时顺带起一个后台线程，删「非本次开机」且「早于 keep_days 天」的日志。
+// ============================================================
+
+/// 本次开机标识 = 开机时刻的 Unix 秒。`now - GetTickCount64()` 恒等于开机瞬间，
+/// 故同一开机内各进程、各时刻算出的值一致（秒级；无需日期/时区换算）。
+pub fn compute_boot_id() -> String {
+    let tick_ms = unsafe { GetTickCount64() };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    now.saturating_sub(tick_ms / 1000).to_string()
+}
+
+/// 按开机分名的日志文件名：`{stem}-{boot}.log`（如 `iuv-tsf-1760289000.log`）。
+pub fn boot_scoped_name(stem: &str, boot: &str) -> String {
+    format!("{stem}-{boot}.log")
+}
+
+/// server 发布指针文件路径：`%TEMP%\iuv-boot.id`（内容 = 本次开机标识）。
+pub fn boot_id_path() -> Option<PathBuf> {
+    temp_dir().map(|d| d.join("iuv-boot.id"))
+}
+
+/// server 发布本次开机标识（best-effort；失败静默——日志机制不得影响主流程）。
+pub fn publish_boot_id(boot: &str) {
+    if let Some(p) = boot_id_path() {
+        let _ = std::fs::write(p, boot);
+    }
+}
+
+/// 读取 server 发布的开机标识（裁剪空白；缺失/空 → None）。
+pub fn read_boot_id() -> Option<String> {
+    let s = std::fs::read_to_string(boot_id_path()?).ok()?;
+    let s = s.trim().to_owned();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// 解析「按开机分名」文件名里的开机标识（`iuv-tsf-<digits>.log` /
+/// `iuv-server-<digits>.log`）；非本机制命名（旧固定名、指针文件等）→ None。
+pub fn parse_boot_from_name(name: &str) -> Option<&str> {
+    let stem = name.strip_suffix(".log")?;
+    let rest = stem
+        .strip_prefix("iuv-tsf-")
+        .or_else(|| stem.strip_prefix("iuv-server-"))?;
+    if rest.is_empty() || !rest.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(rest)
+}
+
+/// 解析本次应写的文件名：**直接采用 server 指针**的开机标识（server 是唯一命名者）；
+/// 指针缺失 → 回退 `fallback`（旧固定名）。TSF 侧取名用它。
+///
+/// 不做"与本地推算比对"：`compute_boot_id` 用 `GetTickCount64` 反推，而墙钟是另一
+/// 时钟源，二者有毫秒级抖动，各进程在不同时刻截断到秒可能差 1 秒 → 比对会误判回退。
+pub fn resolve_boot_scoped_name(stem: &str, fallback: &str) -> String {
+    match read_boot_id() {
+        Some(id) => boot_scoped_name(stem, &id),
+        None => fallback.to_owned(),
+    }
+}
+
+/// 本进程当前日志文件名（init 未装配 → None）。设置页「清日志」用。
+pub fn current_log_name() -> Option<String> {
+    FILE_NAME.get().cloned()
+}
+
+/// 起后台线程清理旧日志（**仅 server 调用**）：删 `%TEMP%` 下按开机分名、且
+/// 「非本次开机」「开机时刻早于 keep_days 天」的日志文件。best-effort：占用/权限
+/// 等失败一律静默；本线程不参与输入热路径。
+pub fn spawn_log_cleanup(current_boot: &str, keep_days: u64) {
+    let cur = current_boot.to_owned();
+    let _ = std::thread::Builder::new()
+        .name("iuv-log-cleanup".into())
+        .spawn(move || cleanup_logs(&cur, keep_days));
+}
+
+fn cleanup_logs(current_boot: &str, keep_days: u64) {
+    let Some(dir) = temp_dir() else {
+        return;
+    };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let keep_secs = keep_days.saturating_mul(86_400);
+    for ent in rd.flatten() {
+        let name = ent.file_name().to_string_lossy().into_owned();
+        let Some(boot) = parse_boot_from_name(&name) else {
+            continue;
+        };
+        if boot == current_boot {
+            continue; // 本次开机正在写，绝不删
+        }
+        if let Ok(b) = boot.parse::<u64>() {
+            if now.saturating_sub(b) > keep_secs {
+                let _ = std::fs::remove_file(ent.path());
+            }
+        }
+    }
+}
+
 // SAFETY（下两函数）：纯查询系统 API，无指针参数，无副作用。
 pub fn process_id() -> u32 {
     unsafe { GetCurrentProcessId() }
@@ -222,6 +345,34 @@ mod tests {
         assert!(module_disabled("[uielem] GetString(0) 被调"));
         assert!(!module_disabled("[caret] GetTextExt"));
         assert!(!module_disabled("无 tag 的消息"));
+    }
+
+    #[test]
+    fn parse_boot_from_name_only_matches_boot_scoped() {
+        assert_eq!(
+            parse_boot_from_name("iuv-tsf-1760289000.log"),
+            Some("1760289000")
+        );
+        assert_eq!(
+            parse_boot_from_name("iuv-server-1760289000.log"),
+            Some("1760289000")
+        );
+        // 旧固定名 / 其它文件不入本机制
+        assert_eq!(parse_boot_from_name("iuv-tsf.log"), None);
+        assert_eq!(parse_boot_from_name("iuv-server.log"), None);
+        assert_eq!(parse_boot_from_name("iuv-boot.id"), None);
+        assert_eq!(parse_boot_from_name("iuv-tsf-.log"), None);
+        assert_eq!(parse_boot_from_name("iuv-tsf-abc.log"), None);
+        assert_eq!(parse_boot_from_name("iuv-script.log"), None);
+    }
+
+    #[test]
+    fn boot_scoped_name_shape() {
+        assert_eq!(
+            boot_scoped_name("iuv-tsf", "1760289000"),
+            "iuv-tsf-1760289000.log"
+        );
+        assert_eq!(boot_scoped_name("iuv-server", "42"), "iuv-server-42.log");
     }
 
     #[test]

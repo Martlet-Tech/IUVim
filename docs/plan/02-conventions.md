@@ -18,8 +18,12 @@
 ## 3. 日志
 
 - 共享实现 = `iuv-win::logger`（唯一实现，TSF/server 门面薄封装；std 直写，不加日志框架）
-- 两个日志文件：`%TEMP%\iuv-tsf.log`（TSF 薄客户端，各宿主进程共用，`pid=` + 宿主 exe 名区分）
-  与 `%TEMP%\iuv-server.log`（服务进程）
+- 日志按**开机会话**分名（2026-10-12，55 号 ④）：`%TEMP%\iuv-tsf-<开机>.log`（TSF 薄客户端，
+  各宿主进程共用，`pid=` + 宿主 exe 名区分）与 `%TEMP%\iuv-server-<开机>.log`（服务进程）。
+  `<开机>` = 本次开机标识（开机时刻 Unix 秒）。**iuv-server 是唯一命名者**：启动时算开机
+  标识并写指针 `%TEMP%\iuv-boot.id`，TSF **直接信指针**取名（不做本地比对——两个时钟源有
+  毫秒级抖动，比对会误判）；指针缺失 → 回退旧固定名 `iuv-tsf.log`（守"server 缺席也能记
+  日志"）。server 另起后台线程清理保留 7 天之外的旧开机日志（排除当前开机正在写的文件）。
 - 行格式：`[YYYY-MM-DD HH:MM:SS.mmm] pid=N [宿主模块名 ]消息`（2026-10-02 起，Unix 时间戳改人读时间；
   日期时间部分按秒缓存，写入用持久句柄不逐行 open）
 - 消息前缀 `[tag]` 即日志模块；设置页「高级」标签可按模块开关（denylist `disabled_log_modules`，

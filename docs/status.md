@@ -1448,3 +1448,23 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
   - **流程教训**：词库类修复（改 dictc/词库源）的真机生效依赖产物替换，
     `data\iuv.imedic` 是 gitignore 产物，装机链只在缺失时重建——**改词库生成逻辑后
     必须显式重编 + dev-deploy 换库**，不能只看代码已提交。
+
+- [x] **55 号全仓体检（M10 后第二轮）+ 分步清账（2026-10-12，报告 `docs/plan/55-health-check.md`）**：
+  基线 main @ `1867503`。自动化=`cargo fmt` 干净 + `clippy -D warnings` 0 告警 + `cargo test`
+  全过（仅 iuv-win 3 条 shm 需管理员终端，环境限制）；另跑 `onkey_bench` release 基线
+  （单键均值 0.32–3.19ms、最大 12.27ms，词库加载 22.4ms）。
+  - **已落地**：① `cargo fmt --all` 清 4 文件违例 + 修 3 条 clippy 告警；② `install.ps1`
+    词库链移出提权窗口（对齐 dev-deploy 红线）；③ 契约/文档对账（`01-contract.md` 依赖表
+    重构 + 删除项就地标注、`00-overview` 依赖行、README 死链）；⑤ 依赖收敛到根 workspace
+    （postcard/windows-core/winres/eframe）+ iuv-server `rust-version=1.95` + 新增 `NOTICE`
+    （GPL-3.0 白霜 / Apache-2.0 OpenCC）；⑥ proto 补 9 个新变体 roundtrip（postcard 序号
+    纪律回归钉）。分支 `chore/55-health-fixes`。
+  - **④ 日志轮转（分支 `feat/log-rotate`，真机通过 2026-10-12）**：日志按**开机会话**分名
+    ——server 是唯一命名者（启动算开机标识 → 发布 `%TEMP%\iuv-boot.id` 指针 → 用
+    `iuv-{tsf,server}-<开机>.log` 装配），TSF 直接信指针取名（缺失回退旧 `iuv-tsf.log`），
+    server 起后台线程清理 7 天前的旧开机日志。**根因曲折**：首版加了"TSF 本地重算开机标识
+    再比对"护栏——`GetTickCount64` 与墙钟两时钟源毫秒级抖动、各截到秒可能差 1 秒 → 稳定
+    误判回退旧名；去掉比对、TSF 直接信 server 指针后真机通过（Trae 重启后
+    `iuv-tsf-1791584099.log` 生成并在增长；旧 `iuv-tsf.log` 仅剩未重启的 edge/explorer 等
+    旧 DLL 进程在写，随其重启停止）。
+  - **待做**：⑦ 54 号第一步（清除自有 pet + 工具栏解耦，施工图见 55 号 §9）。

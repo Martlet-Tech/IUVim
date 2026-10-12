@@ -6,7 +6,7 @@
 //!
 //! 用法：`iuv-server [--pipe <name>]`（默认 `iuv.service.v1`）。
 
-// 服务进程无控制台：计划任务/自启拉起时不弹黑窗（日志全落 %TEMP%\iuv-server.log）。
+// 服务进程无控制台：计划任务/自启拉起时不弹黑窗（日志落 %TEMP%\iuv-server-<开机>.log）。
 #![windows_subsystem = "windows"]
 
 use std::sync::Arc;
@@ -19,9 +19,20 @@ use iuv_win::transport::{load_or_create_token, TransportServer, SERVICE_PIPE_NAM
 const DICT_FILENAME: &str = "iuv.imedic";
 const USERDICT_FILENAME: &str = "iuv.user.imedic";
 const OPENCC_FILENAME: &str = "iuv.opencc";
+/// 日志按开机分名后，旧文件的保留天数（55 号 ④）。
+const LOG_KEEP_DAYS: u64 = 7;
 
 fn main() {
-    iuv_win::logger::init_logger("iuv-server.log", true);
+    // 日志按「开机会话」分名（55 号 ④）：server 是**唯一命名者**——算本次开机标识、
+    // 发布指针（供 TSF 取名）、用开机名装配自身日志，随后起后台线程清理旧日志。
+    // 同一次开机内 server 重启（如 dev-deploy）算出的 boot 标识不变 → 复用同名文件。
+    let boot = iuv_win::logger::compute_boot_id();
+    iuv_win::logger::publish_boot_id(&boot);
+    iuv_win::logger::init_logger(
+        &iuv_win::logger::boot_scoped_name("iuv-server", &boot),
+        true,
+    );
+    iuv_win::logger::spawn_log_cleanup(&boot, LOG_KEEP_DAYS);
     // panic 留痕（2026-10-02 品质审查 S1）：windows_subsystem="windows" 下 panic
     // 输出无控制台可见，钩子落 iuv-server.log（daemon::log::install_panic_hook
     // 此前定义后从未调用）。
