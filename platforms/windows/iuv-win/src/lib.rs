@@ -19,6 +19,7 @@ pub mod popup;
 pub mod shm;
 pub mod transport;
 pub mod ulw;
+pub mod window_probe;
 
 pub use ipc::{CtlCmd, CtlResult, Request, ToolbarSignal};
 pub use keys::{base_key_to_vk, combo_from_vk, combo_mods, vk_to_base_key};
@@ -30,3 +31,7 @@ pub use logger::{
 pub use popup::LayeredWindow;
 pub use shm::{ShmReader, ShmWriter};
 pub use ulw::UlwSurface;
+pub use window_probe::{
+    is_desktop_window, list_candidates, monitor_rect_at, probe_at, virtual_desktop_rect,
+    Mountability, ProbeRect, WindowProbe,
+};

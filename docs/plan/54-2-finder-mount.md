@@ -67,8 +67,15 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
 | 判定 | 条件 | 提示 |
 |---|---|---|
 | 可挂载 | — | 正常描边 |
-| 全屏覆盖 | 宽高 ≥ 显示器矩形 **且** `LAYERED\|TRANSPARENT` | 全屏覆盖 · 不可挂载 |
-| 权限不足 | `OpenProcess` 被拒（提权 / 受保护进程） | 不可挂载（权限不足） |
+| 全屏覆盖 | 盖满显示器 **且** `LAYERED\|TRANSPARENT` | 全屏覆盖 · 不可挂载 |
+| 权限不足 | **进程路径拿不到**（受保护进程） | 不可挂载（权限不足） |
+
+> 权限判据用「路径拿不到」而**不是** `OpenProcess(PROCESS_QUERY_INFORMATION)` 试开：
+> 后者依赖**调用方自身完整性级别**（Step 2 真机实测：同一探针进程对 javaw 可开、
+> 对 bongocat-app 不可开 → 误报）。且提权本身**不阻塞 MVP 路径**——读位置
+> `GetWindowRect` 与 `SetWinEventHook` 都不过 UIPI（UIPI 拦的是跨完整性窗口消息，
+> 而本方案不做 `SetWindowPos`/`SendMessage` 驱动宠物）。真正卡住的是**建档案**。
+> （54 号 §4.3「管理员权限桌宠触发 UIPI」在 MVP 范围内不成立，见 §9 实测记录。）
 
 ### 3.4 输入
 
@@ -103,8 +110,8 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
 
 | 步 | 内容 | 验收 |
 |---|---|---|
-| 1 | `iuv-ui` 三个渲染纯函数 + 单测 | `cargo test -p iuv-ui` 全绿 |
-| 2 | `iuv-win/window_probe.rs`（枚举 / 过滤 / z 序 / 显示器 rect / 可挂性） | 单测 + 手动探针 |
+| 1 ✅ | `iuv-ui` 三个渲染纯函数 + 单测 | `cargo test -p iuv-ui` 全绿（48 过） |
+| 2 ✅ | `iuv-win/window_probe.rs`（枚举 / 过滤 / z 序 / 显示器 rect / 可挂性） | 单测 + 真机探针（见 §9） |
 | 3 | `iuv-server/daemon/finder/` 捕捉 UI 跑通（不接挂载） | 四宠 + 普通窗口悬停三件套正确；MateEngine 标不可挂 |
 | 4 | 工具栏瞄准镜按钮 | 点击进入 / 退出捕捉 |
 | 5 | 档案 + 持久化 | 重启后按档案找回目标 |
@@ -130,3 +137,33 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
 ## 8. 待定（仅 1 项）
 
 1. 档案持久化落点
+
+## 9. 实测记录
+
+### 2026-10-13 · Step 2 探针（真机，**无需部署**）
+
+探针 = `cargo run -p iuv-win --example probe -- [--watch | --list | --at X,Y]`，
+直接在当前桌面上验证窗口探测，不必装输入法。
+
+**已验证**
+
+- 命中检测正确：`--at 2921,699` 精确命中 BongoCat 宠物窗
+  （`bongocat-app.exe · BongoCatProductOverlayWindow · 350×203`）
+- **两遍扫描规则有效**：主屏被 `TextInputHost.exe`（1600×900）、DingTalk
+  （1521×900）等多个满屏窗口覆盖，`pick_hit` 仍稳定取最上层那个，没有被吞
+- 自家窗口按 PID 排除（探针进程 ≠ iuv-server，故工具栏会出现在探针列表里——
+  属预期；真实 finder 跑在 iuv-server 内，工具栏/候选窗/装饰件同进程一并排除）
+
+**新发现（补 54 号档案）**
+
+- **BongoCat 也是多窗口**：除宠物 overlay（350×203）外还有一个可见主窗
+  `Zed::Window`（1076×632，GPUI 系命名）。即"一个宠物多个候选窗口"不是 Shimeji
+  独有，BongoCat 同样需要归属判定。
+- **权限判据修正**（见 §3.3 注）：`PROCESS_QUERY_INFORMATION` 试开受调用方完整性
+  影响，实测对 `bongocat-app` 误报"权限不足"；改用"进程路径拿不到"。
+  推论：54 号 §4.3「管理员权限桌宠触发 UIPI」在 MVP 范围内**不成立**。
+
+**待补测**
+
+- MateEngine 的"全屏覆盖"判定（探针运行时它已退出，需重启后复测）
+- Lively 那档（壁纸层是否真无独立窗口）

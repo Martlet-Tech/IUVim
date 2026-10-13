@@ -21,9 +21,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetShellWindow, GetWindowRect,
-};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
 
 /// 覆盖判定容差（px）：DWM 阴影、部分播放器窗口矩形与显示器矩形有数 px 出入，
 /// 严格相等会漏判。取 8 已能覆盖常见偏差，又不至于把最大化窗口误判为全屏
@@ -46,26 +44,11 @@ fn covers_monitor(win: &RECT, mon: &RECT, tol: i32) -> bool {
         && win.bottom >= mon.bottom - tol
 }
 
-/// 窗口类名（失败返回空串；失败不做猜测，交由调用方按非桌面处理）。
-fn class_name(hwnd: HWND) -> String {
-    let mut buf = [0u16; 256];
-    // SAFETY: buf 为栈上可写缓冲，长度由数组保证。
-    let n = unsafe { GetClassNameW(hwnd, &mut buf) } as usize;
-    if n == 0 || n > buf.len() {
-        return String::new();
-    }
-    String::from_utf16_lossy(&buf[..n])
-}
-
 /// 是否桌面窗口。**必须排除**：桌面自身矩形恒等于整屏，不排除会导致「回到桌面就永远隐藏」。
-/// `GetShellWindow()` 覆盖常规情形；`Progman`/`WorkerW` 覆盖壁纸层抢到前台的情形。
+/// 规则实现收敛在 `iuv_win::window_probe::is_desktop_window`（54-2 起与捕捉期共用同一份，
+/// 防两处规则漂移）。
 fn is_desktop(hwnd: HWND) -> bool {
-    // SAFETY: GetShellWindow 纯查询。
-    let shell = unsafe { GetShellWindow() };
-    if !shell.is_invalid() && shell == hwnd {
-        return true;
-    }
-    matches!(class_name(hwnd).as_str(), "Progman" | "WorkerW")
+    iuv_win::window_probe::is_desktop_window(hwnd)
 }
 
 /// 探测当前是否处于全屏态。
