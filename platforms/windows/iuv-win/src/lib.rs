@@ -12,6 +12,7 @@
 //!
 //! 全部公开函数不 panic：呈现失败记日志并静默降级（iuv 各进程硬性约定）。
 
+pub mod finder;
 pub mod ipc;
 pub mod keys;
 pub mod logger;
@@ -21,6 +22,7 @@ pub mod transport;
 pub mod ulw;
 pub mod window_probe;
 
+pub use finder::{cancel as cancel_capture, is_active as is_capture_active, CaptureOutcome};
 pub use ipc::{CtlCmd, CtlResult, Request, ToolbarSignal};
 pub use keys::{base_key_to_vk, combo_from_vk, combo_mods, vk_to_base_key};
 pub use logger::{

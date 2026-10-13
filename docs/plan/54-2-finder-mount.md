@@ -42,6 +42,19 @@ visual    = clamp(desired, 虚拟桌面矩形)      ← 分轴
 
 **进入**：工具栏瞄准镜按钮（`TB_FINDER`，倒数第二、齿轮左边）
 
+### 3.0 代码落点（与初稿的偏差）
+
+| 位置 | 放什么 |
+|---|---|
+| `crates/iuv-ui/src/finder.rs` | 三个渲染纯函数（跨平台、无 Win32、可单测） |
+| `iuv-win/src/window_probe.rs` | 枚举 / 过滤 / z 序命中 / 显示器 rect / 可挂性（Win32 只在这里） |
+| `iuv-win/src/finder.rs` | 三窗 + 定时器轮询 + 会话状态机 |
+| `iuv-win/examples/{probe,capture}.rs` | **免部署**真机验证入口 |
+
+捕捉模块从初稿的 `iuv-server/daemon/finder/` **改放 `iuv-win`**：它全是 Win32 窗口/定时器
+/ULW 管道（与 `popup.rs` 同类），且 iuv-win 是 lib —— 于是能挂 example 直接跑，
+**Step 2/3 都不用部署输入法就能验收**。iuv-server 侧只留一行 `finder::start(theme, cb)`。
+
 ### 3.1 三件装饰件
 
 | 件 | 形态 | 行为 |
@@ -108,11 +121,9 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
 
 ## 6. 落地顺序（每步可独立验收）
 
-| 步 | 内容 | 验收 |
-|---|---|---|
 | 1 ✅ | `iuv-ui` 三个渲染纯函数 + 单测 | `cargo test -p iuv-ui` 全绿（48 过） |
 | 2 ✅ | `iuv-win/window_probe.rs`（枚举 / 过滤 / z 序 / 显示器 rect / 可挂性） | 单测 + 真机探针（见 §9） |
-| 3 | `iuv-server/daemon/finder/` 捕捉 UI 跑通（不接挂载） | 四宠 + 普通窗口悬停三件套正确；MateEngine 标不可挂 |
+| 3 ✅ | 捕捉态三件装饰件 + 轮询输入（**落 iuv-win**，见 §3.0） | 真机 example 跑通（见 §9） |
 | 4 | 工具栏瞄准镜按钮 | 点击进入 / 退出捕捉 |
 | 5 | 档案 + 持久化 | 重启后按档案找回目标 |
 | 6 | 挂靠跟随（四事件 + clamp + 拖拽改 offset） | 拖宠物工具栏跟随；触底不越屏；拖工具栏改姿态 |
@@ -167,3 +178,19 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
 
 - MateEngine 的"全屏覆盖"判定（探针运行时它已退出，需重启后复测）
 - Lively 那档（壁纸层是否真无独立窗口）
+
+### 2026-10-13 · Step 3 捕捉态（真机，**无需部署**）
+
+入口 = `cargo run -p iuv-win --example capture`（左键确认 / 右键或 Esc 取消）。
+
+**已验证**：进程起得来、三窗建成、定时器轮询持续运行不崩（连跑 6s 无异常）。
+**未验证（需人眼）**：取景框/描边/提示条的观感、悬停跟随是否跟手、确认/取消手感。
+
+实现要点（都为了不抢焦点）：
+
+- 三窗统一 `TOPMOST|TOOLWINDOW|NOACTIVATE|LAYERED|`**`TRANSPARENT`**——点击穿透，
+  不挡底下窗口的关闭按钮；鼠标交互**全走轮询**，不用 `SetCapture`、不用 hook
+- 输入 = 16ms 轮询 `GetCursorPos` + `GetAsyncKeyState`；**首次轮询前等所有键松开**
+  （否则"点工具栏按钮那一下"会被当成确认）——这是个必踩的坑
+- 取景框仅换显示器时重绘；描边仅目标/尺寸变化时重绘；提示条**只 `SetWindowPos` 移动**
+- 提示条位置夹到显示器矩形内（防溢出屏幕）

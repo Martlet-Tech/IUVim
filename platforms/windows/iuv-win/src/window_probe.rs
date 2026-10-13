@@ -66,9 +66,12 @@ pub enum Mountability {
 }
 
 /// 候选目标窗口快照（供提示条展示与建档案）。
+///
+/// `hwnd` 存 **isize** 而非 `HWND`：`HWND` 含裸指针、`!Send`，而捕捉结果要跨线程
+/// （捕捉线程 → 消费方）回传。消费方按需 `HWND(hwnd as *mut _)` 还原。
 #[derive(Clone)]
 pub struct WindowProbe {
-    pub hwnd: HWND,
+    pub hwnd: isize,
     pub class_name: String,
     pub process_path: String,
     pub title: String,
@@ -309,7 +312,7 @@ fn build_probe(hwnd: HWND, rect: ProbeRect, ex: u32) -> WindowProbe {
         Mountability::Ok
     };
     WindowProbe {
-        hwnd,
+        hwnd: hwnd.0 as isize,
         class_name: class_name(hwnd),
         process_path: path,
         title: window_title(hwnd),
