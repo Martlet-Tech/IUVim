@@ -22,6 +22,9 @@ pub struct Theme {
     pub page_fg: [u8; 4],
     /// 边框
     pub border: [u8; 4],
+    /// 警示色（54-2：不可挂载目标的目标描边 / 提示条状态点）。
+    /// 语义上必须与 `hl_bg`（可挂载的强调色）明显区分——这是"能不能挂"的唯一视觉编码。
+    pub warn: [u8; 4],
     /// 圆角半径（px，物理像素缩放前，建议 4.0）
     pub corner_radius: f32,
 }
@@ -37,6 +40,7 @@ pub fn theme_light() -> Theme {
         hover_border: [0x40, 0x40, 0x40, 0xFF], // 悬停虚线框：深灰——白底与高亮蓝底上都可见
         page_fg: [0x99, 0x99, 0x99, 0xFF],      // 页码灰
         border: [0xC0, 0xC0, 0xC0, 0xFF],       // 细边框浅灰（白底区分边界）
+        warn: [0xD9, 0x30, 0x25, 0xFF],         // 警示红（浅底上用深红）
         corner_radius: 4.0,
     }
 }
@@ -52,6 +56,7 @@ pub fn theme_dark() -> Theme {
         hover_border: [0xC8, 0xC8, 0xC8, 0xFF], // 悬停虚线框：亮灰——深底与高亮蓝底上都可见
         page_fg: [0x8A, 0x8A, 0x8A, 0xFF],
         border: [0x3C, 0x3C, 0x3C, 0xFF],
+        warn: [0xFF, 0x6B, 0x6B, 0xFF], // 警示红（深底上用亮红）
         corner_radius: 4.0,
     }
 }
@@ -81,5 +86,11 @@ mod tests {
         assert_ne!(dark.hover_border, dark.bg, "悬停框色与窗口底不同");
         // 浅深两套悬停框色不同（深色需更亮）
         assert_ne!(light.hover_border, dark.hover_border);
+        // 警示色：两套不同，且必须与强调色明显区分（54-2「能不能挂」的唯一视觉编码）
+        assert_ne!(light.warn, dark.warn);
+        assert_ne!(light.warn, light.hl_bg, "警示色不得与可挂载强调色相同");
+        assert_ne!(dark.warn, dark.hl_bg, "警示色不得与可挂载强调色相同");
+        assert_ne!(light.warn, light.bg, "警示色不得与底色相同");
+        assert_ne!(dark.warn, dark.bg, "警示色不得与底色相同");
     }
 }

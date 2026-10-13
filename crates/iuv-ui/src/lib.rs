@@ -10,6 +10,7 @@
 //! - 布局/命中测试/定位为纯函数（自 gdi.rs 迁入，测试断言零改动随迁）；
 //! - 主题独立（light/dark 两套内置），调用方（config）决定用哪套。
 
+pub mod finder;
 pub mod layout;
 pub mod menu;
 pub mod paint;
@@ -19,6 +20,9 @@ pub mod text;
 pub mod theme;
 pub mod toolbar;
 
+pub use finder::{
+    render_finder_frame, render_target_label, render_target_outline, TargetKind, FRAME_INSET,
+};
 pub use layout::{
     candidate_label, hit_test, layout, position_in_area, update_position, Area, Rect,
 };

@@ -289,6 +289,25 @@ pub(crate) fn render_to_surface(
     pixmap_to_surface(pixmap)
 }
 
+/// 透明画布外壳（54-2）：建 Surface 后**不填底色、不画边框**，直接调用 `draw`。
+/// 供捕捉态装饰件（取景框 / 目标描边）使用——它们的「底」必须完全透明，
+/// 否则会遮住被描边的真实窗口（走 `render_to_surface` 会填 `theme.bg`）。
+/// 失败路径与 `render_to_surface` 一致：非法尺寸/分配失败 → 空 Surface，不 panic。
+pub(crate) fn render_transparent_surface(
+    cw: u32,
+    ch: u32,
+    draw: impl FnOnce(&mut Pixmap),
+) -> Surface {
+    if cw == 0 || ch == 0 {
+        return Surface::empty();
+    }
+    let Some(mut pixmap) = Pixmap::new(cw, ch) else {
+        return Surface::empty(); // 分配失败：静默降级
+    };
+    draw(&mut pixmap);
+    pixmap_to_surface(pixmap)
+}
+
 /// Pixmap（premultiplied RGBA）→ Surface（premultiplied BGRA）。
 /// 在宠物复合渲染（toolbar.rs `render_composite`）中合成工具栏 + 宠物帧后
 /// 一次性转 BGRA 出口；也供一般任意合成路径使用。
