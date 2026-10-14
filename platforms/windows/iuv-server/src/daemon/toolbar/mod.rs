@@ -28,6 +28,7 @@
 //! 持久化 `prefs.rs`。
 
 mod fullscreen;
+mod mount_follow;
 mod prefs;
 mod tooltip;
 mod window;
@@ -67,6 +68,8 @@ use crate::daemon::state::DaemonState;
 
 /// 私有消息：FIFO 有新请求 → 唤醒工具条线程 drain（管道线程 PostMessage）。
 const WM_APP_REFRESH: u32 = WM_APP + 41;
+/// 桌宠跟随重定位（54-2 Step 6b）：WinEventHook 回调投递，事件已合并。
+const WM_APP_MOUNT_REFRESH: u32 = WM_APP + 71;
 
 const CLASS_BAR: PCWSTR = w!("IuvToolbarWindow");
 const CLASS_TIP: PCWSTR = w!("IuvTooltipWindow");
@@ -300,6 +303,17 @@ fn toolbar_thread_main(
     // HWND 为裸指针（!Send），经 usize 存原子量。
     host.hwnd.store(hwnd.0 as usize, Ordering::SeqCst);
     host.thread_id.store(os_tid, Ordering::SeqCst);
+    // 54-2 Step 6b：启动时若已有挂载档案，找回目标并挂上跟随（宠物未运行则跳过）。
+    // 放在工具栏线程内做：hook 必须与工具栏窗口同消息循环。
+    if let Some(profile) = iuv_win::mount::load() {
+        match iuv_win::mount::find_target(&profile) {
+            Some(t) => {
+                mount_follow::install(hwnd, t.hwnd, profile);
+                mount_follow::refresh(hwnd); // 立即定位一次（不等宠物下次移动）
+            }
+            None => log::log_line("[mount] 启动未找到目标（宠物未运行？）→ 暂不跟随"),
+        }
+    }
     // 补一发刷新：窗口就绪前入队的信号（含开机早期的 FocusGained 回放）由此
     // 排空，绑定恢复后工具栏立即显示，不必等下一次焦点切换。
     let _ = unsafe { PostMessageW(Some(hwnd), WM_APP_REFRESH, WPARAM(0), LPARAM(0)) };

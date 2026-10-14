@@ -37,7 +37,7 @@ use super::tooltip::TooltipWindow;
 use super::{
     button_tooltip, clamp_to_work, client_pos, create_window, current_theme, cursor_screen,
     default_pos, in_rounded_rect, BarEvent, CtlDispatch, Shared, ToolbarInstance, CLASS_BAR,
-    WM_APP_REFRESH, WM_MOUSELEAVE,
+    WM_APP_MOUNT_REFRESH, WM_APP_REFRESH, WM_MOUSELEAVE,
 };
 use crate::daemon::log;
 use crate::daemon::state::DaemonState;
@@ -474,7 +474,10 @@ impl ToolbarWindow {
             log::log_line("[finder] 已在捕捉中，忽略重复点击");
             return;
         }
-        let ok = iuv_win::finder::start(self.theme, |outcome| match outcome {
+        // 回调跑在捕捉线程上：**不能捕获 `self`**（ToolbarWindow 含 HWND，非 Send）。
+        // 只带走工具栏窗口的裸值，回调内再还原。
+        let bar_raw = self.hwnd.0 as isize;
+        let ok = iuv_win::finder::start(self.theme, move |outcome| match outcome {
             iuv_win::CaptureOutcome::Picked(p) => {
                 log::log_line(&format!(
                     "[finder] 选中：{} · {} · {}×{} @({},{}) · {}",
@@ -513,6 +516,10 @@ impl ToolbarWindow {
                     )),
                     None => log::log_line("[mount] 立即找回：未命中"),
                 }
+                // Step 6b：挂上跟随 + 立即定位一次（工具栏从此跟着宠物走）
+                let bar = HWND(bar_raw as *mut _);
+                super::mount_follow::install(bar, p.hwnd, profile);
+                super::mount_follow::refresh(bar);
             }
             iuv_win::CaptureOutcome::Cancelled => log::log_line("[finder] 已取消"),
         });
@@ -737,6 +744,8 @@ impl ToolbarWindow {
             pos: Some(pos),
         });
         log::log_line(&format!("[toolbar] 位置已记忆：{pos:?}"));
+        // 54-2 Step 6b：拖拽是 offset 的唯一写入口——挂载中则反推 offset + 重判姿态 + 存档。
+        super::mount_follow::recompute_pose(pos, w, h);
     }
 
     // ===== 全屏抑制（显隐第三维度）=====
@@ -865,6 +874,13 @@ pub(super) unsafe extern "system" fn bar_wnd_proc(
             // FIFO 有新消息：drain 串行执行显隐动作。
             if let Some(w) = get_bar_mut(hwnd) {
                 w.reconcile();
+            }
+            LRESULT(0)
+        }
+        WM_APP_MOUNT_REFRESH => {
+            // 54-2 Step 6b：桌宠移动/显隐 → 跟随重定位（事件已在回调侧合并）。
+            if get_bar_mut(hwnd).is_some() {
+                super::mount_follow::refresh(hwnd);
             }
             LRESULT(0)
         }

@@ -137,7 +137,7 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
 | 3 ✅ | 捕捉态三件装饰件 + 轮询输入（**落 iuv-win**，见 §3.0） | 真机 example 跑通（见 §9） |
 | 4 ✅ | 工具栏瞄准镜按钮（素材 `assets/toolbar-icons/finder-target.png`） | 需部署：点按钮进入捕捉、点后日志出 `[finder]` |
 | 5 ✅ | 档案 + 持久化（`iuv-win/mount.rs`，`%LOCALAPPDATA%\iuv\mount.json`） | 需部署：捕捉后出 `[mount] 档案已保存` + `立即找回：命中`；重启后出 `启动档案` |
-| 6 | 挂靠跟随（四事件 + clamp + 拖拽改 offset） | 拖宠物工具栏跟随；触底不越屏；拖工具栏改姿态 |
+| 6 ✅ | 挂靠跟随（四事件 + 分轴 clamp + 拖拽改 offset） | 需部署：拖宠物工具栏跟随；触底不越屏；拖工具栏改姿态 |
 | 7 | 设置页「追踪宠物」标签页 | 显示当前目标 + 解锁 |
 
 ## 7. 冻结决策速查（防反复横杠）
@@ -251,3 +251,28 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
   证明持久化生效
 - 7 条纯函数单测覆盖匹配语义：双主键缺一不可、路径大小写不敏感、
   **尺寸变了仍须找回**、尺寸最近者胜、并列取最上层、提示无效退化为取最上层、JSON 往返
+
+### 2026-10-14 · Step 6 挂靠跟随
+
+**6a（纯几何 + 档案姿态字段，零行为变化）**：`iuv-win/mount.rs` 新增
+`anchor_point` / `follow_pos` / `clamp_pos` / `offset_from_visual` / `judge_anchor`。
+档案追加 `anchor` / `offset`（`#[serde(default)]`，Step 5 的旧档案仍可读）。
+三条关键单测：夹紧不回写 offset（回起点自动恢复）、分轴夹紧→沿边滑行、
+默认姿态与 `judge_anchor` 判定一致。
+
+**6b（WinEventHook 跟随）**：新增 `iuv-server/daemon/toolbar/mount_follow.rs`。
+
+- hook 挂在**工具栏线程**（`WINEVENT_OUTOFCONTEXT` 回调由安装线程的消息循环派发）
+  → **不引入定时器**，守住 40 号"无定时器、无前台查询"的显隐治理
+- 事件范围 `EVENT_OBJECT_DESTROY(0x8001)`–`LOCATIONCHANGE(0x800B)` 一次覆盖四类，
+  `idProcess` 限定目标进程；回调按 `id_object == OBJID_WINDOW` + hwnd 过滤
+- **事件合并**：回调只投一发 `WM_APP_MOUNT_REFRESH`，`PENDING` 标志把一串
+  LOCATIONCHANGE 压成一次（否则拖宠物时每帧一次 `SetWindowPos`）
+- **隐藏 ≠ 解挂**：目标隐藏（Shimeji 会自己藏）→ 跳过本次定位、**保留 offset**，
+  再现时自动恢复；只有 `DESTROY` / `IsWindow` 失效才被动解挂（工具栏留在原地）
+- **拖拽 = offset 唯一写入口**：`end_drag` 里反推 offset + 重判锚点对 + 存档
+- 新增依赖：windows crate 的 **`Win32_UI_Accessibility`** feature（`SetWinEventHook`
+  所在模块；同 crate feature，非新依赖，已获批准）
+
+**一个实现坑（已修）**：捕捉回调跑在捕捉线程上，**不能捕获 `self`**
+（`ToolbarWindow` 含 `HWND`，非 `Send`）→ 只带走 `hwnd` 的裸值，回调内还原。
