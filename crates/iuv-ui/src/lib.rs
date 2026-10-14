@@ -32,6 +32,6 @@ pub use snapshot::{effect_to_snapshot, CaretRect, UiSnapshot};
 pub use text::TextRenderer;
 pub use theme::{theme_dark, theme_light, Theme};
 pub use toolbar::{
-    render_toolbar, ToolbarIcons, ToolbarSpec, TB_GEAR, TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT,
-    TB_WIDTH,
+    render_toolbar, ToolbarIcons, ToolbarSpec, TB_FINDER, TB_GEAR, TB_LOGO, TB_MODE, TB_PUNCT,
+    TB_SCRIPT, TB_WIDTH,
 };

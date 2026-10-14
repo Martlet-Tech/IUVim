@@ -1,5 +1,5 @@
 //! 浮动工具栏渲染（32-status-toolbar.md §6.4；P2.4 自 render.rs 拆出）。
-//! 横排 6 按钮条（logo | 中英 | 全半角 | 标点 | 简繁 | 齿轮），扁平圆角细边框风格
+//! 横排 7 按钮条（logo | 中英 | 全半角 | 标点 | 简繁 | 瞄准镜 | 齿轮），扁平圆角细边框风格
 //! 与候选窗/菜单一致；按钮命中用返回的矩形列表喂 `hit_test`。
 //!
 //! 2026-10-12（54 号第一步）：原「M1 桌宠骨架 · 复合渲染」（工具栏 + 宠物区合成：
@@ -24,14 +24,18 @@ pub(crate) const TOOLBAR_GAP: f32 = 4.0;
 pub(crate) const TOOLBAR_PAD_X: f32 = 6.0;
 pub(crate) const TOOLBAR_PAD_Y: f32 = 2.0;
 
-/// 工具栏按钮索引（布局顺序：logo | 中英 | 全半角 | 标点 | 简繁 | 齿轮）。
+/// 工具栏按钮索引（布局顺序：logo | 中英 | 全半角 | 标点 | 简繁 | 瞄准镜 | 齿轮）。
+/// 左 5 个是**双态开关**（有持久状态），右 2 个是**动作类**（点击触发一次）——
+/// 瞄准镜（进入捕捉）与齿轮同类，故相邻放右端。
 pub const TB_LOGO: usize = 0;
 pub const TB_MODE: usize = 1;
 pub const TB_WIDTH: usize = 2;
 pub const TB_PUNCT: usize = 3;
 pub const TB_SCRIPT: usize = 4;
-pub const TB_GEAR: usize = 5;
-pub(crate) const TB_COUNT: usize = 6;
+/// 瞄准镜：进入桌宠捕捉态（54-2）。
+pub const TB_FINDER: usize = 5;
+pub const TB_GEAR: usize = 6;
+pub(crate) const TB_COUNT: usize = 7;
 
 /// 工具栏图标集（daemon 从内嵌 PNG 解码，失败降级 None——按钮留空不 panic，
 /// §6.7：源图即最终素材，`Pixmap::decode_png` + `draw_pixmap` 缩放绘制）。
@@ -51,6 +55,8 @@ pub struct ToolbarIcons {
     /// 简繁双态（TB_SCRIPT）。
     pub script_simplified: Option<Pixmap>,
     pub script_traditional: Option<Pixmap>,
+    /// 瞄准镜（TB_FINDER，54-2：进入桌宠捕捉态）。
+    pub finder: Option<Pixmap>,
     /// 齿轮设置（TB_GEAR）。
     pub gear: Option<Pixmap>,
 }
@@ -153,6 +159,7 @@ fn toolbar_icon<'a>(spec: &'a ToolbarSpec, i: usize) -> Option<&'a Pixmap> {
             ImeScript::Simplified => spec.icons.script_simplified.as_ref(),
             ImeScript::Traditional => spec.icons.script_traditional.as_ref(),
         },
+        TB_FINDER => spec.icons.finder.as_ref(),
         TB_GEAR => spec.icons.gear.as_ref(),
         _ => None,
     }

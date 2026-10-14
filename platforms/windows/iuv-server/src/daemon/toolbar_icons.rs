@@ -61,9 +61,55 @@ pub fn load_icons() -> ToolbarIcons {
             include_bytes!(asset!("toolbar-icons/script-traditional.png")),
             "script-traditional.png",
         ),
+        finder: decode(
+            include_bytes!(asset!("toolbar-icons/finder-target.png")),
+            "finder-target.png",
+        ),
         gear: decode(
             include_bytes!(asset!("toolbar-icons/gear-settings.png")),
             "gear-settings.png",
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 全部内嵌素材必须能解码——「改图即生效」的工作流靠这条守住：
+    /// 换图出错（格式/通道不符）时测试立刻暴露，而不是运行时按钮静默变空。
+    #[test]
+    fn all_bundled_icons_decode() {
+        let i = load_icons();
+        for (name, ok) in [
+            ("main.png", i.logo.is_some()),
+            ("lang-cn.png", i.lang_cn.is_some()),
+            ("lang-en.png", i.lang_en.is_some()),
+            ("width-half.png", i.width_half.is_some()),
+            ("width-full.png", i.width_full.is_some()),
+            ("punctuate-cn.png", i.punct_cn.is_some()),
+            ("punctuate-en.png", i.punct_en.is_some()),
+            ("script-simplified.png", i.script_simplified.is_some()),
+            ("script-traditional.png", i.script_traditional.is_some()),
+            ("finder-target.png", i.finder.is_some()),
+            ("gear-settings.png", i.gear.is_some()),
+        ] {
+            assert!(ok, "{name} 解码失败");
+        }
+    }
+
+    /// 源图规格统一（方形 + 同一画布边长），便于直接替换素材。
+    #[test]
+    fn icon_sources_are_square_and_same_canvas() {
+        let i = load_icons();
+        let finder = i.finder.as_ref().expect("finder-target.png");
+        assert_eq!(finder.width(), finder.height(), "瞄准镜源图应为方形");
+        if let Some(gear) = i.gear.as_ref() {
+            assert_eq!(
+                (finder.width(), finder.height()),
+                (gear.width(), gear.height()),
+                "瞄准镜与齿轮源图应同画布边长"
+            );
+        }
     }
 }

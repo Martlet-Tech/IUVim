@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use iuv_core::{ImeMode, ImePunct, ImeScript, ImeWidth};
 use iuv_ui::layout::Rect;
 use iuv_ui::{
-    hit_test, render_toolbar, TextRenderer, Theme, ToolbarIcons, ToolbarSpec, TB_GEAR, TB_LOGO,
-    TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
+    hit_test, render_toolbar, TextRenderer, Theme, ToolbarIcons, ToolbarSpec, TB_FINDER, TB_GEAR,
+    TB_LOGO, TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH,
 };
 use iuv_win::UlwSurface;
 use iuv_win::{CtlCmd, CtlResult};
@@ -418,8 +418,14 @@ impl ToolbarWindow {
     }
 
     /// 按钮点击（§6.5 严格请求/响应）：四态钮 → 连接 focused 实例控制管道发 SetState →
-    /// 按结果更新实例表 + 重绘（成功/失败分别呈现）；齿轮 → OpenSettings；logo → 拖动把手。
+    /// 按结果更新实例表 + 重绘（成功/失败分别呈现）；齿轮 → OpenSettings；logo → 拖动把手；
+    /// 瞄准镜 → 进入桌宠捕捉态（54-2）。
     fn on_click(&mut self, index: usize) {
+        // 瞄准镜不依赖 IME 实例（捕捉的是任意桌面窗口），故排在 focused 查询之前。
+        if index == TB_FINDER {
+            self.on_finder_click();
+            return;
+        }
         let focused = self
             .shared
             .lock()
@@ -459,6 +465,37 @@ impl ToolbarWindow {
                 self.dispatch_state_toggle(label, &cmd, pid, tid);
             }
         }
+    }
+
+    /// 瞄准镜：进入桌宠捕捉态（54-2）。捕捉跑在独立线程，结果经回调落到日志——
+    /// Step 5（档案）接上之前，先用日志验收"抓到的是哪个窗口"。
+    fn on_finder_click(&self) {
+        if iuv_win::finder::is_active() {
+            log::log_line("[finder] 已在捕捉中，忽略重复点击");
+            return;
+        }
+        let ok = iuv_win::finder::start(self.theme, |outcome| match outcome {
+            iuv_win::CaptureOutcome::Picked(p) => log::log_line(&format!(
+                "[finder] 选中：{} · {} · {}×{} @({},{}) · {}",
+                p.process_path,
+                p.class_name,
+                p.rect.w,
+                p.rect.h,
+                p.rect.x,
+                p.rect.y,
+                match p.mountability {
+                    iuv_win::Mountability::Ok => "可挂载",
+                    iuv_win::Mountability::FullscreenOverlay => "全屏覆盖·不可挂载",
+                    iuv_win::Mountability::Elevated => "不可挂载（权限不足）",
+                }
+            )),
+            iuv_win::CaptureOutcome::Cancelled => log::log_line("[finder] 已取消"),
+        });
+        log::log_line(if ok {
+            "[finder] 瞄准镜 → 进入捕捉态"
+        } else {
+            "[finder] 捕捉启动失败"
+        });
     }
 
     /// 全局热键触发（WM_HOTKEY → bar_wnd_proc → on_hotkey；41-keymap-settings.md §4）。

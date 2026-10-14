@@ -687,7 +687,7 @@ mod tests {
             pressed: None,
         };
         let (surf, rects) = render_toolbar(&spec, &theme_light(), 1.0);
-        assert_eq!(rects.len(), TB_COUNT, "6 按钮");
+        assert_eq!(rects.len(), TB_COUNT, "7 按钮");
         assert!(rects.iter().all(|r| r.h == rects[0].h), "等高");
         // 按钮横排：x 递增、y 相同
         assert_eq!(rects[0].y, rects[1].y);
