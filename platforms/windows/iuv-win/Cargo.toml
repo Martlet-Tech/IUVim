@@ -11,5 +11,7 @@ iuv-proto = { workspace = true }
 iuv-core = { workspace = true }
 iuv-data = { workspace = true }
 iuv-ui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 windows = { workspace = true }
 windows-core = { workspace = true }

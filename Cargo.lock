@@ -1705,6 +1705,8 @@ dependencies = [
  "iuv-data",
  "iuv-proto",
  "iuv-ui",
+ "serde",
+ "serde_json",
  "windows",
  "windows-core",
 ]

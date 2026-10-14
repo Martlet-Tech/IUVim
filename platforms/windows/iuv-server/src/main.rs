@@ -127,6 +127,31 @@ fn main() {
     log_line(&format!(
         "iuv-server 就绪：{pipe}（等待连接；工具栏/设置页已装配）"
     ));
+    // 54-2 Step 5：回读桌宠挂载档案（有则试找回一次；宠物未必已启动，未命中属正常）。
+    match iuv_win::mount::load() {
+        Some(p) => {
+            log_line(&format!(
+                "[mount] 启动档案：{} · {} · 尺寸提示 {}×{}",
+                p.exe_name(),
+                p.class_name,
+                p.size_hint[0],
+                p.size_hint[1]
+            ));
+            match iuv_win::mount::find_target(&p) {
+                Some(t) => log_line(&format!(
+                    "[mount] 启动找回：命中 {} · {} · {}×{} @({},{})",
+                    t.exe_name(),
+                    t.class_name,
+                    t.rect.w,
+                    t.rect.h,
+                    t.rect.x,
+                    t.rect.y
+                )),
+                None => log_line("[mount] 启动找回：未命中（宠物未运行？）"),
+            }
+        }
+        None => log_line("[mount] 无挂载档案（尚未捕捉过目标）"),
+    }
     // 存活到进程结束。**不能写 `let _ = server`**——`_` 模式的临时值在语句结束即析构，
     // TransportServer::drop 会关管道/停 accept（实测：进程活着但管道消失，客户端全放行）。
     let _server = server;

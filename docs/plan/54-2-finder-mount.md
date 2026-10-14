@@ -101,13 +101,24 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
 ## 4. 目标档案
 
 ```
-{ 进程路径, 类名, 窗口尺寸, 同构序号, exStyle 掩码,
-  是否全屏覆盖, 锚点对(petAnchor, barAnchor), offset }
+{ 进程路径, 类名, 尺寸提示, exStyle 掩码 }
 ```
 
-- 找回：启动时 `EnumWindows` 按 `进程路径 + 类名 + 尺寸` 匹配，同构多窗口用序号区分
-- 持久化落点：**待施工时定**（候选 `%LOCALAPPDATA%\iuv\mount.json` / 并入 `config.json`）
-- 解锁后 offset 与姿态**保留**，重挂自动恢复
+**匹配规则**（真机实测逼出来的，见 §9）：
+
+- 主键 = **进程路径 + 类名**（路径比较大小写不敏感）
+- **尺寸只作消歧提示，不作硬条件**——BongoCat 实测窗口尺寸会变
+  （350×203 → 280×162，1.25 倍缩放），拿尺寸当键会导致"用户一改缩放就找不到挂过的宠物"
+- 消歧顺序：尺寸最接近档案者 → 并列取 **z 序最上层**
+- 同构多窗口（Shimeji 一群 mascot）**无法稳定锁定某一只**——MVP 已知边界
+  （用户侧把 Shimeji 设成单只即可规避；多只语义留待后续）
+
+**持久化落点**：`%LOCALAPPDATA%\iuv\mount.json`（与 `toolbar.json` 同目录；
+"临时文件 + rename 原子替换"，与 toolbar prefs 同套路）。锚点 / offset 是 Step 6 追加
+字段，届时配 `#[serde(default)]` 保证旧档案可读。
+
+**API**（`iuv_win::mount`）：`from_probe` / `load` / `save` / `clear` / `find_target`。
+解锁（主动解绑）→ `clear()`；被动解挂见 §5。
 
 ## 5. 生命周期
 
@@ -125,7 +136,7 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
 | 2 ✅ | `iuv-win/window_probe.rs`（枚举 / 过滤 / z 序 / 显示器 rect / 可挂性） | 单测 + 真机探针（见 §9） |
 | 3 ✅ | 捕捉态三件装饰件 + 轮询输入（**落 iuv-win**，见 §3.0） | 真机 example 跑通（见 §9） |
 | 4 ✅ | 工具栏瞄准镜按钮（素材 `assets/toolbar-icons/finder-target.png`） | 需部署：点按钮进入捕捉、点后日志出 `[finder]` |
-| 5 | 档案 + 持久化 | 重启后按档案找回目标 |
+| 5 ✅ | 档案 + 持久化（`iuv-win/mount.rs`，`%LOCALAPPDATA%\iuv\mount.json`） | 需部署：捕捉后出 `[mount] 档案已保存` + `立即找回：命中`；重启后出 `启动档案` |
 | 6 | 挂靠跟随（四事件 + clamp + 拖拽改 offset） | 拖宠物工具栏跟随；触底不越屏；拖工具栏改姿态 |
 | 7 | 设置页「追踪宠物」标签页 | 显示当前目标 + 解锁 |
 
@@ -145,9 +156,9 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
 | 默认姿态 | 右上外侧 |
 | UIPI | 列出但标「不可挂载（权限不足）」 |
 
-## 8. 待定（仅 1 项）
+## 8. 待定
 
-1. 档案持久化落点
+无。（档案持久化落点已定：`%LOCALAPPDATA%\iuv\mount.json`。）
 
 ## 9. 实测记录
 
@@ -209,3 +220,34 @@ MateEngine，同一条 API 语义）。枚举兜底同时是同构多窗口唯�
 
 **已知未做**（不阻塞 MVP）：按钮在捕捉期间的"激活态"高亮——需要工具栏重绘联动，
 当前靠取景框/描边/提示条承担模态提示（本就是主要信号）。
+
+### 2026-10-14 · Step 1–4 真机验收通过 + Step 5
+
+**Step 1–4 部署验收**（`dev-deploy.ps1` 后四次捕捉，全部成功、零失败零异常）：
+
+```
+[finder] 瞄准镜 → 进入捕捉态 / 进入捕捉态 / 退出捕捉态
+[finder] 选中：C:\Program Files\Java\jdk-25.0.4.1\bin\javaw.exe · SunAwtWindow · 128×128 @(1829,812) · 可挂载
+[finder] 选中：C:\Users\zt\AppData\Local\BongoCat\bongocat-app.exe · BongoCatProductOverlayWindow · 280×162 @(2817,531) · 可挂载
+```
+
+日志无解码失败 / `UpdateLayeredWindow` 失败 / panic；素材图标正常解码。
+
+**实测暴露的两个修正**（都已落进 §4 / §9）：
+
+1. **窗口尺寸不稳定** → BongoCat 从 350×203 变成 **280×162**（正好 1.25 倍缩放）。
+   直接推翻"按 进程+类名+尺寸 匹配"的原计划 → 尺寸降级为提示，主键只留 进程+类名。
+2. **昨日把 Shimeji 的 128×128 判成"菜单/弹窗"是错的**——它位置会变
+   （(1457,768) → (1829,812)），**会移动的就是活体**，它是 Shimeji 本体。
+
+### 2026-10-14 · Step 5 档案 + 持久化
+
+`iuv-win/mount.rs`：`MountProfile{进程路径, 类名, 尺寸提示, exStyle}` +
+`load/save/clear/find_target`，落 `%LOCALAPPDATA%\iuv\mount.json`（临时文件 + rename）。
+
+- 捕捉确认后：存档案 + **立刻回读一轮**（`[mount] 档案已保存` / `立即找回：命中`），
+  不重启就能证明"存得下、找得回"
+- server 启动时：回读档案并试找回一次（`[mount] 启动档案` / `启动找回：命中|未命中`），
+  证明持久化生效
+- 7 条纯函数单测覆盖匹配语义：双主键缺一不可、路径大小写不敏感、
+  **尺寸变了仍须找回**、尺寸最近者胜、并列取最上层、提示无效退化为取最上层、JSON 往返

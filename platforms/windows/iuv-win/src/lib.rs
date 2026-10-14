@@ -16,6 +16,7 @@ pub mod finder;
 pub mod ipc;
 pub mod keys;
 pub mod logger;
+pub mod mount;
 pub mod popup;
 pub mod shm;
 pub mod transport;
@@ -30,6 +31,7 @@ pub use logger::{
     module_name, process_id, publish_boot_id, resolve_boot_scoped_name, set_log_modules_disabled,
     spawn_log_cleanup, temp_dir, thread_id,
 };
+pub use mount::MountProfile;
 pub use popup::LayeredWindow;
 pub use shm::{ShmReader, ShmWriter};
 pub use ulw::UlwSurface;

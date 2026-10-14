@@ -475,20 +475,45 @@ impl ToolbarWindow {
             return;
         }
         let ok = iuv_win::finder::start(self.theme, |outcome| match outcome {
-            iuv_win::CaptureOutcome::Picked(p) => log::log_line(&format!(
-                "[finder] 选中：{} · {} · {}×{} @({},{}) · {}",
-                p.process_path,
-                p.class_name,
-                p.rect.w,
-                p.rect.h,
-                p.rect.x,
-                p.rect.y,
-                match p.mountability {
-                    iuv_win::Mountability::Ok => "可挂载",
-                    iuv_win::Mountability::FullscreenOverlay => "全屏覆盖·不可挂载",
-                    iuv_win::Mountability::Elevated => "不可挂载（权限不足）",
+            iuv_win::CaptureOutcome::Picked(p) => {
+                log::log_line(&format!(
+                    "[finder] 选中：{} · {} · {}×{} @({},{}) · {}",
+                    p.process_path,
+                    p.class_name,
+                    p.rect.w,
+                    p.rect.h,
+                    p.rect.x,
+                    p.rect.y,
+                    match p.mountability {
+                        iuv_win::Mountability::Ok => "可挂载",
+                        iuv_win::Mountability::FullscreenOverlay => "全屏覆盖·不可挂载",
+                        iuv_win::Mountability::Elevated => "不可挂载（权限不足）",
+                    }
+                ));
+                // Step 5：存档案 + 立刻回读验证一轮（证明"存得下、找得回"）
+                let profile = iuv_win::mount::from_probe(&p);
+                if iuv_win::mount::save(&profile) {
+                    log::log_line(&format!(
+                        "[mount] 档案已保存：{} · {} · 尺寸提示 {}×{}",
+                        profile.exe_name(),
+                        profile.class_name,
+                        profile.size_hint[0],
+                        profile.size_hint[1]
+                    ));
                 }
-            )),
+                match iuv_win::mount::find_target(&profile) {
+                    Some(t) => log::log_line(&format!(
+                        "[mount] 立即找回：命中 {} · {} · {}×{} @({},{})",
+                        t.exe_name(),
+                        t.class_name,
+                        t.rect.w,
+                        t.rect.h,
+                        t.rect.x,
+                        t.rect.y
+                    )),
+                    None => log::log_line("[mount] 立即找回：未命中"),
+                }
+            }
             iuv_win::CaptureOutcome::Cancelled => log::log_line("[finder] 已取消"),
         });
         log::log_line(if ok {
