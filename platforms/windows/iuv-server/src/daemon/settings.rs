@@ -228,6 +228,8 @@ enum Tab {
     Dict,
     /// 按键直通/候选自绘/全屏行为——游戏场景（2026-10-02 自原「高级」改名）。
     Game,
+    /// 桌宠挂载（54-2）：当前目标信息 + 解锁。
+    Pet,
     /// 日志模块开关 + 清除日志（2026-10-02 自 dev 专属「开发者」标签并回，
     /// 不再区分 dev/release 构建）。
     Advanced,
@@ -241,6 +243,7 @@ impl Tab {
             Tab::Appearance => "外观",
             Tab::Dict => "词库",
             Tab::Game => "游戏",
+            Tab::Pet => "追踪宠物",
             Tab::Advanced => "高级",
         }
     }
@@ -254,6 +257,7 @@ fn tabs() -> Vec<Tab> {
         Tab::Appearance,
         Tab::Dict,
         Tab::Game,
+        Tab::Pet,
         Tab::Advanced,
     ]
 }
@@ -426,9 +430,11 @@ impl SettingsApp {
     }
 
     /// 顶部标签条：大号字体切换。
+    /// 用 `horizontal_wrapped`：标签数增长到 7 个（54-2 加「追踪宠物」）后宽度余量不多，
+    /// 换行兜底胜过把最后一个标签裁掉。
     fn tab_bar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for tab in tabs() {
                 let selected = tab == self.tab;
                 let label = egui::RichText::new(tab.title()).size(17.0);
@@ -536,6 +542,7 @@ impl SettingsApp {
             Tab::Appearance => self.appearance_tab(ui),
             Tab::Dict => self.dict_tab(ui),
             Tab::Game => self.game_tab(ui),
+            Tab::Pet => self.pet_tab(ui),
             Tab::Advanced => self.advanced_tab(ui),
         }
     }
@@ -999,6 +1006,52 @@ impl SettingsApp {
 
     /// 高级：按键直通名单 + 候选自绘应用（左右双卡片，各带「恢复默认」回填按钮）。
     /// 游戏（2026-10-02 自原「高级」改名）：按键直通/候选自绘/全屏行为。
+    /// 追踪宠物（54-2）：当前挂载目标信息 + 解锁。
+    fn pet_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("追踪宠物");
+        ui.add_space(4.0);
+        let profile = iuv_win::mount::load();
+        card(ui, |ui| {
+            ui.strong("当前挂载目标");
+            ui.add_space(4.0);
+            match &profile {
+                Some(p) => {
+                    ui.label(format!("进程：{}", p.process_path));
+                    ui.label(format!("窗口类：{}", p.class_name));
+                    ui.label(format!(
+                        "尺寸提示：{}×{}（仅用于多窗口消歧，不作匹配硬条件）",
+                        p.size_hint[0], p.size_hint[1]
+                    ));
+                    ui.label(format!(
+                        "挂靠姿态：锚点 {:?}　偏移 {:?}",
+                        p.anchor, p.offset
+                    ));
+                    ui.add_space(6.0);
+                    if ui.button("解锁（停止追踪）").clicked() {
+                        crate::daemon::toolbar::unmount();
+                    }
+                    ui.small("解锁后工具栏留在原地当普通工具栏；重新捕捉即可再挂。");
+                }
+                None => {
+                    ui.label("尚未挂载任何桌宠。");
+                    ui.add_space(4.0);
+                    ui.small(
+                        "点工具栏上齿轮左边的「瞄准镜」按钮 → 鼠标悬停到目标窗口 → 左键确认。",
+                    );
+                }
+            }
+        });
+        ui.add_space(6.0);
+        card(ui, |ui| {
+            ui.strong("说明");
+            ui.add_space(4.0);
+            ui.small("工具栏会跟随宠物移动；拖动工具栏可调整挂靠姿态（贴哪条边、离多远）。");
+            ui.small("宠物被关闭后自动解挂，工具栏留在原地。");
+            ui.small("目标被隐藏（如 Shimeji 会自己藏）时工具栏停在原位，宠物再现即恢复跟随。");
+            ui.small("档案：%LOCALAPPDATA%\\iuv\\mount.json");
+        });
+    }
+
     fn game_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("游戏");
         ui.add_space(4.0);

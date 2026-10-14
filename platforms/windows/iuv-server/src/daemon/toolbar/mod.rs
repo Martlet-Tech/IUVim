@@ -453,6 +453,17 @@ fn in_rounded_rect(x: i32, y: i32, w: i32, h: i32, r: f32) -> bool {
     true
 }
 
+/// 解除桌宠挂载（54-2 Step 7：设置页「追踪宠物」的解锁按钮）。
+///
+/// 清档案 + 卸 hook；工具栏**留在原地**当普通工具栏（§5 决策）。可从设置页线程调用：
+/// 内部状态由 Mutex/原子量保护，`UnhookWinEvent` 亦无线程亲和性；工具栏线程若正好在
+/// `refresh` 中，取到 `None` 会自行早退。
+pub(crate) fn unmount() {
+    iuv_win::mount::clear();
+    mount_follow::uninstall();
+    log::log_line("[mount] 已解锁（档案已清除、hook 已卸载）");
+}
+
 /// 按钮 tooltip 文案（logo 无 tooltip；32-toolbar §6.6「全半角」「简体/繁体」等）。
 fn button_tooltip(index: usize) -> Option<&'static str> {
     use iuv_ui::{TB_FINDER, TB_GEAR, TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH};
