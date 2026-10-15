@@ -101,6 +101,12 @@ impl Engine {
     pub fn page_size(&self) -> u32 {
         self.page_size.load(Ordering::Relaxed)
     }
+
+    /// (code, word) 是否在**基础库**（不含用户库叠加；设置页词条操作用：
+    /// 覆盖词显示「恢复默认」、自造词显示「删除」，55-dict-entry-ops.md）。
+    pub fn has_base_entry(&self, code: &str, word: &str) -> bool {
+        self.dict.has_base_entry(code, word)
+    }
 }
 
 #[cfg(test)]

@@ -44,6 +44,10 @@ pub enum UserMutation {
     Remove { code: String, word: String },
     /// 屏蔽基础库词条（Shift+Delete 隐藏，对应 UserDict::block）。
     Block { code: String, word: String },
+    /// 取消屏蔽（设置页词条操作，55-dict-entry-ops.md；对应 UserDict::unblock）。
+    /// 独立变体而非扩 Remove 语义：Remove 只清覆盖表是 TSF Shift+Delete 依赖的
+    /// 既有行为（先删覆盖、再按才屏蔽），扩语义会改变其按键流。
+    Unblock { code: String, word: String },
 }
 
 /// 文件头 magic。`IUVUSR01` = 仅覆盖表（旧）；`IUVUSR02` = 覆盖表 + 屏蔽表。
@@ -270,6 +274,18 @@ impl UserDict {
         }
     }
 
+    /// 取消屏蔽（设置页「删除屏蔽条目」；幂等）。只动屏蔽表，不碰覆盖表。返回新 UserDict。
+    pub fn unblock(&self, code: &str, word: &str) -> UserDict {
+        let mut block = self.block.clone();
+        if !block.remove(&(code.to_string(), word.to_string())) {
+            return self.clone();
+        }
+        UserDict {
+            map: self.map.clone(),
+            block,
+        }
+    }
+
     /// 应用一条用户库写操作（M10 ②③：transport/引擎侧统一入口，语义与逐方法调用
     /// 同源）。Swap 双 code 任一不在库时忽略该侧（防御，与 Engine::swap_weights 一致）；
     /// Remove 对不存在的条目 = no-op。返回新 UserDict（写时复制）。
@@ -290,6 +306,7 @@ impl UserDict {
             } => self.set_entry(code, word, adj),
             UserMutation::Remove { ref code, ref word } => self.remove_entry(code, word),
             UserMutation::Block { ref code, ref word } => self.block(code, word),
+            UserMutation::Unblock { ref code, ref word } => self.unblock(code, word),
         }
     }
 
@@ -427,6 +444,47 @@ mod tests {
         assert!(!back.is_blocked("shou'xuan", "手选"));
         assert!(!back.is_blocked("zhang'wei'wei", "张葳葳"));
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn apply_mutation_unblock_only_touches_block_table() {
+        // 55-dict-entry-ops.md：Unblock 只清屏蔽表（Remove 只清覆盖表的既有语义
+        // 不变——TSF Shift+Delete「先删覆盖再屏蔽」按键流依赖此分离）。
+        let u = UserDict::empty()
+            .set_entry("shou'xuan", "手癣", 300)
+            .block("shou'xuan", "手癣");
+        let u = u.apply_mutation(&UserMutation::Unblock {
+            code: "shou'xuan".into(),
+            word: "手癣".into(),
+        });
+        assert!(!u.is_blocked("shou'xuan", "手癣"), "屏蔽应被解除");
+        assert!(
+            u.adjusted("shou'xuan")
+                .iter()
+                .any(|(w, a)| w == "手癣" && *a == 300),
+            "覆盖表不受 Unblock 影响"
+        );
+        // 幂等：再次 Unblock 不存在的屏蔽 = no-op（覆盖表仍原样）。
+        let u2 = u.apply_mutation(&UserMutation::Unblock {
+            code: "shou'xuan".into(),
+            word: "手癣".into(),
+        });
+        assert!(!u2.is_blocked("shou'xuan", "手癣"));
+        assert_eq!(u2.block_count(), 0);
+        assert_eq!(u2.cover_count(), 1);
+    }
+
+    #[test]
+    fn apply_mutation_remove_keeps_block_table() {
+        let u = UserDict::empty()
+            .set_entry("de", "得", 100)
+            .block("de", "得");
+        let u = u.apply_mutation(&UserMutation::Remove {
+            code: "de".into(),
+            word: "得".into(),
+        });
+        assert!(u.adjusted("de").is_empty(), "覆盖应被移除");
+        assert!(u.is_blocked("de", "得"), "屏蔽表不受 Remove 影响");
     }
 
     #[test]

@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use eframe::egui;
 use iuv_core::Engine;
-use iuv_data::UserDict;
+use iuv_data::{UserDict, UserMutation};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Gdi::{
@@ -328,6 +328,27 @@ fn slot_combo_mut(slot: &mut iuv_core::TwoSlot, which: Slot) -> &mut Option<iuv_
     }
 }
 
+/// 词库页排序态（55-dict-entry-ops.md 第一梯队：拼音默认 / 权重升降）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum DictSort {
+    /// 按拼音（BTreeMap 天然序，分组渲染 + 组级清除）。
+    #[default]
+    Code,
+    /// 按权重升序（屏蔽条目恒排末尾）。
+    WeightAsc,
+    /// 按权重降序（屏蔽条目恒排末尾）。
+    WeightDesc,
+}
+
+/// 词库页一行（覆盖/自造 或 屏蔽）。weight = None 表示屏蔽条目。
+struct DictRow {
+    code: String,
+    word: String,
+    weight: Option<u32>,
+    /// 基础库已有该词条 → 覆盖词（按钮「↺ 恢复默认」）；否则自造词（按钮「× 删除」）。
+    in_base: bool,
+}
+
 /// 设置页 UI 状态。
 struct SettingsApp {
     state: Arc<DaemonState>,
@@ -369,6 +390,10 @@ struct SettingsApp {
     confirm_clear: bool,
     /// 清除暂挂：确定/应用才真正清空用户库（取消放弃）。
     pending_clear: bool,
+    /// 词库页搜索过滤（按拼音/词条子串，大小写不敏感）。
+    dict_search: String,
+    /// 词库页排序态。
+    dict_sort: DictSort,
     /// 清除日志结果（(成功, 失败)，高级页展示）。
     log_clear: Option<(usize, usize)>,
     /// 操作反馈（保存成功/失败）。
@@ -420,6 +445,8 @@ impl SettingsApp {
             disabled_log: cfg.disabled_log_modules.clone(),
             confirm_clear: false,
             pending_clear: false,
+            dict_search: String::new(),
+            dict_sort: DictSort::Code,
             log_clear: None,
             status: String::new(),
         }
@@ -959,16 +986,176 @@ impl SettingsApp {
         ui.heading("用户库管理");
         ui.add_space(4.0);
         card(ui, |ui| {
-            let (cover, block, lines) = self.user_dict_snapshot();
+            let (cover, block, rows) = self.user_dict_snapshot();
             ui.label(format!("覆盖/自造词 {cover} 条 · 屏蔽 {block} 条"));
+            // 搜索过滤（55 第一梯队）：拼音/词条子串，大小写不敏感。
+            egui::TextEdit::singleline(&mut self.dict_search)
+                .hint_text("过滤：拼音或词条子串")
+                .desired_width(240.0)
+                .show(ui);
+            let q = self.dict_search.trim().to_lowercase();
+            let mut shown: Vec<&DictRow> = rows
+                .iter()
+                .filter(|r| q.is_empty() || r.code.contains(&q) || r.word.contains(&q))
+                .collect();
+            // 排序：Code 走 BTreeMap 天然序（分组渲染）；权重排序屏蔽条目恒排末尾。
+            match self.dict_sort {
+                DictSort::Code => {}
+                DictSort::WeightAsc => {
+                    shown.sort_by_key(|r| (r.weight.is_none(), r.weight.unwrap_or(0)))
+                }
+                DictSort::WeightDesc => shown.sort_by_key(|r| {
+                    (r.weight.is_none(), std::cmp::Reverse(r.weight.unwrap_or(0)))
+                }),
+            }
             if cover + block > 0 {
-                egui::ScrollArea::vertical()
-                    .max_height(260.0)
-                    .show(ui, |ui| {
-                        for line in &lines {
-                            ui.monospace(line);
+                if shown.is_empty() {
+                    ui.small("（无匹配条目）");
+                    return;
+                }
+                // egui_extras::Table（白名单批准 2026-10-15）：粘性表头（滚动不丢）
+                // + 斑马纹。列宽等分，操作列吃余量。
+                // 斑马纹用 faint_bg_color 绘制，与 card 底色同色 → 不可见
+                // （2026-10-15 真机反馈），scope 内提亮一档，深浅主题各选对比色。
+                let sort = self.dict_sort;
+                let sort_update = std::cell::Cell::new(None::<DictSort>);
+                ui.scope(|ui| {
+                    ui.style_mut().visuals.faint_bg_color = if ui.visuals().dark_mode {
+                        egui::Color32::from_white_alpha(12)
+                    } else {
+                        egui::Color32::from_black_alpha(14)
+                    };
+                    let col_w = (ui.available_width() - 32.0) / 4.0;
+                // 表头闭包与 body 闭包都存活到 body() 执行：表头只读 Copy 快照 +
+                // 经 Cell 暂存排序切换，不捕获 self（否则 &self 活到 body，
+                // 与 body 闭包的 &mut self 冲突）。
+                egui_extras::TableBuilder::new(ui)
+                    .striped(true)
+                    .vscroll(true)
+                    .max_scroll_height(260.0)
+                    .column(egui_extras::Column::initial(col_w).resizable(true).clip(true))
+                    .column(egui_extras::Column::initial(col_w).resizable(true).clip(true))
+                    .column(egui_extras::Column::initial(col_w).resizable(true).clip(true))
+                    .column(egui_extras::Column::remainder())
+                    .header(22.0, |mut header| {
+                        header.col(|ui| {
+                            let label = if sort == DictSort::Code { "拼音 ●" } else { "拼音" };
+                            if ui.button(label).on_hover_text("按拼音分组排序").clicked() {
+                                sort_update.set(Some(DictSort::Code));
+                            }
+                        });
+                        header.col(|ui| {
+                            ui.strong("词条");
+                        });
+                        header.col(|ui| {
+                            let label = match sort {
+                                DictSort::WeightAsc => "权重 ↑",
+                                DictSort::WeightDesc => "权重 ↓",
+                                DictSort::Code => "权重",
+                            };
+                            if ui.button(label).on_hover_text("按权重升/降序切换").clicked() {
+                                sort_update.set(Some(match sort {
+                                    DictSort::WeightAsc => DictSort::WeightDesc,
+                                    _ => DictSort::WeightAsc,
+                                }));
+                            }
+                        });
+                        header.col(|ui| {
+                            ui.strong("操作");
+                        });
+                    })
+                    .body(|mut body| {
+                        let grouped = self.dict_sort == DictSort::Code;
+                        for (i, r) in shown.iter().enumerate() {
+                            // 拼音分组模式：每 code 一条组头行。组级清除兜底
+                            // （55 号决策 B：一次 Swap 写两条覆盖，无血缘字段
+                            // 不配对删，组头一键清空该拼音全部调权）。
+                            if grouped && (i == 0 || shown[i - 1].code != r.code) {
+                                let covers = rows
+                                    .iter()
+                                    .filter(|x| x.code == r.code && x.weight.is_some())
+                                    .count();
+                                let code = r.code.clone();
+                                body.row(24.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.strong(&code);
+                                    });
+                                    row.col(|_| {});
+                                    row.col(|_| {});
+                                    row.col(|ui| {
+                                        if covers > 0 {
+                                            let tip = format!(
+                                                "清除 {code} 下全部 {covers} 条权重覆盖（屏蔽条目不受影响）"
+                                            );
+                                            if ui
+                                                .small_button("清除调权")
+                                                .on_hover_text(tip)
+                                                .clicked()
+                                            {
+                                                self.dict_clear_code(&code);
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                            let code = r.code.clone();
+                            let word = r.word.clone();
+                            let weight = r.weight;
+                            let in_base = r.in_base;
+                            body.row(22.0, |mut row| {
+                                row.col(|ui| {
+                                    if grouped {
+                                        ui.label("");
+                                    } else {
+                                        ui.monospace(&code);
+                                    }
+                                });
+                                row.col(|ui| {
+                                    ui.label(&word);
+                                });
+                                row.col(|ui| match weight {
+                                    Some(adj) => {
+                                        ui.monospace(format!("{adj}"));
+                                    }
+                                    None => {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(0xC0, 0x80, 0x00),
+                                            "[屏蔽]",
+                                        );
+                                    }
+                                });
+                                row.col(|ui| {
+                                    let (label, tip, mutation, msg) = match weight {
+                                        Some(_) if in_base => (
+                                            "↺",
+                                            "恢复静态词频序（删除权重覆盖）",
+                                            UserMutation::Remove { code, word: word.clone() },
+                                            format!("已恢复 {word} 为默认权重"),
+                                        ),
+                                        Some(_) => (
+                                            "×",
+                                            "删除自造词",
+                                            UserMutation::Remove { code, word: word.clone() },
+                                            format!("已删除自造词 {word}"),
+                                        ),
+                                        None => (
+                                            "×",
+                                            "取消屏蔽（恢复候选）",
+                                            UserMutation::Unblock { code, word: word.clone() },
+                                            format!("已取消屏蔽 {word}"),
+                                        ),
+                                    };
+                                    if ui.small_button(label).on_hover_text(tip).clicked() {
+                                        self.dict_mutate(mutation, &msg);
+                                    }
+                                });
+                            });
                         }
                     });
+                });
+                if let Some(s) = sort_update.get() {
+                    self.dict_sort = s;
+                }
             } else {
                 ui.small("（空用户库）");
             }
@@ -1121,8 +1308,9 @@ impl SettingsApp {
         });
     }
 
-    /// 用户库列表 + 清除全部。
-    fn user_dict_snapshot(&self) -> (usize, usize, Vec<String>) {
+    /// 用户库快照（面板每帧调用）。weight = None 表示屏蔽条目；in_base 区分
+    /// 覆盖词/自造词（55 号决策 B）。
+    fn user_dict_snapshot(&self) -> (usize, usize, Vec<DictRow>) {
         // M10 ③：远端是唯一形态，用户库文件真相源在引擎本地写盘，内存态
         // 只是启动快照 → 面板打开先重载（文件缺失/损坏保留现状，不炸面板）。
         match UserDict::load(&self.state.user_dict_path) {
@@ -1134,14 +1322,61 @@ impl SettingsApp {
             }
         }
         let dict = self.state.dict.lock().unwrap_or_else(|p| p.into_inner());
-        let mut lines = Vec::new();
-        for (code, word, adj) in dict.cover_iter() {
-            lines.push(format!("{code}\t{word}\t权重 {adj}"));
+        let mut rows: Vec<DictRow> = dict
+            .cover_iter()
+            .map(|(code, word, adj)| DictRow {
+                in_base: self.engine.has_base_entry(code, word),
+                code: code.to_owned(),
+                word: word.to_owned(),
+                weight: Some(adj),
+            })
+            .collect();
+        rows.extend(dict.block_iter().map(|(code, word)| DictRow {
+            in_base: true, // 屏蔽的必是基础库词条（block 只对基础库语义）
+            code: code.to_owned(),
+            word: word.to_owned(),
+            weight: None,
+        }));
+        (dict.cover_count(), dict.block_count(), rows)
+    }
+
+    /// 词条操作（55 号决策 A：立即生效）——引擎 mutation（内存 + 写盘）→
+    /// 内存镜像同步 → SHM 发布 + 落盘（与「清除全部」同路径，防 H5 型复活 bug）。
+    fn dict_mutate(&mut self, m: UserMutation, ok_msg: &str) {
+        self.engine.apply_user_mutation(&m);
+        if let Some(u) = self.engine.user_dict() {
+            *self.state.dict.lock().unwrap_or_else(|p| p.into_inner()) = (*u).clone();
         }
-        for (code, word) in dict.block_iter() {
-            lines.push(format!("{code}\t{word}\t[屏蔽]"));
+        self.state.publish();
+        self.state.flush_now();
+        self.status = ok_msg.to_string();
+        log::log_line(&format!("[settings] {ok_msg}"));
+    }
+
+    /// 组级清除（55 号决策 B 粗调兜底）：循环 Remove 该 code 下全部覆盖。
+    /// 不碰屏蔽表（屏蔽行各有独立「×」）。
+    fn dict_clear_code(&mut self, code: &str) {
+        let entries: Vec<(String, String)> = {
+            let dict = self.state.dict.lock().unwrap_or_else(|p| p.into_inner());
+            dict.cover_iter()
+                .filter(|(c, _, _)| *c == code)
+                .map(|(c, w, _)| (c.to_owned(), w.to_owned()))
+                .collect()
+        };
+        let n = entries.len();
+        for (c, w) in &entries {
+            self.engine.apply_user_mutation(&UserMutation::Remove {
+                code: c.clone(),
+                word: w.clone(),
+            });
         }
-        (dict.cover_count(), dict.block_count(), lines)
+        if let Some(u) = self.engine.user_dict() {
+            *self.state.dict.lock().unwrap_or_else(|p| p.into_inner()) = (*u).clone();
+        }
+        self.state.publish();
+        self.state.flush_now();
+        self.status = format!("已清除 {code} 的 {n} 条调权");
+        log::log_line(&format!("[settings] 组级清除：{code} × {n}"));
     }
 
     /// 确定/应用：写配置 + 广播 + （若暂挂清除）清空用户库。
