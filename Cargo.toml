@@ -31,6 +31,10 @@ windows-registry = "0.6"
 winres = "0.1"
 # 设置页 GUI（iuv-server；egui 经其重导出，rust-version 单独要求 1.95）
 eframe = "0.36"
+# 设置页表格（粘性表头/斑马纹；56-dict-entry-ops.md，主智能体批准 2026-10-15）
+egui_extras = { version = "0.36", default-features = false }
+# 设置页文件对话框（词库导入/导出；56-dict-entry-ops.md，主智能体批准 2026-10-15）
+rfd = { version = "0.17", default-features = false }
 iuv-proto = { path = "crates/iuv-proto" }
 iuv-data = { path = "crates/iuv-data" }
 iuv-core = { path = "crates/iuv-core" }

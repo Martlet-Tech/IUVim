@@ -128,7 +128,7 @@ codegen-units = 1
 | iuv-repl | `iuv-data`、`iuv-core`（workspace） |
 | iuv-tsf | `iuv-proto`、`iuv-data`、`iuv-core`、`iuv-ui`、`iuv-win`、`windows`、`windows-core`、`windows-registry`（workspace）；build-dep：`winres`（workspace） |
 | iuv-win（M10，49 号） | `iuv-proto`、`iuv-core`、`iuv-data`、`iuv-ui`、`windows`、`windows-core`（workspace） |
-| **iuv-server（M10，49 号）** | `iuv-core`、`iuv-data`、`iuv-proto`、`iuv-ui`、`iuv-win`、`windows`、`serde`、`serde_json`、`tiny-skia`、`eframe`（workspace；egui 经其重导出，**rust-version 单独 1.95**） |
+| **iuv-server（M10，49 号）** | `iuv-core`、`iuv-data`、`iuv-proto`、`iuv-ui`、`iuv-win`、`windows`、`serde`、`serde_json`、`tiny-skia`、`eframe`（workspace；egui 经其重导出，**rust-version 单独 1.95**）、`egui_extras`（workspace，default-features off；56 号词库页表格，主智能体批准 2026-10-15）、`rfd`（workspace，default-features off；56 号词库导入/导出文件对话框，主智能体批准 2026-10-15） |
 
 > **2026-10-12 对账**：上表与各 crate 的实际 `Cargo.toml` 一致（iuv-daemon 行删除、
 > 补 iuv-win/iuv-server 行）；所有第三方依赖均经根 `[workspace.dependencies]` 锁定。

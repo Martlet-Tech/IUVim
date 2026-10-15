@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use eframe::egui;
 use iuv_core::Engine;
-use iuv_data::UserDict;
+use iuv_data::{UserDict, UserMutation};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Gdi::{
@@ -328,6 +328,102 @@ fn slot_combo_mut(slot: &mut iuv_core::TwoSlot, which: Slot) -> &mut Option<iuv_
     }
 }
 
+/// 词库页排序态（56-dict-entry-ops.md 第一梯队：拼音默认 / 权重升降）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum DictSort {
+    /// 按拼音（BTreeMap 天然序，分组渲染 + 组级清除）。
+    #[default]
+    Code,
+    /// 按权重升序（屏蔽条目恒排末尾）。
+    WeightAsc,
+    /// 按权重降序（屏蔽条目恒排末尾）。
+    WeightDesc,
+}
+
+/// 词库页一行（覆盖/自造 或 屏蔽）。weight = None 表示屏蔽条目。
+struct DictRow {
+    code: String,
+    word: String,
+    weight: Option<u32>,
+    /// 基础库已有该词条 → 覆盖词（按钮「↺ 恢复默认」）；否则自造词（按钮「× 删除」）。
+    in_base: bool,
+}
+
+/// code → 空格分隔音节（导出格式，决策 C：与 dictc 源格式一致）。
+fn spaced_code(code: &str) -> String {
+    code.replace('\'', " ")
+}
+
+/// 导入拼音归一化：空白转撇号、小写（与 dictc squash 同向，决策 C：撇号/空格都吃）。
+fn normalize_code(s: &str) -> String {
+    s.trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("'")
+}
+
+/// 解析导出文本（决策 C/D）：覆盖行 `词<TAB>拼音<TAB>权重`（权重缺省 8000，
+/// 与新增词条一致）；屏蔽行 `#屏蔽<TAB>词<TAB>拼音`；空行与其他 `#` 注释行
+/// 跳过。返回 (mutations, 词条数, 屏蔽数, 跳过行数)。格式坏的行跳过不炸。
+fn parse_import(text: &str) -> (Vec<UserMutation>, usize, usize, usize) {
+    let mut mutations = Vec::new();
+    let mut covers = 0;
+    let mut blocks = 0;
+    let mut skipped = 0;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("#屏蔽") {
+            let parts: Vec<&str> = rest
+                .split('\t')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            if parts.len() == 2 {
+                let code = normalize_code(parts[1]);
+                let word = parts[0].to_string();
+                if !code.is_empty() && !word.is_empty() {
+                    mutations.push(UserMutation::Block { code, word });
+                    blocks += 1;
+                    continue;
+                }
+            }
+            skipped += 1;
+            continue;
+        }
+        if line.starts_with('#') {
+            continue; // 注释行
+        }
+        let parts: Vec<&str> = line.split('\t').map(str::trim).collect();
+        if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let word = parts[0].to_string();
+        let code = normalize_code(parts[1]);
+        let adj = match parts.get(2) {
+            None => 8000,
+            Some(s) => match s.parse::<u32>() {
+                Ok(v) => v,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            },
+        };
+        if code.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        mutations.push(UserMutation::Set { code, word, adj });
+        covers += 1;
+    }
+    (mutations, covers, blocks, skipped)
+}
+
 /// 设置页 UI 状态。
 struct SettingsApp {
     state: Arc<DaemonState>,
@@ -369,6 +465,21 @@ struct SettingsApp {
     confirm_clear: bool,
     /// 清除暂挂：确定/应用才真正清空用户库（取消放弃）。
     pending_clear: bool,
+    /// 词库页搜索过滤（按拼音/词条子串，大小写不敏感）。
+    dict_search: String,
+    /// 词库页排序态。
+    dict_sort: DictSort,
+    /// 行内改权重（56 第二梯队）：正在编辑的 (code, word)，None = 无编辑行。
+    weight_edit: Option<(String, String)>,
+    /// 行内改权重草稿。
+    weight_edit_buf: String,
+    /// 新增词条表单（56 第二梯队；Set upsert 语义 = 自造词或覆盖权重）。
+    new_code: String,
+    new_word: String,
+    new_weight: String,
+    /// 导入暂存（56 第三梯队，决策 A 两段确认）：已解析待应用的 mutations
+    /// + (词条数, 屏蔽数)。确认后统一 apply。
+    pending_import: Option<(Vec<UserMutation>, usize, usize)>,
     /// 清除日志结果（(成功, 失败)，高级页展示）。
     log_clear: Option<(usize, usize)>,
     /// 操作反馈（保存成功/失败）。
@@ -420,6 +531,14 @@ impl SettingsApp {
             disabled_log: cfg.disabled_log_modules.clone(),
             confirm_clear: false,
             pending_clear: false,
+            dict_search: String::new(),
+            dict_sort: DictSort::Code,
+            weight_edit: None,
+            weight_edit_buf: String::new(),
+            new_code: String::new(),
+            new_word: String::new(),
+            new_weight: String::new(),
+            pending_import: None,
             log_clear: None,
             status: String::new(),
         }
@@ -959,29 +1078,43 @@ impl SettingsApp {
         ui.heading("用户库管理");
         ui.add_space(4.0);
         card(ui, |ui| {
-            let (cover, block, lines) = self.user_dict_snapshot();
+            let (cover, block, rows) = self.user_dict_snapshot();
             ui.label(format!("覆盖/自造词 {cover} 条 · 屏蔽 {block} 条"));
-            if cover + block > 0 {
-                egui::ScrollArea::vertical()
-                    .max_height(260.0)
-                    .show(ui, |ui| {
-                        for line in &lines {
-                            ui.monospace(line);
-                        }
-                    });
-            } else {
-                ui.small("（空用户库）");
-            }
-            ui.add_space(8.0);
-            if self.pending_clear {
-                ui.colored_label(
-                    egui::Color32::from_rgb(0xC0, 0x80, 0x00),
-                    "已标记清除：点「确定」或「应用」后生效；点「取消」放弃。",
-                );
-            }
+            // 工具行（56 第三梯队）：搜索居左，整库操作（清除全部/导入/导出）
+            // 居右——全部上移后表格独占剩余高度，「清除全部被挤出窗口」问题
+            // 随之根治（Table 默认占满可用高度的脾气转为优点）。
+            ui.horizontal(|ui| {
+                egui::TextEdit::singleline(&mut self.dict_search)
+                    .hint_text("过滤：拼音或词条子串")
+                    .desired_width(180.0)
+                    .show(ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // right_to_left：先添加的贴最右。视觉序（左→右）= 清除全部/导入/导出。
+                    if ui
+                        .button("导出")
+                        .on_hover_text("用户库导出为文本文件（换机同步/备份）")
+                        .clicked()
+                    {
+                        self.export_dict();
+                    }
+                    if ui
+                        .button("导入")
+                        .on_hover_text("从导出文本合并导入（两段确认）")
+                        .clicked()
+                    {
+                        self.import_dict_pick();
+                    }
+                    if ui.button("清除全部").clicked() {
+                        self.confirm_clear = true;
+                    }
+                });
+            });
             if self.confirm_clear {
                 ui.horizontal(|ui| {
-                    ui.label("确认清除全部用户库？");
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xC0, 0x80, 0x00),
+                        "确认清除全部用户库？",
+                    );
                     if ui.button("确认清除").clicked() {
                         self.pending_clear = true;
                         self.confirm_clear = false;
@@ -991,8 +1124,279 @@ impl SettingsApp {
                         self.confirm_clear = false;
                     }
                 });
-            } else if ui.button("清除全部").clicked() {
-                self.confirm_clear = true;
+            }
+            if self.pending_clear {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xC0, 0x80, 0x00),
+                    "清除已暂挂：点「确定/应用」生效；点「取消」放弃。",
+                );
+            }
+            let import_counts = self
+                .pending_import
+                .as_ref()
+                .map(|(_, covers, blocks)| (*covers, *blocks));
+            if let Some((covers, blocks)) = import_counts {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xC0, 0x80, 0x00),
+                        format!(
+                            "确认导入 {covers} 条词条、{blocks} 条屏蔽？（同词条按导入值覆盖）"
+                        ),
+                    );
+                    if ui.button("确认导入").clicked() {
+                        self.import_confirm();
+                    }
+                    if ui.button("取消").clicked() {
+                        self.pending_import = None;
+                        self.status = "已取消导入".into();
+                    }
+                });
+            }
+            // 新增词条（56 第二梯队）：Set upsert = 自造词或对基础库覆盖权重。
+            ui.horizontal(|ui| {
+                ui.label("新增词条：");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_code)
+                        .hint_text("拼音 zhang'wei")
+                        .desired_width(120.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_word)
+                        .hint_text("词条")
+                        .desired_width(80.0),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_weight)
+                        .hint_text("权重(默认8000)")
+                        .desired_width(70.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                if ui.button("添加").clicked() {
+                    self.new_entry_submit();
+                }
+            });
+            let q = self.dict_search.trim().to_lowercase();
+            let mut shown: Vec<&DictRow> = rows
+                .iter()
+                .filter(|r| q.is_empty() || r.code.contains(&q) || r.word.contains(&q))
+                .collect();
+            // 排序：Code 走 BTreeMap 天然序（分组渲染）；权重排序屏蔽条目恒排末尾。
+            match self.dict_sort {
+                DictSort::Code => {}
+                DictSort::WeightAsc => {
+                    shown.sort_by_key(|r| (r.weight.is_none(), r.weight.unwrap_or(0)))
+                }
+                DictSort::WeightDesc => shown.sort_by_key(|r| {
+                    (r.weight.is_none(), std::cmp::Reverse(r.weight.unwrap_or(0)))
+                }),
+            }
+            if cover + block > 0 {
+                if shown.is_empty() {
+                    ui.small("（无匹配条目）");
+                    return;
+                }
+                // egui_extras::Table（白名单批准 2026-10-15）：粘性表头（滚动不丢）
+                // + 斑马纹。列宽等分，操作列吃余量。
+                // 斑马纹用 faint_bg_color 绘制，与 card 底色同色 → 不可见
+                // （2026-10-15 真机反馈），scope 内提亮一档，深浅主题各选对比色。
+                let sort = self.dict_sort;
+                let sort_update = std::cell::Cell::new(None::<DictSort>);
+                ui.scope(|ui| {
+                    ui.style_mut().visuals.faint_bg_color = if ui.visuals().dark_mode {
+                        egui::Color32::from_white_alpha(12)
+                    } else {
+                        egui::Color32::from_black_alpha(14)
+                    };
+                    let col_w = (ui.available_width() - 32.0) / 4.0;
+                // 表头闭包与 body 闭包都存活到 body() 执行：表头只读 Copy 快照 +
+                // 经 Cell 暂存排序切换，不捕获 self（否则 &self 活到 body，
+                // 与 body 闭包的 &mut self 冲突）。
+                egui_extras::TableBuilder::new(ui)
+                    .striped(true)
+                    .vscroll(true)
+                    .max_scroll_height(260.0)
+                    .column(egui_extras::Column::initial(col_w).resizable(true).clip(true))
+                    .column(egui_extras::Column::initial(col_w).resizable(true).clip(true))
+                    .column(egui_extras::Column::initial(col_w).resizable(true).clip(true))
+                    .column(egui_extras::Column::remainder())
+                    .header(22.0, |mut header| {
+                        header.col(|ui| {
+                            let label = if sort == DictSort::Code { "拼音 ●" } else { "拼音" };
+                            if ui.button(label).on_hover_text("按拼音分组排序").clicked() {
+                                sort_update.set(Some(DictSort::Code));
+                            }
+                        });
+                        header.col(|ui| {
+                            ui.strong("词条");
+                        });
+                        header.col(|ui| {
+                            let label = match sort {
+                                DictSort::WeightAsc => "权重 ↑",
+                                DictSort::WeightDesc => "权重 ↓",
+                                DictSort::Code => "权重",
+                            };
+                            if ui.button(label).on_hover_text("按权重升/降序切换").clicked() {
+                                sort_update.set(Some(match sort {
+                                    DictSort::WeightAsc => DictSort::WeightDesc,
+                                    _ => DictSort::WeightAsc,
+                                }));
+                            }
+                        });
+                        header.col(|ui| {
+                            ui.strong("操作");
+                        });
+                    })
+                    .body(|mut body| {
+                        let grouped = self.dict_sort == DictSort::Code;
+                        for (i, r) in shown.iter().enumerate() {
+                            // 拼音分组模式：每 code 一条组头行。组级清除兜底
+                            // （56 号决策 B：一次 Swap 写两条覆盖，无血缘字段
+                            // 不配对删，组头一键清空该拼音全部调权）。
+                            if grouped && (i == 0 || shown[i - 1].code != r.code) {
+                                let covers = rows
+                                    .iter()
+                                    .filter(|x| x.code == r.code && x.weight.is_some())
+                                    .count();
+                                let code = r.code.clone();
+                                body.row(24.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.strong(&code);
+                                    });
+                                    row.col(|_| {});
+                                    row.col(|_| {});
+                                    row.col(|ui| {
+                                        if covers > 0 {
+                                            let tip = format!(
+                                                "清除 {code} 下全部 {covers} 条权重覆盖（屏蔽条目不受影响）"
+                                            );
+                                            if ui
+                                                .small_button("清除调权")
+                                                .on_hover_text(tip)
+                                                .clicked()
+                                            {
+                                                self.dict_clear_code(&code);
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                            let code = r.code.clone();
+                            let word = r.word.clone();
+                            let weight = r.weight;
+                            let in_base = r.in_base;
+                            let editing = self
+                                .weight_edit
+                                .as_ref()
+                                .is_some_and(|(c, w)| c == &code && w == &word);
+                            body.row(22.0, |mut row| {
+                                row.col(|ui| {
+                                    if grouped {
+                                        ui.label("");
+                                    } else {
+                                        ui.monospace(&code);
+                                    }
+                                });
+                                row.col(|ui| {
+                                    ui.label(&word);
+                                });
+                                row.col(|ui| {
+                                    // 权重列：点击进入行内编辑（56 第二梯队），
+                                    // 回车提交 / Esc 或失焦取消。
+                                    if editing {
+                                        let resp = ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.weight_edit_buf,
+                                            )
+                                            .desired_width(80.0)
+                                            .font(egui::TextStyle::Monospace),
+                                        );
+                                        let lost = resp.lost_focus();
+                                        let enter =
+                                            lost && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                        let esc = lost
+                                            && ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                        if esc {
+                                            self.weight_edit = None;
+                                        } else if enter {
+                                            self.weight_submit(&code, &word);
+                                        }
+                                    } else if let Some(adj) = weight {
+                                        let resp = ui
+                                            .monospace(format!("{adj}"))
+                                            .interact(egui::Sense::click())
+                                            .on_hover_text("点击修改权重");
+                                        if resp.clicked() {
+                                            self.weight_edit_buf = adj.to_string();
+                                            self.weight_edit = Some((code.clone(), word.clone()));
+                                        }
+                                    } else {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(0xC0, 0x80, 0x00),
+                                            "[屏蔽]",
+                                        );
+                                    }
+                                });
+                                row.col(|ui| {
+                                    let (label, tip, mutation, msg) = match weight {
+                                        Some(_) if in_base => (
+                                            "↺",
+                                            "恢复静态词频序（删除权重覆盖）",
+                                            UserMutation::Remove {
+                                                code: code.clone(),
+                                                word: word.clone(),
+                                            },
+                                            format!("已恢复 {word} 为默认权重"),
+                                        ),
+                                        Some(_) => (
+                                            "×",
+                                            "删除自造词",
+                                            UserMutation::Remove {
+                                                code: code.clone(),
+                                                word: word.clone(),
+                                            },
+                                            format!("已删除自造词 {word}"),
+                                        ),
+                                        None => (
+                                            "×",
+                                            "取消屏蔽（恢复候选）",
+                                            UserMutation::Unblock {
+                                                code: code.clone(),
+                                                word: word.clone(),
+                                            },
+                                            format!("已取消屏蔽 {word}"),
+                                        ),
+                                    };
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .small_button(label)
+                                            .on_hover_text(tip)
+                                            .clicked()
+                                        {
+                                            self.dict_mutate(mutation, &msg);
+                                        }
+                                        // 覆盖词一键屏蔽（56 第二梯队）：撤销覆盖
+                                        // + 屏蔽；自造词屏蔽无意义（Remove 即消失）。
+                                        if in_base
+                                            && weight.is_some()
+                                            && ui
+                                                .small_button("屏蔽")
+                                                .on_hover_text("隐藏该候选并撤销其权重覆盖")
+                                                .clicked()
+                                        {
+                                            self.dict_block_from_cover(&code, &word);
+                                        }
+                                    });
+                                });
+                            });
+                        }
+                    });
+                });
+                if let Some(s) = sort_update.get() {
+                    self.dict_sort = s;
+                }
+            } else {
+                ui.small("（空用户库）");
             }
         });
     }
@@ -1121,8 +1525,9 @@ impl SettingsApp {
         });
     }
 
-    /// 用户库列表 + 清除全部。
-    fn user_dict_snapshot(&self) -> (usize, usize, Vec<String>) {
+    /// 用户库快照（面板每帧调用）。weight = None 表示屏蔽条目；in_base 区分
+    /// 覆盖词/自造词（56 号决策 B）。
+    fn user_dict_snapshot(&self) -> (usize, usize, Vec<DictRow>) {
         // M10 ③：远端是唯一形态，用户库文件真相源在引擎本地写盘，内存态
         // 只是启动快照 → 面板打开先重载（文件缺失/损坏保留现状，不炸面板）。
         match UserDict::load(&self.state.user_dict_path) {
@@ -1134,14 +1539,220 @@ impl SettingsApp {
             }
         }
         let dict = self.state.dict.lock().unwrap_or_else(|p| p.into_inner());
-        let mut lines = Vec::new();
+        let mut rows: Vec<DictRow> = dict
+            .cover_iter()
+            .map(|(code, word, adj)| DictRow {
+                in_base: self.engine.has_base_entry(code, word),
+                code: code.to_owned(),
+                word: word.to_owned(),
+                weight: Some(adj),
+            })
+            .collect();
+        rows.extend(dict.block_iter().map(|(code, word)| DictRow {
+            in_base: true, // 屏蔽的必是基础库词条（block 只对基础库语义）
+            code: code.to_owned(),
+            word: word.to_owned(),
+            weight: None,
+        }));
+        (dict.cover_count(), dict.block_count(), rows)
+    }
+
+    /// 词条 mutation 应用后的同步尾巴（决策 A）：面板镜像 ← 引擎内存态，
+    /// SHM 发布 + 落盘（与「清除全部」同路径，防 H5 型复活 bug）。
+    fn dict_sync(&mut self) {
+        if let Some(u) = self.engine.user_dict() {
+            *self.state.dict.lock().unwrap_or_else(|p| p.into_inner()) = (*u).clone();
+        }
+        self.state.publish();
+        self.state.flush_now();
+    }
+
+    /// 词条操作（56 号决策 A：立即生效）——引擎 mutation（内存 + 写盘）→
+    /// 同步尾巴。
+    fn dict_mutate(&mut self, m: UserMutation, ok_msg: &str) {
+        self.engine.apply_user_mutation(&m);
+        self.dict_sync();
+        self.status = ok_msg.to_string();
+        log::log_line(&format!("[settings] {ok_msg}"));
+    }
+
+    /// 覆盖词一键屏蔽（56 第二梯队）：撤销覆盖（Remove）+ 屏蔽（Block），
+    /// 两次 mutation 一次落盘。
+    fn dict_block_from_cover(&mut self, code: &str, word: &str) {
+        self.engine.apply_user_mutation(&UserMutation::Remove {
+            code: code.into(),
+            word: word.into(),
+        });
+        self.engine.apply_user_mutation(&UserMutation::Block {
+            code: code.into(),
+            word: word.into(),
+        });
+        self.dict_sync();
+        self.status = format!("已屏蔽 {word}（并撤销其权重覆盖）");
+        log::log_line(&format!("[settings] 覆盖转屏蔽：{code} / {word}"));
+    }
+
+    /// 行内改权重提交（56 第二梯队）：Set 绝对值覆盖；非法数值红字提示并
+    /// 保持编辑态（决策 A 立即生效）。
+    fn weight_submit(&mut self, code: &str, word: &str) {
+        match self.weight_edit_buf.trim().parse::<u32>() {
+            Ok(adj) => {
+                self.weight_edit = None;
+                self.dict_mutate(
+                    UserMutation::Set {
+                        code: code.into(),
+                        word: word.into(),
+                        adj,
+                    },
+                    &format!("已将 {word} 权重改为 {adj}"),
+                );
+            }
+            Err(_) => {
+                self.status = "权重须为非负整数".into();
+            }
+        }
+    }
+
+    /// 新增词条提交（56 第二梯队）：Set upsert（基础库没有 = 自造，有 = 覆盖
+    /// 权重）。弱校验（决策 E）：拼音撇号分隔且每段在音节表内；权重缺省 8000
+    /// （与引擎自造词 PHRASE_DEFAULT_WEIGHT 一致）。
+    fn new_entry_submit(&mut self) {
+        let code = self.new_code.trim().to_lowercase();
+        let word = self.new_word.trim().to_string();
+        let weight = match self.new_weight.trim() {
+            "" => Some(8000),
+            s => s.parse::<u32>().ok(),
+        };
+        let err = if code.is_empty() || word.is_empty() {
+            Some("拼音与词条均不能为空".to_string())
+        } else if !self.engine.valid_code(&code) {
+            Some(
+                "拼音格式不对：仅小写字母与撇号，且不能有空段（自定义缩略语如 cj 也可）"
+                    .to_string(),
+            )
+        } else if weight.is_none() {
+            Some("权重须为非负整数".to_string())
+        } else {
+            None
+        };
+        match err {
+            Some(e) => self.status = e,
+            None => {
+                let adj = weight.unwrap_or(8000);
+                self.dict_mutate(
+                    UserMutation::Set {
+                        code,
+                        word: word.clone(),
+                        adj,
+                    },
+                    &format!("已添加 {word}（权重 {adj}）"),
+                );
+                self.new_code.clear();
+                self.new_word.clear();
+                self.new_weight.clear();
+            }
+        }
+    }
+
+    // ===== 整库导入/导出（56 第三梯队，决策 C：格式复用主词库源格式）=====
+
+    /// 导出用户库为文本（决策 C）：覆盖行 `词<TAB>空格分隔拼音<TAB>权重`（与
+    /// dictc 源格式一致，可直接喂回词库链）；屏蔽行 `#屏蔽<TAB>词<TAB>拼音`。
+    fn export_dict(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name("iuv-user-dict.txt")
+            .add_filter("文本文件", &["txt"])
+            .save_file()
+        else {
+            return;
+        };
+        let dict = self.state.dict.lock().unwrap_or_else(|p| p.into_inner());
+        let mut out = String::new();
         for (code, word, adj) in dict.cover_iter() {
-            lines.push(format!("{code}\t{word}\t权重 {adj}"));
+            out.push_str(&format!("{}\t{}\t{adj}\n", word, spaced_code(code)));
         }
         for (code, word) in dict.block_iter() {
-            lines.push(format!("{code}\t{word}\t[屏蔽]"));
+            out.push_str(&format!("#屏蔽\t{}\t{}\n", word, spaced_code(code)));
         }
-        (dict.cover_count(), dict.block_count(), lines)
+        drop(dict);
+        match std::fs::write(&path, out) {
+            Ok(()) => {
+                self.status = format!("已导出到 {}", path.display());
+                log::log_line(&format!("[settings] 导出用户库：{}", path.display()));
+            }
+            Err(e) => {
+                self.status = format!("导出失败：{e}");
+                log::log_line(&format!("[settings] 导出失败：{e}"));
+            }
+        }
+    }
+
+    /// 导入选文件并解析暂存（决策 A 两段确认）：确认后统一 apply 一次落盘。
+    fn import_dict_pick(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("文本文件", &["txt"])
+            .pick_file()
+        else {
+            return;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let (mutations, covers, blocks, skipped) = parse_import(&text);
+                if mutations.is_empty() {
+                    self.status = "文件中没有可导入的词条".into();
+                    return;
+                }
+                self.pending_import = Some((mutations, covers, blocks));
+                self.status = format!(
+                    "已解析 {covers} 条词条、{blocks} 条屏蔽（跳过 {skipped} 行）——点「确认导入」生效"
+                );
+            }
+            Err(e) => {
+                self.status = format!("读取文件失败：{e}");
+                log::log_line(&format!("[settings] 导入读取失败：{e}"));
+            }
+        }
+    }
+
+    /// 导入确认（决策 A 两段确认第二步）：循环 apply 后一次 dict_sync。
+    fn import_confirm(&mut self) {
+        let Some((mutations, covers, blocks)) = self.pending_import.take() else {
+            return;
+        };
+        for m in &mutations {
+            self.engine.apply_user_mutation(m);
+        }
+        self.dict_sync();
+        self.status = format!("已导入 {covers} 条词条、{blocks} 条屏蔽");
+        log::log_line(&format!(
+            "[settings] 导入用户库：{covers} 词条 / {blocks} 屏蔽"
+        ));
+    }
+
+    /// 组级清除（56 号决策 B 粗调兜底）：循环 Remove 该 code 下全部覆盖。
+    /// 不碰屏蔽表（屏蔽行各有独立「×」）。
+    fn dict_clear_code(&mut self, code: &str) {
+        let entries: Vec<(String, String)> = {
+            let dict = self.state.dict.lock().unwrap_or_else(|p| p.into_inner());
+            dict.cover_iter()
+                .filter(|(c, _, _)| *c == code)
+                .map(|(c, w, _)| (c.to_owned(), w.to_owned()))
+                .collect()
+        };
+        let n = entries.len();
+        for (c, w) in &entries {
+            self.engine.apply_user_mutation(&UserMutation::Remove {
+                code: c.clone(),
+                word: w.clone(),
+            });
+        }
+        if let Some(u) = self.engine.user_dict() {
+            *self.state.dict.lock().unwrap_or_else(|p| p.into_inner()) = (*u).clone();
+        }
+        self.state.publish();
+        self.state.flush_now();
+        self.status = format!("已清除 {code} 的 {n} 条调权");
+        log::log_line(&format!("[settings] 组级清除：{code} × {n}"));
     }
 
     /// 确定/应用：写配置 + 广播 + （若暂挂清除）清空用户库。
@@ -1264,5 +1875,53 @@ impl eframe::App for SettingsApp {
         self.capturing = false;
         self.capture = None;
         log::log_line("[settings] 设置窗口已关闭");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 导入解析（56 决策 C/D）：roundtrip（导出格式可还原）+ 归一化 + 坏行跳过。
+    #[test]
+    fn parse_import_roundtrip_and_normalization() {
+        let text = concat!(
+            "测架\tce jia\t6000\n",
+            "#屏蔽\t郭老师\tguo lao shi\n",
+            "\n",
+            "# 注释行\n",
+            "只有词\n",
+            "词\tXIAN  de\n",
+            "词2\tx y\tabc\n",
+        );
+        let (mutations, covers, blocks, skipped) = parse_import(text);
+        assert_eq!(covers, 2, "词条行（含权重缺省）");
+        assert_eq!(blocks, 1);
+        assert_eq!(skipped, 2, "缺拼音行 + 权重非数字行");
+        assert_eq!(
+            mutations[0],
+            UserMutation::Set {
+                code: "ce'jia".into(),
+                word: "测架".into(),
+                adj: 6000
+            },
+            "空格拼音归一化为撇号"
+        );
+        assert_eq!(
+            mutations[1],
+            UserMutation::Block {
+                code: "guo'lao'shi".into(),
+                word: "郭老师".into()
+            }
+        );
+        assert_eq!(
+            mutations[2],
+            UserMutation::Set {
+                code: "xian'de".into(),
+                word: "词".into(),
+                adj: 8000
+            },
+            "权重缺省 8000 + 大写/多空白归一化"
+        );
     }
 }

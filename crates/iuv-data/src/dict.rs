@@ -302,6 +302,12 @@ impl Dict {
         self.exact_raw(squashed_code)
     }
 
+    /// 基础库 (code, word) 存在性探测（不过屏蔽/覆盖叠加——「词条真实存在性」语义，
+    /// 设置页区分覆盖词「恢复默认」与自造词「删除」，56-dict-entry-ops.md）。
+    pub fn has_base_entry(&self, squashed_code: &str, word: &str) -> bool {
+        self.exact_raw(squashed_code).iter().any(|e| e.word == word)
+    }
+
     /// 基础库精确查询（不过屏蔽/覆盖/独有条目——内部"词条真实存在性"语义；
     /// 外部一律走 exact 的叠加视图）。
     fn exact_raw(&self, squashed_code: &str) -> Vec<Entry> {
@@ -1147,6 +1153,16 @@ mod tests {
         assert_eq!(de[2].weight, 200);
         assert_eq!(d.exact("nihao").len(), 2);
         assert_eq!(d.exact("nihao")[0].weight, 8000);
+    }
+
+    /// 56-dict-entry-ops.md：基础库 (code, word) 存在性探测（区分覆盖词/自造词）。
+    #[test]
+    fn has_base_entry_probes_raw_base_dict() {
+        let d = sample();
+        assert!(d.has_base_entry("de", "的"), "基础库词条应命中");
+        assert!(d.has_base_entry("xi'an", "西安"), "带撇号码应原样命中");
+        assert!(!d.has_base_entry("de", "底"), "词条不在基础库 → 自造词语义");
+        assert!(!d.has_base_entry("zhang'wei'wei", "张威威"), "code 不存在");
     }
 
     #[test]

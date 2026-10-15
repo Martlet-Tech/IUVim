@@ -101,6 +101,24 @@ impl Engine {
     pub fn page_size(&self) -> u32 {
         self.page_size.load(Ordering::Relaxed)
     }
+
+    /// (code, word) 是否在**基础库**（不含用户库叠加；设置页词条操作用：
+    /// 覆盖词显示「恢复默认」、自造词显示「删除」，56-dict-entry-ops.md）。
+    pub fn has_base_entry(&self, code: &str, word: &str) -> bool {
+        self.dict.has_base_entry(code, word)
+    }
+
+    /// 手填拼音 code 格式校验（56 决策 E，2026-10-15 真机反馈放宽）：非空 +
+    /// 仅小写字母/撇号 + 无空段（首尾撇号/连续撇号）。**不查音节表**——用户可
+    /// 自定义缩略语（如 cj），音节表限制会挡掉合法需求；可达性由引擎查询路径
+    /// 兜底（自造词条按 code 直接进叠加视图）。
+    pub fn valid_code(&self, code: &str) -> bool {
+        !code.is_empty()
+            && !code.starts_with('\'')
+            && !code.ends_with('\'')
+            && !code.contains("''")
+            && code.chars().all(|c| c.is_ascii_lowercase() || c == '\'')
+    }
 }
 
 #[cfg(test)]
@@ -135,5 +153,24 @@ mod tests {
         assert_eq!(e.config().page_size, 7);
         assert_eq!(e.config().passthrough_apps, vec!["dota2.exe".to_owned()]);
         assert_eq!(e.config().keymap, cfg.keymap, "未改字段保持新值");
+    }
+
+    /// valid_code：手填拼音格式校验（56 决策 E，放宽后）——非空、小写字母 +
+    /// 撇号、无空段；**不查音节表**（用户可自定义缩略语如 cj）。
+    #[test]
+    fn valid_code_checks_format() {
+        let e = Engine::new(
+            dict_of(vec![("de", "的", 100000), ("xian", "先", 500)]),
+            Config::default(),
+        );
+        assert!(e.valid_code("de"));
+        assert!(e.valid_code("xian'de"));
+        assert!(e.valid_code("cj"), "自定义缩略语应放行（2026-10-15 反馈）");
+        assert!(!e.valid_code(""), "空 code 拒绝");
+        assert!(!e.valid_code("'de"), "首撇号拒绝");
+        assert!(!e.valid_code("de'"), "尾撇号拒绝");
+        assert!(!e.valid_code("de''x"), "连续撇号拒绝");
+        assert!(!e.valid_code("de'X"), "非小写字母拒绝");
+        assert!(!e.valid_code("d e"), "空白拒绝");
     }
 }
