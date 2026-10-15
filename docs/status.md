@@ -1486,7 +1486,7 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     `publish_boot_id` 改为**容差 120s 内沿用指针现值并返回生效值**（真重启才换名），
     补 `choose_boot_id` 单测；server 自身日志名/清理基准改用该生效值。
 
-- [x] **56 号设置页用户库词条操作（2026-10-15 结案，任务书 `docs/plan/56-dict-entry-ops.md`，
+- [x] **56 号设置页用户库词条操作（2026-10-15 结案，任务书 `docs/closed/56-dict-entry-ops.md`，
   分支 `feat/55-dict-entry-ops`，提交 7bb26f5 / 7dbcf62 / e1d0def + 编号改 56 收尾）**：
   词库页从只读 Grid 升级为可操作列表。**编号注记**：立项时误取 55 号（已被体检占用），
   收尾改 56，代码注释/白名单引用同步更名。
