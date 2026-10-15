@@ -18,9 +18,9 @@ serde_json = { workspace = true }
 tiny-skia = { workspace = true }
 # eframe 0.36（设置页；自 iuv-daemon 迁入，②daemon→server 演进）。
 eframe = { workspace = true }
-# 词库页表格（粘性表头/斑马纹，55-dict-entry-ops.md）。
+# 词库页表格（粘性表头/斑马纹，56-dict-entry-ops.md）。
 egui_extras = { workspace = true }
-# 词库导入/导出文件对话框（55-dict-entry-ops.md）。
+# 词库导入/导出文件对话框（56-dict-entry-ops.md）。
 rfd = { workspace = true }
 
 [[bin]]

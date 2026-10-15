@@ -44,7 +44,7 @@ pub enum UserMutation {
     Remove { code: String, word: String },
     /// 屏蔽基础库词条（Shift+Delete 隐藏，对应 UserDict::block）。
     Block { code: String, word: String },
-    /// 取消屏蔽（设置页词条操作，55-dict-entry-ops.md；对应 UserDict::unblock）。
+    /// 取消屏蔽（设置页词条操作，56-dict-entry-ops.md；对应 UserDict::unblock）。
     /// 独立变体而非扩 Remove 语义：Remove 只清覆盖表是 TSF Shift+Delete 依赖的
     /// 既有行为（先删覆盖、再按才屏蔽），扩语义会改变其按键流。
     Unblock { code: String, word: String },
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn apply_mutation_unblock_only_touches_block_table() {
-        // 55-dict-entry-ops.md：Unblock 只清屏蔽表（Remove 只清覆盖表的既有语义
+        // 56-dict-entry-ops.md：Unblock 只清屏蔽表（Remove 只清覆盖表的既有语义
         // 不变——TSF Shift+Delete「先删覆盖再屏蔽」按键流依赖此分离）。
         let u = UserDict::empty()
             .set_entry("shou'xuan", "手癣", 300)

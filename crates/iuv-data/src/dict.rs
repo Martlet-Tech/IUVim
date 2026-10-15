@@ -303,7 +303,7 @@ impl Dict {
     }
 
     /// 基础库 (code, word) 存在性探测（不过屏蔽/覆盖叠加——「词条真实存在性」语义，
-    /// 设置页区分覆盖词「恢复默认」与自造词「删除」，55-dict-entry-ops.md）。
+    /// 设置页区分覆盖词「恢复默认」与自造词「删除」，56-dict-entry-ops.md）。
     pub fn has_base_entry(&self, squashed_code: &str, word: &str) -> bool {
         self.exact_raw(squashed_code).iter().any(|e| e.word == word)
     }
@@ -1155,7 +1155,7 @@ mod tests {
         assert_eq!(d.exact("nihao")[0].weight, 8000);
     }
 
-    /// 55-dict-entry-ops.md：基础库 (code, word) 存在性探测（区分覆盖词/自造词）。
+    /// 56-dict-entry-ops.md：基础库 (code, word) 存在性探测（区分覆盖词/自造词）。
     #[test]
     fn has_base_entry_probes_raw_base_dict() {
         let d = sample();

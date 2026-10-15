@@ -328,7 +328,7 @@ fn slot_combo_mut(slot: &mut iuv_core::TwoSlot, which: Slot) -> &mut Option<iuv_
     }
 }
 
-/// 词库页排序态（55-dict-entry-ops.md 第一梯队：拼音默认 / 权重升降）。
+/// 词库页排序态（56-dict-entry-ops.md 第一梯队：拼音默认 / 权重升降）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum DictSort {
     /// 按拼音（BTreeMap 天然序，分组渲染 + 组级清除）。
@@ -469,15 +469,15 @@ struct SettingsApp {
     dict_search: String,
     /// 词库页排序态。
     dict_sort: DictSort,
-    /// 行内改权重（55 第二梯队）：正在编辑的 (code, word)，None = 无编辑行。
+    /// 行内改权重（56 第二梯队）：正在编辑的 (code, word)，None = 无编辑行。
     weight_edit: Option<(String, String)>,
     /// 行内改权重草稿。
     weight_edit_buf: String,
-    /// 新增词条表单（55 第二梯队；Set upsert 语义 = 自造词或覆盖权重）。
+    /// 新增词条表单（56 第二梯队；Set upsert 语义 = 自造词或覆盖权重）。
     new_code: String,
     new_word: String,
     new_weight: String,
-    /// 导入暂存（55 第三梯队，决策 A 两段确认）：已解析待应用的 mutations
+    /// 导入暂存（56 第三梯队，决策 A 两段确认）：已解析待应用的 mutations
     /// + (词条数, 屏蔽数)。确认后统一 apply。
     pending_import: Option<(Vec<UserMutation>, usize, usize)>,
     /// 清除日志结果（(成功, 失败)，高级页展示）。
@@ -1080,7 +1080,7 @@ impl SettingsApp {
         card(ui, |ui| {
             let (cover, block, rows) = self.user_dict_snapshot();
             ui.label(format!("覆盖/自造词 {cover} 条 · 屏蔽 {block} 条"));
-            // 工具行（55 第三梯队）：搜索居左，整库操作（清除全部/导入/导出）
+            // 工具行（56 第三梯队）：搜索居左，整库操作（清除全部/导入/导出）
             // 居右——全部上移后表格独占剩余高度，「清除全部被挤出窗口」问题
             // 随之根治（Table 默认占满可用高度的脾气转为优点）。
             ui.horizontal(|ui| {
@@ -1152,7 +1152,7 @@ impl SettingsApp {
                     }
                 });
             }
-            // 新增词条（55 第二梯队）：Set upsert = 自造词或对基础库覆盖权重。
+            // 新增词条（56 第二梯队）：Set upsert = 自造词或对基础库覆盖权重。
             ui.horizontal(|ui| {
                 ui.label("新增词条：");
                 ui.add(
@@ -1251,7 +1251,7 @@ impl SettingsApp {
                         let grouped = self.dict_sort == DictSort::Code;
                         for (i, r) in shown.iter().enumerate() {
                             // 拼音分组模式：每 code 一条组头行。组级清除兜底
-                            // （55 号决策 B：一次 Swap 写两条覆盖，无血缘字段
+                            // （56 号决策 B：一次 Swap 写两条覆盖，无血缘字段
                             // 不配对删，组头一键清空该拼音全部调权）。
                             if grouped && (i == 0 || shown[i - 1].code != r.code) {
                                 let covers = rows
@@ -1301,7 +1301,7 @@ impl SettingsApp {
                                     ui.label(&word);
                                 });
                                 row.col(|ui| {
-                                    // 权重列：点击进入行内编辑（55 第二梯队），
+                                    // 权重列：点击进入行内编辑（56 第二梯队），
                                     // 回车提交 / Esc 或失焦取消。
                                     if editing {
                                         let resp = ui.add(
@@ -1375,7 +1375,7 @@ impl SettingsApp {
                                         {
                                             self.dict_mutate(mutation, &msg);
                                         }
-                                        // 覆盖词一键屏蔽（55 第二梯队）：撤销覆盖
+                                        // 覆盖词一键屏蔽（56 第二梯队）：撤销覆盖
                                         // + 屏蔽；自造词屏蔽无意义（Remove 即消失）。
                                         if in_base
                                             && weight.is_some()
@@ -1526,7 +1526,7 @@ impl SettingsApp {
     }
 
     /// 用户库快照（面板每帧调用）。weight = None 表示屏蔽条目；in_base 区分
-    /// 覆盖词/自造词（55 号决策 B）。
+    /// 覆盖词/自造词（56 号决策 B）。
     fn user_dict_snapshot(&self) -> (usize, usize, Vec<DictRow>) {
         // M10 ③：远端是唯一形态，用户库文件真相源在引擎本地写盘，内存态
         // 只是启动快照 → 面板打开先重载（文件缺失/损坏保留现状，不炸面板）。
@@ -1567,7 +1567,7 @@ impl SettingsApp {
         self.state.flush_now();
     }
 
-    /// 词条操作（55 号决策 A：立即生效）——引擎 mutation（内存 + 写盘）→
+    /// 词条操作（56 号决策 A：立即生效）——引擎 mutation（内存 + 写盘）→
     /// 同步尾巴。
     fn dict_mutate(&mut self, m: UserMutation, ok_msg: &str) {
         self.engine.apply_user_mutation(&m);
@@ -1576,7 +1576,7 @@ impl SettingsApp {
         log::log_line(&format!("[settings] {ok_msg}"));
     }
 
-    /// 覆盖词一键屏蔽（55 第二梯队）：撤销覆盖（Remove）+ 屏蔽（Block），
+    /// 覆盖词一键屏蔽（56 第二梯队）：撤销覆盖（Remove）+ 屏蔽（Block），
     /// 两次 mutation 一次落盘。
     fn dict_block_from_cover(&mut self, code: &str, word: &str) {
         self.engine.apply_user_mutation(&UserMutation::Remove {
@@ -1592,7 +1592,7 @@ impl SettingsApp {
         log::log_line(&format!("[settings] 覆盖转屏蔽：{code} / {word}"));
     }
 
-    /// 行内改权重提交（55 第二梯队）：Set 绝对值覆盖；非法数值红字提示并
+    /// 行内改权重提交（56 第二梯队）：Set 绝对值覆盖；非法数值红字提示并
     /// 保持编辑态（决策 A 立即生效）。
     fn weight_submit(&mut self, code: &str, word: &str) {
         match self.weight_edit_buf.trim().parse::<u32>() {
@@ -1613,7 +1613,7 @@ impl SettingsApp {
         }
     }
 
-    /// 新增词条提交（55 第二梯队）：Set upsert（基础库没有 = 自造，有 = 覆盖
+    /// 新增词条提交（56 第二梯队）：Set upsert（基础库没有 = 自造，有 = 覆盖
     /// 权重）。弱校验（决策 E）：拼音撇号分隔且每段在音节表内；权重缺省 8000
     /// （与引擎自造词 PHRASE_DEFAULT_WEIGHT 一致）。
     fn new_entry_submit(&mut self) {
@@ -1654,7 +1654,7 @@ impl SettingsApp {
         }
     }
 
-    // ===== 整库导入/导出（55 第三梯队，决策 C：格式复用主词库源格式）=====
+    // ===== 整库导入/导出（56 第三梯队，决策 C：格式复用主词库源格式）=====
 
     /// 导出用户库为文本（决策 C）：覆盖行 `词<TAB>空格分隔拼音<TAB>权重`（与
     /// dictc 源格式一致，可直接喂回词库链）；屏蔽行 `#屏蔽<TAB>词<TAB>拼音`。
@@ -1729,7 +1729,7 @@ impl SettingsApp {
         ));
     }
 
-    /// 组级清除（55 号决策 B 粗调兜底）：循环 Remove 该 code 下全部覆盖。
+    /// 组级清除（56 号决策 B 粗调兜底）：循环 Remove 该 code 下全部覆盖。
     /// 不碰屏蔽表（屏蔽行各有独立「×」）。
     fn dict_clear_code(&mut self, code: &str) {
         let entries: Vec<(String, String)> = {
@@ -1882,7 +1882,7 @@ impl eframe::App for SettingsApp {
 mod tests {
     use super::*;
 
-    /// 导入解析（55 决策 C/D）：roundtrip（导出格式可还原）+ 归一化 + 坏行跳过。
+    /// 导入解析（56 决策 C/D）：roundtrip（导出格式可还原）+ 归一化 + 坏行跳过。
     #[test]
     fn parse_import_roundtrip_and_normalization() {
         let text = concat!(
