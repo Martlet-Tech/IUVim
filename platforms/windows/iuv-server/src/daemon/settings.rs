@@ -394,6 +394,14 @@ struct SettingsApp {
     dict_search: String,
     /// 词库页排序态。
     dict_sort: DictSort,
+    /// 行内改权重（55 第二梯队）：正在编辑的 (code, word)，None = 无编辑行。
+    weight_edit: Option<(String, String)>,
+    /// 行内改权重草稿。
+    weight_edit_buf: String,
+    /// 新增词条表单（55 第二梯队；Set upsert 语义 = 自造词或覆盖权重）。
+    new_code: String,
+    new_word: String,
+    new_weight: String,
     /// 清除日志结果（(成功, 失败)，高级页展示）。
     log_clear: Option<(usize, usize)>,
     /// 操作反馈（保存成功/失败）。
@@ -447,6 +455,11 @@ impl SettingsApp {
             pending_clear: false,
             dict_search: String::new(),
             dict_sort: DictSort::Code,
+            weight_edit: None,
+            weight_edit_buf: String::new(),
+            new_code: String::new(),
+            new_word: String::new(),
+            new_weight: String::new(),
             log_clear: None,
             status: String::new(),
         }
@@ -993,6 +1006,32 @@ impl SettingsApp {
                 .hint_text("过滤：拼音或词条子串")
                 .desired_width(240.0)
                 .show(ui);
+            // 新增词条（55 第二梯队）：Set upsert = 自造词或对基础库覆盖权重。
+            // 放表格上方（Table 占满剩余高度，下方内容会被挤出——同「清除全部」
+            // 已知问题，第三梯队工具行重排一并收口）。
+            ui.horizontal(|ui| {
+                ui.label("新增词条：");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_code)
+                        .hint_text("拼音 zhang'wei")
+                        .desired_width(120.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_word)
+                        .hint_text("词条")
+                        .desired_width(80.0),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_weight)
+                        .hint_text("权重(默认8000)")
+                        .desired_width(70.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                if ui.button("添加").clicked() {
+                    self.new_entry_submit();
+                }
+            });
             let q = self.dict_search.trim().to_lowercase();
             let mut shown: Vec<&DictRow> = rows
                 .iter()
@@ -1102,6 +1141,10 @@ impl SettingsApp {
                             let word = r.word.clone();
                             let weight = r.weight;
                             let in_base = r.in_base;
+                            let editing = self
+                                .weight_edit
+                                .as_ref()
+                                .is_some_and(|(c, w)| c == &code && w == &word);
                             body.row(22.0, |mut row| {
                                 row.col(|ui| {
                                     if grouped {
@@ -1113,11 +1156,37 @@ impl SettingsApp {
                                 row.col(|ui| {
                                     ui.label(&word);
                                 });
-                                row.col(|ui| match weight {
-                                    Some(adj) => {
-                                        ui.monospace(format!("{adj}"));
-                                    }
-                                    None => {
+                                row.col(|ui| {
+                                    // 权重列：点击进入行内编辑（55 第二梯队），
+                                    // 回车提交 / Esc 或失焦取消。
+                                    if editing {
+                                        let resp = ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.weight_edit_buf,
+                                            )
+                                            .desired_width(80.0)
+                                            .font(egui::TextStyle::Monospace),
+                                        );
+                                        let lost = resp.lost_focus();
+                                        let enter =
+                                            lost && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                        let esc = lost
+                                            && ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                        if esc {
+                                            self.weight_edit = None;
+                                        } else if enter {
+                                            self.weight_submit(&code, &word);
+                                        }
+                                    } else if let Some(adj) = weight {
+                                        let resp = ui
+                                            .monospace(format!("{adj}"))
+                                            .interact(egui::Sense::click())
+                                            .on_hover_text("点击修改权重");
+                                        if resp.clicked() {
+                                            self.weight_edit_buf = adj.to_string();
+                                            self.weight_edit = Some((code.clone(), word.clone()));
+                                        }
+                                    } else {
                                         ui.colored_label(
                                             egui::Color32::from_rgb(0xC0, 0x80, 0x00),
                                             "[屏蔽]",
@@ -1129,25 +1198,51 @@ impl SettingsApp {
                                         Some(_) if in_base => (
                                             "↺",
                                             "恢复静态词频序（删除权重覆盖）",
-                                            UserMutation::Remove { code, word: word.clone() },
+                                            UserMutation::Remove {
+                                                code: code.clone(),
+                                                word: word.clone(),
+                                            },
                                             format!("已恢复 {word} 为默认权重"),
                                         ),
                                         Some(_) => (
                                             "×",
                                             "删除自造词",
-                                            UserMutation::Remove { code, word: word.clone() },
+                                            UserMutation::Remove {
+                                                code: code.clone(),
+                                                word: word.clone(),
+                                            },
                                             format!("已删除自造词 {word}"),
                                         ),
                                         None => (
                                             "×",
                                             "取消屏蔽（恢复候选）",
-                                            UserMutation::Unblock { code, word: word.clone() },
+                                            UserMutation::Unblock {
+                                                code: code.clone(),
+                                                word: word.clone(),
+                                            },
                                             format!("已取消屏蔽 {word}"),
                                         ),
                                     };
-                                    if ui.small_button(label).on_hover_text(tip).clicked() {
-                                        self.dict_mutate(mutation, &msg);
-                                    }
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .small_button(label)
+                                            .on_hover_text(tip)
+                                            .clicked()
+                                        {
+                                            self.dict_mutate(mutation, &msg);
+                                        }
+                                        // 覆盖词一键屏蔽（55 第二梯队）：撤销覆盖
+                                        // + 屏蔽；自造词屏蔽无意义（Remove 即消失）。
+                                        if in_base
+                                            && weight.is_some()
+                                            && ui
+                                                .small_button("屏蔽")
+                                                .on_hover_text("隐藏该候选并撤销其权重覆盖")
+                                                .clicked()
+                                        {
+                                            self.dict_block_from_cover(&code, &word);
+                                        }
+                                    });
                                 });
                             });
                         }
@@ -1340,17 +1435,98 @@ impl SettingsApp {
         (dict.cover_count(), dict.block_count(), rows)
     }
 
-    /// 词条操作（55 号决策 A：立即生效）——引擎 mutation（内存 + 写盘）→
-    /// 内存镜像同步 → SHM 发布 + 落盘（与「清除全部」同路径，防 H5 型复活 bug）。
-    fn dict_mutate(&mut self, m: UserMutation, ok_msg: &str) {
-        self.engine.apply_user_mutation(&m);
+    /// 词条 mutation 应用后的同步尾巴（决策 A）：面板镜像 ← 引擎内存态，
+    /// SHM 发布 + 落盘（与「清除全部」同路径，防 H5 型复活 bug）。
+    fn dict_sync(&mut self) {
         if let Some(u) = self.engine.user_dict() {
             *self.state.dict.lock().unwrap_or_else(|p| p.into_inner()) = (*u).clone();
         }
         self.state.publish();
         self.state.flush_now();
+    }
+
+    /// 词条操作（55 号决策 A：立即生效）——引擎 mutation（内存 + 写盘）→
+    /// 同步尾巴。
+    fn dict_mutate(&mut self, m: UserMutation, ok_msg: &str) {
+        self.engine.apply_user_mutation(&m);
+        self.dict_sync();
         self.status = ok_msg.to_string();
         log::log_line(&format!("[settings] {ok_msg}"));
+    }
+
+    /// 覆盖词一键屏蔽（55 第二梯队）：撤销覆盖（Remove）+ 屏蔽（Block），
+    /// 两次 mutation 一次落盘。
+    fn dict_block_from_cover(&mut self, code: &str, word: &str) {
+        self.engine.apply_user_mutation(&UserMutation::Remove {
+            code: code.into(),
+            word: word.into(),
+        });
+        self.engine.apply_user_mutation(&UserMutation::Block {
+            code: code.into(),
+            word: word.into(),
+        });
+        self.dict_sync();
+        self.status = format!("已屏蔽 {word}（并撤销其权重覆盖）");
+        log::log_line(&format!("[settings] 覆盖转屏蔽：{code} / {word}"));
+    }
+
+    /// 行内改权重提交（55 第二梯队）：Set 绝对值覆盖；非法数值红字提示并
+    /// 保持编辑态（决策 A 立即生效）。
+    fn weight_submit(&mut self, code: &str, word: &str) {
+        match self.weight_edit_buf.trim().parse::<u32>() {
+            Ok(adj) => {
+                self.weight_edit = None;
+                self.dict_mutate(
+                    UserMutation::Set {
+                        code: code.into(),
+                        word: word.into(),
+                        adj,
+                    },
+                    &format!("已将 {word} 权重改为 {adj}"),
+                );
+            }
+            Err(_) => {
+                self.status = "权重须为非负整数".into();
+            }
+        }
+    }
+
+    /// 新增词条提交（55 第二梯队）：Set upsert（基础库没有 = 自造，有 = 覆盖
+    /// 权重）。弱校验（决策 E）：拼音撇号分隔且每段在音节表内；权重缺省 8000
+    /// （与引擎自造词 PHRASE_DEFAULT_WEIGHT 一致）。
+    fn new_entry_submit(&mut self) {
+        let code = self.new_code.trim().to_lowercase();
+        let word = self.new_word.trim().to_string();
+        let weight = match self.new_weight.trim() {
+            "" => Some(8000),
+            s => s.parse::<u32>().ok(),
+        };
+        let err = if code.is_empty() || word.is_empty() {
+            Some("拼音与词条均不能为空".to_string())
+        } else if !self.engine.valid_code(&code) {
+            Some("拼音格式不对：仅小写字母与撇号，且不能有空段（自定义缩略语如 cj 也可）".to_string())
+        } else if weight.is_none() {
+            Some("权重须为非负整数".to_string())
+        } else {
+            None
+        };
+        match err {
+            Some(e) => self.status = e,
+            None => {
+                let adj = weight.unwrap_or(8000);
+                self.dict_mutate(
+                    UserMutation::Set {
+                        code,
+                        word: word.clone(),
+                        adj,
+                    },
+                    &format!("已添加 {word}（权重 {adj}）"),
+                );
+                self.new_code.clear();
+                self.new_word.clear();
+                self.new_weight.clear();
+            }
+        }
     }
 
     /// 组级清除（55 号决策 B 粗调兜底）：循环 Remove 该 code 下全部覆盖。
