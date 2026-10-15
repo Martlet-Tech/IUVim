@@ -20,6 +20,8 @@ tiny-skia = { workspace = true }
 eframe = { workspace = true }
 # 词库页表格（粘性表头/斑马纹，55-dict-entry-ops.md）。
 egui_extras = { workspace = true }
+# 词库导入/导出文件对话框（55-dict-entry-ops.md）。
+rfd = { workspace = true }
 
 [[bin]]
 name = "iuv-server"
