@@ -75,6 +75,27 @@ fn jump_distance(a: CaretRect, b: CaretRect) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+/// 微移抑制阈值（px，逐轴分量）：候选窗可见时，新算出的窗口位置与当前
+/// 位置逐轴差都在该值内就不动窗。
+///
+/// 为什么需要它：会话首键锚点（selection 现量）与布局跟随锚点（composition
+/// 起点）是**两条量取路径**，宿主对"空插入点"与"组合文字起点"返回的矩形
+/// 有 1~2px 的固有差异（2026-10-16 双端日志实锤：notepad 首键 `w=23 h=21`
+/// vs 跟随 `w=0 h=23`，y 相同 → 窗口顶 = y+h+GAP 差 2px；Trae 首键
+/// `x=960` vs 跟随 `x=962`，Δx=+2）。用户看到的就是每会话首键后候选窗
+/// "下沉/横移一小下"。该差异是宿主量取怪癖（字形盒 vs 行盒），客户端无
+/// 法可靠归一——在消费端按"移动量小到不可见"兜掉最稳。
+///
+/// 阈值 3：实测差异最大 2px（100% DPI），留 1px 余量覆盖高 DPI 宿主把
+/// 同款怪癖放大到 3px 的情况；真实光标移动（打字推进/换行）远大于此。
+/// 抑制不是丢弃：`last_caret` 照常更新（跳变判定基准不丢），只是不挪窗。
+const MICRO_MOVE_PX: i32 = 3;
+
+/// 窗口位置微移判定（逐轴 |Δ| ≤ [`MICRO_MOVE_PX`]；px，屏幕物理像素）。
+fn is_micro_move(prev: (i32, i32), next: (i32, i32)) -> bool {
+    (next.0 - prev.0).abs() <= MICRO_MOVE_PX && (next.1 - prev.1).abs() <= MICRO_MOVE_PX
+}
+
 /// 候选窗命令（会话线程 → UI 线程；latest-wins 由命令自身语义保证——每条命令
 /// 携带完整快照/位置，UI 线程按序应用最后一条即最新状态）。
 pub(crate) enum CandwinCmd {
@@ -347,6 +368,15 @@ impl ServerCandwin {
         let h = rc.bottom - rc.top;
         let (x, y) = position_for(caret, w, h);
         let prev = (rc.left, rc.top);
+        // 微移抑制：首键 selection 量取与布局跟随量取的宿主级 1~3px 差异
+        //（见 MICRO_MOVE_PX）——不挪窗，肉眼不可见的位移不值得动一次窗。
+        if is_micro_move(prev, (x, y)) {
+            iuv_win::logger::log_line(&format!(
+                "[candwin] 微移抑制：({},{}) → ({},{}) 差 ≤{MICRO_MOVE_PX}px，保持原位",
+                prev.0, prev.1, x, y
+            ));
+            return;
+        }
         if prev != (x, y) {
             iuv_win::logger::log_line(&format!(
                 "[candwin] 平移：({},{}) → ({},{})（锚点 {},{})",
@@ -423,6 +453,27 @@ impl ServerCandwin {
                 )
             }
         };
+        // 微移抑制（与 move_to 同规则，快照更新路径的兜底）：move_to 抑制了
+        // 首键后的 1~3px 差异，但本路径每键按 last_caret 重定位——不兜的话
+        // 第二键 update 会把被抑制的那 2px 从这里漏回来（下沉晚一拍复发）。
+        // 上传像素不受影响，只是位置钉在原位。
+        // SAFETY: GetWindowRect 读当前窗口矩形
+        let mut rc = RECT::default();
+        if unsafe { GetWindowRect(self.layered.hwnd, &mut rc) }.is_ok()
+            && is_micro_move((rc.left, rc.top), (x, y))
+        {
+            // SAFETY: 原位重传像素（位置不动）
+            let _ = self.ulw.upload(
+                self.layered.hwnd,
+                &surf,
+                rc.left,
+                rc.top,
+                w,
+                h,
+                "[server-candwin]",
+            );
+            return;
+        }
         self.ulw
             .upload(self.layered.hwnd, &surf, x, y, w, h, "[server-candwin]");
     }
@@ -695,5 +746,35 @@ mod tests {
         assert!(jump_distance(caret(1013, 481), caret(558, 481)) > JUMP_THRESHOLD);
         // 斜跳：实测 (−213, +200) ≈ 292px → 判为远跳。
         assert!(jump_distance(caret(1013, 481), caret(800, 681)) > JUMP_THRESHOLD);
+    }
+
+    #[test]
+    fn micro_move_suppresses_host_measurement_quirk_only() {
+        // 2026-10-16 实锤的两类宿主量取怪癖：notepad Δy=2（h 21↔23）、Trae Δx=2。
+        assert!(
+            is_micro_move((960, 640), (960, 642)),
+            "纵向 2px 下沉 → 抑制"
+        );
+        assert!(
+            is_micro_move((960, 640), (962, 640)),
+            "横向 2px 平移 → 抑制"
+        );
+        assert!(
+            is_micro_move((960, 640), (963, 643)),
+            "阈值边界内（对角 3,3）→ 抑制"
+        );
+        // 真实移动不抑制：打字推进 ≥4px、换行 ~20px。
+        assert!(
+            !is_micro_move((960, 640), (964, 640)),
+            "横向 4px = 真实移动"
+        );
+        assert!(
+            !is_micro_move((960, 640), (960, 644)),
+            "纵向 4px = 真实移动"
+        );
+        assert!(
+            !is_micro_move((960, 640), (963, 644)),
+            "单轴超阈（y=4）→ 不抑制"
+        );
     }
 }
