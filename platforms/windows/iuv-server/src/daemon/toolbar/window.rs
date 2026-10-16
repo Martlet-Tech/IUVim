@@ -446,7 +446,16 @@ impl ToolbarWindow {
                         .map(|i| i.state)
                         .unwrap_or_default();
                     match index {
-                        TB_MODE => ("中英", CtlCmd::SetMode(st.mode == ImeMode::Chinese)),
+                        // 57 号三态：caps 开悬停提示锁定态（点击仍发 SetMode，
+                        // TSF 侧 CapsLock 锁拒绝并回现态）。
+                        TB_MODE => (
+                            if st.caps {
+                                "中英（大写锁定）"
+                            } else {
+                                "中英"
+                            },
+                            CtlCmd::SetMode(st.mode == ImeMode::Chinese),
+                        ),
                         TB_WIDTH => ("全半角", CtlCmd::SetWidth(st.width == ImeWidth::Half)),
                         TB_PUNCT => ("标点", CtlCmd::SetPunct(st.punct == ImePunct::Chinese)),
                         TB_SCRIPT => (

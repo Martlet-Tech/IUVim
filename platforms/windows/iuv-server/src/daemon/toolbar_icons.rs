@@ -37,6 +37,10 @@ pub fn load_icons() -> ToolbarIcons {
             include_bytes!(asset!("toolbar-icons/lang-en.png")),
             "lang-en.png",
         ),
+        lang_caps: decode(
+            include_bytes!(asset!("toolbar-icons/lang-caps.png")),
+            "lang-caps.png",
+        ),
         width_half: decode(
             include_bytes!(asset!("toolbar-icons/width-half.png")),
             "width-half.png",

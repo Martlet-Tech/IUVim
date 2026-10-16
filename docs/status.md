@@ -1530,5 +1530,7 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     hide→show）、Shift 连切中↔英同正确、1200ms 淡出自隐、commit 后锚点
     573→613 前进 40px 贴最新光标、会话内不弹、失焦消失；workspace 测试全绿
     （ime [u8;5] 编码 roundtrip 等）、fmt/clippy 零告警。
-  - **遗留**（转入后续提交）：工具栏中英按钮随 caps 显 A 态（30 号内容随退回
-    丢失，`ImeState.caps` 已过线待补渲染）；游戏进程 RawKey 零流量待实测。
+  - **遗留跟进（同日后续提交）**：工具栏三态已补——`lang-caps.png`（288×288
+    品牌蓝 A，System.Drawing 生成）+ `ToolbarIcons.lang_caps` + toolbar_icon
+    caps 分支 + 悬停提示「中英（大写锁定）」；已部署待下轮日常打字确认。
+    游戏进程 RawKey 零流量待实测。

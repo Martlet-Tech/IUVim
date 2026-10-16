@@ -137,10 +137,12 @@ RawKey + caps 同步 + follow_layout 扩展，约 60 行。
 - [x] cargo test --workspace 全过；fmt/clippy 零告警
 - [x] 热部署真机复测（2026-10-16 16:21 部署，16:25-16:26 双端日志对齐验证）
 
-### 8.1 验收遗留（转入后续提交）
+### 8.1 验收遗留（57 号后续提交，2026-10-16）
 
-- **工具栏三态**：中英按钮应随 caps 显 A 态（30 号内容随退回丢失；`ImeState.caps`
-  已过线，server 工具栏渲染补 caps 分支即可）——2026-10-16 真机验收发现。
+- **工具栏三态**：中英按钮随 caps 显 A 形（`lang-caps.png` 288×288 品牌蓝 A，
+  与 lang-cn/en 同族；`ToolbarIcons.lang_caps` + `toolbar_icon` caps 分支 +
+  悬停提示「中英（大写锁定）」；点击仍发 SetMode，TSF 侧 CapsLock 锁拒绝
+  并回现态）——已施工待真机复测。
 
 ## 9. 交付物
 
