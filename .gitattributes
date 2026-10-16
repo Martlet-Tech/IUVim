@@ -1,0 +1,23 @@
+# 行尾与二进制规则（2026-10-16，治「CRLF 幻影」）。
+#
+# 背景：全局 core.autocrlf=true + 仓库无 .gitattributes，工作区实际是 LF——
+# 任何工具写文件后 git stat 缓存失效，重算规范化先报「悬空 M」（内容其实没变），
+# add 时才消化并吼 "LF will be replaced by CRLF" 警告（多智能体轮流写码时反复发作，
+# 见 f81e9b0「悬空 M 为 CRLF 幻影」）。
+#
+# 治法：规则钉死在本文件（不再依赖各机器的 autocrlf），仓库与工作区统一 LF
+# （与现状 i/lf w/lf 一致）；本地配 `git config core.autocrlf false` 关掉两头转换。
+# PowerShell 7 对 LF 脚本无兼容问题（本仓脚本均为 ps1/py，无 .bat）。
+
+* text=auto eol=lf
+
+# 二进制（text=auto 会自动嗅探，此处显式声明防误判）
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.dll binary
+*.exe binary
+*.pdb binary
