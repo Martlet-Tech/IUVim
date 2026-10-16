@@ -246,6 +246,32 @@ pub fn render_tooltip(label: &str, theme: &Theme, scale: f32, text: &mut TextRen
     })
 }
 
+// ===== 57 号光标处状态徽标（server 渲染） =====
+
+/// 渲染状态徽标（57 号）：单字形方形小框（`中`/`英`/`A`），对齐小狼毫光标处
+/// 状态图标观感——正方形底 + 细边框 + 居中字形，尺寸 = 字形盒 + 统一 PAD。
+/// 与 tooltip 同族（扁平圆角细边框、premultiplied BGRA Surface）。调用方自持
+/// 淡出/隐藏时机，本函数纯绘制。
+pub fn render_badge(glyph: &str, theme: &Theme, scale: f32, text: &mut TextRenderer) -> Surface {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let size_px = FONT_PX_96 * scale;
+    let (w, h) = text.measure(glyph, size_px);
+    let pad = (crate::layout::PAD_X as f32 * scale).ceil() as i32;
+    // 方形：边长 = max(字形宽, 行高) + 2*PAD——中/A 单字形本就近方，英文场景也保证方框。
+    let side = w.max(h) + pad * 2;
+    let (cw, ch) = (side.max(1) as u32, side.max(1) as u32);
+    render_to_surface(theme, scale, cw, ch, |pixmap| {
+        // 居中：字形盒在方框内水平垂直居中。
+        let x = (cw as f32 - w as f32) / 2.0;
+        let y = (ch as f32 - h as f32) / 2.0;
+        text.draw(pixmap, glyph, x, y, size_px, theme.fg);
+    })
+}
+
 /// 通用外壳：建 Surface 画布（内容精确尺寸）→ 圆角底 + 细边框 → 调用 `draw`。
 /// 扁平风格：无阴影；边框宽度 = `(scale).round().max(1)`（100%/125%→1px、150%+→2px），
 /// 描边路径内缩 `宽度/2` 使整条边框完整落在位图内（外缘贴齐位图边缘，不被裁半）。
@@ -663,6 +689,7 @@ mod tests {
                 width: ImeWidth::Half,
                 punct: ImePunct::English,
                 script: ImeScript::Simplified,
+                caps: false,
             },
             hover: Some(TB_GEAR),
             pressed: None,

@@ -1508,3 +1508,27 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     6000→60000、新增缩略语、导出 → 导入 roundtrip ×2（148 词条/1 屏蔽幂等）全部落盘；
     `cargo test --workspace` 全绿（新增 unblock 语义 / has_base_entry / valid_code /
     parse_import 测试）。
+
+- [x] **57 号光标处状态徽标 server 渲染重做（30 号路线废止；真机验收通过 2026-10-16）**：
+  分支 `feat/57-badge-server-render`（自 f81e9b0 重立，cherry-pick 无关修复
+  fce3978/891a366）。**动机**：小狼毫截图证实光标处独立徽标交互；30 号 TSF 自绘
+  与薄客户端方向相悖且暴露首翻吞徽标/位置滞后两缺陷——按「徽标持有者 = server、
+  TSF 只报信息」重做。
+  - **协议**（PROTO 3→4，破坏性）：`C2S::RawKey { vk, mods }`（Pass 键如实上报，
+    会话键不重复；直通名单进程跳过）；`ImeState` 补 `caps`（A 态真值过线，
+    `[u8;4]`→`[u8;5]`）。
+  - **server**：badge.rs（candwin 同款 UI 线程骨架，ULW 整窗穿透，
+    `iuv_ui::render_badge` 方框字形，caret 下沿定位，1200ms 兜底自隐）；
+    lib.rs 决策 = ImeState diff（首报不弹/echo 同值滤除）+ 会话外 + 有锚点 → 弹
+    （glyph 自推导 caps→A→mode）；Key/RawKey/失焦/停用/CandwinHide → 隐。
+  - **TSF**：RawKey 上报 + poll_caps 最小版（caps 变化才 sync_state）+
+    follow_layout 扩展槽空插入点现量（commit 后锚点新鲜化，徽标贴最新光标）。
+    TSF 从此零徽标逻辑。
+  - **关键设计**：wire 全序替代时序特判——CapsLock 键 RawKey 先到（隐旧）→
+    ImeState 后到（弹新），30 号 0x14 例外天然消失。
+  - **真机验证**（双端 log 对齐）：CapsLock 连按 A↔英 10 次逐次正确（每次
+    hide→show）、Shift 连切中↔英同正确、1200ms 淡出自隐、commit 后锚点
+    573→613 前进 40px 贴最新光标、会话内不弹、失焦消失；workspace 测试全绿
+    （ime [u8;5] 编码 roundtrip 等）、fmt/clippy 零告警。
+  - **遗留**（转入后续提交）：工具栏中英按钮随 caps 显 A 态（30 号内容随退回
+    丢失，`ImeState.caps` 已过线待补渲染）；游戏进程 RawKey 零流量待实测。

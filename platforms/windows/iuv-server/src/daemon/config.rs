@@ -299,6 +299,7 @@ mod tests {
                 width: iuv_core::ImeWidth::Half,
                 script: iuv_core::ImeScript::Simplified,
                 punct: iuv_core::ImePunct::English,
+                caps: false,
             },
             passthrough_apps: vec!["notepad.exe".to_string()],
             candidate_owner_apps: vec!["wow.exe".to_string()],

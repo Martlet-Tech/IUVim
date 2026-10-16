@@ -278,6 +278,17 @@ pub enum C2S {
     /// **必须追加在枚举末尾**：postcard 按变体序号编码，中间插入会使全部后续序号
     /// 错位，旧客户端 DLL（进程级常驻，部署后仍存活）连新 server 即解码失败掉线。
     InstanceDeactivated,
+    /// 原始按键上报（57 号，徽标 server 决策）：到达 TSF 键盘 sink 但**未产生
+    /// [`C2S::Key`] 的键**——Pass 放行的修饰键/方向键/功能键/CapsLock 等。
+    /// 会话键不重复发（已有 `Key` 消息覆盖）。TSF 从此不持有任何徽标逻辑：
+    /// 「任意按键 = 隐藏徽标」由服务端从 `Key`/`RawKey` 两路自行判定；wire 顺序
+    /// 单连接全序保证「CapsLock 的 RawKey 先到（隐旧）→ ImeState 后到（弹新）」
+    /// 天然正确，无需客户端特判。fire-and-forget（服务端回 Ok）。
+    /// **必须追加在枚举末尾**（同上 postcard 序号纪律）。
+    RawKey {
+        vk: u16,
+        mods: Mods,
+    },
 }
 
 // —— S2C：服务端 → 客户端 ——

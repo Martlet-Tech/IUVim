@@ -55,7 +55,8 @@ pub enum ImePunct {
     English,
 }
 
-/// 实例四态（每 TSF 实例，32-status-toolbar.md §5.1）。
+/// 实例四态（每 TSF 实例，32-status-toolbar.md §5.1）+ CapsLock 位（57 号：
+/// 徽标 server 渲染需要 A 态真值——状态全量过线，TSF 不自持任何展示决策）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ImeState {
@@ -67,12 +68,15 @@ pub struct ImeState {
     pub script: ImeScript,
     /// 中文标点/英文标点
     pub punct: ImePunct,
+    /// CapsLock 开（57 号：server 徽标显 A 态用；不是中英模式，锁定语义在 TSF 侧）
+    pub caps: bool,
 }
 
-/// 四态唯一线编码（管道传输；字段序 mode/width/script/punct，见 iuv-win codec.rs）：
-/// `mode` 0=中文 1=英文；`width` 0=半角 1=全角；`script` 0=简体 1=繁体；`punct` 0=中文标点 1=英文标点。
-/// 全仓唯一映射点——加第五态只改这里 + codec 一个函数。
-impl From<ImeState> for [u8; 4] {
+/// 五态唯一线编码（管道传输；字段序 mode/width/script/punct/caps，见 iuv-win codec.rs）：
+/// `mode` 0=中文 1=英文；`width` 0=半角 1=全角；`script` 0=简体 1=繁体；`punct` 0=中文标点 1=英文标点；
+/// `caps` 0=关（默认）1=开。
+/// 全仓唯一映射点——加第六态只改这里 + codec 一个函数。
+impl From<ImeState> for [u8; 5] {
     fn from(s: ImeState) -> Self {
         [
             match s.mode {
@@ -91,15 +95,16 @@ impl From<ImeState> for [u8; 4] {
                 ImePunct::Chinese => 0,
                 ImePunct::English => 1,
             },
+            u8::from(s.caps),
         ]
     }
 }
 
-/// 线字节 → 四态。任一字节非 0/1 → `Err`（解码侧拒绝非法值，不静默收垃圾）。
-impl TryFrom<[u8; 4]> for ImeState {
+/// 线字节 → 五态。任一字节非 0/1 → `Err`（解码侧拒绝非法值，不静默收垃圾）。
+impl TryFrom<[u8; 5]> for ImeState {
     type Error = ();
 
-    fn try_from(b: [u8; 4]) -> Result<Self, ()> {
+    fn try_from(b: [u8; 5]) -> Result<Self, ()> {
         fn pick<T>(v: u8, zero: T, one: T) -> Result<T, ()> {
             match v {
                 0 => Ok(zero),
@@ -112,6 +117,7 @@ impl TryFrom<[u8; 4]> for ImeState {
             width: pick(b[1], ImeWidth::Half, ImeWidth::Full)?,
             script: pick(b[2], ImeScript::Simplified, ImeScript::Traditional)?,
             punct: pick(b[3], ImePunct::Chinese, ImePunct::English)?,
+            caps: pick(b[4], false, true)?,
         })
     }
 }
@@ -149,33 +155,36 @@ mod tests {
                 width: ImeWidth::Full,
                 script: ImeScript::Traditional,
                 punct: ImePunct::English,
+                caps: true,
             },
             ImeState {
                 mode: ImeMode::English,
                 ..ImeState::default()
             },
         ] {
-            assert_eq!(ImeState::try_from(<[u8; 4]>::from(state)), Ok(state));
+            assert_eq!(ImeState::try_from(<[u8; 5]>::from(state)), Ok(state));
         }
     }
 
     #[test]
     fn wire_encoding_order() {
-        // 字段序 mode/width/script/punct：全英/全/繁/英标 = 全 1。
-        let all_one = <[u8; 4]>::from(ImeState {
+        // 字段序 mode/width/script/punct/caps：全英/全/繁/英标/开 caps = 全 1。
+        let all_one = <[u8; 5]>::from(ImeState {
             mode: ImeMode::English,
             width: ImeWidth::Full,
             script: ImeScript::Traditional,
             punct: ImePunct::English,
+            caps: true,
         });
-        assert_eq!(all_one, [1, 1, 1, 1]);
-        assert_eq!(<[u8; 4]>::from(ImeState::default()), [0, 0, 0, 0]);
+        assert_eq!(all_one, [1, 1, 1, 1, 1]);
+        assert_eq!(<[u8; 5]>::from(ImeState::default()), [0, 0, 0, 0, 0]);
     }
 
     #[test]
     fn wire_rejects_invalid_byte() {
-        assert!(ImeState::try_from([0, 0, 0, 2]).is_err());
-        assert!(ImeState::try_from([7, 0, 0, 0]).is_err());
-        assert!(ImeState::try_from([0, 0, 0xFF, 0]).is_err());
+        assert!(ImeState::try_from([0, 0, 0, 2, 0]).is_err());
+        assert!(ImeState::try_from([7, 0, 0, 0, 0]).is_err());
+        assert!(ImeState::try_from([0, 0, 0xFF, 0, 0]).is_err());
+        assert!(ImeState::try_from([0, 0, 0, 0, 2]).is_err());
     }
 }

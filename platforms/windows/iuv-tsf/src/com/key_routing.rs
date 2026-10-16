@@ -140,8 +140,16 @@ impl TextService {
         let vk = wparam.0 as u16;
         let action = self.route_key(vk, false); // Test 纯判定：不提交引号配对翻转（H3）
         if matches!(action, KeyAction::Pass) {
+            // 57 号 RawKey 上报：Pass 放行的键（修饰键/方向键/功能键/CapsLock 等）
+            // 如实上报，徽标隐匿时机由 server 决策（TSF 不持有任何徽标逻辑）。
+            // **必须在 poll_caps 之前发**——wire 全序保证 CapsLock 场景
+            // 「RawKey 先到（server 隐旧徽标）→ ImeState 后到（server 弹新 A）」。
+            // 直通名单进程跳过：完全透明 + 逐键 IPC 不可接受（游戏）。
+            self.report_raw_key(vk);
+            self.poll_caps();
             return false;
         }
+        self.poll_caps();
         if let Some(key) = Self::action_key(&action) {
             let Some(remote) = crate::com::remote_host::remote() else {
                 return false;
@@ -153,6 +161,43 @@ impl TextService {
             }
         }
         true
+    }
+
+    /// 57 号 RawKey 上报：非会话键的原始 VK 过线。直通名单命中跳过（该进程
+    /// 输入法完全透明，逐键 IPC 纯开销）；server 未连接静默丢弃。
+    fn report_raw_key(&self, vk: u16) {
+        let Some(config) = crate::com::remote_host::backend_config() else {
+            return;
+        };
+        if !config.passthrough_apps.is_empty()
+            && is_passthrough_app(&log::module_name(), &config.passthrough_apps)
+        {
+            return;
+        }
+        if let Some(remote) = crate::com::remote_host::remote() {
+            let mods =
+                crate::com::remote_host::wire_mods(shift_pressed(), ctrl_pressed(), alt_pressed());
+            remote.raw_key(vk, mods);
+        }
+    }
+
+    /// CapsLock 变化检测（57 号，30 号 poll_caps 的最小版）：按键入口比对缓存，
+    /// 变化才更新 `runtime.caps` → sync_state（内部 last_state 去重兜底）。
+    /// server 据此弹 A 态徽标并推导中英——TSF 不持有任何展示决策。
+    pub(crate) fn poll_caps(&self) {
+        let now = capslock_on();
+        if self.caps_cache.replace(now) == now {
+            return;
+        }
+        {
+            let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+            runtime.caps = now;
+        }
+        log_line(&format!(
+            "[caps] CapsLock {}：同步四态",
+            if now { "开" } else { "关" }
+        ));
+        self.after_runtime_change();
     }
 
     /// KeyAction 中的会话键（CommitText/Pass 无引擎交互）。

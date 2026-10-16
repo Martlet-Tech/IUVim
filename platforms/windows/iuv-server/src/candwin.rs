@@ -115,17 +115,18 @@ pub(crate) struct CandwinHandle {
 /// 唤醒事件（真机实锤 2026-09-27：UI 线程纯 `recv()` 阻塞 = 无消息泵 →
 /// WM_SETCURSOR 等 SendMessage 无响应 → 悬停漏斗；hover/圆角穿透全死）。
 /// 现在 sender 发命令后 SetEvent 唤醒，UI 线程醒后排空命令 + 泵窗口消息。
-struct WakeEvent(HANDLE);
+/// 57 号起 badge 模块复用（pub(crate)：同进程兄弟 UI 线程共享同款唤醒模式）。
+pub(crate) struct WakeEvent(pub(crate) HANDLE);
 unsafe impl Send for WakeEvent {}
 unsafe impl Sync for WakeEvent {}
 
 impl WakeEvent {
-    fn new() -> WakeEvent {
+    pub(crate) fn new() -> WakeEvent {
         // SAFETY: 自动重置事件；句柄由 Arc 引用计数管理（最后一个 drop 关闭）。
         let h = unsafe { CreateEventW(None, false, false, None) }.unwrap_or_default();
         WakeEvent(h)
     }
-    fn set(&self) {
+    pub(crate) fn set(&self) {
         // SAFETY: 事件句柄有效（Arc 存活保证）。
         let _ = unsafe { SetEvent(self.0) };
     }

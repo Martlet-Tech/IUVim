@@ -30,9 +30,11 @@ pub use stream::StreamIdAlloc;
 /// 2→3：新增 `C2S::PendingTextQuery` / `S2C::PendingText` /（消费）`Push::Shutdown`
 /// ——混合期旧端解不出新变体会整帧拒收，按 VersionMismatch 拒绝（③-2 同款纪律，
 /// 部署后旧 DLL 进程重启/注销翻页即恢复）。
-pub const PROTO_MIN: u16 = 3;
+/// 3→4：新增 `C2S::RawKey`（57 号徽标 server 决策）+ `ImeState` 补 `caps` 字段
+/// ——struct 字段追加同为破坏性（postcard 定长序列），旧端解新端必错位。
+pub const PROTO_MIN: u16 = 4;
 /// 协议版本上限。区间 [PROTO_MIN, PROTO_MAX] 允许前后兼容窗口。
-pub const PROTO_MAX: u16 = 3;
+pub const PROTO_MAX: u16 = 4;
 
 /// 版本协商：取双方支持区间的**最大共同值**（= 双方上限的较小者）；无交集 →
 /// [`msg::ProtoError::VersionMismatch`]。

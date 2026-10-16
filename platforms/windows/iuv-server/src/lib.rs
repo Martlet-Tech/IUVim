@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use iuv_win::logger::log_line;
 
-use iuv_core::{Effect, Engine, ImeState, Key};
+use iuv_core::{Effect, Engine, ImeMode, ImeState, Key};
 use iuv_proto::{
     Candidate, Caps, ClientConfig, ClientInfo, KeyOutcome, KeyVerdict, ProtoError, Push,
     ResumeToken, C2S, S2C,
@@ -31,10 +31,12 @@ use iuv_proto::{
 use iuv_win::transport::{ConnHandler, ConnSender, Reply, Session};
 use iuv_win::ToolbarSignal;
 
+pub mod badge;
 pub mod candwin;
 pub mod config_watch;
 pub mod daemon;
 
+use crate::badge::{BadgeCmd, BadgeHandle};
 use crate::candwin::{CandwinCmd, CandwinHandle};
 
 /// 重绑现场保留期：断连后客户端在此时间内带令牌重连可回绑（49 §4.5.4 方案 C）。
@@ -182,6 +184,11 @@ impl ConnHandler for EngineService {
                 },
                 sender.clone(),
             ),
+            badge: BadgeHandle::spawn(match theme_choice {
+                iuv_core::ThemeChoice::Light => iuv_ui::theme_light(),
+                iuv_core::ThemeChoice::Dark => iuv_ui::theme_dark(),
+            }),
+            badge_prev_state: None,
             caret: None,
             candwin_visible: false,
             awaiting_caret: None,
@@ -231,6 +238,10 @@ pub struct EngineSession {
     shm: Arc<Mutex<Option<iuv_win::ShmWriter>>>,
     /// 会话候选窗（服务端自渲染，49 §4.5.3；抑制命中时静默）。
     candwin: CandwinHandle,
+    /// 状态徽标（57 号，server 渲染）：弹/隐决策在本结构，窗体执行在 [`badge`]。
+    badge: BadgeHandle,
+    /// 上一次四态快照（徽标弹出判定：变化才弹；None = 连接后首报 = 初始化不弹）。
+    badge_prev_state: Option<ImeState>,
     /// 客户端最近上报的光标锚点（屏幕物理坐标；None = 未上报，不渲染）。
     caret: Option<iuv_ui::CaretRect>,
     candwin_visible: bool,
@@ -286,6 +297,9 @@ impl Session for EngineSession {
         }
         match req {
             C2S::Key { key, full, .. } => {
+                // 徽标隐藏（57 号）：任意按键 = 用户在输入，光标处提示立即让位。
+                // 会话键经本消息、Pass 键经 RawKey——两路都汇到这里语义闭环。
+                self.badge.send(BadgeCmd::Hide);
                 let t0 = std::time::Instant::now();
                 let effect = self.on_key(key);
                 let t_engine = t0.elapsed();
@@ -326,6 +340,7 @@ impl Session for EngineSession {
             C2S::CandwinHide => {
                 // 焦点切换不打断会话（2026-08-21 原则）的远端对应：客户端本地窗
                 // 隐藏时同步隐藏服务端窗口，会话保留，回焦后下键经 sync_candwin 重显。
+                self.badge.send(BadgeCmd::Hide);
                 self.hide_candwin();
                 reply.respond(S2C::Ok);
             }
@@ -340,10 +355,40 @@ impl Session for EngineSession {
                         state: core,
                     });
                 }
+                // 徽标弹出决策（57 号）：态真变化 + 会话外 + 有锚点才弹。
+                // - 首报（prev=None）= 连接初始化同步，不弹（否则每个程序获得
+                //   焦点都弹一次）；
+                // - 客户端 sync_state 自带 last_state 去重，到达即变化；
+                // - 工具栏/语言栏 SetMode 经客户端 apply 后回传变化值，同路径弹；
+                // - 会话内不弹（30 号决议承继：打字中弹窗很吵）。
+                let changed = self
+                    .badge_prev_state
+                    .replace(core)
+                    .is_some_and(|p| p != core);
+                if changed && self.session.is_none() {
+                    if let Some(caret) = self.caret {
+                        let glyph = if core.caps {
+                            "A"
+                        } else if core.mode == ImeMode::English {
+                            "英"
+                        } else {
+                            "中"
+                        };
+                        self.badge.send(BadgeCmd::Show { glyph, caret });
+                    }
+                }
                 // 客户端 request() 同步等应答（真机实锤 2026-09-27：不回应答 =
                 // sync_state 每次白等满 300ms 截止 + 误标 degraded，四态切换卡
                 // 300ms）。**每个 C2S 请求必须有应答**——fire-and-forget 变体
                 // 一律回 Ok，杜绝整类「等不来的应答」。
+                reply.respond(S2C::Ok);
+            }
+            C2S::RawKey { vk: _, mods: _ } => {
+                // 徽标隐藏（57 号）：Pass 键（修饰键/方向键/功能键/CapsLock 等）
+                // 与会话键同权——用户在敲键盘，光标处提示让位。CapsLock 场景
+                // wire 全序天然正确：本消息先到（隐旧徽标），随后的 ImeState
+                // （caps 变化）后到（弹新徽标）。
+                self.badge.send(BadgeCmd::Hide);
                 reply.respond(S2C::Ok);
             }
             C2S::Ping { nonce } => reply.respond(S2C::Pong { nonce }),
@@ -396,6 +441,10 @@ impl Session for EngineSession {
             }
             C2S::FocusChanged { focused } => {
                 // ②toolbar 信号迁入：焦点变化 → ToolbarSignal（pid/tid = 握手报备）。
+                // 失焦时徽标同步消失（57 号：切程序不留悬空提示）。
+                if !focused {
+                    self.badge.send(BadgeCmd::Hide);
+                }
                 if let Some((_, tb)) = &self.ui {
                     let sig = if focused {
                         let st = *self.runtime.lock().unwrap_or_else(|e| e.into_inner());
@@ -418,6 +467,7 @@ impl Session for EngineSession {
                 // 实例停用（TSF Deactivate / 实例 Drop）= iuv 被整体切走：强于失焦，
                 // 服务端解绑工具栏不受设置窗失焦粘性抑制（粘性只服务「焦点移走但
                 // iuv 仍在用」的热键场景；切到别的输入法时该前提不成立）。
+                self.badge.send(BadgeCmd::Hide);
                 if let Some((_, tb)) = &self.ui {
                     tb.handle_signal(&ToolbarSignal::Deactivated {
                         pid: self.client_pid,

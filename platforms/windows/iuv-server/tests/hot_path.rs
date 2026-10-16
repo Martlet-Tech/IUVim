@@ -356,6 +356,7 @@ fn every_c2s_request_gets_a_reply() {
             width: iuv_proto::ImeWidth::Half,
             script: iuv_proto::ImeScript::Simplified,
             punct: iuv_proto::ImePunct::Chinese,
+            caps: false,
         }),
         true,
         Duration::from_millis(500),

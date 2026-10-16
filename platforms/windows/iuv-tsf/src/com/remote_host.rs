@@ -436,6 +436,14 @@ impl RemoteHandle {
         });
     }
 
+    /// 原始按键上报（57 号，徽标 server 决策）：Pass 放行的键（修饰键/方向键/
+    /// 功能键/CapsLock 等）。会话键不重复发（走 key_test/key_down 的 Key 消息）。
+    /// fire-and-forget（服务端回 Ok）——徽标隐匿时机由服务端从 Key/RawKey
+    /// 两路自行判定，TSF 不持有任何徽标逻辑。
+    pub(crate) fn raw_key(&self, vk: u16, mods: iuv_proto::Mods) {
+        let _ = self.request(C2S::RawKey { vk, mods });
+    }
+
     /// flush_session 原文上屏：向服务端查 `Session::pending_text()`（picked + raw
     /// 真相源，含用户强制撇号）。None/空 = 无待上屏内容，调用方走 cancel 分支。
     /// 低频路径（Ctrl+Space 关闭输入法/Deactivate），一次往返可接受。

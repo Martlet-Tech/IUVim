@@ -108,6 +108,7 @@ fn c2s_samples() -> Vec<C2S> {
                 width: ImeWidth::Full,
                 script: ImeScript::Traditional,
                 punct: ImePunct::English,
+                caps: true,
             },
         }),
         C2S::CtlResult(CtlResult::Err {

@@ -23,7 +23,7 @@ pub use layout::{
     candidate_label, hit_test, layout, position_in_area, update_position, Area, Rect,
 };
 pub use menu::{menu_hit_test, MenuEntry};
-pub use render::{render_candidate, render_menu, render_tooltip, Surface};
+pub use render::{render_badge, render_candidate, render_menu, render_tooltip, Surface};
 pub use snapshot::{effect_to_snapshot, CaretRect, UiSnapshot};
 pub use text::TextRenderer;
 pub use theme::{theme_dark, theme_light, Theme};

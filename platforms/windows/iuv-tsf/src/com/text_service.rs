@@ -120,6 +120,10 @@ pub(crate) struct TextService {
     /// P4 服务端渲染：已上报给 iuv-server 的光标锚点（变化才发 CaretMoved；
     /// 打字期锚点恒定 → 绝大多数键零上报）。
     pub(crate) caret_reported: Cell<CaretRect>,
+    /// CapsLock 缓存（57 号）：按键入口每键比对 `capslock_on()`，变化才更新
+    /// `runtime.caps` 并 sync_state（server 据此弹 A 态徽标；TSF 不持有任何
+    /// 展示决策）。初值 false，首个按键入口与真实态比对校正。
+    pub(crate) caps_cache: Cell<bool>,
 }
 
 impl TextService {
@@ -152,6 +156,7 @@ impl TextService {
             runtime: Arc::new(Mutex::new(Config::load().initial_state)),
             ctl: RefCell::new(None),
             caret_reported: Cell::new(CaretRect::default()),
+            caps_cache: Cell::new(false),
         }
     }
 
@@ -621,22 +626,30 @@ impl TextService_Impl {
         }
     }
 
-    /// 布局变化处理：仅组词中响应（槽空/异 context 秒退）；只读会话重查**锚点**
-    /// （composition 起点）→ 变化才上报 iuv-server（P4 服务端渲染：本地窗不跟随，
-    /// 服务端窗口随报移动；打字期锚点恒定 → 绝大多数事件零上报）。
+    /// 布局变化处理：组词中重查**锚点**（composition 起点）；槽空时改做**插入点
+    /// 现量**（57 号 caret 新鲜化——commit 上屏 = 文本插入 = 布局事件，组合起点
+    /// 已陈旧，现量让 server 徽标/候选窗锚点紧跟真实光标）→ 变化才上报
+    /// iuv-server（P4 服务端渲染：本地窗不跟随，服务端窗口随报移动）。
     fn follow_layout(&self, pic: &ITfContext) {
         let old = self.caret.get();
         let rect = {
             let slot = self.composition.borrow();
-            let Some(comp) = slot.as_ref() else {
-                return;
-            };
-            // 异 context（如 Excel 编辑栏↔单元格切换后的旧会话）不跟；
-            // 外部终止无需判 terminated：内部 comp 槽已被清空，query_caret 兜底 None。
-            if !std::ptr::eq(comp.context().as_raw(), pic.as_raw()) {
-                return;
+            match slot.as_ref() {
+                Some(comp) => {
+                    // 异 context（如 Excel 编辑栏↔单元格切换后的旧会话）不跟；
+                    // 外部终止无需判 terminated：内部 comp 槽已被清空，query_caret 兜底 None。
+                    if !std::ptr::eq(comp.context().as_raw(), pic.as_raw()) {
+                        return;
+                    }
+                    comp.query_caret()
+                }
+                None => {
+                    // 57 号 caret 新鲜化：无组词期的布局事件（commit/滚动/窗口变化）
+                    // 现量插入点。事件低频（打字期走组词路径），一次只读编辑会话
+                    // 开销可忽略；失败（文档锁等）→ None，下方按"保持原位"处理。
+                    crate::composition::query_insertion_caret(pic, self.client_id.get())
+                }
             }
-            comp.query_caret()
         };
         // 只在**锚点真的平移**时记：打字期锚点恒定（宿主仍每键发 layout 事件），
         // 若逐次记会淹没日志。
