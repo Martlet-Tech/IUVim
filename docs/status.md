@@ -1509,7 +1509,7 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     `cargo test --workspace` 全绿（新增 unblock 语义 / has_base_entry / valid_code /
     parse_import 测试）。
 
-- [x] **57 号光标处状态徽标 server 渲染重做（30 号路线废止；真机验收通过 2026-10-16）**：
+- [x] **57 号光标处状态徽标 server 渲染重做（30 号路线废止；真机验收通过 2026-10-16，2026-10-17 结案归档 `docs/closed/57-badge-server-render.md`）**：
   分支 `feat/57-badge-server-render`（自 f81e9b0 重立，cherry-pick 无关修复
   fce3978/891a366）。**动机**：小狼毫截图证实光标处独立徽标交互；30 号 TSF 自绘
   与薄客户端方向相悖且暴露首翻吞徽标/位置滞后两缺陷——按「徽标持有者 = server、
@@ -1530,7 +1530,15 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     hide→show）、Shift 连切中↔英同正确、1200ms 淡出自隐、commit 后锚点
     573→613 前进 40px 贴最新光标、会话内不弹、失焦消失；workspace 测试全绿
     （ime [u8;5] 编码 roundtrip 等）、fmt/clippy 零告警。
-  - **遗留跟进（同日后续提交）**：工具栏三态已补——`lang-caps.png`（288×288
-    品牌蓝 A，System.Drawing 生成）+ `ToolbarIcons.lang_caps` + toolbar_icon
-    caps 分支 + 悬停提示「中英（大写锁定）」；已部署待下轮日常打字确认。
-    游戏进程 RawKey 零流量待实测。
+  - **后续提交（均已真机验收）**：
+    - `54aa4ed` **中/英/A 三态统一**：收敛为单一决策 `iuv_ui::ModeGlyph`（caps→A /
+      英文→英 / 中文→中），工具栏图标、光标徽标字形、语言栏图标 + GetText、工具栏
+      tooltip/日志 label 全部共用（全仓再无第二份分支）；字形源统一（`lang-en.png`→「英」、
+      `lang-caps.png` 的 A 与 lang-cn 墨迹等高居中，ICO 由 `gen-tsf-icons.py` 从同套 PNG
+      派生）。语言栏三态一并落地（`TextService.caps_mode` 共享位 + `res/caps.ico` ID 103）。
+    - `8a3c65f` **VSCode/Chromium caps 修复**：某些宿主对 CapsLock 只调 `OnKeyDown`、
+      不调 `OnTestKeyDown`，而 caps 轮询 + RawKey 上报原只挂 Test 路径 → VSCode 里 caps
+      永不同步（三处停在 中/英）。改挂 **Down 路径**（先 RawKey 后 poll_caps 保 wire 全序）。
+      日志实锤：`Code.exe` 的 `[caps]` 0→27 条且正确交替、server `[badge] show glyph=A`
+      时间一一对齐；Notepad 复验无回归。
+    - 遗留（非阻塞）：游戏进程 RawKey 零流量未实测。

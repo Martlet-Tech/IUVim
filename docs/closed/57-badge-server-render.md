@@ -1,6 +1,8 @@
 # 57 号：光标处状态徽标——server 渲染重构（30 号路线废止重做）
 
-状态：**施工完成，待真机验收**（2026-10-16；cargo test --workspace 全过、fmt/clippy 零告警）
+状态：**已结（2026-10-17 归档 docs/closed）**。首轮 server 侧徽标重做于 2026-10-16 真机验收
+通过；随后两个后续提交（`54aa4ed` / `8a3c65f`）把中/英/A 三态**统一到单一决策 `ModeGlyph`**
+并补齐语言栏三态、修掉 VSCode 宿主 caps 不生效——均真机验证。
 前身：30 号（TSF 客户端自绘徽标）——已随分支退回至 f81e9b0 废止；本任务按
 「徽标持有者 = server」重做，对齐 49 号薄客户端架构（TSF 只报信息）与小狼毫
 同款交互（光标处独立方框徽标，弹出后自动淡出）。
@@ -133,22 +135,39 @@ RawKey + caps 同步 + follow_layout 扩展，约 60 行。
   follow_layout 新鲜化生效）
 - [x] 打字中 CapsLock/Shift：会话内不弹
 - [x] 失焦/切程序：徽标消失（FocusChanged(false)/InstanceDeactivated 隐藏）
-- [ ] 游戏进程（passthrough_apps）：无 RawKey 流量（日志验证）——待游戏实测
+- [ ] 游戏进程（passthrough_apps）：无 RawKey 流量（日志验证）——未实测（非阻塞：RawKey
+  仍受 passthrough 名单守卫，且已挪到 Down 路径）
 - [x] cargo test --workspace 全过；fmt/clippy 零告警
 - [x] 热部署真机复测（2026-10-16 16:21 部署，16:25-16:26 双端日志对齐验证）
 
-### 8.1 验收遗留（57 号后续提交，2026-10-16）
+### 8.1 后续提交（中/英/A 三态统一 + VSCode caps 修复，均已真机验收）
 
-- **工具栏三态**：中英按钮随 caps 显 A 形（`lang-caps.png` 288×288 品牌蓝 A，
-  与 lang-cn/en 同族；`ToolbarIcons.lang_caps` + `toolbar_icon` caps 分支 +
-  悬停提示「中英（大写锁定）」；点击仍发 SetMode，TSF 侧 CapsLock 锁拒绝
-  并回现态）——已施工待真机复测。
+- **三态统一到单一决策（`54aa4ed`）**：工具栏中英按钮原素材是字母 A、caps 素材字号偏小，
+  与光标徽标（caps→A / 英文→英 / 中文→中）不一致。收敛为 **`iuv_ui::ModeGlyph`**
+  （`of` / `of_flags` / `text` / `tooltip`，全仓唯一决策点）——工具栏图标、光标徽标字形、
+  语言栏图标+GetText、工具栏 tooltip/日志 label 全部共用，杜绝各写一套。
+  glyph 字形源统一：`lang-en.png` 改「英」、`lang-caps.png` 的 A 与 lang-cn 墨迹等高居中，
+  ICO 由 `gen-tsf-icons.py` 从同一套 PNG 派生。
+- **语言栏三态**：`TextService` 增共享 `caps_mode`（poll_caps 更新），`langbar` 的
+  `GetIcon/GetText` 走 `ModeGlyph`（新资源 `res/caps.ico`，ID 103），caps 变化即
+  `refresh_lang_bar`。
+- **VSCode/Chromium caps 不生效修复（`8a3c65f`）**：某些宿主对 CapsLock 这类键**只调
+  `ITfKeyEventSink::OnKeyDown`、不调 `OnTestKeyDown`**，而 caps 轮询与 RawKey 上报原只挂
+  Test 路径 → VSCode 里 caps 永不同步（三处停在 中/英、徽标"按键即隐"对 Pass 键失效）。
+  改为 Test 只判定、两者统一挂 **Down 路径**（先 RawKey 后 poll_caps，保住 wire 全序）。
+  日志实锤：`Code.exe` 的 `[caps]` 行 0→27 条且开关正确交替，server `[badge] show glyph=A`
+  与 `[caps]` 时间一一对齐；Notepad 复验正常。
 
 ## 9. 交付物
 
 - crates/iuv-data/src/ime.rs（caps 字段 + [u8;5] 编码）
 - crates/iuv-proto/src/{msg.rs,lib.rs}（RawKey + 版本 4）
-- crates/iuv-ui/src/render.rs（render_badge）
-- platforms/windows/iuv-server/src/{badge.rs（新）,lib.rs（决策接线）}
-- platforms/windows/iuv-tsf/src/com/{key_routing.rs,text_service.rs,remote_host.rs}
+- crates/iuv-ui/src/render.rs（render_badge + **ModeGlyph 单一决策**）
+- crates/iuv-ui/src/toolbar.rs（TB_MODE 图标映射走 ModeGlyph）
+- crates/iuv-server/src/{badge.rs（新）,lib.rs（决策接线）}；daemon/toolbar/{mod.rs,window.rs}
+  （tooltip/日志 label 走 ModeGlyph）
+- crates/iuv-tsf/src/com/{key_routing.rs,text_service.rs,remote_host.rs}；langbar.rs + build.rs
+  （语言栏三态，资源 ID 103）
+- assets/toolbar-icons/{lang-en,lang-caps}.png + platforms/windows/iuv-tsf/res/{en,caps}.ico
+  + scripts/gen-tsf-icons.py（字形源统一）
 - docs/status.md 台账条目
