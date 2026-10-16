@@ -140,16 +140,11 @@ impl TextService {
         let vk = wparam.0 as u16;
         let action = self.route_key(vk, false); // Test 纯判定：不提交引号配对翻转（H3）
         if matches!(action, KeyAction::Pass) {
-            // 57 号 RawKey 上报：Pass 放行的键（修饰键/方向键/功能键/CapsLock 等）
-            // 如实上报，徽标隐匿时机由 server 决策（TSF 不持有任何徽标逻辑）。
-            // **必须在 poll_caps 之前发**——wire 全序保证 CapsLock 场景
-            // 「RawKey 先到（server 隐旧徽标）→ ImeState 后到（server 弹新 A）」。
-            // 直通名单进程跳过：完全透明 + 逐键 IPC 不可接受（游戏）。
-            self.report_raw_key(vk);
-            self.poll_caps();
+            // 57 号 RawKey 上报 + caps 轮询已统一挪到 Down 路径（handle_key_down）——
+            // 某些宿主（VSCode/Chromium）对 CapsLock 这类键只调 OnKeyDown、不调
+            // OnTestKeyDown，挂这里会漏。Test 阶段只做判定。
             return false;
         }
-        self.poll_caps();
         if let Some(key) = Self::action_key(&action) {
             let Some(remote) = crate::com::remote_host::remote() else {
                 return false;
@@ -224,6 +219,15 @@ impl TextService {
     ) -> bool {
         let vk = wparam.0 as u16;
         let action = self.route_key(vk, true); // Down 阶段：提交引号配对翻转（H3）
+                                               // 57 号 RawKey 上报 + caps 轮询统一放 **Down 路径**（不再挂 Test）：某些宿主
+                                               // （VSCode/Chromium）对 CapsLock 这类键只调 OnKeyDown、不调 OnTestKeyDown，
+                                               // 挂 Test 会漏 → caps 永不同步（三态出不来）、徽标"按键即隐"失效。顺序仍是
+                                               // wire 全序所需：RawKey 先（server 隐旧徽标）→ ImeState 后（server 弹新）。
+                                               // poll_caps 对非 CapsLock 键 cache 早返回，零副作用。
+        if matches!(action, KeyAction::Pass) {
+            self.report_raw_key(vk);
+        }
+        self.poll_caps();
         let handled = match action {
             KeyAction::Pass => false,
             KeyAction::CommitText(text) => {
