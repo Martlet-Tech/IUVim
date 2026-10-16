@@ -151,12 +151,17 @@ RawKey + caps 同步 + follow_layout 扩展，约 60 行。
 - **语言栏三态**：`TextService` 增共享 `caps_mode`（poll_caps 更新），`langbar` 的
   `GetIcon/GetText` 走 `ModeGlyph`（新资源 `res/caps.ico`，ID 103），caps 变化即
   `refresh_lang_bar`。
-- **VSCode/Chromium caps 不生效修复（`8a3c65f`）**：某些宿主对 CapsLock 这类键**只调
-  `ITfKeyEventSink::OnKeyDown`、不调 `OnTestKeyDown`**，而 caps 轮询与 RawKey 上报原只挂
-  Test 路径 → VSCode 里 caps 永不同步（三处停在 中/英、徽标"按键即隐"对 Pass 键失效）。
-  改为 Test 只判定、两者统一挂 **Down 路径**（先 RawKey 后 poll_caps，保住 wire 全序）。
-  日志实锤：`Code.exe` 的 `[caps]` 行 0→27 条且开关正确交替，server `[badge] show glyph=A`
-  与 `[caps]` 时间一一对齐；Notepad 复验正常。
+- **VSCode/Chromium caps 不生效修复（`8a3c65f` → `fc5178b` 修正）**：某些宿主对 CapsLock
+  这类键**只调 `ITfKeyEventSink::OnKeyDown`、不调 `OnTestKeyDown`**，而 caps 轮询与 RawKey
+  上报原只挂 Test 路径 → VSCode 里 caps 永不同步（三处停在 中/英、徽标"按键即隐"对 Pass
+  键失效）。`8a3c65f` 先把两者整体「挪」到 Down 路径——判断有误：TSF 契约里
+  **`OnTestKeyDown` 返回 false（Pass 键）后系统不再调 `OnKeyDown`**，于是常规宿主（记事本）
+  的 CapsLock 只走 Test、Down 不执行 → 记事本反被漏掉（三态失效）。
+  `fc5178b` 改为 **Test 与 Down 两条路径都挂**：记事本走 Test、VSCode 走 Down，各覆盖一边；
+  Pass 键在常规宿主里 Test 返回 false 后 Down 不执行 → RawKey/ImeState 仍只发生一次、wire
+  全序（RawKey 先隐、ImeState 后弹）不变；`poll_caps` 有 `caps_cache` 去重、多挂一路零副作用。
+  日志实锤：记事本与 VSCode 的 `[caps]` 均正确交替；server `[badge] show glyph=英↔A` 与两侧
+  时间一一对齐。
 
 ## 9. 交付物
 

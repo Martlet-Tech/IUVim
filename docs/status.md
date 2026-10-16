@@ -1536,9 +1536,12 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
       tooltip/日志 label 全部共用（全仓再无第二份分支）；字形源统一（`lang-en.png`→「英」、
       `lang-caps.png` 的 A 与 lang-cn 墨迹等高居中，ICO 由 `gen-tsf-icons.py` 从同套 PNG
       派生）。语言栏三态一并落地（`TextService.caps_mode` 共享位 + `res/caps.ico` ID 103）。
-    - `8a3c65f` **VSCode/Chromium caps 修复**：某些宿主对 CapsLock 只调 `OnKeyDown`、
-      不调 `OnTestKeyDown`，而 caps 轮询 + RawKey 上报原只挂 Test 路径 → VSCode 里 caps
-      永不同步（三处停在 中/英）。改挂 **Down 路径**（先 RawKey 后 poll_caps 保 wire 全序）。
-      日志实锤：`Code.exe` 的 `[caps]` 0→27 条且正确交替、server `[badge] show glyph=A`
-      时间一一对齐；Notepad 复验无回归。
+    - `8a3c65f` → `fc5178b` **VSCode/Chromium caps 修复（含单路径偏差修正）**：某些宿主对
+      CapsLock 只调 `OnKeyDown`、不调 `OnTestKeyDown`，caps 轮询 + RawKey 上报原只挂 Test
+      路径 → VSCode 里 caps 永不同步。`8a3c65f` 先整体挪到 Down；但 TSF 契约里
+      `OnTestKeyDown` 返回 false（Pass 键）后**系统不再调 `OnKeyDown`**，记事本（只走 Test）
+      反被漏掉。`fc5178b` 改为 **Test 与 Down 双挂**：记事本走 Test、VSCode 走 Down，各覆盖
+      一边；Pass 键 Test 返回 false 后 Down 不执行 → RawKey/ImeState 仍只发一次、wire 全序
+      不变；poll_caps 有 caps_cache 去重。日志：两侧 `[caps]` 均正确交替、server
+      `[badge] show glyph=英↔A` 一一对齐。
     - 遗留（非阻塞）：游戏进程 RawKey 零流量未实测。
