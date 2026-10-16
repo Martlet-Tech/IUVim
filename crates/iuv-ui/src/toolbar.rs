@@ -6,12 +6,12 @@
 //! `render_composite` / `CompositeSpec` / `PetSpec` / `PET_OVERHANG` 等）随自有桌宠
 //! 一并移除——本模块只负责纯工具栏渲染。
 
-use iuv_core::{ImeMode, ImePunct, ImeScript, ImeState, ImeWidth};
+use iuv_core::{ImePunct, ImeScript, ImeState, ImeWidth};
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 
 use crate::layout::Rect as LayoutRect;
 use crate::paint::{fill_rounded, HL_RADIUS};
-use crate::render::{render_to_surface, Surface};
+use crate::render::{render_to_surface, ModeGlyph, Surface};
 use crate::theme::Theme;
 
 /// 工具栏按钮几何（物理像素 @96dpi 基准；render 乘 scale）。
@@ -39,10 +39,11 @@ pub(crate) const TB_COUNT: usize = 6;
 pub struct ToolbarIcons {
     /// 输入法 logo（TB_LOGO，拖动把手）。
     pub logo: Option<Pixmap>,
-    /// 中英双态（TB_MODE）；caps 开时切 `lang_caps`（57 号三态：中英 A）。
+    /// 中文态（TB_MODE）：素材「中」。
     pub lang_cn: Option<Pixmap>,
+    /// 英文态（TB_MODE）：素材「英」（57 号收尾：原素材是字母 A，与徽标统一后改为「英」）。
     pub lang_en: Option<Pixmap>,
-    /// CapsLock 态（TB_MODE 的 A 形；57 号，素材与 lang-cn/en 同族 288×288）。
+    /// 大写锁态（TB_MODE）：素材「A」；与 lang-cn/en 墨迹等高居中（288×288 同族）。
     pub lang_caps: Option<Pixmap>,
     /// 全半角双态（TB_WIDTH）。
     pub width_half: Option<Pixmap>,
@@ -140,18 +141,14 @@ fn toolbar_icon<'a>(spec: &'a ToolbarSpec, i: usize) -> Option<&'a Pixmap> {
     match i {
         TB_LOGO => spec.icons.logo.as_ref(),
         // 三态（57 号）：caps 开 → A 形（A 优先于中英——大写锁定改变的是有效
-        // 输出形态，与 30 号徽标 glyph 推导同规则）；点击仍发 SetMode，
-        // TSF 侧 CapsLock 锁拒绝并回现态。
-        TB_MODE => {
-            if spec.state.caps {
-                spec.icons.lang_caps.as_ref()
-            } else {
-                match spec.state.mode {
-                    ImeMode::Chinese => spec.icons.lang_cn.as_ref(),
-                    ImeMode::English => spec.icons.lang_en.as_ref(),
-                }
-            }
-        }
+        // 输出形态）；否则英文 → 英、中文 → 中。与光标徽标共用同一决策
+        // [`ModeGlyph`]（杜绝两处各写一套）；点击仍发 SetMode，TSF 侧 CapsLock
+        // 锁拒绝并回现态。
+        TB_MODE => match ModeGlyph::of(spec.state) {
+            ModeGlyph::CapsA => spec.icons.lang_caps.as_ref(),
+            ModeGlyph::Ying => spec.icons.lang_en.as_ref(),
+            ModeGlyph::Zhong => spec.icons.lang_cn.as_ref(),
+        },
         TB_WIDTH => match spec.state.width {
             ImeWidth::Half => spec.icons.width_half.as_ref(),
             ImeWidth::Full => spec.icons.width_full.as_ref(),

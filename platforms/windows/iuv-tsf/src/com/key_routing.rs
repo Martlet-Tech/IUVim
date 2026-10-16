@@ -193,11 +193,18 @@ impl TextService {
             let mut runtime = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
             runtime.caps = now;
         }
+        // 同步语言栏共享位（57 号收尾：语言栏三态图标经 ModeGlyph 读它）。
+        self.caps_mode
+            .store(now, std::sync::atomic::Ordering::SeqCst);
         log_line(&format!(
             "[caps] CapsLock {}：同步四态",
             if now { "开" } else { "关" }
         ));
         self.after_runtime_change();
+        // 刷新语言栏"中/英/A"图标（caps 变化即时反映；复用 mode.rs 同款刷新路径）。
+        if let Some(lang_bar) = self.lang_bar.borrow().as_ref() {
+            crate::langbar::refresh_lang_bar(lang_bar);
+        }
     }
 
     /// KeyAction 中的会话键（CommitText/Pass 无引擎交互）。

@@ -446,14 +446,11 @@ impl ToolbarWindow {
                         .map(|i| i.state)
                         .unwrap_or_default();
                     match index {
-                        // 57 号三态：caps 开悬停提示锁定态（点击仍发 SetMode，
-                        // TSF 侧 CapsLock 锁拒绝并回现态）。
+                        // 57 号三态：label 由 ModeGlyph 统一派生（caps 标注锁定，与
+                        // tooltip 共用一处）；点击仍发 SetMode，TSF 侧 CapsLock 锁
+                        // 拒绝并回现态。
                         TB_MODE => (
-                            if st.caps {
-                                "中英（大写锁定）"
-                            } else {
-                                "中英"
-                            },
+                            iuv_ui::ModeGlyph::of(st).tooltip(),
                             CtlCmd::SetMode(st.mode == ImeMode::Chinese),
                         ),
                         TB_WIDTH => ("全半角", CtlCmd::SetWidth(st.width == ImeWidth::Half)),
@@ -590,7 +587,7 @@ impl ToolbarWindow {
         self.hover = hit;
         // tooltip：悬停按钮（logo/齿轮除外）显示说明；离开/空白隐藏。
         if let Some(i) = hit {
-            if let Some(label) = button_tooltip(i) {
+            if let Some(label) = button_tooltip(i, self.focused_state()) {
                 if changed_hover {
                     self.tip.show_near(label);
                 }

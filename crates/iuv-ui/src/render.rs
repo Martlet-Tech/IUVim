@@ -13,6 +13,8 @@
 
 use tiny_skia::{Paint, Pixmap, Rect, Stroke, Transform};
 
+use iuv_core::{ImeMode, ImeState};
+
 use crate::layout::{candidate_label, layout, Rect as LayoutRect};
 use crate::menu::MenuEntry;
 use crate::paint::{fill_path, fill_rounded, rounded_rect_path, stroke_rounded_dashed, HL_RADIUS};
@@ -244,6 +246,60 @@ pub fn render_tooltip(label: &str, theme: &Theme, scale: f32, text: &mut TextRen
     render_to_surface(theme, scale, cw.max(1) as u32, ch.max(1) as u32, |pixmap| {
         text.draw(pixmap, label, pad_x as f32, pad_y as f32, size_px, theme.fg);
     })
+}
+
+// ===== 57 号中英/大写锁三态符号真值（工具栏图标与光标徽标共用） =====
+
+/// 中英按钮图标 + 光标徽标字形共用的「符号真值」——全仓唯一决策点，杜绝工具栏
+/// （图标）与徽标（字形）各写一套导致的错位（57 号收尾统一）。
+/// 优先级：caps 开 → `A`（大写锁定改变的是有效输出形态，先于中英）；否则英文 →
+/// `英`；否则中文 → `中`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeGlyph {
+    /// 中文态
+    Zhong,
+    /// 英文态（未锁大写）
+    Ying,
+    /// 大写锁定态
+    CapsA,
+}
+
+impl ModeGlyph {
+    /// 由实例四态推导（工具栏图标 / 光标徽标消费）。
+    pub fn of(state: ImeState) -> Self {
+        Self::of_flags(state.mode == ImeMode::English, state.caps)
+    }
+
+    /// 由「英文模式 / 大写锁」两枚布尔推导——语言栏项只持有这两枚共享原子量
+    /// （无完整 `ImeState`），与 [`ModeGlyph::of`] 同一优先级（caps 优先）。
+    pub fn of_flags(english: bool, caps: bool) -> Self {
+        if caps {
+            ModeGlyph::CapsA
+        } else if english {
+            ModeGlyph::Ying
+        } else {
+            ModeGlyph::Zhong
+        }
+    }
+
+    /// 文字形态（光标徽标 [`render_badge`] / 语言栏 `GetText` 消费；工具栏则由
+    /// `toolbar::toolbar_icon` 映射到对应图标素材——决策同源，呈现各表）。
+    pub fn text(self) -> &'static str {
+        match self {
+            ModeGlyph::Zhong => "中",
+            ModeGlyph::Ying => "英",
+            ModeGlyph::CapsA => "A",
+        }
+    }
+
+    /// 悬停提示 / 日志文案（57 号收尾）：与字形决策同源——caps 态标注锁定，
+    /// 中/英态统一「中/英」。工具栏 tooltip 与翻转日志 label 共用，杜绝各写一套。
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            ModeGlyph::CapsA => "中/英（大写锁定）",
+            ModeGlyph::Zhong | ModeGlyph::Ying => "中/英",
+        }
+    }
 }
 
 // ===== 57 号光标处状态徽标（server 渲染） =====

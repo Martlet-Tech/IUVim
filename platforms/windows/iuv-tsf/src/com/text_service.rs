@@ -104,6 +104,9 @@ pub(crate) struct TextService {
     /// Shift 临时英文模式（会话非 active 时 Shift 切换）。
     /// `Arc` 共享：语言栏"中/英"图标与按键路径读同一状态。
     pub(crate) english_mode: Arc<AtomicBool>,
+    /// CapsLock 共享位（57 号收尾）：`poll_caps` 更新它，语言栏"中/英/A"三态图标
+    /// 经 `ModeGlyph::of_flags` 读取（与 `runtime.caps` 同源同值，供语言栏 3 态）。
+    pub(crate) caps_mode: Arc<AtomicBool>,
     /// 语言栏"中/英"切换图标（Activate 挂载，Deactivate 卸载）。
     pub(crate) lang_bar: RefCell<Option<ComObject<LangBarItemButton>>>,
     /// TSF 候选 UI 元素宿主（WoW 游戏内候选框实验）。Rc 共享：dispatch 路径同线程访问。
@@ -147,6 +150,7 @@ impl TextService {
             caret,
             cand_elem,
             english_mode: Arc::new(AtomicBool::new(false)),
+            caps_mode: Arc::new(AtomicBool::new(false)),
             lang_bar: RefCell::new(None),
             // 引号配对状态初值 true = 下个引号从开形起（chinese_punct 语义
             // quote_open=true → ‘/“，2026-10-02 品质审查 H3 纠正旧初值 false）。
@@ -448,6 +452,7 @@ impl TextService_Impl {
         };
         let lang_bar_com = ComObject::new(LangBarItemButton::new(
             self.english_mode.clone(),
+            self.caps_mode.clone(),
             self.compartment
                 .borrow()
                 .as_ref()

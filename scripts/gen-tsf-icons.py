@@ -1,13 +1,15 @@
-# TSF 托盘/语言栏图标生成器：品牌素材 → res/{icon,zh,en}.ico。
+# TSF 托盘/语言栏图标生成器：品牌素材 → res/{icon,zh,en,caps}.ico。
 #
 # 设计（2026-10-07，对齐主流输入法）：品牌 logo 用色块，中英态用裸字形无底色
-# （参考搜狗/QQ/微软拼音：托盘里 logo 是色块、中/英是裸字）：
+# （参考搜狗/QQ/微软拼音：托盘里 logo 是色块、中/英/A 是裸字）：
 #   - icon.ico：品牌蓝圆角方块 + 白色 iuv 字标（assets/main.png 反白）→ DLL/输入指示器主图标
 #   - zh.ico  ：品牌蓝裸 中（assets/toolbar-icons/lang-cn.png 原色，无底）→ 语言栏中文态
-#   - en.ico  ：品牌蓝裸 A （assets/toolbar-icons/lang-en.png 原色，无底）→ 语言栏英文态
+#   - en.ico  ：品牌蓝裸 英（assets/toolbar-icons/lang-en.png 原色，无底）→ 语言栏英文态
+#   - caps.ico：品牌蓝裸 A （assets/toolbar-icons/lang-caps.png 原色，无底）→ 语言栏大写锁态
+#               （57 号收尾：语言栏三态；字形源与悬浮工具栏图标同源，改一处即同步）
 # 裸字形用品牌蓝 #38A6F5：深/浅任务栏都可读，且与工具栏图标完全同款。
 # 产物为经典 32bpp DIB 条目（BITMAPINFOHEADER + BGRA XOR + 全零 AND 掩码），
-# LoadImageW 全兼容——格式与 convert-main-icon.ps1 相同，本脚本覆盖全部三个 ico。
+# LoadImageW 全兼容——格式与 convert-main-icon.ps1 相同，本脚本覆盖全部四个 ico。
 #
 # 用法：python scripts/gen-tsf-icons.py   （需 Pillow）
 
@@ -128,6 +130,7 @@ def write_ico(path: Path, images: list[Image.Image]) -> None:
 def main() -> None:
     zh = crop_alpha(ASSETS / "toolbar-icons" / "lang-cn.png")
     en = crop_alpha(ASSETS / "toolbar-icons" / "lang-en.png")
+    caps = crop_alpha(ASSETS / "toolbar-icons" / "lang-caps.png")
     iuv = crop_alpha(ASSETS / "main.png")
 
     white_iuv = recolor(iuv, WHITE)
@@ -144,6 +147,10 @@ def main() -> None:
         [bare(en, s, GLYPH_RATIO) for s in small_sizes],
     )
     write_ico(
+        RES / "caps.ico",
+        [bare(caps, s, GLYPH_RATIO) for s in small_sizes],
+    )
+    write_ico(
         RES / "icon.ico",
         [tile(white_iuv, s, WORD_RATIO) for s in big_sizes],
     )
@@ -152,12 +159,17 @@ def main() -> None:
     preview_dir = ROOT / "target" / "tsf-icon-preview"
     preview_dir.mkdir(parents=True, exist_ok=True)
     row_h, pad = 96, 12
-    sheet = Image.new("RGBA", (3 * 150 + pad, row_h * 2 + pad * 3), (0, 0, 0, 0))
+    sheet = Image.new("RGBA", (4 * 150 + pad, row_h * 2 + pad * 3), (0, 0, 0, 0))
     for r, bg in enumerate(((24, 24, 24, 255), (240, 240, 240, 255))):
         d = ImageDraw.Draw(sheet)
         d.rectangle([0, pad + r * (row_h + pad), sheet.width - 1, pad + r * (row_h + pad) + row_h - 1], fill=bg)
         x = pad
-        for glyph, ratio, style in ((iuv, WORD_RATIO, "tile"), (zh, GLYPH_RATIO, "bare"), (en, GLYPH_RATIO, "bare")):
+        for glyph, ratio, style in (
+            (iuv, WORD_RATIO, "tile"),
+            (zh, GLYPH_RATIO, "bare"),
+            (en, GLYPH_RATIO, "bare"),
+            (caps, GLYPH_RATIO, "bare"),
+        ):
             if style == "tile":
                 im16 = tile(recolor(glyph, WHITE), 16, ratio)
                 im24 = tile(recolor(glyph, WHITE), 24, ratio)

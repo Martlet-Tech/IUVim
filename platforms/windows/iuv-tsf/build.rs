@@ -5,6 +5,7 @@
 //! - `icon.ico` → ID "1"：DLL/输入法图标（应用图标）
 //! - `zh.ico`   → ID "101"：语言栏"中"图标（LoadImageW + MAKEINTRESOURCE(101)）
 //! - `en.ico`   → ID "102"：语言栏"英"图标（LoadImageW + MAKEINTRESOURCE(102)）
+//! - `caps.ico` → ID "103"：语言栏大写锁"A"图标（57 号收尾三态；由 lang-caps.png 生成）
 //!
 //! ID 对齐 Weasel（IDI_ZH=101/IDI_EN=102 同语义），契约 01 §5.1。
 
@@ -13,6 +14,7 @@ fn main() {
     println!("cargo:rerun-if-changed=res/icon.ico");
     println!("cargo:rerun-if-changed=res/zh.ico");
     println!("cargo:rerun-if-changed=res/en.ico");
+    println!("cargo:rerun-if-changed=res/caps.ico");
 
     // 逃生舱（仅显式设置时生效，默认行为不变）：沙箱/CI 里 `reg.exe` 被安全策略
     // 拦截时 winres 查不到 Windows SDK 路径 → rc.exe 解析失败 → 本脚本 panic，
@@ -28,7 +30,8 @@ fn main() {
     let mut res = winres::WindowsResource::new();
     res.set_icon("res/icon.ico")
         .set_icon_with_id("res/zh.ico", "101")
-        .set_icon_with_id("res/en.ico", "102");
+        .set_icon_with_id("res/en.ico", "102")
+        .set_icon_with_id("res/caps.ico", "103");
     res.set("FileDescription", "IUV 输入法 - 中文输入法（TSF 文本服务）");
     res.set("ProductName", "IUV 输入法");
     res.set("FileVersion", "0.1.0.0");

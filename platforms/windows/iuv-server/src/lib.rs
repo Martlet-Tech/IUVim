@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use iuv_win::logger::log_line;
 
-use iuv_core::{Effect, Engine, ImeMode, ImeState, Key};
+use iuv_core::{Effect, Engine, ImeState, Key};
 use iuv_proto::{
     Candidate, Caps, ClientConfig, ClientInfo, KeyOutcome, KeyVerdict, ProtoError, Push,
     ResumeToken, C2S, S2C,
@@ -367,13 +367,9 @@ impl Session for EngineSession {
                     .is_some_and(|p| p != core);
                 if changed && self.session.is_none() {
                     if let Some(caret) = self.caret {
-                        let glyph = if core.caps {
-                            "A"
-                        } else if core.mode == ImeMode::English {
-                            "英"
-                        } else {
-                            "中"
-                        };
+                        // 字形真值：与工具栏中英按钮共用同一决策（iuv_ui::ModeGlyph，
+                        // caps→A / 英文→英 / 中文→中），杜绝两处各写一套。
+                        let glyph = iuv_ui::ModeGlyph::of(core).text();
                         self.badge.send(BadgeCmd::Show { glyph, caret });
                     }
                 }

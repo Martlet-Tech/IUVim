@@ -39,7 +39,7 @@ use windows_core::{
 };
 
 use crate::log::log_line;
-use iuv_ui::{MenuEntry, Theme};
+use iuv_ui::{MenuEntry, ModeGlyph, Theme};
 
 /// 「关于」对话框（自绘菜单与 InitMenu 菜单共用）。
 fn show_about() {
@@ -64,6 +64,8 @@ const SINK_COOKIE: u32 = 0x42424242;
 /// 中/英图标的 DLL 资源 ID（winres `set_icon_with_id` 编入，契约 01 §5.1；对齐 Weasel）。
 const ICON_ID_ZH: u32 = 101;
 const ICON_ID_EN: u32 = 102;
+/// 大写锁 A 图标（57 号收尾：语言栏三态；`gen-tsf-icons.py` 由 lang-caps.png 生成）。
+const ICON_ID_CAPS: u32 = 103;
 
 /// 本 DLL 的模块句柄。
 ///
@@ -176,6 +178,8 @@ pub(crate) fn write_openclose(comp: &ITfCompartment, tid: u32, open: bool) -> Re
 pub(crate) struct LangBarItemButton {
     /// 共享中/英模式：true = 英文（按键放行），false = 中文。
     mode: Arc<AtomicBool>,
+    /// 共享 CapsLock 位（57 号收尾）：true = 大写锁 → 图标显 A（三态，`ModeGlyph`）。
+    caps: Arc<AtomicBool>,
     /// OPENCLOSE compartment + 本实例 client id（Activate 传入；None = 无监听，
     /// 点击走本地翻转兜底）。
     compartment: RefCell<Option<(ITfCompartment, u32)>>,
@@ -192,11 +196,13 @@ pub(crate) struct LangBarItemButton {
 impl LangBarItemButton {
     pub(crate) fn new(
         mode: Arc<AtomicBool>,
+        caps: Arc<AtomicBool>,
         compartment: Option<(ITfCompartment, u32)>,
         menu_theme: Theme,
     ) -> Self {
         LangBarItemButton {
             mode,
+            caps,
             compartment: RefCell::new(compartment),
             sink: RefCell::new(None),
             status: Cell::new(0),
@@ -211,6 +217,15 @@ impl LangBarItemButton {
             // SAFETY: sink 由语言栏通过 ITfSource::AdviseSink 塞入，持有期间有效。
             let _ = unsafe { sink.OnUpdate(TF_LBI_STATUS | TF_LBI_ICON) };
         }
+    }
+
+    /// 当前字形真值（57 号收尾）：与悬浮工具栏按钮、光标徽标共用同一决策
+    /// （`iuv_ui::ModeGlyph`）——caps 优先 A，其次英文 英 / 中文 中。
+    fn glyph(&self) -> ModeGlyph {
+        ModeGlyph::of_flags(
+            self.mode.load(Ordering::SeqCst),
+            self.caps.load(Ordering::SeqCst),
+        )
     }
 
     /// 翻转中/英模式并刷新图标。
@@ -397,21 +412,17 @@ impl ITfLangBarItemButton_Impl for LangBarItemButton_Impl {
     }
 
     fn GetIcon(&self) -> Result<HICON> {
-        // 按当前模式加载 DLL 资源图标（LR_SHARED，系统管理，无需销毁）。
-        let id = if self.mode.load(Ordering::SeqCst) {
-            ICON_ID_EN
-        } else {
-            ICON_ID_ZH
+        // 按当前字形加载 DLL 资源图标（LR_SHARED，系统管理，无需销毁）。
+        let id = match self.glyph() {
+            ModeGlyph::CapsA => ICON_ID_CAPS,
+            ModeGlyph::Ying => ICON_ID_EN,
+            ModeGlyph::Zhong => ICON_ID_ZH,
         };
         Ok(load_icon(id))
     }
 
     fn GetText(&self) -> Result<BSTR> {
-        Ok(if self.mode.load(Ordering::SeqCst) {
-            BSTR::from("英")
-        } else {
-            BSTR::from("中")
-        })
+        Ok(BSTR::from(self.glyph().text()))
     }
 }
 

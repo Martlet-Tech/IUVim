@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use iuv_core::ImeState;
-use iuv_ui::{theme_dark, theme_light, Theme, ToolbarIcons};
+use iuv_ui::{theme_dark, theme_light, ModeGlyph, Theme, ToolbarIcons};
 use iuv_win::{CtlCmd, CtlResult, ToolbarSignal};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
@@ -440,10 +440,11 @@ fn in_rounded_rect(x: i32, y: i32, w: i32, h: i32, r: f32) -> bool {
 }
 
 /// 按钮 tooltip 文案（logo/齿轮无 tooltip；32-toolbar §6.6「全半角」「简体/繁体」等）。
-fn button_tooltip(index: usize) -> Option<&'static str> {
+/// TB_MODE 随四态（caps 锁定）文案由 `ModeGlyph` 统一派生（57 号收尾，去静态写死）。
+fn button_tooltip(index: usize, state: ImeState) -> Option<&'static str> {
     use iuv_ui::{TB_GEAR, TB_MODE, TB_PUNCT, TB_SCRIPT, TB_WIDTH};
     match index {
-        TB_MODE => Some("中/英"),
+        TB_MODE => Some(ModeGlyph::of(state).tooltip()),
         TB_WIDTH => Some("全半角"),
         TB_PUNCT => Some("中英文标点"),
         TB_SCRIPT => Some("简体/繁体"),
@@ -527,12 +528,29 @@ mod tests {
 
     #[test]
     fn button_tooltip_mapping() {
-        assert_eq!(button_tooltip(TB_MODE), Some("中/英"));
-        assert_eq!(button_tooltip(TB_WIDTH), Some("全半角"));
-        assert_eq!(button_tooltip(TB_PUNCT), Some("中英文标点"));
-        assert_eq!(button_tooltip(TB_SCRIPT), Some("简体/繁体"));
-        assert_eq!(button_tooltip(TB_GEAR), Some("设置"));
-        assert_eq!(button_tooltip(TB_LOGO), None, "logo 无 tooltip");
+        let zh = iuv_core::ImeState::default();
+        assert_eq!(button_tooltip(TB_MODE, zh), Some("中/英"));
+        assert_eq!(
+            button_tooltip(
+                TB_MODE,
+                iuv_core::ImeState {
+                    mode: iuv_core::ImeMode::English,
+                    ..zh
+                }
+            ),
+            Some("中/英"),
+            "英文（无 caps）tooltip 仍为中/英"
+        );
+        assert_eq!(
+            button_tooltip(TB_MODE, iuv_core::ImeState { caps: true, ..zh }),
+            Some("中/英（大写锁定）"),
+            "caps 态 tooltip 标注锁定"
+        );
+        assert_eq!(button_tooltip(TB_WIDTH, zh), Some("全半角"));
+        assert_eq!(button_tooltip(TB_PUNCT, zh), Some("中英文标点"));
+        assert_eq!(button_tooltip(TB_SCRIPT, zh), Some("简体/繁体"));
+        assert_eq!(button_tooltip(TB_GEAR, zh), Some("设置"));
+        assert_eq!(button_tooltip(TB_LOGO, zh), None, "logo 无 tooltip");
     }
 
     #[test]
