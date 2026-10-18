@@ -1,8 +1,8 @@
 # 23 · 任务书 M8：i/u/v 功能键插件系统（命令调用模型）
 
 > 状态：**设计定案**（2026-08-18 决策冻结，未写代码）。
-> 前置阅读：`00-overview.md`、`01-contract.md`（§4 候选契约）、`16-command-mode.md`（iuv 命令体系构想）、
-> `22-m6-daemon.md`（管道 IPC 网关先例）。
+> 前置阅读：`AGENTS.md`（架构与模块依赖）、`01-contract.md`（§4 候选契约）、`16-command-mode.md`（iuv 命令体系构想）、
+> `docs/closed/22-m6-daemon.md`（管道 IPC 网关先例）。
 > 决策记录：见 §2（2026-08-18 四轮问答收敛）。
 
 ## 1. 目标（验收一句话）

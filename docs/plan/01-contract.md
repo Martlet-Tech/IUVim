@@ -70,7 +70,7 @@ d:\Projects\input\iuvim\
 
 > 分层约定：`crates/` = 跨平台（引擎/词库/CLI，纯 Rust）；`platforms/` = 每平台一套
 > （系统适配层 + 门面）。macOS（IMK）、Linux（Fcitx5/IBus）为占位目录（README），
-> 真做时新建 crate 并加入 workspace members。跨平台分层见 `00-overview.md` §2 与
+> 真做时新建 crate 并加入 workspace members。跨平台分层见 `AGENTS.md`「模块依赖与数据流」与
 > `platforms/*/README.md`。
 
 ## 2. 依赖（白名单，版本锁定）

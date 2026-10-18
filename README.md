@@ -56,11 +56,11 @@ scripts\dev-deploy.ps1        # 热部署：改完代码免注销生效，新开
 ```
 
 注册后需在系统设置中将该输入法设为默认，并在高级键设置把「输入法/非输入法切换」热键设为 Ctrl+Space。
-使用中英切换的注意事项见 `docs/plan/00-overview.md`。
+使用中英切换的注意事项见 `AGENTS.md`「关键设计决策」。
 
 ## 文档
 
-- `docs/plan/00-overview.md` — 总览与架构
+- `AGENTS.md` — 总览、架构与模块依赖（仓库根）
 - `docs/plan/01-contract.md` — 共享契约（接口唯一权威来源）
 - `docs/plan/02-conventions.md` — 全局约定（测试纪律/日志/代码风格）
 - `docs/status.md` — 工作状态台账

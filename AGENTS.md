@@ -57,7 +57,7 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 ## 开发入口
 
 **先读 `docs/plan/01-contract.md`（共享契约，接口唯一权威来源）**，再读对应模块任务书。
-执行流程（W0 骨架 → W1 并行实现 → W2 组装）见 `docs/plan/00-overview.md` §3 与 `docs/closed/20-assembly.md`。
+`docs/plan/` 只放**未结案**任务书，结案后移入 `docs/closed/`；工作流水账见 `docs/status.md`。
 
 ## 结构
 
@@ -74,6 +74,34 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 | `data/` | 下载的词库（gitignore；白霜拼音 GPL-3.0，不入库） |
 | `docs/status.md` | 工作状态台账：每项落地的根因/方案/改动/测试记录（AGENTS.md 指向此处） |
 | `scripts/` | build（三车道并行构建：x64/x86 TSF ∥ server） / install（全新安装：词库链+DLL+server+注册） / dev-deploy（热部署：运行中替换免注销，新进程加载新 DLL） / uninstall（赶尽杀绝：停服务+注册表+文件，注销收尾） / iuv-common（共享库：路径/提权/日志/ctfmon/延迟清理/热替换/词库链/配置模板/注册/server 部署） / download-dict / download-opencc / clear-data（清用户数据） / convert-main-icon（一次性 logo→ico，产物已入库，留作再生成） |
+
+### 模块依赖与数据流
+
+```
+crates/（跨平台，纯 Rust）
+  iuv-data   词库编译 dictc + IMEDIC02 格式 + Dict 查询层 + 用户库   叶 crate
+  iuv-proto  IPC 协议：帧格式 + 三平面消息 + 握手协商                叶 crate
+  iuv-core   引擎：切分/查词/rime poet 组句/会话状态机/排序管线       → iuv-data
+  iuv-ui     候选窗/菜单绘制：tiny-skia + cosmic-text                 → iuv-core
+  iuv-repl   CLI 调试前端（不注册输入法即可测引擎）                   → iuv-core, iuv-data
+
+platforms/windows/
+  iuv-win    共享层：transport 长连接 + ULW 呈现 + 日志 + 共享段      → iuv-proto, iuv-core, iuv-data, iuv-ui
+  iuv-tsf    cdylib：COM/TSF 薄客户端 + 语言栏三态                     → 以上全部
+  iuv-server exe：引擎/用户库 + 自绘候选窗 + 工具栏/设置页/全局热键     → iuv-win, iuv-core…
+
+platforms/{macos,linux}/  占位：IMK / Fcitx5·IBus 适配层（README）
+```
+
+运行时数据流（M10 起远端唯一形态，49 号定稿）：
+
+```
+按键 → TSF 薄客户端(OnTestKeyDown/OnKeyDown) → session_bridge 映射为 iuv_core::Key
+      → transport 长连接（iuv-proto 契约）→ iuv-server 引擎 Session::on_key → Effect
+      ─┬→ composition 回传应用：更新预编辑文本 / 上屏
+        └→ 服务端自绘候选窗（iuv-ui 渲染 + ULW 上屏，不经过 TSF）
+（断连自动拉起 + ResumeToken 重绑；不可达窗口期按键透明放行）
+```
 
 ## 常用命令
 
