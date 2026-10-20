@@ -455,7 +455,7 @@ impl Session {
 | `ShiftChar('A'..='Z')`（Shift/CapsLock 字母） | **大写保形进序列**：`raw` 原样追加大写（不转小写）→ 重切分 → 重新生成候选。匹配只认小写——大写字符不被音节表命中（按不可匹配字符单字母段兜底，`niHAO` → `ni`/`H`/`A`/`O`，候选仍从 `ni` 前缀出），commit 时 `raw` 原样上屏。**也是开会话键**（无会话时 `Hello` 的 `H` 同样进序列）。字母大小写 = Shift 与 CapsLock 的 XOR（恰好一个生效 → 大写；CapsLock+Shift 反转 → 小写）。**CapsLock 生效时 TSF 层例外**：会话外字母放行直通（Caps = 英文模式，不建会话；会话内 Caps 字母照常进序列），见 `session_bridge::caps_passthrough` |
 | `Backspace` | 删 raw 尾字符；删后 raw 为空 → `end = Some(Cancel)`；否则重算候选 |
 | `Space` | 有候选 → commit 当前页 selected 项；无候选 → `Commit(picked.join + raw)`（全部上屏） |
-| `Digit(n)` n∈1..=9 | 全表索引 = page×page_size + n−1，存在则 commit 该项；不存在则无操作（仍消费） |
+| `Digit(n)` n∈0..=9 | **序号即所见**（60 号）：`n` 在 `1..=本页候选数`（`page_candidates().len()`）内 → commit 页内第 `n` 个；其余（越界 + `0`）→ 数字字符进**字面尾巴**（预编辑出现 `ce6`、候选变一条不编号原文、空格/回车整串上屏）。`9`/`0` 被 keymap 绑成翻页时组合表先命中，数字到不了本层 |
 | `Enter` | `Commit(picked.join + raw)` 原文上屏 |
 | `Esc` | **悬空**：有 picked → `end = Some(Commit(picked.join("")))`（已选词上屏，尾巴随之取消）；无 picked → `end = Some(Cancel)` |
 | `PageUp/PageDown` | page ±1，clamp 到 `[0, page_count−1]`，selected 归 0 |

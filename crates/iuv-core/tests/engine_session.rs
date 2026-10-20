@@ -1199,19 +1199,8 @@ fn digit_selects_nth_in_page() {
     assert_eq!(e.end, Some(SessionEnd::Commit("得".into())));
 }
 
-#[test]
-fn digit_out_of_range_noop() {
-    let engine = default_engine();
-    let mut s = engine.start_session();
-    for c in "de".chars() {
-        s.on_key(Key::Char(c));
-    }
-    let before = s.effect();
-    let e = s.on_key(Key::Digit(9));
-    assert!(e.end.is_none());
-    assert!(s.is_active());
-    assert_eq!(e.candidates, before.candidates);
-}
+// 旧 `digit_out_of_range_noop`（越界静默吞键）已被 60 号反转，用例见文末
+// 「数字键越界字面化」一节。
 
 #[test]
 fn enter_commits_raw() {
@@ -2770,5 +2759,116 @@ fn literal_space_commits_verbatim_url() {
     match s.on_key(Key::Space).end {
         Some(SessionEnd::Commit(text)) => assert_eq!(text, "d:8000"),
         other => panic!("期望字面态 Space 提交 d:8000，实际 {other:?}"),
+    }
+}
+
+// ===== 数字键越界字面化（docs/closed/60-digit-out-of-page-literal.md）=====
+
+/// 9 个 `ce` 候选（权重降序）：足够覆盖 page_size=5 的越界场景与 page_size=9 的满页场景。
+/// 候选文本取单字，避免整句/词条通道额外插入干扰序号断言。
+fn ce_dict() -> Dict {
+    Dict::from_entries(vec![
+        ("ce".into(), "测".into(), 9000),
+        ("ce".into(), "册".into(), 8000),
+        ("ce".into(), "侧".into(), 7000),
+        ("ce".into(), "策".into(), 6000),
+        ("ce".into(), "厕".into(), 5000),
+        ("ce".into(), "恻".into(), 4000),
+        ("ce".into(), "泽".into(), 3000),
+        ("ce".into(), "择".into(), 2000),
+        ("ce".into(), "责".into(), 1000),
+    ])
+}
+
+fn type_ce(s: &mut Session) {
+    s.on_key(Key::Char('c'));
+    s.on_key(Key::Char('e'));
+}
+
+/// §5-1：page_size=5、`ce` 有 9 个候选时 `Digit(6)` 不选词，数字进字面尾巴。
+#[test]
+fn digit_out_of_page_literalizes() {
+    let engine = Engine::new(ce_dict(), Config::default()); // page_size 默认 5
+    let mut s = engine.start_session();
+    type_ce(&mut s);
+    assert_eq!(s.effect().candidates.len(), 5, "前提：第 1 页 5 个候选");
+    let e = s.on_key(Key::Digit(6));
+    assert_eq!(e.end, None, "越界数字不上屏（旧实现会选走第 2 页第 1 个）");
+    assert_eq!(e.composition, "ce6");
+    assert_eq!(e.candidates.len(), 1, "字面态只呈现一条原文候选");
+    assert_eq!(e.candidates[0].text, "ce6");
+}
+
+/// §5-2：`Digit(0)` 不再是被静默吞掉的死键，而是字面字符。
+#[test]
+fn digit_zero_literalizes() {
+    let engine = Engine::new(ce_dict(), Config::default());
+    let mut s = engine.start_session();
+    type_ce(&mut s);
+    let e = s.on_key(Key::Digit(0));
+    assert_eq!(e.end, None, "0 不选词");
+    assert_eq!(e.composition, "ce0", "0 进字面尾巴（旧行为：静默吞掉）");
+}
+
+/// §5-3：字面数字退格后，候选/页码/高亮逐项复原（走 tail 而非 raw 的核心收益）。
+#[test]
+fn backspace_after_literal_digit_restores() {
+    let engine = Engine::new(ce_dict(), Config::default());
+    let mut s = engine.start_session();
+    type_ce(&mut s);
+    // 先制造非默认页码与高亮，验证退格是"逐项复原"而非"重置到首页"
+    s.on_key(Key::PageDown);
+    s.on_key(Key::Down);
+    let before = s.effect();
+    assert_eq!(before.page.page, 1, "前提：已翻到第 2 页");
+    assert_eq!(before.selected, 1, "前提：高亮非 0");
+    s.on_key(Key::Digit(6));
+    assert_eq!(s.effect().composition, "ce6", "前提：已进字面态");
+    let after = s.on_key(Key::Backspace);
+    let texts = |e: &iuv_core::Effect| -> Vec<String> {
+        e.candidates.iter().map(|c| c.text.clone()).collect()
+    };
+    assert_eq!(texts(&after), texts(&before), "候选逐项复原");
+    assert_eq!(after.page.page, before.page.page, "页码复原");
+    assert_eq!(after.selected, before.selected, "高亮复原");
+    assert_eq!(after.composition, "ce", "预编辑回到拼音");
+}
+
+/// §5-4：页内数字仍正常选词（防回归）。
+#[test]
+fn digit_within_page_still_commits() {
+    let engine = Engine::new(ce_dict(), Config::default());
+    let mut s = engine.start_session();
+    type_ce(&mut s);
+    let e = s.on_key(Key::Digit(5));
+    assert_eq!(e.end, Some(SessionEnd::Commit("厕".into())), "第 5 个候选");
+}
+
+/// §5-5：规则随配置自洽——page_size=9 时 `Digit(9)` 选第 9 个，不硬编码 5。
+#[test]
+fn digit_follows_page_size() {
+    let cfg = Config {
+        page_size: 9,
+        ..Config::default()
+    };
+    let engine = Engine::new(ce_dict(), cfg);
+    let mut s = engine.start_session();
+    type_ce(&mut s);
+    assert_eq!(s.effect().candidates.len(), 9, "前提：9 个候选同页");
+    let e = s.on_key(Key::Digit(9));
+    assert_eq!(e.end, Some(SessionEnd::Commit("责".into())), "第 9 个候选");
+}
+
+/// §5-6：字面态空格照常上屏整串（含数字）——所见即所得（§3.4 a2 钉住）。
+#[test]
+fn space_in_literal_commits_verbatim() {
+    let engine = Engine::new(ce_dict(), Config::default());
+    let mut s = engine.start_session();
+    type_ce(&mut s);
+    s.on_key(Key::Digit(6));
+    assert_eq!(s.effect().composition, "ce6", "前提：已进字面态");
+    match s.on_key(Key::Space).end {
+        Some(SessionEnd::Commit(text)) => assert_eq!(text, "ce6"),
+        other => panic!("期望字面态 Space 提交 ce6，实际 {other:?}"),
     }
 }

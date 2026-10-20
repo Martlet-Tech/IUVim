@@ -96,6 +96,27 @@ fn is_micro_move(prev: (i32, i32), next: (i32, i32)) -> bool {
     (next.0 - prev.0).abs() <= MICRO_MOVE_PX && (next.1 - prev.1).abs() <= MICRO_MOVE_PX
 }
 
+/// 快照中的**无编号候选**文本（原文兜底 / 字面尾巴态）。
+///
+/// 直接复用 `iuv_ui::candidate_label`（布局/渲染共用的唯一编号规则）判定：
+/// 标签 == 候选文本本身 ⇒ 没加 `N.` 前缀 ⇒ 无编号。日志要回答的是"窗口上到底
+/// 有没有编号"，所以必须复用它、不能重写一条近似规则——重写会漂移。
+fn unnumbered_candidate(snap: &UiSnapshot) -> Option<&str> {
+    snap.candidates
+        .iter()
+        .enumerate()
+        .find(|(i, c)| iuv_ui::candidate_label(snap, *i, c) == **c)
+        .map(|(_, c)| c.as_str())
+}
+
+/// `show` 日志的追加段：无编号态标注出来，免得"候选 N 项"被读成 N 个可选词。
+fn unnumbered_suffix(snap: &UiSnapshot) -> String {
+    match unnumbered_candidate(snap) {
+        Some(text) => format!("，无编号候选={text:?}"),
+        None => String::new(),
+    }
+}
+
 /// 候选窗命令（会话线程 → UI 线程；latest-wins 由命令自身语义保证——每条命令
 /// 携带完整快照/位置，UI 线程按序应用最后一条即最新状态）。
 pub(crate) enum CandwinCmd {
@@ -311,17 +332,40 @@ impl ServerCandwin {
         self.snap = snap;
         self.last_caret = Some(caret);
         iuv_win::logger::log_line(&format!(
-            "[candwin] show：锚点 ({},{})，候选 {} 项，reading={:?}",
+            "[candwin] show：锚点 ({},{})，候选 {} 项，reading={:?}{}",
             caret.x,
             caret.y,
             self.snap.candidates.len(),
-            self.snap.reading
+            self.snap.reading,
+            unnumbered_suffix(&self.snap)
         ));
         self.show_with_current_snapshot(caret);
     }
 
     fn update(&mut self, snap: UiSnapshot) {
+        // 无编号候选（原文兜底 / 字面尾巴态）的**出现与消失**入日志。
+        // 只记状态翻转、不逐键记：这一维是"候选窗到底画了什么"的唯一证据——
+        // 60 号之前 update 完全静默，字面态只能靠"窗没 hide + 整串上屏"间接推断，
+        // 候选编号/条目数根本无从核实。翻转很稀少（进/出字面态各一次），
+        // 热路径日志量不受影响。
+        let before = unnumbered_candidate(&self.snap).map(str::to_string);
         self.snap = snap;
+        let after = unnumbered_candidate(&self.snap).map(str::to_string);
+        if before != after {
+            match &after {
+                Some(text) => iuv_win::logger::log_line(&format!(
+                    "[candwin] 无编号候选出现：{:?}（候选 {} 项，reading={:?}）",
+                    text,
+                    self.snap.candidates.len(),
+                    self.snap.reading
+                )),
+                None => iuv_win::logger::log_line(&format!(
+                    "[candwin] 无编号候选消失，回常规编号（候选 {} 项，reading={:?}）",
+                    self.snap.candidates.len(),
+                    self.snap.reading
+                )),
+            }
+        }
         if self.layered.hwnd.is_invalid() || !self.visible {
             return;
         }
@@ -777,5 +821,62 @@ mod tests {
             !is_micro_move((960, 640), (963, 644)),
             "单轴超阈（y=4）→ 不抑制"
         );
+    }
+
+    fn snap(reading: &str, cands: &[&str]) -> UiSnapshot {
+        UiSnapshot {
+            reading: reading.into(),
+            candidates: cands.iter().map(|s| s.to_string()).collect(),
+            ..UiSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn unnumbered_candidate_detects_literal_tail_state() {
+        // 字面尾巴态（60 号）：候选只有一条，text == reading（无撇号）→ 无编号。
+        // 这正是真机 `ceshi6` / `ceshi0` 的样子（窗口显示裸 `ceshi0`，不带 `1.`）。
+        assert_eq!(
+            unnumbered_candidate(&snap("ceshi0", &["ceshi0"])),
+            Some("ceshi0")
+        );
+        // 无候选的纯原文兜底（英文串兜底）：同样不编号。
+        assert_eq!(
+            unnumbered_candidate(&snap("input", &["input"])),
+            Some("input")
+        );
+    }
+
+    #[test]
+    fn unnumbered_candidate_ignores_numbered_candidates() {
+        // 常规编号态：候选文本 != reading 去撇号 → 有编号，不该报"无编号"。
+        assert_eq!(
+            unnumbered_candidate(&snap("ce", &["测", "册", "侧", "策", "厕"])),
+            None
+        );
+        // 原文兜底与真实词共存时，只有那条原文候选无编号（其余仍编号）。
+        assert_eq!(
+            unnumbered_candidate(&snap("d:", &["d:", "的"])),
+            Some("d:"),
+            "只认与 reading 相等的那一条"
+        );
+    }
+
+    #[test]
+    fn unnumbered_candidate_empty_reading_is_none() {
+        assert_eq!(unnumbered_candidate(&snap("", &[])), None);
+        assert_eq!(
+            unnumbered_candidate(&snap("", &["de"])),
+            None,
+            "reading 为空（会话外）不判定，避免误报"
+        );
+    }
+
+    #[test]
+    fn unnumbered_suffix_only_when_present() {
+        assert_eq!(
+            unnumbered_suffix(&snap("ceshi6", &["ceshi6"])),
+            "，无编号候选=\"ceshi6\""
+        );
+        assert_eq!(unnumbered_suffix(&snap("ce", &["测"])), "");
     }
 }
