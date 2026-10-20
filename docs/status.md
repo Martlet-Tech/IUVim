@@ -1545,3 +1545,38 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
       不变；poll_caps 有 caps_cache 去重。日志：两侧 `[caps]` 均正确交替、server
       `[badge] show glyph=英↔A` 一一对齐。
     - 遗留（非阻塞）：游戏进程 RawKey 零流量未实测。
+
+- [x] **60 号数字键越界字面化（2026-10-20，已结案归档 `docs/closed/60-digit-out-of-page-literal.md`，
+  真机两轮验收通过）**：
+  - **根因**：`session.rs` 数字臂用**全表索引** `page*page_size+n-1` + `idx < all.len()`
+    判边界，page=0 按 `6` 会命中第 2 页第 1 个候选（选中窗口上看不见的词）；`Digit(0)`
+    落到防御臂被静默吞掉（死键）。
+  - **方案**：判定基准改为**本页候选数**——`n ∈ 1..=page_candidates().len()` → 选词，
+    其余（越界 + `0`）→ 数字字符进**字面尾巴**（tail 而非 raw：raw 拼音序列不被污染、
+    候选表原样保留、退格零重算逐项复原）。防御臂删除 `Key::Digit(_)`（`0` 已被主臂接住，
+    不留两处语义）。
+  - **改动**：`crates/iuv-core/src/session.rs`（数字臂重写 + 防御臂收窄）；
+    `docs/plan/01-contract.md` §4.1 契约行、`docs/plan/38-keyboard-flow.md` §二表格与变更记录
+    同步为「数字 0-9 / 页内选词 / 越界字面 / 0 一并字面」口径。`iuv-tsf`/`iuv-win`/keymap
+    零改动（路由与绑定层不动；`9`/`0` 被绑成翻页时组合表先命中，数字到不了会话层）。
+  - **真机验收（notepad，两轮）**：①`ceshi` + `6`/`7`/`9`/`0` → 均不选词不上屏，候选窗
+    单条无编号 `ceshi*`，Enter/Space 整串上屏；②`wenjian`（**有真实汉字候选**的合法拼音）
+    + `0` → 不误选，候选 5 项 → 1 项无编号，`commit：wenjian0`。②是更强证据：
+    有候选背景下按数字仍不选词。日志 `[candwin] 无编号候选出现："wenjian0"（候选 1 项）`
+    直接给出候选窗内容，不再需要间接推断。
+  - **计划外附带**：候选窗日志补「无编号候选」维度——`candwin.rs` 新增
+    `unnumbered_candidate()`（**复用 `iuv_ui::candidate_label`** 判定，不重写规则）
+    与 `unnumbered_suffix()`；`show` 追加标注，`update` 仅在无编号态翻转时记一条。
+    动机：首轮验收时 `update` 完全静默，字面态无从核实。4 个单测覆盖字面尾巴态 /
+    常规编号态 / 原文兜底共存 / 空 reading 不误报。首版自写近似判定被 `d:'t2` 用例打回
+    ——「不得写第二份规则」的实例。
+  - **测试**：`crates/iuv-core/tests/engine_session.rs` 新增 §5 六用例
+    （`digit_out_of_page_literalizes` / `digit_zero_literalizes` /
+    `backspace_after_literal_digit_restores` / `digit_within_page_still_commits` /
+    `digit_follows_page_size` / `space_in_literal_commits_verbatim`），旧
+    `digit_out_of_range_noop` 按新语义删除并留注释指路。
+    `cargo test --workspace` 全绿（iuv-core 集成 106 项、iuv-server candwin 8 项）、
+    `cargo check --workspace --all-targets` 零告警、`cargo clippy -p iuv-core -p iuv-server
+    --all-targets` 零告警、`cargo fmt --all -- --check` 通过。
+  - **未覆盖**（详见任务书 §8）：末页不足一页的末尾序号、`9`/`0` 被绑成翻页、悬空 picked
+    态下越界数字——三处机制上成立但未单独真机验证。

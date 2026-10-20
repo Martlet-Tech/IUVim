@@ -149,12 +149,22 @@ impl Session {
                     self.commit_index(idx);
                 }
             }
-            Key::Digit(n) if (1..=9).contains(&n) => {
-                let idx = self.page * self.page_size() + (n - 1) as usize;
-                if idx < self.all.len() {
-                    self.commit_index(idx);
+            // 数字键 = 序号即所见（docs/closed/60-digit-out-of-page-literal.md §3.1）：
+            // `n ∈ 1..=本页候选数` → 选词；其余（越界 + `0`）→ 字面尾巴追加该数字字符。
+            // 判定用**页内候选数**（`page_candidates().len()`，与窗口上看得见的序号逐一对齐），
+            // 不再是"全表索引"——旧实现 page=0 按 6 会命中第 2 页第 1 个候选，选走看不见的词。
+            // 数字进 tail 而非 raw：raw（拼音序列）不被污染，候选列表原样保留，
+            // 退格后 page/selected/候选逐项复原（零重算），与符号键同一套机制。
+            // `9`/`0` 被 keymap 绑成翻页时，路由层先命中组合表，根本到不了这里（层级次序见 §3.2）。
+            Key::Digit(n) => {
+                let n = n as usize;
+                if (1..=self.page_candidates().len()).contains(&n) {
+                    self.commit_index(self.page * self.page_size() + (n - 1));
+                } else if let Some(c) = char::from_digit(n as u32, 10) {
+                    // 0 与越界数字同等字面化（§3.4 a1）：不做无效序号的 UI 反馈，字面化本身就是反馈。
+                    // `from_digit` 兜住 n>9 的越界值（桥层只产 0-9，此处纯属防御，不 panic）。
+                    self.tail.push(c);
                 }
-                // 越界：消费但无操作
             }
             Key::Enter => {
                 self.end = Some(SessionEnd::Commit(self.all_text()));
@@ -233,8 +243,8 @@ impl Session {
             Key::Char(c) => self.tail.push(c),
             // 防御性忽略：Tab/Delete/Home/End/Insert/F1-F12 正常情况下经组合查表被归一化为
             // 会话动作（或未绑定放行给应用），不该直达会话；兜底忽略不扰动 composition。
-            Key::Digit(_)
-            | Key::ShiftChar(_)
+            // 数字键不在此列：0-9 全部由上面的 `Key::Digit` 臂接住（页内选词 / 越界字面化）。
+            Key::ShiftChar(_)
             | Key::Tab
             | Key::Delete
             | Key::Home
