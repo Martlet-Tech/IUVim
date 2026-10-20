@@ -42,9 +42,21 @@ platforms/
 iuv-server 引擎 `Session::on_key` → 服务端自绘候选窗；断连自动拉起 + ResumeToken 重绑，
 不可达窗口期按键透明放行。用户库由 server 独占持有并发布共享段。
 
-## 快速开始
+## 安装（普通用户）
 
-前置：Rust 1.89+（workspace rust-version，cosmic-text 0.19 要求），Windows 10/11 x64。
+从 [Releases](https://github.com/Martlet-Tech/vaim/releases) 下载 `iuv-setup-<版本>.exe`，双击安装
+（需要管理员权限，安装程序会弹 UAC）。装完**注销一次或重启**，然后在
+系统设置 → 时间和语言 → 语言 → 中文 → 键盘 里切到「IUV 输入法」。
+
+⚠️ 本版**未做代码签名**。Windows SmartScreen 会拦一次，点「更多信息 → 仍要运行」即可。
+安装包只做两件系统级改动：注册 TSF 输入法（`HKLM\...\CTF\TIP`）和注册一个登录自启计划任务
+（`Iuv-ServerStart`，即引擎服务进程）。卸载在「设置 → 应用」里，会备份你的配置和用户词库。
+
+卸载后残留文件在注销/重启时自动清理（输入法 DLL 被所有运行中的程序映射，无法当场删除）。
+
+## 从源码构建（开发者）
+
+前置：Rust 1.89+（workspace rust-version；iuv-server 因 eframe 需要 1.95+），Windows 10/11 x64。
 
 ```powershell
 cargo check --workspace       # 检查
@@ -53,7 +65,15 @@ scripts\build.ps1             # 三车道并行构建（x64/x86 TSF ∥ server�
 scripts\install.ps1           # 安装（管理员，自动弹 UAC；词库缺失自动下载编译）
 scripts\uninstall.ps1         # 卸载（注销一次收尾）
 scripts\dev-deploy.ps1        # 热部署：改完代码免注销生效，新开窗口加载新 DLL
+scripts\package.ps1           # 出安装包 → dist\iuv-setup-<ver>.exe（需 Inno Setup 6）
 ```
+
+出安装包还需要 Inno Setup 6：`winget install --id JRSoftware.InnoSetup -e`。
+详见 [`installer/README.md`](installer/README.md)。
+
+**测试环境注意**：本仓库有部分测试依赖 Windows 命名对象（共享段/命名管道）。若在受限或
+非交互环境（如某些沙箱、低完整性进程）跑测试失败，把 `TMP`/`TEMP` 重定向到一个可写目录再跑；
+`docs/closed/50-quality-audit.md` §6 记录了这类环境的排查过程。
 
 注册后需在系统设置中将该输入法设为默认，并在高级键设置把「输入法/非输入法切换」热键设为 Ctrl+Space。
 使用中英切换的注意事项见 `AGENTS.md`「关键设计决策」。
@@ -65,6 +85,7 @@ scripts\dev-deploy.ps1        # 热部署：改完代码免注销生效，新开
 - `docs/plan/02-conventions.md` — 全局约定（测试纪律/日志/代码风格）
 - `docs/status.md` — 工作状态台账
 - `docs/closed/` — 已结案任务书归档
+- `installer/README.md` — 出安装包与版本发布流程
 
 ## 许可
 

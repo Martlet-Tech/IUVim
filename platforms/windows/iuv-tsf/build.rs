@@ -34,8 +34,12 @@ fn main() {
         .set_icon_with_id("res/caps.ico", "103");
     res.set("FileDescription", "IUV 输入法 - 中文输入法（TSF 文本服务）");
     res.set("ProductName", "IUV 输入法");
-    res.set("FileVersion", "0.1.0.0");
-    res.set("ProductVersion", "0.1.0.0");
+    // 版本号唯一真相源 = workspace `[workspace.package] version`（61 号）。
+    // 原先硬编码 "0.1.0.0"，每次发版必漏——改由 cargo 注入的包版本派生。
+    let ver = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
+    let quad = format!("{ver}.0"); // 三段 semver → 四段 Windows 版本
+    res.set("FileVersion", &quad);
+    res.set("ProductVersion", &quad);
     res.set("OriginalFilename", "iuv_tsf.dll");
     res.set("InternalName", "iuv_tsf.dll");
     res.set("LegalCopyright", "MIT License");

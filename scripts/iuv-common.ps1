@@ -1,4 +1,4 @@
-﻿# iuv 输入法 部署/卸载公共库（install.ps1 / dev-deploy.ps1 / uninstall.ps1 / build.ps1
+# iuv 输入法 部署/卸载公共库（install.ps1 / dev-deploy.ps1 / uninstall.ps1 / build.ps1
 # dot-source 共享）。只定义函数，无顶层副作用。用法：. (Join-Path $PSScriptRoot 'iuv-common.ps1')
 #requires -Version 5.1
 
@@ -677,6 +677,25 @@ function Register-IuvTip {
 # 访问（实测 2026-09-27）。ExecutionTimeLimit 清零：计划任务默认 3 天限时会
 # 杀长驻服务进程。任务常驻注册不注销（2026-09-30：一次性任务导致重启后
 # server 缺席——开机自启是服务在位的正道）。
+#
+# **崩溃自愈（61 号 §3.3，2026-10-20 实测定稿）**：server 是薄客户端架构的全系统
+# 单点，进程挂掉后客户端的 schedule_revive 只在"有按键"时才触发——空闲期挂掉要等用户
+# 下次打字才 1-3s 透明恢复。本任务补上这个空窗。
+#
+# **为什么不用 RestartOnFailure**：`New-ScheduledTaskSettingsSet -RestartCount/-RestartInterval`
+# 写进 XML 是 `<RestartOnFailure>`，本机 4 轮探针实测**从不触发**（含正常失败退出、
+# 崩溃、被强杀三种），只在「任务被触发器启动」时才有机会生效，且行为不可靠。
+# （官方文档：https://learn.microsoft.com/windows/win32/taskscheduler/taskschedulerschema-restartonfailure-settingstype-element）
+#
+# **改用「周期触发器 + IgnoreNew」**：每 1 分钟请求启动一次：
+#   · server 活着 → IgnoreNew 直接忽略，不产生额外进程；
+#   · server 死了 → 下一次触发（≤60s）把它拉起来。
+# 实测：杀掉运行中的任务进程后，下一分钟内自动重启（探针 §5）。
+# 代价：server 被 TSF 客户端抢先拉起时，任务的周期请求会真起一个进程（任务视角
+# 它没在跑），靠 server 的**早期单实例守卫**立即退出——故 main.rs 的守卫被提到
+# 一切副作用之前（否则每分钟重复发布 boot id / 写日志）。
+#
+# 电池策略必须置 false：默认 true 会在笔记本拔电后停摆，server 被杀且不自愈。
 function Deploy-IuvServer {
     $p = Get-IuvPaths
     if (-not (Test-Path $p.ServerSrc)) {
@@ -693,12 +712,22 @@ function Deploy-IuvServer {
     try {
         $u = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         $action = New-ScheduledTaskAction -Execute $p.ServerDst -WorkingDirectory $p.DestDir
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $u
+        # 两个触发器：登录自启（立刻起）+ 周期自愈（每 1 分钟探测）。
+        $triggers = @(
+            (New-ScheduledTaskTrigger -AtLogOn -User $u),
+            (New-ScheduledTaskTrigger -Once -At (Get-Date) `
+                -RepetitionInterval (New-TimeSpan -Minutes 1) `
+                -RepetitionDuration (New-TimeSpan -Days 3650))
+        )
         $principal = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited
-        $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
-        Register-ScheduledTask -TaskName $tn -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+        $settings = New-ScheduledTaskSettingsSet `
+            -StartWhenAvailable `
+            -ExecutionTimeLimit ([TimeSpan]::Zero) `
+            -MultipleInstances IgnoreNew `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName $tn -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
         Start-ScheduledTask -TaskName $tn -ErrorAction Stop
-        Trace-Script "Deploy-IuvServer: 自启任务已常驻注册并启动（AtLogOn $u）"
+        Trace-Script "Deploy-IuvServer: 自启任务已常驻注册并启动（AtLogOn $u + 1min 周期自愈）"
     } catch {
         Trace-Script "Deploy-IuvServer: 计划任务注册/启动失败：$_"
         Write-Host "警告：计划任务注册/启动失败（$_），回退直启（可能高完整性不可连）"
@@ -707,10 +736,10 @@ function Deploy-IuvServer {
     Start-Sleep -Milliseconds 800
     if (Get-Process -Name 'iuv-server' -ErrorAction SilentlyContinue) {
         Trace-Script "Deploy-IuvServer: iuv-server 已运行（用户中完整性上下文）"
-        Write-Host "iuv-server 已部署并启动（日志：%TEMP%\iuv-server.log）"
+        Write-Host "iuv-server 已部署并启动（日志：%TEMP%\iuv-server-<开机>.log）"
         return $true
     }
     Trace-Script "Deploy-IuvServer: iuv-server 启动后退出"
-    Write-Host "警告：iuv-server 启动后退出，请查看 %TEMP%\iuv-server.log"
+    Write-Host "警告：iuv-server 启动后退出，请查看 %TEMP%\iuv-server-<开机>.log"
     return $false
 }
