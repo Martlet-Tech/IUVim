@@ -1580,3 +1580,39 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     --all-targets` 零告警、`cargo fmt --all -- --check` 通过。
   - **未覆盖**（详见任务书 §8）：末页不足一页的末尾序号、`9`/`0` 被绑成翻页、悬空 picked
     态下越界数字——三处机制上成立但未单独真机验证。
+
+- [x] **61 号发布线第一周：CI + 安装包 + v0.2.0 + server 周期自愈（2026-10-20，分支 `feat/release-0.2`）**
+  - **动机**：10 周 295 提交 / 443 测试 / 32k 行 Rust，但无 CI、无 tag、无安装包。技术底子已够，
+    缺的是"可交付物"。
+  - **CI**（`.github/workflows/ci.yml`）：四 job —— `fmt` / `clippy -- -D warnings` /
+    `test --no-fail-fast` / `rtt-bench`（独立串行）。`IUV_SKIP_WINRES` **不置位**（资源必须真编，
+    否则产物不可装载）；`Swatinem/rust-cache` 缓存；`concurrency` 按分支取消旧跑。
+    `rtt_bench` 拆独立 job 的理由：本机全量并行时曾失败一次（`per_request_connect` P50 断言，
+    单跑必过），拆开后失败即真失败，不动断言语义。
+  - **版本归一**：`[workspace.package] version = "0.2.0"`，8 crate 改 `version.workspace = true`；
+    `iuv-tsf/build.rs` 的 `FileVersion`/`ProductVersion` 从 `CARGO_PKG_VERSION` 派生
+    （原硬编码 `0.1.0.0`，每次发版必漏）。实测两个 TSF 产物均为 `0.2.0.0`。
+  - **安装包**：`installer/iuv-setup.iss`（Inno Setup 6）+ `scripts/package.ps1` +
+    `scripts/install-steps.ps1`。产物 `dist\iuv-setup-0.2.0.exe`（18.3 MB，含 36MB 词库的
+    LZMA 压缩）。布局：三 exe/dll → `{app}`；词库/简繁表 → `%LOCALAPPDATA%\iuv`（用户数据，
+    `onlyifdoesntexist` + `uninsneveruninstall`）；双架构 `regsvr32`（x86 走 SysWOW64）；
+    计划任务与 ctfmon 重启交给 `install-steps.ps1`（复用 `iuv-common.ps1`，避免两份真相）。
+    Inno 官方包不带简中，`installer/ChineseSimplified.isl` 随仓库带（UTF-8 BOM）。
+  - **server 周期自愈（方案经实测订正）**：原计划用 `-RestartCount/-RestartInterval`
+    （即 XML 的 `<RestartOnFailure>`）——**六轮探针实测从不触发**：正常失败退出、崩溃、
+    被强杀三种情形都只跑一遍，XML 里能看到但行为不生效。改用
+    **`AtLogOn` + `Once` 带 `RepetitionInterval=1min`（Duration 3650 天）+ `MultipleInstances=IgnoreNew`**：
+    server 活着时触发被忽略，死了下一次触发 ≤60s 拉起。**真机验证：强杀后 39.5s 自动恢复。**
+  - **配套代码改动**（`main.rs`）：单实例守卫从 `main()` 中部**提到一切副作用之前**。
+    周期触发会在 server 被客户端抢先拉起时真起一个空转进程，守卫必须早于
+    boot id 发布（会与 TSF 读指针竞争）/日志初始化/36MB 词库 mmap。
+    实测空转进程 420ms 退出、**零日志增长**。
+  - **顺带修**：`iuv-common.ps1` / `uninstall.ps1` / `download-opencc.ps1` 三个脚本补
+    UTF-8 BOM（PowerShell 5.1 按 GBK 解读 → 中文乱码甚至 `Missing terminator` 解析失败，
+    本次出包脚本首次踩中）；`uninstall.ps1` 加 `-FromUninstaller`（不删 `{app}`——
+    Inno 卸载器自己删，脚本先删 `unins000.exe` 会让卸载器半途崩）；
+    `.gitignore` 加 `/build` `/dist`；README 加「安装（普通用户）」节 + `installer/README.md`。
+  - **测试**：本机等价 CI 全绿 —— `cargo fmt --all -- --check` 0、`cargo clippy --workspace
+    --all-targets` 0 告警、`cargo test --workspace --no-fail-fast` **443 过 / 0 败**。
+  - **未做（61 号 §5）**：`gh` 未登录 → Release 未建（tag `v0.2.0` 已在本机）；
+    干净机器装包验收未做；无代码签名（SmartScreen 会拦一次）。

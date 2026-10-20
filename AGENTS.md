@@ -29,11 +29,16 @@ Rust + TSF 的 Windows 中文输入法。核心卖点（M2 起）：**用户掌�
 - ◐ **M10** 薄客户端重构（49 号，分支 `feat/m10-thin-client`）：iuv-server 全系统唯一服务进程 + TSF 薄客户端，
   一条长连接三平面（transport + iuv-proto）。P0-P5/②迁移/③-1 删本地模式/③-2 镜像归一全部落地并真机回归；
   ③-3 已收口并并入 main（2026-09-30）。任务书 `docs/closed/49-thin-client-arch.md`
+- ✅ **发布线 v0.2.0**（61 号，2026-10-20）：CI（fmt/clippy/test）+ Inno 安装包 + server 周期自愈。
+  `scripts\package.ps1` 一条命令出 `dist\iuv-setup-<ver>.exe`；版本真相源 = `Cargo.toml` 的
+  `[workspace.package] version`。任务书 `docs/plan/61-release-v0.2.md`
 - ⏸ **M9** 贴图皮肤框架（调研定稿挂起；前置 M8 工具栏已多轮打磨，可重新评估）
 - ⬜ **M3** 整句增强(LMDG)/模糊音 · 符号/emoji 候选 · 学习候选
 
 ### 活跃事项
 
+- **v0.2.0 发布收尾**：`gh auth login` 后 `gh release create v0.2.0 dist\iuv-setup-0.2.0.exe`
+  （tag 已在本机，未推）；装包后的干净机器验收未做（见 61 号 §4）
 - **另立任务**：语言栏右键菜单部分程序不弹出
   （已布 `[langbar]` 诊断日志，待复现定位：复现程序无 `OnClick` 行 = 系统路由
   层问题；首要假设 = 管理员权限程序）
@@ -112,6 +117,7 @@ scripts\build.ps1          # 三车道并行构建（x64/x86 TSF ∥ server）
 scripts\install.ps1        # 全新安装（管理员，自动弹 UAC）
 scripts\uninstall.ps1      # 卸载（管理员，自动弹 UAC；注销收尾）
 scripts\dev-deploy.ps1     # 热部署：改完代码后免注销生效（默认构建；-SkipBuild 跳过）
+scripts\package.ps1        # 出安装包 → dist\iuv-setup-<ver>.exe（需 Inno Setup 6）
 ```
 
 ## 硬性约定
