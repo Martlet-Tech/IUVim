@@ -1,4 +1,4 @@
-# 安装包内的「装后动作」（61 号）：注册计划任务 → 起 server → 生成默认配置 → 重启 ctfmon。
+﻿# 安装包内的「装后动作」（61 号）：注册计划任务 → 起 server → 生成默认配置 → 重启 ctfmon。
 #
 # 为什么这些不放 Inno 的 [Code] 里：
 #  · 计划任务的「崩溃重启」(RestartOnFailure) 在 schtasks 命令行没有参数，只能写 XML；

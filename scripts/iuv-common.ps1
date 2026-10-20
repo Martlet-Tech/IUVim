@@ -1,4 +1,4 @@
-# iuv 输入法 部署/卸载公共库（install.ps1 / dev-deploy.ps1 / uninstall.ps1 / build.ps1
+﻿# iuv 输入法 部署/卸载公共库（install.ps1 / dev-deploy.ps1 / uninstall.ps1 / build.ps1
 # dot-source 共享）。只定义函数，无顶层副作用。用法：. (Join-Path $PSScriptRoot 'iuv-common.ps1')
 #requires -Version 5.1
 

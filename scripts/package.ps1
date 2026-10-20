@@ -25,8 +25,11 @@ $distDir = Join-Path $root 'dist'
 
 # ---- 1. 版本号：唯一真相源 = Cargo.toml 的 [workspace.package] version ----
 # 直接解析文本而不问 cargo：出包要能在任何机器上跑，不依赖 cargo metadata 的耗时。
-$cargoToml = Get-Content (Join-Path $root 'Cargo.toml') -Raw
-if ($cargoToml -notmatch '(?ms)\[workspace\.package\].*?^version\s*=\s*"([^"]+)"') {
+# **必须显式按 UTF-8 读**：Windows PowerShell 5.1 的 Get-Content 默认按系统 ANSI
+# （简中 = GBK）解码，Cargo.toml 是无 BOM 的 UTF-8，中文注释会被解成乱码并让
+# 后续正则失配（2026-10-20 实际踩中：`-raw` 下多字节错位，`^version` 匹配不上）。
+$cargoToml = [System.IO.File]::ReadAllText((Join-Path $root 'Cargo.toml'), [System.Text.Encoding]::UTF8)
+if ($cargoToml -notmatch '(?ms)^\[workspace\.package\].*?^version\s*=\s*"([^"]+)"') {
     Write-Host "错误：无法从 Cargo.toml 的 [workspace.package] 解析版本号"
     exit 1
 }
