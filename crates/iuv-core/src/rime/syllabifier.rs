@@ -266,7 +266,7 @@ fn prune(edges: &mut Edges, target: usize) {
             }
         }
     }
-    for (_, m) in edges.iter_mut() {
+    for m in edges.values_mut() {
         m.retain(|e, _| good.contains(e));
     }
     edges.retain(|f, m| good.contains(f) && !m.is_empty());

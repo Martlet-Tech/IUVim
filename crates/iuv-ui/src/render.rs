@@ -388,7 +388,10 @@ pub(crate) fn pixmap_to_surface(pixmap: Pixmap) -> Surface {
     }
     // tiny-skia 0.12 像素缓冲为 premultiplied RGBA（内存序 r,g,b,a）；
     // Surface 契约要求 premultiplied BGRA（Windows ULW DIB / D2D 直供）——交换每像素 R/B。
-    for px in data.chunks_exact_mut(4) {
+    // `as_chunks_mut`（稳定 1.88+）比 `chunks_exact_mut(4)` + `swap(0, 2)` 更直白：
+    // 编译器直接拿到 `&mut [u8; 4]`，且长度非 4 倍数时语义明确（尾部丢弃）。
+    let (pxs, _tail) = data.as_chunks_mut::<4>();
+    for px in pxs {
         px.swap(0, 2);
     }
     Surface { w, h, pixels: data }
