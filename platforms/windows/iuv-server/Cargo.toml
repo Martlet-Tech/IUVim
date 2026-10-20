@@ -1,6 +1,6 @@
 [package]
 name = "iuv-server"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 # eframe 0.36 要求 rustc ≥ 1.95（workspace 基线 1.89，本 crate 单独抬到 1.95）
 rust-version = "1.95"

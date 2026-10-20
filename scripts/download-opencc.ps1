@@ -1,4 +1,4 @@
-# 下载 OpenCC 简→繁转换表（BYVoid/OpenCC，Apache-2.0）到 data\opencc\。
+﻿# 下载 OpenCC 简→繁转换表（BYVoid/OpenCC，Apache-2.0）到 data\opencc\。
 # 数据仅用于本地构建 iuv.opencc（31-script-traditional.md）：不入 git 仓库（data/ 已 gitignore）、
 # 不编进二进制；发布包若含编译产物 iuv.opencc，需附 Apache-2.0 NOTICE 声明（见 docs/plan/02-conventions.md §6）。
 # 幂等：目标已存在且非空则跳过。用法：scripts\download-opencc.ps1

@@ -9,11 +9,18 @@
 # - 不调用 regsvr32 /u（会加载 DLL，被占用时挂起）；注册键直接删，效果相同。
 # - 不杀 explorer、不要求关闭应用：DLL 被占用只影响文件删除，不影响注册表与列表刷新。
 # - 用户数据（config.json / 用户词库）删除前备份，误卸可恢复；共享密钥随之失效属预期。
+# - **-FromUninstaller**（61 号，安装包内的卸载路径）：跳过安装目录的文件删除——
+#   调用方是 Inno 的卸载器，它自己会删 {app}；本脚本若先删掉 unins000.exe，
+#   卸载器会在半途崩。其余步骤（停服务、删注册表、重启 ctfmon、清用户数据）照做。
 #requires -Version 5.1
+
+param(
+    [switch]$FromUninstaller
+)
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'iuv-common.ps1')
-Exit-IfNotAdmin -ScriptPath $PSCommandPath
+Exit-IfNotAdmin -ScriptPath $PSCommandPath -PassArgs @(if ($FromUninstaller) { '-FromUninstaller' } else { @() })
 
 Trace-Script "uninstall: 提升实例启动"
 Write-Host "正在卸载 IUV 输入法（管理员窗口）..."
@@ -86,7 +93,11 @@ if (-not (Restart-Ctfmon)) {
 
 # ---- 3. 删除安装文件与用户数据（未锁直接删，有残留交给延迟清理）----
 $delayed = $false
-if (Test-Path $destDir) {
+if ($FromUninstaller) {
+    # Inno 卸载器自己删 {app}（它必须活着走完自己的流程）；这里只登记目录兜底，
+    # 防止卸载器被残留文件卡住留下空壳。
+    Trace-Script "uninstall: -FromUninstaller → 跳过安装目录文件删除（交给 Inno）"
+} elseif (Test-Path $destDir) {
     $locked = @()
     Get-ChildItem -LiteralPath $destDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
         if ($_.PSIsContainer) { return }

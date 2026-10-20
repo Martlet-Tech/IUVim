@@ -2,3 +2,7 @@
 
 /target-server
 /data
+
+# 出包中间目录与产物（61 号）：build\pkg 是 Inno 的 Source 目录，dist\ 放安装包
+/build
+/dist

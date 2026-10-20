@@ -3,6 +3,9 @@ resolver = "2"
 members = ["crates/iuv-data", "crates/iuv-proto", "crates/iuv-core", "crates/iuv-ui", "crates/iuv-repl", "platforms/windows/iuv-tsf", "platforms/windows/iuv-win", "platforms/windows/iuv-server"]
 
 [workspace.package]
+# 发布版本唯一真相源（61 号）：各 crate 用 version.workspace = true 继承；
+# iuv-tsf 的 Windows 版本资源也从 CARGO_PKG_VERSION 读，不再另写一份。
+version = "0.2.0"
 edition = "2021"
 # cosmic-text 0.19 需要 rust >= 1.89（M4 起）。
 rust-version = "1.89"

@@ -1,0 +1,73 @@
+name: CI
+
+# 61 号：把「人肉跑测试」变成机器判定。
+# 只跑 Windows：TSF 是 Windows 专属，跨平台 crate 的类型检查在 Windows 上同样成立。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # 不用 IUV_SKIP_WINRES：runner 自带 Windows SDK，TSF 的 winres 资源编译必须真跑
+  #（跳过的话产物不可装载，测了也不算数）。
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+      # -D warnings：警告即失败。仓库当前基线是零告警，不给自己留退路。
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+      # --no-fail-fast：一个 crate 红了也要看完全量，别被第一处失败挡住诊断。
+      # 需要真词库的用例已 #[ignore]，CI 不下载 36MB 词库。
+      - run: cargo test --workspace --no-fail-fast
+
+  # rtt_bench 是传输层唯一的性能护栏。它与其它测试并行时偶发管道竞争
+  # （61 号 §5-①），故拆成独立 job 串行跑：失败就是真失败，不是噪声。
+  bench-guard:
+    name: rtt-bench
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: rtt
+      - run: cargo test -p iuv-win --test rtt_bench -- --test-threads=1 --nocapture

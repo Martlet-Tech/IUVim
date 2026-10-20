@@ -23,6 +23,27 @@ const OPENCC_FILENAME: &str = "iuv.opencc";
 const LOG_KEEP_DAYS: u64 = 7;
 
 fn main() {
+    // 单实例守卫（必须最前置，61 号 §3.3 定稿）。
+    //
+    // 调用方有三条，其中一条是**周期性**的：计划任务用「1 分钟重复触发器」做崩溃自愈
+    // ——server 活着时它仍每分钟拉起一次 exe，靠本守卫立即退出。因此本守卫必须早于
+    // 一切副作用（日志初始化、boot id 发布、引擎加载）：
+    //   · 每分钟重复发布 boot id 指针会与 TSF 读指针竞争（TSF 直接信指针取名）；
+    //   · 每分钟写一行「已有实例在位」到 server 日志 = 噪声；
+    //   · 加载 36MB 词库 mmap 只为退出 = 浪费。
+    // 守卫失败 → **静默** return（无日志：日志未初始化；无退出码：正常路径）。
+    //
+    // 命名管道支持多实例创建，无守卫会抢出多个 server 瓜分连接（工具栏/引擎分家）。
+    // 退出自动释放互斥体；持有者存续期 = 进程生命周期，无需显式 Release/Close。
+    unsafe {
+        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows::Win32::System::Threading::CreateMutexW;
+        if let Ok(_h) = CreateMutexW(None, false, windows::core::w!("iuv-server-singleton")) {
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                return; // 已有实例在位（正常：计划任务的周期探测）
+            }
+        }
+    }
     // 日志按「开机会话」分名（55 号 ④）：server 是**唯一命名者**——算本次开机标识、
     // 发布指针（供 TSF 取名）、用开机名装配自身日志，随后起后台线程清理旧日志。
     // 同一次开机内 server 重启（如 dev-deploy）算出的 boot 标识有 ±1s 抖动，发布时
@@ -37,20 +58,6 @@ fn main() {
     // 输出无控制台可见，钩子落 iuv-server.log（daemon::log::install_panic_hook
     // 此前定义后从未调用）。
     iuv_server::daemon::log::install_panic_hook();
-    // 单实例守卫：部署（计划任务 Start-ScheduledTask）与客户端首连拉起
-    //（remote_host::spawn_server_process）在部署/重启瞬间并发，命名管道支持多
-    // 实例创建——无守卫会抢出多个 server 瓜分连接（工具栏/引擎分家）。后来者
-    // 记日志即退（退出自动释放互斥体；持有者存续期 = 进程生命周期，无需显式
-    // Release/Close）。
-    unsafe {
-        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-        use windows::Win32::System::Threading::CreateMutexW;
-        let _ = CreateMutexW(None, false, windows::core::w!("iuv-server-singleton"));
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            log_line("已有 iuv-server 实例在位 → 本实例退出（单实例守卫）");
-            return;
-        }
-    }
     // P4 服务端自渲染候选窗：PMv2（GetDpiForMonitor 按 caret 所在显示器返回
     // 真 per-monitor DPI；窗口创建前置位，晚于任何窗口创建则无效）。
     // SAFETY: 标准一次性进程属性设置；失败（已设置/不支持）忽略。

@@ -188,7 +188,7 @@ impl Dict {
         // ---- 段4 记录体：逐条边界扫描（防截断/坏字节；不校验排序）----
         let mut pos = records.start;
         while pos < records.end {
-            let step = record_step(&bytes[pos..records.end]).map_err(&bad)?;
+            let step = record_step(&bytes[pos..records.end]).map_err(bad)?;
             pos += step;
         }
 
@@ -212,7 +212,7 @@ impl Dict {
             bucket_dir.push((letter, (pos + 5 - buckets.start) as u32, n as u32));
             pos += 5;
             for _ in 0..n {
-                let step = record_step(&bytes[pos..buckets.end]).map_err(&bad)?;
+                let step = record_step(&bytes[pos..buckets.end]).map_err(bad)?;
                 pos += step;
             }
             count += 1;

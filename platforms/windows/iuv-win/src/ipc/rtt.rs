@@ -179,15 +179,25 @@ pub fn test_pipe_name(tag: &str) -> String {
     format!(r"\\.\pipe\iuv-rtt-{}-{tag}", std::process::id())
 }
 
-/// 客户端连接（含 NOT_FOUND 短重试）：服务端两次 accept 之间/首个实例创建前存在
-/// 微秒级「管道不存在」窗口（ERROR_FILE_NOT_FOUND），与 daemon 在线判定无关——
-/// 基准里重试到管道出现为止（上界 2s，超时按真错误上报）。
+/// 客户端连接（含短重试）：基准自身存在**两种**「暂时连不上」的窗口，都要重试：
+///
+/// 1. `NotFound` —— 服务端两次 `CreateNamedPipeW` 之间，管道实例还不存在；
+/// 2. `TimedOut`（内部即 `ERROR_PIPE_BUSY`）—— 客户端下一轮 `CreateFileW` 撞上
+///    服务端**上一轮尚未 `CloseHandle`** 的已连接实例。此时实例存在但无监听位，
+///    `connect_client` 会 `WaitNamedPipeW` 等满 1500ms 才报 TimedOut。
+///
+/// 第 2 条是 2026-10-20 在 GitHub Actions 上暴露的（本机 1.96 时序侥幸没撞上）：
+/// per-request 形态每轮都关句柄再建实例，客户端快一拍就必然 busy。基准里这是
+/// **自身竞态**，与 daemon 在线判定无关，故一并重试。
+///
+/// 上界 10s：`TimedOut` 每次要耗满 1.5s，2s 上界只够重试一次，不够覆盖这窗口。
+/// 正常路径永远第一次就成功，放宽上界不影响基准结果。
 fn connect_client_retry(name: &str) -> io::Result<windows::Win32::Foundation::HANDLE> {
-    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
     loop {
         match imp::connect_client(&imp::name_wide(name)) {
             Ok(h) => return Ok(h),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::TimedOut) => {
                 if Instant::now() > deadline {
                     return Err(e);
                 }

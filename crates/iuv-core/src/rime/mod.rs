@@ -201,7 +201,7 @@ impl ImeEngine for RimeEngine {
         // 多起点全丢 → 句通道静默失效 + 中段词消失，2026-08-26 实测根因。）
         let mut origins = std::collections::BTreeSet::new();
         origins.insert(0);
-        for (_, to_map) in graph.edges.iter() {
+        for to_map in graph.edges.values() {
             for (to, sps) in to_map {
                 if sps
                     .iter()
@@ -636,7 +636,7 @@ mod tests {
         println!("== farthest = {}", graph.farthest);
         let mut origins = std::collections::BTreeSet::new();
         origins.insert(0);
-        for (_, to_map) in graph.edges.iter() {
+        for to_map in graph.edges.values() {
             for (to, sps) in to_map {
                 if sps
                     .iter()
