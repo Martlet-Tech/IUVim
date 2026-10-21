@@ -62,10 +62,16 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-; 三个二进制产物（scripts\package.ps1 从 target / target-server 汇集到 build\pkg）
-Source: "..\build\pkg\iuv_tsf.dll";     DestDir: "{app}"; Flags: ignoreversion
-Source: "..\build\pkg\iuv_tsf_x86.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\build\pkg\iuv-server.exe";  DestDir: "{app}"; Flags: ignoreversion
+; ⚠️ 二进制**不直接落到 {app}**，先落 {app}\payload，由 scripts\install-steps.ps1 热替换。
+;
+; 原因（2026-10-21 真机覆盖安装卡死）：TSF DLL 被全系统运行中的进程映射，Inno 覆盖
+; 已存在文件走 DeleteFile + 重建 → sharing violation →「DeleteFile 失败：错误代码 5。
+; 拒绝访问」，重试永远过不去。仓库脚本的做法是**改名再写**（iuv-common.ps1 的
+; Replace-InUseFile）：已加载的 DLL 以 FILE_SHARE_DELETE 映射，可以改名让出原名，
+; 老进程持旧映射、新进程加载新文件，免注销、零杀进程。
+Source: "..\build\pkg\iuv_tsf.dll";     DestDir: "{app}\payload"; Flags: ignoreversion
+Source: "..\build\pkg\iuv_tsf_x86.dll"; DestDir: "{app}\payload"; Flags: ignoreversion
+Source: "..\build\pkg\iuv-server.exe";  DestDir: "{app}\payload"; Flags: ignoreversion
 ; 词库与简繁表 → 用户数据目录。onlyifdoesntexist：升级不覆盖用户已有的词库；
 ; uninsneveruninstall：不归 Inno 卸载跟踪（卸载时由 uninstall.ps1 备份后清理）。
 Source: "..\build\pkg\iuv.imedic"; DestDir: "{localappdata}\iuv"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
@@ -76,13 +82,12 @@ Source: "..\scripts\uninstall.ps1";     DestDir: "{app}\scripts"; Flags: ignorev
 Source: "..\scripts\iuv-common.ps1";    DestDir: "{app}\scripts"; Flags: ignoreversion
 
 [Run]
-; 1) 注册：x64 用 System32 regsvr32，x86 用 SysWOW64（落 WoW64 视图）
-Filename: "{sys}\regsvr32.exe";     Parameters: "/s ""{app}\iuv_tsf.dll""";     Flags: runhidden waituntilterminated; StatusMsg: "正在注册输入法（x64）..."
-Filename: "{syswow64}\regsvr32.exe"; Parameters: "/s ""{app}\iuv_tsf_x86.dll"""; Flags: runhidden waituntilterminated; StatusMsg: "正在注册输入法（x86）..."
-; 2) 计划任务 + 起 server + 默认配置 + 重启 ctfmon（全部在 install-steps.ps1）
+; 全部装后动作（二进制落地 + 双架构注册 + 计划任务 + 起 server + 默认配置 + 刷新 ctfmon）
+; 都在 install-steps.ps1 里：注册必须在**新 DLL 落地之后**，而落地是热替换，
+; 不能用 Inno 的 [Run] 拆成两步。
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\install-steps.ps1"""; \
-  Flags: runhidden waituntilterminated; StatusMsg: "正在配置引擎服务..."
+  Flags: runhidden waituntilterminated; StatusMsg: "正在安装输入法组件..."
 
 [UninstallRun]
 ; 卸载统一交给 uninstall.ps1（停服务 / 删 5 个注册表键 / 备份用户数据 / 延迟清理）
@@ -91,7 +96,9 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Flags: runhidden waituntilterminated; RunOnceId: "IuvCleanup"
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}\scripts"
+; 二进制不是 Inno 装的（是脚本热替换进去的），必须显式声明；
+; 被映射中的 DLL 删不掉是正常的——uninstall.ps1 已登记延迟清理。
+Type: filesandordirs; Name: "{app}"
 
 [Code]
 // 升级场景：先停旧 server，避免文件占用（Inno 的 CloseApplications 不覆盖常驻进程）。

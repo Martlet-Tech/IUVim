@@ -26,18 +26,37 @@ scripts\package.ps1 -SkipBuild
 
 | 内容 | 目标 | 说明 |
 |---|---|---|
-| `iuv_tsf.dll` | `{app}` | x64 TSF，`regsvr32` 注册 |
-| `iuv_tsf_x86.dll` | `{app}` | x86（WoW64），`SysWOW64\regsvr32` 注册 |
-| `iuv-server.exe` | `{app}` | 引擎服务进程 |
+| 内容 | 目标 | 说明 |
+|---|---|---|
+| `iuv_tsf.dll` | `{app}`（经 `payload\` 热替换） | x64 TSF，`regsvr32` 注册 |
+| `iuv_tsf_x86.dll` | `{app}`（同上） | x86（WoW64），`SysWOW64\regsvr32` 注册 |
+| `iuv-server.exe` | `{app}`（同上） | 引擎服务进程 |
 | `iuv.imedic` / `iuv.opencc` | `%LOCALAPPDATA%\iuv` | 词库与简繁表（用户数据，不覆盖已有） |
 | `scripts\*.ps1` | `{app}\scripts` | 装后动作与卸载动作 |
 
+### ⚠️ 二进制为什么先落 `payload\` 再热替换
+
+**输入法的硬约束：TSF DLL 被全系统运行中的进程映射**（explorer、ctfmon、每个加载过
+输入法的应用都持着 image section）。Inno 的 `[Files]` 覆盖已存在文件走
+`DeleteFile` + 重建，此时必然 sharing violation → 弹「DeleteFile 失败：错误代码 5。
+拒绝访问」，**重试永远过不去**（2026-10-21 真机覆盖安装卡死）。
+
+仓库脚本早就解过这题：`iuv-common.ps1` 的 `Replace-InUseFile`。已加载的 DLL 是以
+`FILE_SHARE_DELETE` 映射的，**可以改名**——把旧文件改名成 `.old` 让出原名，再在原位
+写新文件。老进程继续持旧映射，新进程加载新 DLL，零杀进程、免注销。
+
+所以 `[Files]` 只把二进制放进 `{app}\payload\`，由 `install-steps.ps1` 做改名替换，
+用完删掉 `payload`。**不要为了省事把它们直接写回 `[Files]` 的 `{app}`**——那正是
+0.2.0 覆盖安装失败的原因。
+
 装后动作（`scripts/install-steps.ps1`，与 `dev-deploy`/`install` 共用 `iuv-common.ps1`）：
 
-1. 注册计划任务 `Iuv-ServerStart`：登录自启 + **崩溃重启（1 分钟 × 3 次）**
-2. 通过计划任务启动 `iuv-server`（关键：必须是**中完整性**上下文，否则 TSF 连不上管道）
-3. 缺失时生成默认 `config.json`
-4. 以中完整性重启 `ctfmon`，让输入法列表刷新
+1. 把 `payload\` 里的三个二进制热替换到 `{app}`（改名旧文件 → 原位写新文件）
+2. 双架构 `regsvr32` 注册（必须在替换之后：regsvr32 是新进程，加载新文件）
+3. 注册计划任务 `Iuv-ServerStart`：登录自启 + **1 分钟周期自愈**
+4. 通过计划任务启动 `iuv-server`（关键：必须是**中完整性**上下文，否则 TSF 连不上管道）
+5. 缺失时生成默认 `config.json`（已有配置不动——覆盖安装不能丢用户设置）
+6. 以中完整性重启 `ctfmon`，让输入法列表刷新
 
 ## 3. 发布流程
 
@@ -79,5 +98,8 @@ gh release create v0.2.0 dist\iuv-setup-0.2.0.exe --title "iuv 输入法 v0.2.0"
 | 打字卡住/候选窗不出现 | 同上日志；`%TEMP%\iuv-tsf-<开机>.log` 看 `[backend]` 行 |
 | 词库加载失败 | 检查 `%LOCALAPPDATA%\iuv\iuv.imedic` 是否存在；见上面第 4 节的账户问题 |
 | 卸载后文件还在 | 正常：注销/重启时自动清理（`docs/plan/02-conventions.md` §3 的延迟清理机制） |
+| 安装中途报「DeleteFile 失败：错误代码 5」 | **0.2.0 的已知缺陷**，0.2.1 已修。升级到 0.2.1 即可覆盖安装；旧版只能先卸载再装 |
+| 安装目录出现 `iuv_tsf.dll.old` | 正常：改名替换的产物，注销/重启后由延迟清理删除 |
+| 装完提示「无法替换 xxx（被占用且不允许改名）」 | 有进程以独占方式持有该 DLL（少见）。注销后重装 |
 
 日志文件名里的 `<开机>` 是本次开机的 Unix 秒标识，由 `iuv-server` 发布。

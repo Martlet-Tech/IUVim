@@ -1616,3 +1616,24 @@ transport 层 6 项中危（客户端写保护/stream_id 烧号/odd 分支等）
     --all-targets` 0 告警、`cargo test --workspace --no-fail-fast` **443 过 / 0 败**。
   - **未做（61 号 §5）**：`gh` 未登录 → Release 未建（tag `v0.2.0` 已在本机）；
     干净机器装包验收未做；无代码签名（SmartScreen 会拦一次）。
+
+- [x] **0.2.1 · 修覆盖安装失败（2026-10-21，用户真机报障）**
+  - **现象**：在本机跑 `iuv-setup-0.2.0.exe` 覆盖安装，卡在
+    「\Program Files\iuv\iuv_tsf.dll … DeleteFile 失败：错误代码 5。拒绝访问」，重试无效。
+  - **根因**：输入法的基本约束——**TSF DLL 被全系统运行中的进程映射**（explorer /
+    ctfmon / 每个加载过输入法的应用都持 image section）。Inno `[Files]` 覆盖已存在文件
+    走 DeleteFile + 重建 → sharing violation。
+  - **我的失误**：仓库脚本的 `Replace-InUseFile` 本来就是为这个场景写的（已加载 DLL 以
+    `FILE_SHARE_DELETE` 映射，可改名让出原名 → 老进程持旧映射、新进程加载新文件、免注销），
+    我在安装包里却让 Inno 直接覆盖，绕过了这条已验证的路径。
+  - **修法**：`[Files]` 只把三个二进制落到 `{app}\payload\`；`install-steps.ps1` 用
+    `Replace-InUseFile` 逐个落到 `{app}`，然后删 payload。**顺序必须是先替换、后
+    regsvr32**（regsvr32 是新进程，要加载新文件），因此两条 regsvr32 从 `[Run]` 并入脚本。
+  - **卸载配套**：二进制不在 Inno 安装日志里 → `[UninstallDelete]` 显式声明整个 `{app}`；
+    `uninstall.ps1 -FromUninstaller` 跳过 `unins*`（卸载器正在跑）与 `{app}\scripts\`
+    （脚本正在那里执行），删不掉的登记延迟清理。
+  - **机械验证**（本机，LoadLibraryW 把 DLL 加载进进程模拟持锁）：
+    普通 `Copy-Item -Force` → sharing violation（复现报障）；`Replace-InUseFile` →
+    `Ok=True Renamed=True`，目标哈希 = 新版、`.old` 哈希 = 旧版。
+  - **产物**：`dist\iuv-setup-0.2.1.exe`（18.4 MB），TSF 版本资源实测 `0.2.1.0`。
+    本机 fmt 0 / clippy -D warnings 0。

@@ -82,15 +82,40 @@ scripts/package.ps1              一条命令：构建三产物 → 词库 → I
 - `iuv-server.exe` → `{app}`
 - `iuv.imedic` + `iuv.opencc` → `%LOCALAPPDATA%\iuv`（**词库不进 Program Files**：
   36MB 词库属用户数据，卸载时保留，与现有 `Get-IuvPaths` 一致）
-- 计划任务 `Iuv-ServerStart`（AtLogOn / Limited / 无限时限 / **带崩溃重启**，见 §3.3）
+- 计划任务 `Iuv-ServerStart`（AtLogOn / Limited / 无限时限 / **1 分钟周期自愈**，见 §3.3）
+
+**⚠️ 二进制必须走热替换（0.2.1 订正，2026-10-21 真机教训）**
+
+原实现让 Inno 的 `[Files]` 直接把三个二进制写到 `{app}`。**覆盖安装必失败**：
+Inno 覆盖已存在文件走 `DeleteFile` + 重建，而 TSF DLL 被全系统运行中的进程映射
+（explorer / ctfmon / 每个加载过输入法的应用），必然 sharing violation →
+「DeleteFile 失败：错误代码 5。拒绝访问」，重试永远过不去。
+
+**这是我漏掉的输入法基本约束**——仓库脚本的 `Replace-InUseFile` 本来就是为这个
+场景写的（已加载 DLL 以 `FILE_SHARE_DELETE` 映射，可以改名让出原名），我在安装包里
+绕过了它。
+
+订正后的布局：
+```
+[Files]  →  {app}\payload\iuv_tsf.dll / iuv_tsf_x86.dll / iuv-server.exe
+[Run]    →  install-steps.ps1：逐个 Replace-InUseFile 到 {app}，然后删掉 payload
+```
+顺序必须是「先替换、后 regsvr32」：regsvr32 是**新进程**，加载的是改名替换后的新文件。
+据此把 `[Run]` 里的两条 regsvr32 也并入 `install-steps.ps1`（拆成两步会注册到旧 DLL）。
+
+机械验证（本机，把 DLL 加载进进程模拟持锁）：
+- 普通 `Copy-Item -Force` → `sharing violation`（复现用户截图里的错）
+- `Replace-InUseFile` → `Ok=True Renamed=True`，目标文件哈希 = 新版本，`.old` = 旧版本
 
 **不做什么**（本版明确排除）：
 - 不做代码签名（无证书；Windows SmartScreen 会拦一次，文档里写清楚"更多信息 → 仍要运行"）
 - 不做自动更新
 - 不做静默安装参数以外的 CLI（`/SILENT` 由 Inno 自带）
 
-**卸载**：Inno 的 `UninstallRun` 调 `scripts\uninstall.ps1`（它已经做全了：停服务、删注册表、
-备份用户数据、延迟清理）。安装包自带该脚本副本。
+**卸载**：Inno 的 `UninstallRun` 调 `scripts\uninstall.ps1 -FromUninstaller`（停服务、删注册表、
+备份用户数据、延迟清理）。因为二进制是脚本热替换进去的、不在 Inno 的安装日志里，
+`[UninstallDelete]` 必须显式声明整个 `{app}`；脚本侧跳过 `unins*`（卸载器正在运行）
+与 `{app}\scripts\`（脚本正在那里执行），解锁不掉的文件登记延迟清理。
 
 ### 3.3 server 崩溃自愈（本任务唯一真代码改动）
 

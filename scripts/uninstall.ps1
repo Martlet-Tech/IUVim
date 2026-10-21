@@ -94,9 +94,30 @@ if (-not (Restart-Ctfmon)) {
 # ---- 3. 删除安装文件与用户数据（未锁直接删，有残留交给延迟清理）----
 $delayed = $false
 if ($FromUninstaller) {
-    # Inno 卸载器自己删 {app}（它必须活着走完自己的流程）；这里只登记目录兜底，
-    # 防止卸载器被残留文件卡住留下空壳。
-    Trace-Script "uninstall: -FromUninstaller → 跳过安装目录文件删除（交给 Inno）"
+    # 由 Inno 卸载器调用：删掉安装目录内容，但**跳过两类**：
+    #  · unins000.exe/.dat/.msg —— 卸载器正在运行，删了它会在半途崩；
+    #  · {app}\scripts\** —— 本脚本和 iuv-common.ps1 正在从这里执行（虽然 PowerShell
+    #    启动时已解析完整个脚本，但删正在执行的脚本目录是不必要的风险）。留给 Inno 的
+    #    [UninstallDelete] 在本脚本退出后收尾。
+    # Inno 的 [UninstallDelete] 会删 {app}，但被映射中的 DLL 它删不掉（sharing
+    # violation），需要这里登记延迟清理。
+    Trace-Script "uninstall: -FromUninstaller → 清理安装目录（保留 unins* 与 scripts\）"
+    $scriptsDir = Join-Path $destDir 'scripts'
+    $locked = @()
+    if (Test-Path $destDir) {
+        Get-ChildItem -LiteralPath $destDir -Recurse -Force -ErrorAction SilentlyContinue |
+            Where-Object { -not $_.PSIsContainer } |
+            Where-Object { $_.Name -notlike 'unins*' } |
+            Where-Object { -not $_.FullName.StartsWith($scriptsDir, [StringComparison]::OrdinalIgnoreCase) } |
+            ForEach-Object {
+                try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop }
+                catch { $locked += $_.FullName }
+            }
+        if ($locked.Count -gt 0) {
+            Trace-Script ("uninstall: 锁定文件 " + ($locked -join ', '))
+            $delayed = $true
+        }
+    }
 } elseif (Test-Path $destDir) {
     $locked = @()
     Get-ChildItem -LiteralPath $destDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
