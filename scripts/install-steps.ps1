@@ -122,7 +122,10 @@ Register-ScheduledTask -TaskName $tn -Action $action -Trigger $triggers `
     -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
 Trace-Script "install-steps: 计划任务已注册（AtLogOn $u + 1min 周期自愈）"
 
-# ---- 4. 起 server ----
+# ---- 4. 起 server（新版；旧版优雅停机，客户端透明恢复，正在打字的用户无感）----
+# 不能 taskkill：强杀 = Push::Shutdown 发不出去 = 客户端盲等 300ms 超时才放行。
+# 优雅停机后由计划任务 1 分钟自愈拉起会太慢，这里立刻经计划任务起一次（IgnoreNew
+# 在 server 退出前的瞬间会拦一次，所以先停、再注册任务、再 Start 的顺序已保证不撞）。
 if (Get-Process -Name 'iuv-server' -ErrorAction SilentlyContinue) {
     Stop-IuvServerGraceful | Out-Null
 }

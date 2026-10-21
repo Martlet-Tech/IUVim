@@ -96,17 +96,12 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Flags: runhidden waituntilterminated; RunOnceId: "IuvCleanup"
 
 [UninstallDelete]
-; 二进制不是 Inno 装的（是脚本热替换进去的），必须显式声明；
-; 被映射中的 DLL 删不掉是正常的——uninstall.ps1 已登记延迟清理。
-Type: filesandordirs; Name: "{app}"
+; ⚠️ 不能声明整个 {app}：unins000.exe 正在运行，删除运行中的 exe 会失败。
+; 二进制由 uninstall.ps1 -FromUninstaller 删（删不掉的登记延迟清理）；
+; scripts\ 由 Inno 的安装日志删；这里只兜底 payload（正常安装后已被删掉）。
+Type: filesandordirs; Name: "{app}\payload"
 
-[Code]
-// 升级场景：先停旧 server，避免文件占用（Inno 的 CloseApplications 不覆盖常驻进程）。
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-var
-  Code: Integer;
-begin
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im iuv-server.exe', '', SW_HIDE,
-    ewWaitUntilTerminated, Code);
-  Result := '';
-end;
+; 升级**零中断**：不杀任何进程。二进制由 install-steps.ps1 热替换
+; （Replace-InUseFile 改名让出原名，老进程持旧映射继续跑），server 由脚本
+; 优雅停机后经计划任务拉起新版。此前的 taskkill 已删——那会让正在打字的
+; 用户瞬间回到英文输入。
