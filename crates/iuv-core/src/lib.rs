@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod candidate;
+pub mod candidate_space;
 pub mod config;
 pub mod engine;
 pub mod key;
@@ -16,6 +17,7 @@ pub(crate) mod userdict;
 
 pub use api::{EngineCtx, ImeEngine, PendingInput, Span, Translation};
 pub use candidate::{Candidate, CandidateKind};
+pub use candidate_space::{GroupInfo, GroupKind, GroupMeta};
 pub use config::keymap::{
     is_session_start_key, Combo, GlobalAction, Keymap, SessionAction, TwoSlot,
 };

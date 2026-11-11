@@ -471,6 +471,17 @@ impl Session {
 
 ### 4.2 候选生成算法契约（`Engine` 内部流程，B 实现；顺序即静态展示序）
 
+> **62 号覆盖（2026-11-11，分支 `feat/62-candidate-space`）**：本节以下「按 `end`
+> 降序的扁平全表 / 全量返回不截断 / 全局 `max_candidates` 兜底」条款已被
+> `docs/plan/62-structured-candidate-space.md` 取代，仅作历史档案保留。现行契约：
+> ①**唯一权威切分**——`best_seg` 是候选生成的唯一基线，只有落在切分累计边界
+> `cum` 上的桶进主空间，其它读法归入折叠的 `Alternate` 组；②**分组配额**——
+> 候选按 `Whole / Completion / Prefix[k] / Alternate / Rare` 分组，组间不竞争
+> 名额，每组独立按权重排序并裁剪常用字，`max_candidates` 只作折叠组安全阀；
+> ③**OOV 直达**——整串只有句候选时默认组落在「首字」组，逐字构造上屏写用户库；
+> ④ `Translation` / `Effect` / `KeyOutcome` 携带 `groups` / `active_group`，
+> 会话按当前组分页（PageUp/Down 跨组、`]`/`[` 显式切组）。PROTO 4→5。
+
 设 `seg` = 方案[0]，`n` = seg 段数。**方案[0] 语义（2026-08-14 修正）**：切分器输出
 仍按贪心优先（方案[0] = 贪心/强制），但**消费端 `Engine::rank_plans` 按词频重排**
 （方案 join 键 exact 词条最大权重降序，稳定保贪心原序）——分节显示/主路径跟随

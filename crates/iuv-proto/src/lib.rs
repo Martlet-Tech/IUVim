@@ -20,9 +20,9 @@ pub use frame::{
 };
 pub use msg::{
     Auth, BuildId, Candidate, CandidateKind, Caps, CaretRect, ClientConfig, ClientInfo, CtlCmd,
-    CtlResult, Effect, ImeMode, ImePunct, ImeScript, ImeState, ImeWidth, Key, KeyOutcome, KeyPhase,
-    KeyToken, KeyVerdict, Mods, PageInfo, Payload, ProtoError, Push, ResumeToken, SessionEnd,
-    UserMutation, C2S, S2C,
+    CtlResult, Effect, GroupInfo, ImeMode, ImePunct, ImeScript, ImeState, ImeWidth, Key,
+    KeyOutcome, KeyPhase, KeyToken, KeyVerdict, Mods, PageInfo, Payload, ProtoError, Push,
+    ResumeToken, SessionEnd, UserMutation, C2S, S2C,
 };
 pub use stream::StreamIdAlloc;
 
@@ -32,9 +32,12 @@ pub use stream::StreamIdAlloc;
 /// 部署后旧 DLL 进程重启/注销翻页即恢复）。
 /// 3→4：新增 `C2S::RawKey`（57 号徽标 server 决策）+ `ImeState` 补 `caps` 字段
 /// ——struct 字段追加同为破坏性（postcard 定长序列），旧端解新端必错位。
-pub const PROTO_MIN: u16 = 4;
+/// 4→5：62 号候选分组——`KeyOutcome` / `Effect` 追加 `groups` / `active_group`
+/// 字段（同为定长序列破坏性变更）。dev-deploy 同版本替换 server 与 TSF DLL；
+/// 运行中仍持旧 DLL 的进程需新开窗口/注销恢复。
+pub const PROTO_MIN: u16 = 5;
 /// 协议版本上限。区间 [PROTO_MIN, PROTO_MAX] 允许前后兼容窗口。
-pub const PROTO_MAX: u16 = 4;
+pub const PROTO_MAX: u16 = 5;
 
 /// 版本协商：取双方支持区间的**最大共同值**（= 双方上限的较小者）；无交集 →
 /// [`msg::ProtoError::VersionMismatch`]。

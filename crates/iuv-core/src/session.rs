@@ -24,8 +24,11 @@ pub struct Session {
     seg: Vec<String>,
     /// 已确认选词栈：(文本, 词条 code)——选中间级词入栈（悬空，未上屏），退格回退栈顶
     picked: Vec<(String, String)>,
-    /// 全表候选
+    /// 当前活动组的候选（分页对象；62 号起不再是 1024 长的扁平全表）
     all: Vec<Candidate>,
+    /// 62 号：各组展平的全表 + 组元信息 + 当前组索引。切组时按元信息重新切片。
+    all_cands: Vec<Candidate>,
+    groups: Vec<crate::GroupMeta>,
     page: usize,
     selected: usize,
     end: Option<SessionEnd>,
@@ -48,6 +51,8 @@ impl Session {
             seg: Vec::new(),
             picked: Vec::new(),
             all: Vec::new(),
+            all_cands: Vec::new(),
+            groups: Vec::new(),
             page: 0,
             selected: 0,
             end: None,
@@ -192,6 +197,9 @@ impl Session {
                     self.selected = 0;
                 }
             }
+            // 显式组切换（仅在确实存在多个组时截获，单组时 `[`/`]` 仍走字面尾巴）
+            Key::Char(']') if self.groups.len() > 1 => self.switch_group(1),
+            Key::Char('[') if self.groups.len() > 1 => self.switch_group(-1),
             Key::Up | Key::Left => self.move_selected(-1),
             Key::Down | Key::Right => self.move_selected(1),
             // M2 主动调权（18-m2-user-dict.md）：与相邻候选交换权重。立即重排
@@ -397,8 +405,57 @@ impl Session {
             .next()
             .map(|s| s.syllables)
             .unwrap_or_default();
-        self.all = tr.candidates;
+        self.groups = tr.groups;
+        self.all_cands = tr.candidates;
+        self.sync_main_space();
         self.page = 0;
+        self.selected = 0;
+    }
+
+    /// 62 号：主空间 = 所有**非折叠组**的展平表。逐级候选仍在同一条表里翻页可达
+    /// （兼容既有交互与契约），但生僻字与其它读法已被折叠组隔离、不再挤占名额。
+    fn sync_main_space(&mut self) {
+        self.all = crate::candidate_space::main_flat(&self.all_cands, &self.groups);
+    }
+
+    /// 非折叠组在主空间展平表里的 `(组索引, 起始偏移)`。
+    fn main_group_offsets(&self) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut start = 0usize;
+        for (i, g) in self.groups.iter().enumerate() {
+            if !g.folded {
+                out.push((i, start));
+                start += g.len;
+            }
+        }
+        out
+    }
+
+    /// 当前页所在的组（用于候选窗组标签）。
+    fn current_group(&self) -> usize {
+        let offsets = self.main_group_offsets();
+        offsets
+            .iter()
+            .rposition(|(_, s)| *s <= self.page * self.page_size())
+            .map(|i| offsets[i].0)
+            .unwrap_or(0)
+    }
+
+    /// `]` / `[`：跳到相邻组的第一页（不切走主空间，只是定位）。
+    fn switch_group(&mut self, dir: i32) {
+        let offsets = self.main_group_offsets();
+        if offsets.is_empty() {
+            return;
+        }
+        let cur = offsets
+            .iter()
+            .rposition(|(_, s)| *s <= self.page * self.page_size())
+            .unwrap_or(0);
+        let next = cur as i32 + dir;
+        if next < 0 || next as usize >= offsets.len() {
+            return;
+        }
+        self.page = offsets[next as usize].1 / self.page_size();
         self.selected = 0;
     }
 
@@ -489,6 +546,12 @@ impl Session {
                     page_size: self.page_size() as u32,
                     total: 1,
                 },
+                groups: vec![crate::GroupInfo {
+                    label: "原文".into(),
+                    count: 1,
+                    folded: false,
+                }],
+                active_group: 0,
                 end: self.end.clone(),
             };
         }
@@ -536,6 +599,8 @@ impl Session {
                 page_size: self.page_size() as u32,
                 total: self.all.len() as u32,
             },
+            groups: crate::candidate_space::infos(&self.groups),
+            active_group: self.current_group() as u32,
             end: self.end.clone(),
         }
     }

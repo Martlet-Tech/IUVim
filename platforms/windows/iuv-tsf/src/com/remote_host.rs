@@ -750,6 +750,8 @@ mod tests {
                         all_candidates: None,
                         page: None,
                         selected: None,
+                        groups: None,
+                        active_group: None,
                     })));
                 }
                 C2S::Ping { nonce } => reply.respond(S2C::Pong { nonce }),
@@ -797,6 +799,8 @@ mod tests {
                     all_candidates: None,
                     page: None,
                     selected: None,
+                    groups: None,
+                    active_group: None,
                 })));
             }
         }

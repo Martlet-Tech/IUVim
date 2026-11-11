@@ -111,6 +111,9 @@ pub struct KeyOutcome {
     pub all_candidates: Option<Vec<Candidate>>,
     pub page: Option<PageInfo>,
     pub selected: Option<u32>,
+    /// 62 号：候选分组摘要（仅 UIELEMENT 客户端消费；None = 旧端/无分组信息）。
+    pub groups: Option<Vec<GroupInfo>>,
+    pub active_group: Option<u32>,
 }
 
 // ===================== 候选 / 翻页（49 §4.5.3 瘦身版） =====================
@@ -121,6 +124,14 @@ pub struct KeyOutcome {
 pub struct Candidate {
     pub text: String,
     pub kind: CandidateKind,
+}
+
+/// 62 号：候选分组摘要（线上只带渲染所需的标签 / 数量 / 折叠标记，不带候选本体）。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupInfo {
+    pub label: String,
+    pub count: u32,
+    pub folded: bool,
 }
 
 /// UI 快照推送载荷（仅 `Push::UiElement` / `KeyOutcome.candidates` 消费）。
@@ -139,6 +150,9 @@ pub struct Effect {
     /// 页内高亮索引。
     pub selected: u32,
     pub page: PageInfo,
+    /// 62 号：分组摘要（游戏内候选栏按当前组构造页，不再拿 1024 条全表）。
+    pub groups: Vec<GroupInfo>,
+    pub active_group: u32,
 }
 
 // ===================== 四态 / 控制（镜像 iuv-win ipc::msg 语义） =====================

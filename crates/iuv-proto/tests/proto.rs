@@ -149,6 +149,8 @@ fn s2c_samples() -> Vec<S2C> {
             all_candidates: None,
             page: None,
             selected: None,
+            groups: None,
+            active_group: None,
         })),
         S2C::KeyResult(KeyVerdict::Busy),
         S2C::Ok,
@@ -192,6 +194,8 @@ fn push_samples() -> Vec<Push> {
             candidates: vec![cand("你好"), cand("拟好")],
             all_candidates: vec![cand("你好"), cand("拟好"), cand("你号")],
             selected: 0,
+            groups: vec![],
+            active_group: 0,
             page: PageInfo {
                 page: 0,
                 page_count: 2,
@@ -391,6 +395,8 @@ fn reject_oversize_payload_in_encode() {
             kind: CandidateKind::Sentence,
         }],
         selected: 0,
+        groups: vec![],
+        active_group: 0,
         page: PageInfo::default(),
     });
     match encode_frame(0, false, &Payload::Push(big)) {
@@ -433,6 +439,8 @@ fn hot_path_key_frame_is_tiny() {
             all_candidates: None,
             page: None,
             selected: None,
+            groups: None,
+            active_group: None,
         }))),
     )
     .unwrap();

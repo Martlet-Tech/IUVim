@@ -78,9 +78,9 @@ where
         let (w, h) = measurer(&text);
         items.push((text, w, h));
     }
-    let show_page = snap.page.page_count > 1;
+    let show_page = crate::snapshot::show_page(snap);
     if show_page {
-        let text = format!("{}/{}", snap.page.page + 1, snap.page.page_count);
+        let text = crate::snapshot::page_label(snap);
         let (w, h) = page_measurer(&text);
         items.push((text, w, h));
     }
@@ -220,6 +220,7 @@ mod tests {
                 total: page_count * 5,
             },
             orientation: Orientation::Vertical,
+            group_label: String::new(),
         }
     }
 

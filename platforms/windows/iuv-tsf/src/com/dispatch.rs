@@ -92,6 +92,20 @@ pub(crate) fn merge_outcome(
     if let Some(s) = outcome.selected {
         e.selected = s as usize;
     }
+    // 62 号：分组摘要随应答合并（游戏内候选栏按当前组分页，旧端发 None 沿用基线）。
+    if let Some(gs) = outcome.groups {
+        e.groups = gs
+            .into_iter()
+            .map(|g| iuv_core::GroupInfo {
+                label: g.label,
+                count: g.count,
+                folded: g.folded,
+            })
+            .collect();
+    }
+    if let Some(g) = outcome.active_group {
+        e.active_group = g;
+    }
     e.end = outcome.end;
     let ended = e.end.is_some();
     (e, ended)

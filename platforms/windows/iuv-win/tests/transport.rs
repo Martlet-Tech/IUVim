@@ -51,6 +51,8 @@ impl Session for EchoSession {
                 all_candidates: None,
                 page: None,
                 selected: None,
+                groups: None,
+                active_group: None,
             }))),
             C2S::UserMutation(_) => reply.respond(S2C::Ok),
             _ => reply.respond(S2C::Err(ProtoError::Malformed {

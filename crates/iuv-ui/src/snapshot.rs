@@ -26,6 +26,23 @@ pub struct UiSnapshot {
     pub page: PageInfo,
     /// 布局方向（竖排/横排）；effect_to_snapshot 默认竖排，TSF 侧从 config 填
     pub orientation: Orientation,
+    /// 62 号：当前候选组标签（如「首字 2/4」）；空 = 无分组信息，布局与旧版一致。
+    pub group_label: String,
+}
+
+/// 是否需要底部小字行：多页，或存在分组标签。
+pub fn show_page(snap: &UiSnapshot) -> bool {
+    snap.page.page_count > 1 || !snap.group_label.is_empty()
+}
+
+/// 底部小字行的唯一文本口径（布局量测与渲染共用，避免漂移）。
+pub fn page_label(snap: &UiSnapshot) -> String {
+    let p = format!("{}/{}", snap.page.page + 1, snap.page.page_count.max(1));
+    if snap.group_label.is_empty() {
+        p
+    } else {
+        format!("{} {}", snap.group_label, p)
+    }
 }
 
 /// Effect → UiSnapshot：取 effect.reading / 页内候选 text / selected / page。
@@ -37,6 +54,12 @@ pub fn effect_to_snapshot(e: &Effect) -> UiSnapshot {
         selected: e.selected,
         page: e.page,
         orientation: Orientation::default(),
+        group_label: if e.groups.len() > 1 {
+            let idx = (e.active_group as usize).min(e.groups.len() - 1);
+            format!("{} {}/{}", e.groups[idx].label, idx + 1, e.groups.len())
+        } else {
+            String::new()
+        },
     }
 }
 

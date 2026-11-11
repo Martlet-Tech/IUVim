@@ -35,7 +35,12 @@ pub struct Span {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Translation {
     pub segmentation: Vec<Span>,
+    /// 62 号：各组按顺序展平的候选表。组边界由 `groups` 描述，会话层按当前组切片分页。
     pub candidates: Vec<Candidate>,
+    /// 候选分组元信息（整串 / 补全词 / 前缀 / 其它切分 / 生僻字）。
+    pub groups: Vec<crate::candidate_space::GroupMeta>,
+    /// 默认活动组索引：词库无整串词（OOV）时直达「首字」组，便于逐字构造。
+    pub default_group: usize,
 }
 
 /// 顶层引擎接口。实现须线程安全（进程级单例跨线程共享）。

@@ -602,6 +602,22 @@ impl EngineSession {
                 .caps
                 .has(Caps::UIELEMENT)
                 .then_some(effect.selected as u32),
+            // 62 号：分组摘要随候选一起上线（游戏内候选栏按当前组分页，旧端忽略）。
+            groups: self.caps.has(Caps::UIELEMENT).then(|| {
+                effect
+                    .groups
+                    .iter()
+                    .map(|g| iuv_proto::GroupInfo {
+                        label: g.label.clone(),
+                        count: g.count,
+                        folded: g.folded,
+                    })
+                    .collect()
+            }),
+            active_group: self
+                .caps
+                .has(Caps::UIELEMENT)
+                .then_some(effect.active_group as u32),
         }
     }
 

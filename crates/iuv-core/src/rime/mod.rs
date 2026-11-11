@@ -82,12 +82,12 @@ impl RimeEngine {
         if cands.is_empty() {
             return self.fallback_translation(pending, seg);
         }
-        Translation {
-            segmentation: vec![Span {
+        single_group_translation(
+            vec![Span {
                 syllables: seg.to_vec(),
             }],
-            candidates: cands,
-        }
+            cands,
+        )
     }
 
     fn blocked(&self) -> impl Fn(&str, &str) -> bool + '_ {
@@ -113,10 +113,29 @@ impl RimeEngine {
             let n_seg = seg.iter().filter(|s| !s.is_empty()).count();
             cands.push(crate::api::raw_fallback_candidate(&plain, n_seg.max(1)));
         }
-        Translation {
-            segmentation: vec![],
-            candidates: cands,
-        }
+        single_group_translation(vec![], cands)
+    }
+}
+
+/// 单组翻译（纯单字档 / 原文兜底）：整组归入 `Whole`，无分组歧义。
+fn single_group_translation(segmentation: Vec<Span>, cands: Vec<crate::Candidate>) -> Translation {
+    use crate::candidate_space::{GroupKind, GroupMeta};
+    let len = cands.len();
+    let groups = if len == 0 {
+        Vec::new()
+    } else {
+        vec![GroupMeta {
+            kind: GroupKind::Whole,
+            label: "整串".into(),
+            len,
+            folded: false,
+        }]
+    };
+    Translation {
+        segmentation,
+        candidates: cands,
+        groups,
+        default_group: 0,
     }
 }
 
@@ -126,6 +145,8 @@ impl ImeEngine for RimeEngine {
             return Translation {
                 segmentation: vec![],
                 candidates: vec![],
+                groups: vec![],
+                default_group: 0,
             };
         }
         // 图构建视图：保留大小写（大写保形字符不参与拼音匹配——syllabifier 对
@@ -277,59 +298,79 @@ impl ImeEngine for RimeEngine {
             .collect();
         ends.sort_unstable_by(|a, b| b.cmp(a));
         ends.dedup();
-        let mut cands: Vec<crate::Candidate> = Vec::new();
+
+        // —— 62 号：候选从「按 end 降序的一条扁平全表」改为「按意图分组的空间」——
+        // 唯一权威切分 = `seg`（best_seg；46 号整跨词反查/贪心）。只有落在切分
+        // 边界 `cum` 上的桶进主空间；其它读法（`yinguai` 借走 g 的 ying、yi 等）
+        // 归入折叠的 Alternate 组，用户显式切组才展开。这样 w=27218 的「因」不再
+        // 被 272 个 w=0 的 ying 生僻字堵在后面，权重回到组内排序的本位。
+
+        // 整句通道（Poet DP）先算：句候选进 Whole 组，并先占去重名额（先见先留）。
+        let rest_all_syllables = {
+            let ne: Vec<&String> = seg.iter().filter(|s| !s.is_empty()).collect();
+            ne.len() >= 2 && ne[..ne.len() - 1].iter().all(|s| self.is_syllable(s))
+        };
+        let mut sentence: Vec<crate::Candidate> = Vec::new();
+        if rest_all_syllables {
+            if let Some(wg) = translator::build_poet_graph(&buckets, graph.farthest, |w| {
+                self.lm.log_prob(None, "", w)
+            }) {
+                if let Some(s) =
+                    poet::make_sentence(&wg, graph.farthest, ctx.preceding_text, self.lambda)
+                {
+                    sentence.push(translator::sentence_candidate(&s, seg.join("'")));
+                }
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for c in &sentence {
+            seen.insert(c.text.clone());
+        }
+        let mut by_end: Vec<(usize, Vec<crate::Candidate>)> = Vec::new();
         for end in ends {
             let Some(slot) = buckets.get(&(0, end)) else {
                 continue;
             };
+            let mut bucket = Vec::new();
             for be in slot.iter() {
+                if !seen.insert(be.entry.word.clone()) {
+                    continue;
+                }
                 // 预测匹配（尾前缀补全）覆盖全输入 → 恒全消费
                 let seg_len = if be.exact { consumed_parts(end) } else { 999 };
                 let kind = crate::CandidateKind::for_word(&be.entry.word);
                 let mut cand = crate::Candidate::for_entry(&be.entry, kind, seg_len);
                 // 统一标量分：log 词权 + 拼写可信度累计（诊断展示，不参与排序）
                 cand.score = self.lm.log_prob(None, "", be.entry.weight) + be.cred;
-                cands.push(cand);
+                bucket.push(cand);
+            }
+            if !bucket.is_empty() {
+                by_end.push((end, bucket));
             }
         }
 
-        // —— 整句通道：闸门 + Poet DP；句候选置最前（st.cc:598-601）。
-        // 守卫：除末段外全为完整音节才组句（全简拼输入无句通道）。
-        // 词格不再按拼法过滤——librime PrepareForMakingSentence（st.cc:698-716）
-        // 对词格零拼法过滤，旧 `class != 1` 过滤随 class 分级一并移除。——
-        let rest_all_syllables = {
-            let ne: Vec<&String> = seg.iter().filter(|s| !s.is_empty()).collect();
-            ne.len() >= 2 && ne[..ne.len() - 1].iter().all(|s| self.is_syllable(s))
-        };
-        if rest_all_syllables {
-            if let Some(wg) = translator::build_poet_graph(&buckets, graph.farthest, |w| {
-                self.lm.log_prob(None, "", w)
-            }) {
-                if let Some(sentence) =
-                    poet::make_sentence(&wg, graph.farthest, ctx.preceding_text, self.lambda)
-                {
-                    cands.insert(0, translator::sentence_candidate(&sentence, seg.join("'")));
-                }
-            }
-        }
-
-        // 前缀联想（config `candidate_prefix`，默认关，微软化）：追加以当前码
-        // （seg 去空段 join `'`）为前缀的词条（classic generate_candidates 同款）。
+        // 前缀联想（config `candidate_prefix`，默认关）：以当前码为前缀的长词并
+        // 入整串组（默认关闭，不影响分组语义）。
         if self.candidate_prefix {
             let n = seg.iter().filter(|s| !s.is_empty()).count().max(1);
             let squashed = seg.join("'");
             for e in &self.dict.prefix(&squashed, 20) {
+                if !seen.insert(e.word.clone()) {
+                    continue;
+                }
                 let kind = crate::CandidateKind::for_word(&e.word);
-                cands.push(crate::Candidate::for_entry(e, kind, n));
+                sentence.push(crate::Candidate::for_entry(e, kind, n));
             }
         }
 
-        // 文本去重（DistinctTranslation：静默丢重、先见先留）
-        let mut seen = std::collections::HashSet::new();
-        cands.retain(|c| seen.insert(c.text.clone()));
-
-        // 截断 + 原文兜底
-        cands.truncate(self.max_candidates);
+        let (cands, groups, default_group) = crate::candidate_space::build(
+            by_end,
+            &cum,
+            graph.farthest,
+            sentence,
+            self.max_candidates,
+        );
         if cands.is_empty() {
             return self.fallback_translation(pending, &seg);
         }
@@ -337,6 +378,8 @@ impl ImeEngine for RimeEngine {
         Translation {
             segmentation: vec![Span { syllables: seg }],
             candidates: cands,
+            groups,
+            default_group,
         }
     }
 

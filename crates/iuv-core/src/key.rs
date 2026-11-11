@@ -23,6 +23,10 @@ pub struct Effect {
     /// 页内高亮索引
     pub selected: usize,
     pub page: PageInfo,
+    /// 62 号：候选分组摘要（标签 / 该组候选数 / 是否折叠）。
+    pub groups: Vec<crate::GroupInfo>,
+    /// 当前活动组索引（`groups` 下标）。
+    pub active_group: u32,
     /// Some → 会话结束（Commit 上屏 / Cancel 取消）
     pub end: Option<SessionEnd>,
 }

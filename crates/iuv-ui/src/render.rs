@@ -70,8 +70,8 @@ pub fn render_candidate(
         sizes.push((label, size));
     }
     let mut page_size = None;
-    if snap.page.page_count > 1 {
-        let label = format!("{}/{}", snap.page.page + 1, snap.page.page_count);
+    if crate::snapshot::show_page(snap) {
+        let label = crate::snapshot::page_label(snap);
         page_size = Some(text.measure(&label, page_px));
     }
     let (cw, ch, rects) = layout(
@@ -122,9 +122,9 @@ pub fn render_candidate(
             text.draw(pixmap, &label, r.x as f32, r.y as f32, size_px, color);
         }
         // 页码小字（多页时；行号 = candidates.len()）
-        if snap.page.page_count > 1 {
+        if crate::snapshot::show_page(snap) {
             if let Some(r) = rects.get(snap.candidates.len()) {
-                let label = format!("{}/{}", snap.page.page + 1, snap.page.page_count);
+                let label = crate::snapshot::page_label(snap);
                 text.draw(
                     pixmap,
                     &label,
@@ -427,6 +427,7 @@ mod tests {
                 total: page_count * 5,
             },
             orientation: Orientation::Vertical,
+            group_label: String::new(),
         }
     }
 
