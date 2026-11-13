@@ -1,0 +1,44 @@
+name: Release
+
+# 63 号：tag 触发出安装包——家里电脑不再人肉 build + package。
+# 触发：推送 v* tag（v0.2.3 起）。产物 = scripts/package.ps1 的
+# dist\iuv-setup-<ver>.exe，自动挂到 GitHub Release。
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write  # 创建 Release / 上传产物
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: package + release
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc  # x86 TSF 车道需要
+
+      # Inno Setup 6：choco 装到 Program Files (x86)，package.ps1 的 ISCC 探测路径覆盖
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Package
+        shell: pwsh
+        run: ./scripts/package.ps1
+
+      - name: Release
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $exe = Get-ChildItem dist/iuv-setup-*.exe | Select-Object -First 1
+          if (-not $exe) { Write-Host "错误：dist 下没有安装包"; exit 1 }
+          gh release create "$tag" $exe.FullName --title "$tag" --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
