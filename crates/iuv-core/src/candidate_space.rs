@@ -10,21 +10,17 @@
 //! - `Whole`：覆盖整串的词（exact）与句候选——「选中就上屏」；
 //! - `Completion`：尾前缀补全词（如 `yin'gu` → 因故/银箍）；
 //! - `Prefix`：只消费前 k 段的词/单字——「先上屏前半截，尾巴续接」；
-//! - `Alternate`：不属于唯一权威切分的其它读法（ying/yi …）——默认折叠，可展开；
-//! - `Rare`：权重为 0 或超出常用字配额的扩展区生僻字——默认折叠。
+//! - `Alternate`：不属于唯一权威切分的其它读法（ying/yi …）——默认折叠，可展开。
 //!
-//! 每组独立配额、独立按权重排序（桶内权重序保持不变），`max_candidates` 只作
+//! 63 号：组内不限量（62 号的 `GROUP_LIMIT` 配额与 `Rare` 生僻字折叠组已删除），
+//! 0 权重生僻字按权重正常排在各组尾部、翻页可达；`max_candidates` 只作
 //! 全局安全阀。整串只有句候选而没有 exact 词时，默认组落在首个 `Prefix`/`Syllable`
 //! 组，让词库未收录（OOV）的组合可以直接逐字构造。
 
 use crate::{Candidate, CandidateKind};
 
-/// 主空间每组候选上限（常用字全量可达，微软对齐的「翻页可达」由组配额兑现）。
-pub const GROUP_LIMIT: usize = 50;
 /// 前缀补全组上限（长词联想，不占整串组名额）。
 pub const COMPLETION_LIMIT: usize = 10;
-/// 进入 `Rare` 的最低权重：0 权重的扩展区汉字默认不进主空间。
-pub const RARE_MIN_WEIGHT: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupKind {
@@ -32,9 +28,7 @@ pub enum GroupKind {
     Completion,
     Prefix,
     Alternate,
-    Rare,
 }
-
 /// 组元信息：`len` 为该组在 `Translation.candidates` 展平表里的候选数。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupMeta {
@@ -98,25 +92,6 @@ pub fn main_flat(cands: &[Candidate], groups: &[GroupMeta]) -> Vec<Candidate> {
     out
 }
 
-/// 单组整理：单字按权重保留常用字，权重 0 / 超配额的单字移入 `Rare`；
-/// 词候选按原序保留。组内原有顺序（权重降序）不变。
-fn trim_group(group: &mut Vec<Candidate>, limit: usize, rare: &mut Vec<Candidate>) {
-    let mut kept = Vec::new();
-    let mut n_char = 0usize;
-    for c in group.drain(..) {
-        if c.kind == CandidateKind::Char {
-            n_char += 1;
-            if c.weight < RARE_MIN_WEIGHT || n_char > limit {
-                rare.push(c);
-                continue;
-            }
-        }
-        kept.push(c);
-    }
-    kept.truncate(limit);
-    *group = kept;
-}
-
 /// 把「按 end 降序分桶」的候选整理成分组空间。
 ///
 /// - `by_end`：`(end, 桶内候选)`，已按 end 降序；
@@ -157,15 +132,8 @@ pub fn build(
         }
     }
 
-    let mut rare: Vec<Candidate> = Vec::new();
-    trim_group(&mut whole, GROUP_LIMIT, &mut rare);
-    completion.truncate(COMPLETION_LIMIT);
-    for (_, p) in prefixes.iter_mut() {
-        trim_group(p, GROUP_LIMIT, &mut rare);
-    }
-
     // 组顺序 = 用户意图优先级：整串 → 补全词 → 逐级前缀（end 降序 = 长前缀先） →
-    // 折叠的备选切分 → 折叠的生僻字。
+    // 折叠的备选切分。
     // 用宏而非闭包：闭包会长期持有 groups/flat 的可变借用，期间读 groups.len() 冲突。
     let mut groups: Vec<GroupMeta> = Vec::new();
     let mut flat: Vec<Candidate> = Vec::new();
@@ -229,9 +197,7 @@ pub fn build(
     }
     // 折叠组不进主空间分页，仍受全局安全阀约束（避免长串下展平表无限膨胀）。
     alternate.truncate(cap);
-    rare.truncate(cap);
     push_group!(GroupKind::Alternate, "其它切分".into(), alternate, true);
-    push_group!(GroupKind::Rare, "生僻字".into(), rare, true);
 
     // 会话默认展示主空间展平表（所有非折叠组），故默认活动组恒为 0；
     // `active_group` 由当前页位置推算，用于窗口组标签。
